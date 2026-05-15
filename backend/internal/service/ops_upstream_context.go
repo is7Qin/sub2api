@@ -42,8 +42,7 @@ func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
 	if c == nil || len(body) == 0 {
 		return
 	}
-	// 热路径避免 string(body) 额外分配，按需在落库前再转换。
-	c.Set(OpsUpstreamRequestBodyKey, body)
+	c.Set(OpsUpstreamRequestBodyKey, NewOpsRequestBodySnapshot(body, OpsUpstreamRequestBodySnapshotBytes))
 }
 
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
@@ -139,6 +138,14 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 				ev.UpstreamRequestBody = strings.TrimSpace(raw)
 			case []byte:
 				ev.UpstreamRequestBody = strings.TrimSpace(string(raw))
+			case *OpsRequestBodySnapshot:
+				ev.UpstreamRequestBody = strings.TrimSpace(OpsRequestBodySnapshotText(raw))
+				if raw.Truncated && !strings.Contains(ev.Kind, "request_body_truncated") {
+					if ev.Kind == "" {
+						ev.Kind = "upstream"
+					}
+					ev.Kind = ev.Kind + ":request_body_truncated"
+				}
 			}
 		}
 	}

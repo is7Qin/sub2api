@@ -2772,8 +2772,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reasoningEffort := extractOpenAIReasoningEffort(reqBody, originalModel)
 		serviceTier := extractOpenAIServiceTier(reqBody)
 		releaseOpenAIParsedRequestBody(c)
-		reqBody = nil
-		body = nil
 
 		// Handle normal response
 		var usage *OpenAIUsage
@@ -3022,7 +3020,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	serviceTier := extractOpenAIServiceTierFromBody(body)
-	body = nil
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int

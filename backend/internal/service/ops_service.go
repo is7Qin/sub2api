@@ -121,8 +121,8 @@ func (s *OpsService) IsMonitoringEnabled(ctx context.Context) bool {
 	}
 }
 
-func (s *OpsService) RecordError(ctx context.Context, entry *OpsInsertErrorLogInput, rawRequestBody []byte) error {
-	prepared, ok, err := s.prepareErrorLogInput(ctx, entry, rawRequestBody)
+func (s *OpsService) RecordError(ctx context.Context, entry *OpsInsertErrorLogInput) error {
+	prepared, ok, err := s.prepareErrorLogInput(ctx, entry)
 	if err != nil {
 		log.Printf("[Ops] RecordError prepare failed: %v", err)
 		return err
@@ -145,7 +145,7 @@ func (s *OpsService) RecordErrorBatch(ctx context.Context, entries []*OpsInsertE
 	}
 	prepared := make([]*OpsInsertErrorLogInput, 0, len(entries))
 	for _, entry := range entries {
-		item, ok, err := s.prepareErrorLogInput(ctx, entry, nil)
+		item, ok, err := s.prepareErrorLogInput(ctx, entry)
 		if err != nil {
 			log.Printf("[Ops] RecordErrorBatch prepare failed: %v", err)
 			continue
@@ -181,11 +181,10 @@ func (s *OpsService) RecordErrorBatch(ctx context.Context, entries []*OpsInsertE
 	return nil
 }
 
-func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertErrorLogInput, rawRequestBody []byte) (*OpsInsertErrorLogInput, bool, error) {
+func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertErrorLogInput) (*OpsInsertErrorLogInput, bool, error) {
 	if entry == nil {
 		return nil, false, nil
 	}
-	_ = rawRequestBody
 	if !s.IsMonitoringEnabled(ctx) {
 		return nil, false, nil
 	}

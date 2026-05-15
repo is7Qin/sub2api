@@ -340,7 +340,7 @@ func setOpsRequestContext(c *gin.Context, model string, stream bool, requestBody
 	c.Set(opsModelKey, model)
 	c.Set(opsStreamKey, stream)
 	if len(requestBody) > 0 {
-		c.Set(opsRequestBodyKey, requestBody)
+		c.Set(opsRequestBodyKey, service.NewOpsStoredRequestBodySnapshot(requestBody))
 	}
 	if c.Request != nil && model != "" {
 		ctx := context.WithValue(c.Request.Context(), ctxkey.Model, model)
@@ -368,11 +368,11 @@ func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLo
 	if !ok {
 		return
 	}
-	raw, ok := v.([]byte)
-	if !ok || len(raw) == 0 {
+	snapshot, ok := v.(*service.OpsRequestBodySnapshot)
+	if !ok || snapshot == nil || snapshot.Bytes <= 0 {
 		return
 	}
-	entry.RequestBodyJSON, entry.RequestBodyTruncated, entry.RequestBodyBytes = service.PrepareOpsRequestBodyForQueue(raw)
+	entry.RequestBodyJSON, entry.RequestBodyTruncated, entry.RequestBodyBytes = service.PrepareOpsRequestBodySnapshotForQueue(snapshot)
 	opsErrorLogSanitized.Add(1)
 }
 

@@ -58,3 +58,47 @@ func TestPrepareOpsRequestBodyForQueue_LargeBodyTruncated(t *testing.T) {
 	require.LessOrEqual(t, len(*requestBodyJSON), opsMaxStoredRequestBodyBytes)
 	require.Contains(t, *requestBodyJSON, "request_body_truncated")
 }
+
+func TestPrepareOpsRequestBodySnapshotForQueue_IncompleteLargeJSONKeepsMetadata(t *testing.T) {
+	largeMsg := strings.Repeat("x", 50<<20)
+	raw := []byte(`{"model":"gpt-5","stream":true,"service_tier":"priority","max_output_tokens":4096,"messages":[{"role":"user","content":"` + largeMsg + `"}],"api_key":"secret"}`)
+	snapshot := NewOpsStoredRequestBodySnapshot(raw)
+	require.NotNil(t, snapshot)
+	require.True(t, snapshot.Truncated)
+	require.Len(t, snapshot.Body, opsMaxStoredRequestBodyBytes)
+
+	requestBodyJSON, truncated, requestBodyBytes := PrepareOpsRequestBodySnapshotForQueue(snapshot)
+	require.NotNil(t, requestBodyJSON)
+	require.NotNil(t, requestBodyBytes)
+	require.True(t, truncated)
+	require.Equal(t, len(raw), *requestBodyBytes)
+	require.LessOrEqual(t, len(*requestBodyJSON), opsMaxStoredRequestBodyBytes)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*requestBodyJSON), &body))
+	require.Equal(t, "gpt-5", body["model"])
+	require.Equal(t, true, body["stream"])
+	require.Equal(t, "priority", body["service_tier"])
+	require.Equal(t, float64(4096), body["max_output_tokens"])
+	require.Equal(t, true, body["request_body_truncated"])
+	require.NotContains(t, *requestBodyJSON, "secret")
+}
+
+func TestPrepareOpsRequestBodySnapshotForQueue_CompleteSnapshotBehaviorUnchanged(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5","stream":false,"api_key":"secret","messages":[{"role":"user","content":"hello"}]}`)
+	snapshot := NewOpsStoredRequestBodySnapshot(raw)
+	require.NotNil(t, snapshot)
+	require.False(t, snapshot.Truncated)
+
+	requestBodyJSON, truncated, requestBodyBytes := PrepareOpsRequestBodySnapshotForQueue(snapshot)
+	require.NotNil(t, requestBodyJSON)
+	require.NotNil(t, requestBodyBytes)
+	require.False(t, truncated)
+	require.Equal(t, len(raw), *requestBodyBytes)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*requestBodyJSON), &body))
+	require.Equal(t, "gpt-5", body["model"])
+	require.Equal(t, false, body["stream"])
+	require.Equal(t, "[REDACTED]", body["api_key"])
+}

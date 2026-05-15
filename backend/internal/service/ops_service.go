@@ -11,198 +11,13 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/tidwall/gjson"
 )
 
 var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is disabled")
 
 const (
-	opsMaxStoredRequestBodyBytes = 256 * 1024
-	opsMaxStoredErrorBodyBytes   = 20 * 1024
-	opsSnapshotNestedJSONBytes   = 8 * 1024
-
-	OpsUpstreamRequestBodySnapshotBytes = 10 * 1024
+	opsMaxStoredErrorBodyBytes = 20 * 1024
 )
-
-// OpsRequestBodySnapshot is a bounded copy of a request body for ops logging.
-// It deliberately does not keep a slice of the original buffer; slicing a large
-// body would keep the whole backing array alive until the request context is
-// released.
-type OpsRequestBodySnapshot struct {
-	Body      []byte
-	Bytes     int
-	Truncated bool
-}
-
-func NewOpsRequestBodySnapshot(raw []byte, maxBytes int) *OpsRequestBodySnapshot {
-	if len(raw) == 0 {
-		return nil
-	}
-	if maxBytes <= 0 || maxBytes > len(raw) {
-		maxBytes = len(raw)
-	}
-	body := make([]byte, maxBytes)
-	copy(body, raw[:maxBytes])
-	return &OpsRequestBodySnapshot{
-		Body:      body,
-		Bytes:     len(raw),
-		Truncated: len(raw) > maxBytes,
-	}
-}
-
-func NewOpsStoredRequestBodySnapshot(raw []byte) *OpsRequestBodySnapshot {
-	return NewOpsRequestBodySnapshot(raw, opsMaxStoredRequestBodyBytes)
-}
-
-// PrepareOpsRequestBodyForQueue 在入队前对请求体执行脱敏与裁剪，返回可直接写入 OpsInsertErrorLogInput 的字段。
-// 该方法用于避免异步队列持有大块原始请求体，减少错误风暴下的内存放大风险。
-func PrepareOpsRequestBodyForQueue(raw []byte) (requestBodyJSON *string, truncated bool, requestBodyBytes *int) {
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	sanitized, truncated, bytesLen := sanitizeAndTrimRequestBody(raw, opsMaxStoredRequestBodyBytes)
-	if sanitized != "" {
-		out := sanitized
-		requestBodyJSON = &out
-	}
-	n := bytesLen
-	requestBodyBytes = &n
-	return requestBodyJSON, truncated, requestBodyBytes
-}
-
-func PrepareOpsRequestBodySnapshotForQueue(snapshot *OpsRequestBodySnapshot) (requestBodyJSON *string, truncated bool, requestBodyBytes *int) {
-	if snapshot == nil || snapshot.Bytes <= 0 {
-		return nil, false, nil
-	}
-	requestBodyJSON, truncated, requestBodyBytes = PrepareOpsRequestBodyForQueue(snapshot.Body)
-	if requestBodyJSON == nil && snapshot.Truncated {
-		if fallback := buildTruncatedOpsSnapshotRequestBody(snapshot.Body, opsMaxStoredRequestBodyBytes); fallback != "" {
-			requestBodyJSON = &fallback
-			truncated = true
-		}
-	}
-	if requestBodyBytes == nil {
-		n := snapshot.Bytes
-		requestBodyBytes = &n
-	} else {
-		*requestBodyBytes = snapshot.Bytes
-	}
-	return requestBodyJSON, truncated || snapshot.Truncated, requestBodyBytes
-}
-
-func buildTruncatedOpsSnapshotRequestBody(prefix []byte, maxBytes int) string {
-	if len(prefix) == 0 {
-		return ""
-	}
-	out := map[string]any{
-		"request_body_truncated": true,
-	}
-
-	for _, key := range []string{"model", "service_tier", "reasoning_effort"} {
-		if v, ok := opsSnapshotString(prefix, key); ok {
-			out[key] = v
-		}
-	}
-	for _, key := range []string{"stream"} {
-		if v, ok := opsSnapshotBool(prefix, key); ok {
-			out[key] = v
-		}
-	}
-	for _, key := range []string{
-		"max_tokens",
-		"max_output_tokens",
-		"max_input_tokens",
-		"max_completion_tokens",
-		"temperature",
-		"top_p",
-		"top_k",
-	} {
-		if v, ok := opsSnapshotNumber(prefix, key); ok {
-			out[key] = v
-		}
-	}
-	for _, key := range []string{"thinking", "reasoning"} {
-		if v, ok := opsSnapshotSmallJSON(prefix, key); ok {
-			out[key] = redactSensitiveJSON(v)
-		}
-	}
-
-	for _, key := range []string{"messages", "contents", "input", "prompt"} {
-		if gjson.GetBytes(prefix, key).Exists() {
-			out[key] = []any{}
-		}
-	}
-	if gjson.GetBytes(prefix, "text").Exists() {
-		out["text"] = ""
-	}
-
-	encoded, err := json.Marshal(out)
-	if err == nil && (maxBytes <= 0 || len(encoded) <= maxBytes) {
-		return string(encoded)
-	}
-	minimal, err := json.Marshal(map[string]any{"request_body_truncated": true})
-	if err != nil {
-		return ""
-	}
-	return string(minimal)
-}
-
-func opsSnapshotString(raw []byte, key string) (string, bool) {
-	res := gjson.GetBytes(raw, key)
-	if !res.Exists() || res.Type != gjson.String {
-		return "", false
-	}
-	v := strings.TrimSpace(res.String())
-	if v == "" {
-		return "", false
-	}
-	return v, true
-}
-
-func opsSnapshotBool(raw []byte, key string) (bool, bool) {
-	res := gjson.GetBytes(raw, key)
-	if !res.Exists() {
-		return false, false
-	}
-	switch res.Type {
-	case gjson.True:
-		return true, true
-	case gjson.False:
-		return false, true
-	default:
-		return false, false
-	}
-}
-
-func opsSnapshotNumber(raw []byte, key string) (any, bool) {
-	res := gjson.GetBytes(raw, key)
-	if !res.Exists() || res.Type != gjson.Number {
-		return nil, false
-	}
-	return res.Value(), true
-}
-
-func opsSnapshotSmallJSON(raw []byte, key string) (any, bool) {
-	res := gjson.GetBytes(raw, key)
-	if !res.Exists() || res.Type != gjson.JSON {
-		return nil, false
-	}
-	if len(res.Raw) == 0 || len(res.Raw) > opsSnapshotNestedJSONBytes {
-		return nil, false
-	}
-	var decoded any
-	if err := json.Unmarshal([]byte(res.Raw), &decoded); err != nil {
-		return nil, false
-	}
-	return decoded, true
-}
-
-func OpsRequestBodySnapshotText(snapshot *OpsRequestBodySnapshot) string {
-	if snapshot == nil || len(snapshot.Body) == 0 {
-		return ""
-	}
-	return string(snapshot.Body)
-}
 
 // OpsService provides ingestion and query APIs for the Ops monitoring module.
 type OpsService struct {
@@ -370,6 +185,7 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	if entry == nil {
 		return nil, false, nil
 	}
+	_ = rawRequestBody
 	if !s.IsMonitoringEnabled(ctx) {
 		return nil, false, nil
 	}
@@ -390,11 +206,6 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	}
 	if entry.ErrorType == "" {
 		entry.ErrorType = "api_error"
-	}
-
-	// Sanitize + trim request body (errors only).
-	if len(rawRequestBody) > 0 {
-		entry.RequestBodyJSON, entry.RequestBodyTruncated, entry.RequestBodyBytes = PrepareOpsRequestBodyForQueue(rawRequestBody)
 	}
 
 	// Sanitize + truncate error_body to avoid storing sensitive data.
@@ -483,31 +294,6 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 			out.Detail = ""
 		}
 
-		out.UpstreamRequestBody = strings.TrimSpace(out.UpstreamRequestBody)
-		if out.UpstreamRequestBody != "" {
-			// Reuse the same sanitization/trimming strategy as request body storage.
-			// Keep it small so it is safe to persist in ops_error_logs JSON.
-			sanitizedBody, truncated, _ := sanitizeAndTrimRequestBody([]byte(out.UpstreamRequestBody), 10*1024)
-			if sanitizedBody == "" && strings.Contains(out.Kind, "request_body_truncated") {
-				sanitizedBody = buildTruncatedOpsSnapshotRequestBody([]byte(out.UpstreamRequestBody), 10*1024)
-				truncated = sanitizedBody != ""
-			}
-			if sanitizedBody != "" {
-				out.UpstreamRequestBody = sanitizedBody
-				if truncated {
-					out.Kind = strings.TrimSpace(out.Kind)
-					if out.Kind == "" {
-						out.Kind = "upstream"
-					}
-					if !strings.Contains(out.Kind, "request_body_truncated") {
-						out.Kind = out.Kind + ":request_body_truncated"
-					}
-				}
-			} else {
-				out.UpstreamRequestBody = ""
-			}
-		}
-
 		// Drop fully-empty events (can happen if only status code was known).
 		if out.UpstreamStatusCode == 0 && out.Message == "" && out.Detail == "" {
 			continue
@@ -555,27 +341,7 @@ func (s *OpsService) GetErrorLogByID(ctx context.Context, id int64) (*OpsErrorLo
 	return detail, nil
 }
 
-func (s *OpsService) ListRetryAttemptsByErrorID(ctx context.Context, errorID int64, limit int) ([]*OpsRetryAttempt, error) {
-	if err := s.RequireMonitoringEnabled(ctx); err != nil {
-		return nil, err
-	}
-	if s.opsRepo == nil {
-		return nil, infraerrors.ServiceUnavailable("OPS_REPO_UNAVAILABLE", "Ops repository not available")
-	}
-	if errorID <= 0 {
-		return nil, infraerrors.BadRequest("OPS_ERROR_INVALID_ID", "invalid error id")
-	}
-	items, err := s.opsRepo.ListRetryAttemptsByErrorID(ctx, errorID, limit)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return []*OpsRetryAttempt{}, nil
-		}
-		return nil, infraerrors.InternalServer("OPS_RETRY_LIST_FAILED", "Failed to list retry attempts").WithCause(err)
-	}
-	return items, nil
-}
-
-func (s *OpsService) UpdateErrorResolution(ctx context.Context, errorID int64, resolved bool, resolvedByUserID *int64, resolvedRetryID *int64) error {
+func (s *OpsService) UpdateErrorResolution(ctx context.Context, errorID int64, resolved bool, resolvedByUserID *int64) error {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return err
 	}
@@ -592,10 +358,10 @@ func (s *OpsService) UpdateErrorResolution(ctx context.Context, errorID int64, r
 		}
 		return infraerrors.InternalServer("OPS_ERROR_LOAD_FAILED", "Failed to load ops error log").WithCause(err)
 	}
-	return s.opsRepo.UpdateErrorResolution(ctx, errorID, resolved, resolvedByUserID, resolvedRetryID, nil)
+	return s.opsRepo.UpdateErrorResolution(ctx, errorID, resolved, resolvedByUserID, nil)
 }
 
-func sanitizeAndTrimRequestBody(raw []byte, maxBytes int) (jsonString string, truncated bool, bytesLen int) {
+func sanitizeAndTrimJSONPayload(raw []byte, maxBytes int) (jsonString string, truncated bool, bytesLen int) {
 	bytesLen = len(raw)
 	if len(raw) == 0 {
 		return "", false, 0
@@ -603,7 +369,7 @@ func sanitizeAndTrimRequestBody(raw []byte, maxBytes int) (jsonString string, tr
 
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		// If it's not valid JSON, don't store (retry would not be reliable anyway).
+		// If it is not valid JSON, fall back to the caller's non-JSON handling.
 		return "", false, bytesLen
 	}
 
@@ -639,7 +405,7 @@ func sanitizeAndTrimRequestBody(raw []byte, maxBytes int) (jsonString string, tr
 	// This avoids downstream code that expects certain top-level keys from crashing.
 	if root, ok := decoded.(map[string]any); ok {
 		placeholder := shallowCopyMap(root)
-		placeholder["request_body_truncated"] = true
+		placeholder["payload_truncated"] = true
 
 		// Replace potentially huge arrays/strings, but keep the keys present.
 		for _, k := range []string{"messages", "contents", "input", "prompt"} {
@@ -662,7 +428,7 @@ func sanitizeAndTrimRequestBody(raw []byte, maxBytes int) (jsonString string, tr
 	}
 
 	// Final fallback: minimal valid JSON.
-	encoded4, err4 := json.Marshal(map[string]any{"request_body_truncated": true})
+	encoded4, err4 := json.Marshal(map[string]any{"payload_truncated": true})
 	if err4 != nil {
 		return "", true, bytesLen
 	}
@@ -906,7 +672,7 @@ func sanitizeErrorBodyForStorage(raw string, maxBytes int) (sanitized string, tr
 	}
 
 	// Prefer JSON-safe sanitization when possible.
-	if out, trunc, _ := sanitizeAndTrimRequestBody([]byte(raw), maxBytes); out != "" {
+	if out, trunc, _ := sanitizeAndTrimJSONPayload([]byte(raw), maxBytes); out != "" {
 		return out, trunc
 	}
 

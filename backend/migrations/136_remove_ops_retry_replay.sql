@@ -12,3 +12,5 @@ ALTER TABLE ops_error_logs
   DROP COLUMN IF EXISTS is_retryable,
   DROP COLUMN IF EXISTS retry_count,
   DROP COLUMN IF EXISTS resolved_retry_id;
+
+COMMENT ON TABLE ops_error_logs IS 'Ops error logs (vNext). Stores sanitized error details; request replay storage removed.';

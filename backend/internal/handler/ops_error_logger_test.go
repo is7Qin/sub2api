@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -64,6 +65,26 @@ func TestAttachOpsRequestBodyToEntry_SanitizeAndTrim(t *testing.T) {
 	require.NotContains(t, *entry.RequestBodyJSON, "secret-token")
 	require.Contains(t, *entry.RequestBodyJSON, "[REDACTED]")
 	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
+}
+
+func TestSetOpsRequestContext_StoresBoundedSnapshot(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	raw := []byte(`{"model":"gpt-5","input":"` + strings.Repeat("x", 512*1024) + `"}`)
+	setOpsRequestContext(c, "gpt-5", true, raw)
+
+	v, ok := c.Get(opsRequestBodyKey)
+	require.True(t, ok)
+	snapshot, ok := v.(*service.OpsRequestBodySnapshot)
+	require.True(t, ok)
+	require.Equal(t, len(raw), snapshot.Bytes)
+	require.True(t, snapshot.Truncated)
+	require.LessOrEqual(t, len(snapshot.Body), 256*1024)
 }
 
 func TestAttachOpsRequestBodyToEntry_InvalidJSONKeepsSize(t *testing.T) {

@@ -187,6 +187,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 	}
 
+	forcedBody, forceErr := forceOpenAIPriorityTierInBody(getAPIKeyFromContext(c), responsesBody)
+	if forceErr != nil {
+		return nil, forceErr
+	}
+	responsesBody = forcedBody
+
 	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
 	if policyErr != nil {
@@ -198,6 +204,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, policyErr
 	}
 	responsesBody = updatedBody
+
+	// Refresh ServiceTier so billing reflects the final body sent upstream.
+	if responsesReq != nil {
+		responsesReq.ServiceTier = strings.TrimSpace(gjson.GetBytes(responsesBody, "service_tier").String())
+	}
 
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)

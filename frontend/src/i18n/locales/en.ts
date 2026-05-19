@@ -821,6 +821,8 @@ export default {
     rateLimitResetSuccess: 'Rate limit usage reset successfully',
     failedToResetRateLimit: 'Failed to reset rate limit usage',
     resetNow: 'Resetting soon',
+    openaiForcePriorityTier: 'Force enable Fast mode',
+    openaiForcePriorityTierHint: 'When this key is used, OpenAI gateway requests will be sent with service_tier=priority, overriding any client-supplied value.',
     expiration: 'Expiration',
     expiresInDays: '{days} days',
     extendDays: '+{days} days',

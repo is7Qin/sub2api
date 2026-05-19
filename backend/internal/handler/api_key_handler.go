@@ -42,6 +42,9 @@ type CreateAPIKeyRequest struct {
 	RateLimit5h *float64 `json:"rate_limit_5h"`
 	RateLimit1d *float64 `json:"rate_limit_1d"`
 	RateLimit7d *float64 `json:"rate_limit_7d"`
+
+	// OpenAI request overrides
+	OpenAIForcePriorityTier bool `json:"openai_force_priority_tier"`
 }
 
 // UpdateAPIKeyRequest represents the update API key request payload
@@ -60,6 +63,9 @@ type UpdateAPIKeyRequest struct {
 	RateLimit1d         *float64 `json:"rate_limit_1d"`
 	RateLimit7d         *float64 `json:"rate_limit_7d"`
 	ResetRateLimitUsage *bool    `json:"reset_rate_limit_usage"` // 重置限速用量
+
+	// OpenAI request overrides (nil = no change)
+	OpenAIForcePriorityTier *bool `json:"openai_force_priority_tier"`
 }
 
 // List handles listing user's API keys with pagination
@@ -160,6 +166,8 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		IPWhitelist:   req.IPWhitelist,
 		IPBlacklist:   req.IPBlacklist,
 		ExpiresInDays: req.ExpiresInDays,
+
+		OpenAIForcePriorityTier: req.OpenAIForcePriorityTier,
 	}
 	if req.Quota != nil {
 		svcReq.Quota = *req.Quota
@@ -213,6 +221,8 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		RateLimit1d:         req.RateLimit1d,
 		RateLimit7d:         req.RateLimit7d,
 		ResetRateLimitUsage: req.ResetRateLimitUsage,
+
+		OpenAIForcePriorityTier: req.OpenAIForcePriorityTier,
 	}
 	if req.Name != "" {
 		svcReq.Name = &req.Name

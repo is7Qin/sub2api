@@ -115,6 +115,11 @@ func (APIKey) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			Comment("Start time of the current 7d rate limit window"),
+
+		// ========== OpenAI request overrides ==========
+		field.Bool("openai_force_priority_tier").
+			Default(false).
+			Comment("Force OpenAI gateway requests to use service_tier=priority for this key"),
 	}
 }
 

@@ -60,6 +60,9 @@ type APIKey struct {
 	Window5hStart *time.Time // Start of current 5h window
 	Window1dStart *time.Time // Start of current 1d window
 	Window7dStart *time.Time // Start of current 7d window
+
+	// OpenAI request overrides
+	OpenAIForcePriorityTier bool // Force service_tier=priority on OpenAI gateway requests
 }
 
 func (k *APIKey) IsActive() bool {

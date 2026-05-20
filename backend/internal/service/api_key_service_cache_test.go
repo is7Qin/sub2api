@@ -273,6 +273,33 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Group.MessagesDispatchModelConfig, roundTrip.Group.MessagesDispatchModelConfig)
 }
 
+func TestAPIKeyService_SnapshotRoundTrip_PreservesOpenAIForcePriorityTier(t *testing.T) {
+	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
+	apiKey := &APIKey{
+		ID:                      1,
+		UserID:                  2,
+		Key:                     "k-priority",
+		Name:                    "Priority Key",
+		Status:                  StatusActive,
+		OpenAIForcePriorityTier: true,
+		User: &User{
+			ID:          2,
+			Status:      StatusActive,
+			Role:        RoleUser,
+			Balance:     0,
+			Concurrency: 1,
+		},
+	}
+
+	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NotNil(t, snapshot)
+	require.True(t, snapshot.OpenAIForcePriorityTier)
+
+	roundTrip := svc.snapshotToAPIKey(apiKey.Key, snapshot)
+	require.NotNil(t, roundTrip)
+	require.True(t, roundTrip.OpenAIForcePriorityTier)
+}
+
 func TestAPIKeyService_GetByKey_IgnoresLegacyAuthCacheSnapshotWithoutMessagesDispatchConfig(t *testing.T) {
 	cache := &authCacheStub{}
 	var repoCalls int32

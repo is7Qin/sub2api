@@ -163,6 +163,9 @@ type CreateAPIKeyRequest struct {
 	RateLimit5h float64 `json:"rate_limit_5h"`
 	RateLimit1d float64 `json:"rate_limit_1d"`
 	RateLimit7d float64 `json:"rate_limit_7d"`
+
+	// OpenAI overrides
+	OpenAIForcePriorityTier bool `json:"openai_force_priority_tier"`
 }
 
 // UpdateAPIKeyRequest 更新API Key请求
@@ -184,6 +187,9 @@ type UpdateAPIKeyRequest struct {
 	RateLimit1d         *float64 `json:"rate_limit_1d"`
 	RateLimit7d         *float64 `json:"rate_limit_7d"`
 	ResetRateLimitUsage *bool    `json:"reset_rate_limit_usage"` // Reset all usage counters to 0
+
+	// OpenAI overrides (nil = no change)
+	OpenAIForcePriorityTier *bool `json:"openai_force_priority_tier"`
 }
 
 // APIKeyService API Key服务
@@ -409,6 +415,8 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		RateLimit5h: req.RateLimit5h,
 		RateLimit1d: req.RateLimit1d,
 		RateLimit7d: req.RateLimit7d,
+
+		OpenAIForcePriorityTier: req.OpenAIForcePriorityTier,
 	}
 
 	// Set expiration time if specified
@@ -619,6 +627,10 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.Window5hStart = nil
 		apiKey.Window1dStart = nil
 		apiKey.Window7dStart = nil
+	}
+
+	if req.OpenAIForcePriorityTier != nil {
+		apiKey.OpenAIForcePriorityTier = *req.OpenAIForcePriorityTier
 	}
 
 	if err := s.apiKeyRepo.Update(ctx, apiKey); err != nil {

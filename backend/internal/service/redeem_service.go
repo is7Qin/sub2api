@@ -10,6 +10,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -390,10 +391,7 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	// 事务提交成功后失效缓存
 	s.invalidateRedeemCaches(ctx, userID, redeemCode)
 
-	// 余额类正数兑换码触发邀请返利（best-effort，失败不影响兑换结果）
-	if redeemCode.Type == RedeemTypeBalance && redeemCode.Value > 0 {
-		s.tryAccrueAffiliateRebateForRedeem(ctx, userID, redeemCode.Value)
-	}
+	s.tryAccrueAffiliateRebateForRedeemCode(ctx, userID, redeemCode)
 
 	// 重新获取更新后的兑换码
 	redeemCode, err = s.redeemRepo.GetByID(ctx, redeemCode.ID)
@@ -444,7 +442,7 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
 	}
 }
 
-func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, userID int64, amount float64) {
+func (s *RedeemService) tryAccrueAffiliateRebateForRedeemCode(ctx context.Context, userID int64, redeemCode *RedeemCode) {
 	if ctx.Value(ctxKeySkipRedeemAffiliate{}) != nil {
 		return
 	}
@@ -454,6 +452,12 @@ func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, u
 	if !s.affiliateService.IsEnabled(ctx) {
 		return
 	}
+
+	amount, ok := s.redeemAffiliateRebateBaseAmount(ctx, redeemCode)
+	if !ok {
+		return
+	}
+
 	rebate, err := s.affiliateService.AccrueInviteRebate(ctx, userID, amount)
 	if err != nil {
 		logger.LegacyPrintf("service.redeem", "[Redeem] affiliate rebate failed for user %d amount %.2f: %v", userID, amount, err)
@@ -462,6 +466,48 @@ func (s *RedeemService) tryAccrueAffiliateRebateForRedeem(ctx context.Context, u
 	if rebate > 0 {
 		logger.LegacyPrintf("service.redeem", "[Redeem] affiliate rebate accrued %.8f for inviter of user %d", rebate, userID)
 	}
+}
+
+func (s *RedeemService) redeemAffiliateRebateBaseAmount(ctx context.Context, redeemCode *RedeemCode) (float64, bool) {
+	if redeemCode == nil {
+		return 0, false
+	}
+
+	switch redeemCode.Type {
+	case RedeemTypeBalance:
+		return redeemCode.Value, redeemCode.Value > 0
+	case RedeemTypeSubscription:
+		if redeemCode.GroupID == nil || redeemCode.ValidityDays <= 0 || s.entClient == nil {
+			return 0, false
+		}
+		return s.subscriptionRedeemPlanPrice(ctx, *redeemCode.GroupID, redeemCode.ValidityDays)
+	default:
+		return 0, false
+	}
+}
+
+func (s *RedeemService) subscriptionRedeemPlanPrice(ctx context.Context, groupID int64, validityDays int) (float64, bool) {
+	plans, err := s.entClient.SubscriptionPlan.Query().
+		Where(subscriptionplan.GroupIDEQ(groupID)).
+		All(ctx)
+	if err != nil {
+		logger.LegacyPrintf("service.redeem", "[Redeem] failed to load subscription plans for affiliate rebate group %d validity_days %d: %v", groupID, validityDays, err)
+		return 0, false
+	}
+
+	var matchedPrice float64
+	matched := 0
+	for _, plan := range plans {
+		if psComputeValidityDays(plan.ValidityDays, plan.ValidityUnit) != validityDays || plan.Price <= 0 {
+			continue
+		}
+		matchedPrice = plan.Price
+		matched++
+	}
+	if matched != 1 {
+		return 0, false
+	}
+	return matchedPrice, true
 }
 
 // GetByID 根据ID获取兑换码

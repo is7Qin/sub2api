@@ -16,6 +16,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -682,6 +684,36 @@ func (_u *GroupUpdate) AddSubscriptions(v ...*UserSubscription) *GroupUpdate {
 	return _u.AddSubscriptionIDs(ids...)
 }
 
+// AddRechargeResetRuleIDs adds the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity by IDs.
+func (_u *GroupUpdate) AddRechargeResetRuleIDs(ids ...int64) *GroupUpdate {
+	_u.mutation.AddRechargeResetRuleIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRules adds the "recharge_reset_rules" edges to the RechargeResetCampaignRule entity.
+func (_u *GroupUpdate) AddRechargeResetRules(v ...*RechargeResetCampaignRule) *GroupUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRuleIDs(ids...)
+}
+
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_u *GroupUpdate) AddRechargeResetRecordIDs(ids ...int64) *GroupUpdate {
+	_u.mutation.AddRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *GroupUpdate) AddRechargeResetRecords(v ...*RechargeResetRecord) *GroupUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRecordIDs(ids...)
+}
+
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by IDs.
 func (_u *GroupUpdate) AddUsageLogIDs(ids ...int64) *GroupUpdate {
 	_u.mutation.AddUsageLogIDs(ids...)
@@ -793,6 +825,48 @@ func (_u *GroupUpdate) RemoveSubscriptions(v ...*UserSubscription) *GroupUpdate 
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveSubscriptionIDs(ids...)
+}
+
+// ClearRechargeResetRules clears all "recharge_reset_rules" edges to the RechargeResetCampaignRule entity.
+func (_u *GroupUpdate) ClearRechargeResetRules() *GroupUpdate {
+	_u.mutation.ClearRechargeResetRules()
+	return _u
+}
+
+// RemoveRechargeResetRuleIDs removes the "recharge_reset_rules" edge to RechargeResetCampaignRule entities by IDs.
+func (_u *GroupUpdate) RemoveRechargeResetRuleIDs(ids ...int64) *GroupUpdate {
+	_u.mutation.RemoveRechargeResetRuleIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRules removes "recharge_reset_rules" edges to RechargeResetCampaignRule entities.
+func (_u *GroupUpdate) RemoveRechargeResetRules(v ...*RechargeResetCampaignRule) *GroupUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRuleIDs(ids...)
+}
+
+// ClearRechargeResetRecords clears all "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *GroupUpdate) ClearRechargeResetRecords() *GroupUpdate {
+	_u.mutation.ClearRechargeResetRecords()
+	return _u
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to RechargeResetRecord entities by IDs.
+func (_u *GroupUpdate) RemoveRechargeResetRecordIDs(ids ...int64) *GroupUpdate {
+	_u.mutation.RemoveRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRecords removes "recharge_reset_records" edges to RechargeResetRecord entities.
+func (_u *GroupUpdate) RemoveRechargeResetRecords(v ...*RechargeResetRecord) *GroupUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRecordIDs(ids...)
 }
 
 // ClearUsageLogs clears all "usage_logs" edges to the UsageLog entity.
@@ -1246,6 +1320,96 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usersubscription.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRulesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRulesIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRulesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRulesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRecordsIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -2078,6 +2242,36 @@ func (_u *GroupUpdateOne) AddSubscriptions(v ...*UserSubscription) *GroupUpdateO
 	return _u.AddSubscriptionIDs(ids...)
 }
 
+// AddRechargeResetRuleIDs adds the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity by IDs.
+func (_u *GroupUpdateOne) AddRechargeResetRuleIDs(ids ...int64) *GroupUpdateOne {
+	_u.mutation.AddRechargeResetRuleIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRules adds the "recharge_reset_rules" edges to the RechargeResetCampaignRule entity.
+func (_u *GroupUpdateOne) AddRechargeResetRules(v ...*RechargeResetCampaignRule) *GroupUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRuleIDs(ids...)
+}
+
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_u *GroupUpdateOne) AddRechargeResetRecordIDs(ids ...int64) *GroupUpdateOne {
+	_u.mutation.AddRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *GroupUpdateOne) AddRechargeResetRecords(v ...*RechargeResetRecord) *GroupUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRecordIDs(ids...)
+}
+
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by IDs.
 func (_u *GroupUpdateOne) AddUsageLogIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddUsageLogIDs(ids...)
@@ -2189,6 +2383,48 @@ func (_u *GroupUpdateOne) RemoveSubscriptions(v ...*UserSubscription) *GroupUpda
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveSubscriptionIDs(ids...)
+}
+
+// ClearRechargeResetRules clears all "recharge_reset_rules" edges to the RechargeResetCampaignRule entity.
+func (_u *GroupUpdateOne) ClearRechargeResetRules() *GroupUpdateOne {
+	_u.mutation.ClearRechargeResetRules()
+	return _u
+}
+
+// RemoveRechargeResetRuleIDs removes the "recharge_reset_rules" edge to RechargeResetCampaignRule entities by IDs.
+func (_u *GroupUpdateOne) RemoveRechargeResetRuleIDs(ids ...int64) *GroupUpdateOne {
+	_u.mutation.RemoveRechargeResetRuleIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRules removes "recharge_reset_rules" edges to RechargeResetCampaignRule entities.
+func (_u *GroupUpdateOne) RemoveRechargeResetRules(v ...*RechargeResetCampaignRule) *GroupUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRuleIDs(ids...)
+}
+
+// ClearRechargeResetRecords clears all "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *GroupUpdateOne) ClearRechargeResetRecords() *GroupUpdateOne {
+	_u.mutation.ClearRechargeResetRecords()
+	return _u
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to RechargeResetRecord entities by IDs.
+func (_u *GroupUpdateOne) RemoveRechargeResetRecordIDs(ids ...int64) *GroupUpdateOne {
+	_u.mutation.RemoveRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRecords removes "recharge_reset_records" edges to RechargeResetRecord entities.
+func (_u *GroupUpdateOne) RemoveRechargeResetRecords(v ...*RechargeResetRecord) *GroupUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRecordIDs(ids...)
 }
 
 // ClearUsageLogs clears all "usage_logs" edges to the UsageLog entity.
@@ -2672,6 +2908,96 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usersubscription.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRulesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRulesIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRulesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRulesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRecordsIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

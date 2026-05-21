@@ -27,6 +27,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/schema"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
@@ -1357,6 +1360,94 @@ func init() {
 	proxy.DefaultStatus = proxyDescStatus.Default.(string)
 	// proxy.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	proxy.StatusValidator = proxyDescStatus.Validators[0].(func(string) error)
+	rechargeresetcampaignFields := schema.RechargeResetCampaign{}.Fields()
+	_ = rechargeresetcampaignFields
+	// rechargeresetcampaignDescName is the schema descriptor for name field.
+	rechargeresetcampaignDescName := rechargeresetcampaignFields[0].Descriptor()
+	// rechargeresetcampaign.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	rechargeresetcampaign.NameValidator = func() func(string) error {
+		validators := rechargeresetcampaignDescName.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(name string) error {
+			for _, fn := range fns {
+				if err := fn(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// rechargeresetcampaignDescDescription is the schema descriptor for description field.
+	rechargeresetcampaignDescDescription := rechargeresetcampaignFields[1].Descriptor()
+	// rechargeresetcampaign.DefaultDescription holds the default value on creation for the description field.
+	rechargeresetcampaign.DefaultDescription = rechargeresetcampaignDescDescription.Default.(string)
+	// rechargeresetcampaignDescStatus is the schema descriptor for status field.
+	rechargeresetcampaignDescStatus := rechargeresetcampaignFields[2].Descriptor()
+	// rechargeresetcampaign.DefaultStatus holds the default value on creation for the status field.
+	rechargeresetcampaign.DefaultStatus = rechargeresetcampaignDescStatus.Default.(string)
+	// rechargeresetcampaign.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	rechargeresetcampaign.StatusValidator = rechargeresetcampaignDescStatus.Validators[0].(func(string) error)
+	// rechargeresetcampaignDescResetDaily is the schema descriptor for reset_daily field.
+	rechargeresetcampaignDescResetDaily := rechargeresetcampaignFields[5].Descriptor()
+	// rechargeresetcampaign.DefaultResetDaily holds the default value on creation for the reset_daily field.
+	rechargeresetcampaign.DefaultResetDaily = rechargeresetcampaignDescResetDaily.Default.(bool)
+	// rechargeresetcampaignDescResetWeekly is the schema descriptor for reset_weekly field.
+	rechargeresetcampaignDescResetWeekly := rechargeresetcampaignFields[6].Descriptor()
+	// rechargeresetcampaign.DefaultResetWeekly holds the default value on creation for the reset_weekly field.
+	rechargeresetcampaign.DefaultResetWeekly = rechargeresetcampaignDescResetWeekly.Default.(bool)
+	// rechargeresetcampaignDescResetMonthly is the schema descriptor for reset_monthly field.
+	rechargeresetcampaignDescResetMonthly := rechargeresetcampaignFields[7].Descriptor()
+	// rechargeresetcampaign.DefaultResetMonthly holds the default value on creation for the reset_monthly field.
+	rechargeresetcampaign.DefaultResetMonthly = rechargeresetcampaignDescResetMonthly.Default.(bool)
+	// rechargeresetcampaignDescCreatedAt is the schema descriptor for created_at field.
+	rechargeresetcampaignDescCreatedAt := rechargeresetcampaignFields[9].Descriptor()
+	// rechargeresetcampaign.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rechargeresetcampaign.DefaultCreatedAt = rechargeresetcampaignDescCreatedAt.Default.(func() time.Time)
+	// rechargeresetcampaignDescUpdatedAt is the schema descriptor for updated_at field.
+	rechargeresetcampaignDescUpdatedAt := rechargeresetcampaignFields[10].Descriptor()
+	// rechargeresetcampaign.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	rechargeresetcampaign.DefaultUpdatedAt = rechargeresetcampaignDescUpdatedAt.Default.(func() time.Time)
+	// rechargeresetcampaign.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	rechargeresetcampaign.UpdateDefaultUpdatedAt = rechargeresetcampaignDescUpdatedAt.UpdateDefault.(func() time.Time)
+	rechargeresetcampaignruleFields := schema.RechargeResetCampaignRule{}.Fields()
+	_ = rechargeresetcampaignruleFields
+	// rechargeresetcampaignruleDescStatus is the schema descriptor for status field.
+	rechargeresetcampaignruleDescStatus := rechargeresetcampaignruleFields[3].Descriptor()
+	// rechargeresetcampaignrule.DefaultStatus holds the default value on creation for the status field.
+	rechargeresetcampaignrule.DefaultStatus = rechargeresetcampaignruleDescStatus.Default.(string)
+	// rechargeresetcampaignrule.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	rechargeresetcampaignrule.StatusValidator = rechargeresetcampaignruleDescStatus.Validators[0].(func(string) error)
+	// rechargeresetcampaignruleDescCreatedAt is the schema descriptor for created_at field.
+	rechargeresetcampaignruleDescCreatedAt := rechargeresetcampaignruleFields[5].Descriptor()
+	// rechargeresetcampaignrule.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rechargeresetcampaignrule.DefaultCreatedAt = rechargeresetcampaignruleDescCreatedAt.Default.(func() time.Time)
+	// rechargeresetcampaignruleDescUpdatedAt is the schema descriptor for updated_at field.
+	rechargeresetcampaignruleDescUpdatedAt := rechargeresetcampaignruleFields[6].Descriptor()
+	// rechargeresetcampaignrule.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	rechargeresetcampaignrule.DefaultUpdatedAt = rechargeresetcampaignruleDescUpdatedAt.Default.(func() time.Time)
+	// rechargeresetcampaignrule.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	rechargeresetcampaignrule.UpdateDefaultUpdatedAt = rechargeresetcampaignruleDescUpdatedAt.UpdateDefault.(func() time.Time)
+	rechargeresetrecordFields := schema.RechargeResetRecord{}.Fields()
+	_ = rechargeresetrecordFields
+	// rechargeresetrecordDescResetDaily is the schema descriptor for reset_daily field.
+	rechargeresetrecordDescResetDaily := rechargeresetrecordFields[8].Descriptor()
+	// rechargeresetrecord.DefaultResetDaily holds the default value on creation for the reset_daily field.
+	rechargeresetrecord.DefaultResetDaily = rechargeresetrecordDescResetDaily.Default.(bool)
+	// rechargeresetrecordDescResetWeekly is the schema descriptor for reset_weekly field.
+	rechargeresetrecordDescResetWeekly := rechargeresetrecordFields[9].Descriptor()
+	// rechargeresetrecord.DefaultResetWeekly holds the default value on creation for the reset_weekly field.
+	rechargeresetrecord.DefaultResetWeekly = rechargeresetrecordDescResetWeekly.Default.(bool)
+	// rechargeresetrecordDescResetMonthly is the schema descriptor for reset_monthly field.
+	rechargeresetrecordDescResetMonthly := rechargeresetrecordFields[10].Descriptor()
+	// rechargeresetrecord.DefaultResetMonthly holds the default value on creation for the reset_monthly field.
+	rechargeresetrecord.DefaultResetMonthly = rechargeresetrecordDescResetMonthly.Default.(bool)
+	// rechargeresetrecordDescCreatedAt is the schema descriptor for created_at field.
+	rechargeresetrecordDescCreatedAt := rechargeresetrecordFields[12].Descriptor()
+	// rechargeresetrecord.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rechargeresetrecord.DefaultCreatedAt = rechargeresetrecordDescCreatedAt.Default.(func() time.Time)
 	redeemcodeFields := schema.RedeemCode{}.Fields()
 	_ = redeemcodeFields
 	// redeemcodeDescCode is the schema descriptor for code field.

@@ -93,6 +93,7 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateRepository,
 	NewContentModerationRepository,
 	NewAffiliateRepository,
+	NewRechargeResetCampaignRepository,
 
 	// Cache implementations
 	NewGatewayCache,

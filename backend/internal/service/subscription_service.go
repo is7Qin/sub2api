@@ -760,20 +760,33 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 	if err != nil {
 		return nil, err
 	}
+	if err := s.AdminResetQuotaBySubscription(ctx, sub, resetDaily, resetWeekly, resetMonthly); err != nil {
+		return nil, err
+	}
+	return s.userSubRepo.GetByID(ctx, subscriptionID)
+}
+
+func (s *SubscriptionService) AdminResetQuotaBySubscription(ctx context.Context, sub *UserSubscription, resetDaily, resetWeekly, resetMonthly bool) error {
+	if !resetDaily && !resetWeekly && !resetMonthly {
+		return ErrInvalidInput
+	}
+	if sub == nil {
+		return ErrSubscriptionNilInput
+	}
 	windowStart := startOfDay(time.Now())
 	if resetDaily {
 		if err := s.userSubRepo.ResetDailyUsage(ctx, sub.ID, windowStart); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if resetWeekly {
 		if err := s.userSubRepo.ResetWeeklyUsage(ctx, sub.ID, windowStart); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if resetMonthly {
 		if err := s.userSubRepo.ResetMonthlyUsage(ctx, sub.ID, windowStart); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	// Invalidate L1 ristretto cache. Ristretto's Del() is asynchronous by design,
@@ -786,8 +799,7 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 	if s.billingCacheService != nil {
 		_ = s.billingCacheService.InvalidateSubscription(ctx, sub.UserID, sub.GroupID)
 	}
-	// Return the refreshed subscription from DB
-	return s.userSubRepo.GetByID(ctx, subscriptionID)
+	return nil
 }
 
 // CheckAndResetWindows 检查并重置过期的窗口

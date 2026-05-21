@@ -20,6 +20,7 @@ type RedeemCode struct {
 
 	GroupID      *int64
 	ValidityDays int
+	Metadata     map[string]any
 
 	User  *User
 	Group *Group

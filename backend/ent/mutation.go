@@ -46,6 +46,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
 	"github.com/Wei-Shaw/sub2api/ent/userattributedefinition"
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
+	"github.com/Wei-Shaw/sub2api/ent/userquotagrant"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
@@ -92,6 +93,7 @@ const (
 	TypeUserAllowedGroup              = "UserAllowedGroup"
 	TypeUserAttributeDefinition       = "UserAttributeDefinition"
 	TypeUserAttributeValue            = "UserAttributeValue"
+	TypeUserQuotaGrant                = "UserQuotaGrant"
 	TypeUserSubscription              = "UserSubscription"
 )
 
@@ -28713,6 +28715,7 @@ type RedeemCodeMutation struct {
 	expires_at       *time.Time
 	validity_days    *int
 	addvalidity_days *int
+	metadata         *map[string]interface{}
 	clearedFields    map[string]struct{}
 	user             *int64
 	cleareduser      bool
@@ -29322,6 +29325,55 @@ func (m *RedeemCodeMutation) ResetValidityDays() {
 	m.addvalidity_days = nil
 }
 
+// SetMetadata sets the "metadata" field.
+func (m *RedeemCodeMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RedeemCodeMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RedeemCode entity.
+// If the RedeemCode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RedeemCodeMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RedeemCodeMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[redeemcode.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RedeemCodeMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[redeemcode.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RedeemCodeMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, redeemcode.FieldMetadata)
+}
+
 // SetUserID sets the "user" edge to the User entity by id.
 func (m *RedeemCodeMutation) SetUserID(id int64) {
 	m.user = &id
@@ -29423,7 +29475,7 @@ func (m *RedeemCodeMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *RedeemCodeMutation) Fields() []string {
-	fields := make([]string, 0, 11)
+	fields := make([]string, 0, 12)
 	if m.code != nil {
 		fields = append(fields, redeemcode.FieldCode)
 	}
@@ -29457,6 +29509,9 @@ func (m *RedeemCodeMutation) Fields() []string {
 	if m.validity_days != nil {
 		fields = append(fields, redeemcode.FieldValidityDays)
 	}
+	if m.metadata != nil {
+		fields = append(fields, redeemcode.FieldMetadata)
+	}
 	return fields
 }
 
@@ -29487,6 +29542,8 @@ func (m *RedeemCodeMutation) Field(name string) (ent.Value, bool) {
 		return m.GroupID()
 	case redeemcode.FieldValidityDays:
 		return m.ValidityDays()
+	case redeemcode.FieldMetadata:
+		return m.Metadata()
 	}
 	return nil, false
 }
@@ -29518,6 +29575,8 @@ func (m *RedeemCodeMutation) OldField(ctx context.Context, name string) (ent.Val
 		return m.OldGroupID(ctx)
 	case redeemcode.FieldValidityDays:
 		return m.OldValidityDays(ctx)
+	case redeemcode.FieldMetadata:
+		return m.OldMetadata(ctx)
 	}
 	return nil, fmt.Errorf("unknown RedeemCode field %s", name)
 }
@@ -29604,6 +29663,13 @@ func (m *RedeemCodeMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetValidityDays(v)
 		return nil
+	case redeemcode.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
 	}
 	return fmt.Errorf("unknown RedeemCode field %s", name)
 }
@@ -29676,6 +29742,9 @@ func (m *RedeemCodeMutation) ClearedFields() []string {
 	if m.FieldCleared(redeemcode.FieldGroupID) {
 		fields = append(fields, redeemcode.FieldGroupID)
 	}
+	if m.FieldCleared(redeemcode.FieldMetadata) {
+		fields = append(fields, redeemcode.FieldMetadata)
+	}
 	return fields
 }
 
@@ -29704,6 +29773,9 @@ func (m *RedeemCodeMutation) ClearField(name string) error {
 		return nil
 	case redeemcode.FieldGroupID:
 		m.ClearGroupID()
+		return nil
+	case redeemcode.FieldMetadata:
+		m.ClearMetadata()
 		return nil
 	}
 	return fmt.Errorf("unknown RedeemCode nullable field %s", name)
@@ -29745,6 +29817,9 @@ func (m *RedeemCodeMutation) ResetField(name string) error {
 		return nil
 	case redeemcode.FieldValidityDays:
 		m.ResetValidityDays()
+		return nil
+	case redeemcode.FieldMetadata:
+		m.ResetMetadata()
 		return nil
 	}
 	return fmt.Errorf("unknown RedeemCode field %s", name)
@@ -38130,6 +38205,9 @@ type UserMutation struct {
 	redeem_codes                  map[int64]struct{}
 	removedredeem_codes           map[int64]struct{}
 	clearedredeem_codes           bool
+	quota_grants                  map[int64]struct{}
+	removedquota_grants           map[int64]struct{}
+	clearedquota_grants           bool
 	subscriptions                 map[int64]struct{}
 	removedsubscriptions          map[int64]struct{}
 	clearedsubscriptions          bool
@@ -39378,6 +39456,60 @@ func (m *UserMutation) ResetRedeemCodes() {
 	m.removedredeem_codes = nil
 }
 
+// AddQuotaGrantIDs adds the "quota_grants" edge to the UserQuotaGrant entity by ids.
+func (m *UserMutation) AddQuotaGrantIDs(ids ...int64) {
+	if m.quota_grants == nil {
+		m.quota_grants = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.quota_grants[ids[i]] = struct{}{}
+	}
+}
+
+// ClearQuotaGrants clears the "quota_grants" edge to the UserQuotaGrant entity.
+func (m *UserMutation) ClearQuotaGrants() {
+	m.clearedquota_grants = true
+}
+
+// QuotaGrantsCleared reports if the "quota_grants" edge to the UserQuotaGrant entity was cleared.
+func (m *UserMutation) QuotaGrantsCleared() bool {
+	return m.clearedquota_grants
+}
+
+// RemoveQuotaGrantIDs removes the "quota_grants" edge to the UserQuotaGrant entity by IDs.
+func (m *UserMutation) RemoveQuotaGrantIDs(ids ...int64) {
+	if m.removedquota_grants == nil {
+		m.removedquota_grants = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.quota_grants, ids[i])
+		m.removedquota_grants[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedQuotaGrants returns the removed IDs of the "quota_grants" edge to the UserQuotaGrant entity.
+func (m *UserMutation) RemovedQuotaGrantsIDs() (ids []int64) {
+	for id := range m.removedquota_grants {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// QuotaGrantsIDs returns the "quota_grants" edge IDs in the mutation.
+func (m *UserMutation) QuotaGrantsIDs() (ids []int64) {
+	for id := range m.quota_grants {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetQuotaGrants resets all changes to the "quota_grants" edge.
+func (m *UserMutation) ResetQuotaGrants() {
+	m.quota_grants = nil
+	m.clearedquota_grants = false
+	m.removedquota_grants = nil
+}
+
 // AddSubscriptionIDs adds the "subscriptions" edge to the UserSubscription entity by ids.
 func (m *UserMutation) AddSubscriptionIDs(ids ...int64) {
 	if m.subscriptions == nil {
@@ -40527,12 +40659,15 @@ func (m *UserMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *UserMutation) AddedEdges() []string {
-	edges := make([]string, 0, 12)
+	edges := make([]string, 0, 13)
 	if m.api_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
 	if m.redeem_codes != nil {
 		edges = append(edges, user.EdgeRedeemCodes)
+	}
+	if m.quota_grants != nil {
+		edges = append(edges, user.EdgeQuotaGrants)
 	}
 	if m.subscriptions != nil {
 		edges = append(edges, user.EdgeSubscriptions)
@@ -40580,6 +40715,12 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 	case user.EdgeRedeemCodes:
 		ids := make([]ent.Value, 0, len(m.redeem_codes))
 		for id := range m.redeem_codes {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeQuotaGrants:
+		ids := make([]ent.Value, 0, len(m.quota_grants))
+		for id := range m.quota_grants {
 			ids = append(ids, id)
 		}
 		return ids
@@ -40649,12 +40790,15 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *UserMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 12)
+	edges := make([]string, 0, 13)
 	if m.removedapi_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
 	if m.removedredeem_codes != nil {
 		edges = append(edges, user.EdgeRedeemCodes)
+	}
+	if m.removedquota_grants != nil {
+		edges = append(edges, user.EdgeQuotaGrants)
 	}
 	if m.removedsubscriptions != nil {
 		edges = append(edges, user.EdgeSubscriptions)
@@ -40702,6 +40846,12 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 	case user.EdgeRedeemCodes:
 		ids := make([]ent.Value, 0, len(m.removedredeem_codes))
 		for id := range m.removedredeem_codes {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeQuotaGrants:
+		ids := make([]ent.Value, 0, len(m.removedquota_grants))
+		for id := range m.removedquota_grants {
 			ids = append(ids, id)
 		}
 		return ids
@@ -40771,12 +40921,15 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *UserMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 12)
+	edges := make([]string, 0, 13)
 	if m.clearedapi_keys {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
 	if m.clearedredeem_codes {
 		edges = append(edges, user.EdgeRedeemCodes)
+	}
+	if m.clearedquota_grants {
+		edges = append(edges, user.EdgeQuotaGrants)
 	}
 	if m.clearedsubscriptions {
 		edges = append(edges, user.EdgeSubscriptions)
@@ -40819,6 +40972,8 @@ func (m *UserMutation) EdgeCleared(name string) bool {
 		return m.clearedapi_keys
 	case user.EdgeRedeemCodes:
 		return m.clearedredeem_codes
+	case user.EdgeQuotaGrants:
+		return m.clearedquota_grants
 	case user.EdgeSubscriptions:
 		return m.clearedsubscriptions
 	case user.EdgeAssignedSubscriptions:
@@ -40860,6 +41015,9 @@ func (m *UserMutation) ResetEdge(name string) error {
 		return nil
 	case user.EdgeRedeemCodes:
 		m.ResetRedeemCodes()
+		return nil
+	case user.EdgeQuotaGrants:
+		m.ResetQuotaGrants()
 		return nil
 	case user.EdgeSubscriptions:
 		m.ResetSubscriptions()
@@ -43109,6 +43267,1017 @@ func (m *UserAttributeValueMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown UserAttributeValue edge %s", name)
+}
+
+// UserQuotaGrantMutation represents an operation that mutates the UserQuotaGrant nodes in the graph.
+type UserQuotaGrantMutation struct {
+	config
+	op                 Op
+	typ                string
+	id                 *int64
+	amount_usd         *float64
+	addamount_usd      *float64
+	used_amount_usd    *float64
+	addused_amount_usd *float64
+	starts_at          *time.Time
+	expires_at         *time.Time
+	source             *string
+	source_id          *string
+	status             *string
+	metadata           *map[string]interface{}
+	created_at         *time.Time
+	updated_at         *time.Time
+	clearedFields      map[string]struct{}
+	user               *int64
+	cleareduser        bool
+	done               bool
+	oldValue           func(context.Context) (*UserQuotaGrant, error)
+	predicates         []predicate.UserQuotaGrant
+}
+
+var _ ent.Mutation = (*UserQuotaGrantMutation)(nil)
+
+// userquotagrantOption allows management of the mutation configuration using functional options.
+type userquotagrantOption func(*UserQuotaGrantMutation)
+
+// newUserQuotaGrantMutation creates new mutation for the UserQuotaGrant entity.
+func newUserQuotaGrantMutation(c config, op Op, opts ...userquotagrantOption) *UserQuotaGrantMutation {
+	m := &UserQuotaGrantMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeUserQuotaGrant,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withUserQuotaGrantID sets the ID field of the mutation.
+func withUserQuotaGrantID(id int64) userquotagrantOption {
+	return func(m *UserQuotaGrantMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *UserQuotaGrant
+		)
+		m.oldValue = func(ctx context.Context) (*UserQuotaGrant, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().UserQuotaGrant.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withUserQuotaGrant sets the old UserQuotaGrant of the mutation.
+func withUserQuotaGrant(node *UserQuotaGrant) userquotagrantOption {
+	return func(m *UserQuotaGrantMutation) {
+		m.oldValue = func(context.Context) (*UserQuotaGrant, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m UserQuotaGrantMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m UserQuotaGrantMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *UserQuotaGrantMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *UserQuotaGrantMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().UserQuotaGrant.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetUserID sets the "user_id" field.
+func (m *UserQuotaGrantMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *UserQuotaGrantMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *UserQuotaGrantMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetAmountUsd sets the "amount_usd" field.
+func (m *UserQuotaGrantMutation) SetAmountUsd(f float64) {
+	m.amount_usd = &f
+	m.addamount_usd = nil
+}
+
+// AmountUsd returns the value of the "amount_usd" field in the mutation.
+func (m *UserQuotaGrantMutation) AmountUsd() (r float64, exists bool) {
+	v := m.amount_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAmountUsd returns the old "amount_usd" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldAmountUsd(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAmountUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAmountUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAmountUsd: %w", err)
+	}
+	return oldValue.AmountUsd, nil
+}
+
+// AddAmountUsd adds f to the "amount_usd" field.
+func (m *UserQuotaGrantMutation) AddAmountUsd(f float64) {
+	if m.addamount_usd != nil {
+		*m.addamount_usd += f
+	} else {
+		m.addamount_usd = &f
+	}
+}
+
+// AddedAmountUsd returns the value that was added to the "amount_usd" field in this mutation.
+func (m *UserQuotaGrantMutation) AddedAmountUsd() (r float64, exists bool) {
+	v := m.addamount_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetAmountUsd resets all changes to the "amount_usd" field.
+func (m *UserQuotaGrantMutation) ResetAmountUsd() {
+	m.amount_usd = nil
+	m.addamount_usd = nil
+}
+
+// SetUsedAmountUsd sets the "used_amount_usd" field.
+func (m *UserQuotaGrantMutation) SetUsedAmountUsd(f float64) {
+	m.used_amount_usd = &f
+	m.addused_amount_usd = nil
+}
+
+// UsedAmountUsd returns the value of the "used_amount_usd" field in the mutation.
+func (m *UserQuotaGrantMutation) UsedAmountUsd() (r float64, exists bool) {
+	v := m.used_amount_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUsedAmountUsd returns the old "used_amount_usd" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldUsedAmountUsd(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUsedAmountUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUsedAmountUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUsedAmountUsd: %w", err)
+	}
+	return oldValue.UsedAmountUsd, nil
+}
+
+// AddUsedAmountUsd adds f to the "used_amount_usd" field.
+func (m *UserQuotaGrantMutation) AddUsedAmountUsd(f float64) {
+	if m.addused_amount_usd != nil {
+		*m.addused_amount_usd += f
+	} else {
+		m.addused_amount_usd = &f
+	}
+}
+
+// AddedUsedAmountUsd returns the value that was added to the "used_amount_usd" field in this mutation.
+func (m *UserQuotaGrantMutation) AddedUsedAmountUsd() (r float64, exists bool) {
+	v := m.addused_amount_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetUsedAmountUsd resets all changes to the "used_amount_usd" field.
+func (m *UserQuotaGrantMutation) ResetUsedAmountUsd() {
+	m.used_amount_usd = nil
+	m.addused_amount_usd = nil
+}
+
+// SetStartsAt sets the "starts_at" field.
+func (m *UserQuotaGrantMutation) SetStartsAt(t time.Time) {
+	m.starts_at = &t
+}
+
+// StartsAt returns the value of the "starts_at" field in the mutation.
+func (m *UserQuotaGrantMutation) StartsAt() (r time.Time, exists bool) {
+	v := m.starts_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStartsAt returns the old "starts_at" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldStartsAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStartsAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStartsAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStartsAt: %w", err)
+	}
+	return oldValue.StartsAt, nil
+}
+
+// ResetStartsAt resets all changes to the "starts_at" field.
+func (m *UserQuotaGrantMutation) ResetStartsAt() {
+	m.starts_at = nil
+}
+
+// SetExpiresAt sets the "expires_at" field.
+func (m *UserQuotaGrantMutation) SetExpiresAt(t time.Time) {
+	m.expires_at = &t
+}
+
+// ExpiresAt returns the value of the "expires_at" field in the mutation.
+func (m *UserQuotaGrantMutation) ExpiresAt() (r time.Time, exists bool) {
+	v := m.expires_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExpiresAt returns the old "expires_at" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldExpiresAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExpiresAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExpiresAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExpiresAt: %w", err)
+	}
+	return oldValue.ExpiresAt, nil
+}
+
+// ResetExpiresAt resets all changes to the "expires_at" field.
+func (m *UserQuotaGrantMutation) ResetExpiresAt() {
+	m.expires_at = nil
+}
+
+// SetSource sets the "source" field.
+func (m *UserQuotaGrantMutation) SetSource(s string) {
+	m.source = &s
+}
+
+// Source returns the value of the "source" field in the mutation.
+func (m *UserQuotaGrantMutation) Source() (r string, exists bool) {
+	v := m.source
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSource returns the old "source" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldSource(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSource is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSource requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSource: %w", err)
+	}
+	return oldValue.Source, nil
+}
+
+// ResetSource resets all changes to the "source" field.
+func (m *UserQuotaGrantMutation) ResetSource() {
+	m.source = nil
+}
+
+// SetSourceID sets the "source_id" field.
+func (m *UserQuotaGrantMutation) SetSourceID(s string) {
+	m.source_id = &s
+}
+
+// SourceID returns the value of the "source_id" field in the mutation.
+func (m *UserQuotaGrantMutation) SourceID() (r string, exists bool) {
+	v := m.source_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSourceID returns the old "source_id" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldSourceID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSourceID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSourceID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSourceID: %w", err)
+	}
+	return oldValue.SourceID, nil
+}
+
+// ResetSourceID resets all changes to the "source_id" field.
+func (m *UserQuotaGrantMutation) ResetSourceID() {
+	m.source_id = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *UserQuotaGrantMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *UserQuotaGrantMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *UserQuotaGrantMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *UserQuotaGrantMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *UserQuotaGrantMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *UserQuotaGrantMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[userquotagrant.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *UserQuotaGrantMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[userquotagrant.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *UserQuotaGrantMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, userquotagrant.FieldMetadata)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *UserQuotaGrantMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *UserQuotaGrantMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *UserQuotaGrantMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *UserQuotaGrantMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *UserQuotaGrantMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the UserQuotaGrant entity.
+// If the UserQuotaGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserQuotaGrantMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *UserQuotaGrantMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *UserQuotaGrantMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[userquotagrant.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *UserQuotaGrantMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *UserQuotaGrantMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *UserQuotaGrantMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// Where appends a list predicates to the UserQuotaGrantMutation builder.
+func (m *UserQuotaGrantMutation) Where(ps ...predicate.UserQuotaGrant) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the UserQuotaGrantMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *UserQuotaGrantMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.UserQuotaGrant, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *UserQuotaGrantMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *UserQuotaGrantMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (UserQuotaGrant).
+func (m *UserQuotaGrantMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *UserQuotaGrantMutation) Fields() []string {
+	fields := make([]string, 0, 11)
+	if m.user != nil {
+		fields = append(fields, userquotagrant.FieldUserID)
+	}
+	if m.amount_usd != nil {
+		fields = append(fields, userquotagrant.FieldAmountUsd)
+	}
+	if m.used_amount_usd != nil {
+		fields = append(fields, userquotagrant.FieldUsedAmountUsd)
+	}
+	if m.starts_at != nil {
+		fields = append(fields, userquotagrant.FieldStartsAt)
+	}
+	if m.expires_at != nil {
+		fields = append(fields, userquotagrant.FieldExpiresAt)
+	}
+	if m.source != nil {
+		fields = append(fields, userquotagrant.FieldSource)
+	}
+	if m.source_id != nil {
+		fields = append(fields, userquotagrant.FieldSourceID)
+	}
+	if m.status != nil {
+		fields = append(fields, userquotagrant.FieldStatus)
+	}
+	if m.metadata != nil {
+		fields = append(fields, userquotagrant.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, userquotagrant.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, userquotagrant.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *UserQuotaGrantMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case userquotagrant.FieldUserID:
+		return m.UserID()
+	case userquotagrant.FieldAmountUsd:
+		return m.AmountUsd()
+	case userquotagrant.FieldUsedAmountUsd:
+		return m.UsedAmountUsd()
+	case userquotagrant.FieldStartsAt:
+		return m.StartsAt()
+	case userquotagrant.FieldExpiresAt:
+		return m.ExpiresAt()
+	case userquotagrant.FieldSource:
+		return m.Source()
+	case userquotagrant.FieldSourceID:
+		return m.SourceID()
+	case userquotagrant.FieldStatus:
+		return m.Status()
+	case userquotagrant.FieldMetadata:
+		return m.Metadata()
+	case userquotagrant.FieldCreatedAt:
+		return m.CreatedAt()
+	case userquotagrant.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *UserQuotaGrantMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case userquotagrant.FieldUserID:
+		return m.OldUserID(ctx)
+	case userquotagrant.FieldAmountUsd:
+		return m.OldAmountUsd(ctx)
+	case userquotagrant.FieldUsedAmountUsd:
+		return m.OldUsedAmountUsd(ctx)
+	case userquotagrant.FieldStartsAt:
+		return m.OldStartsAt(ctx)
+	case userquotagrant.FieldExpiresAt:
+		return m.OldExpiresAt(ctx)
+	case userquotagrant.FieldSource:
+		return m.OldSource(ctx)
+	case userquotagrant.FieldSourceID:
+		return m.OldSourceID(ctx)
+	case userquotagrant.FieldStatus:
+		return m.OldStatus(ctx)
+	case userquotagrant.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case userquotagrant.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case userquotagrant.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown UserQuotaGrant field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *UserQuotaGrantMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case userquotagrant.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case userquotagrant.FieldAmountUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAmountUsd(v)
+		return nil
+	case userquotagrant.FieldUsedAmountUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUsedAmountUsd(v)
+		return nil
+	case userquotagrant.FieldStartsAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStartsAt(v)
+		return nil
+	case userquotagrant.FieldExpiresAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExpiresAt(v)
+		return nil
+	case userquotagrant.FieldSource:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSource(v)
+		return nil
+	case userquotagrant.FieldSourceID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSourceID(v)
+		return nil
+	case userquotagrant.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case userquotagrant.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case userquotagrant.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case userquotagrant.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown UserQuotaGrant field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *UserQuotaGrantMutation) AddedFields() []string {
+	var fields []string
+	if m.addamount_usd != nil {
+		fields = append(fields, userquotagrant.FieldAmountUsd)
+	}
+	if m.addused_amount_usd != nil {
+		fields = append(fields, userquotagrant.FieldUsedAmountUsd)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *UserQuotaGrantMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case userquotagrant.FieldAmountUsd:
+		return m.AddedAmountUsd()
+	case userquotagrant.FieldUsedAmountUsd:
+		return m.AddedUsedAmountUsd()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *UserQuotaGrantMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case userquotagrant.FieldAmountUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddAmountUsd(v)
+		return nil
+	case userquotagrant.FieldUsedAmountUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddUsedAmountUsd(v)
+		return nil
+	}
+	return fmt.Errorf("unknown UserQuotaGrant numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *UserQuotaGrantMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(userquotagrant.FieldMetadata) {
+		fields = append(fields, userquotagrant.FieldMetadata)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *UserQuotaGrantMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *UserQuotaGrantMutation) ClearField(name string) error {
+	switch name {
+	case userquotagrant.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	}
+	return fmt.Errorf("unknown UserQuotaGrant nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *UserQuotaGrantMutation) ResetField(name string) error {
+	switch name {
+	case userquotagrant.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case userquotagrant.FieldAmountUsd:
+		m.ResetAmountUsd()
+		return nil
+	case userquotagrant.FieldUsedAmountUsd:
+		m.ResetUsedAmountUsd()
+		return nil
+	case userquotagrant.FieldStartsAt:
+		m.ResetStartsAt()
+		return nil
+	case userquotagrant.FieldExpiresAt:
+		m.ResetExpiresAt()
+		return nil
+	case userquotagrant.FieldSource:
+		m.ResetSource()
+		return nil
+	case userquotagrant.FieldSourceID:
+		m.ResetSourceID()
+		return nil
+	case userquotagrant.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case userquotagrant.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case userquotagrant.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case userquotagrant.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown UserQuotaGrant field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *UserQuotaGrantMutation) AddedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.user != nil {
+		edges = append(edges, userquotagrant.EdgeUser)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *UserQuotaGrantMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case userquotagrant.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *UserQuotaGrantMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 1)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *UserQuotaGrantMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *UserQuotaGrantMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.cleareduser {
+		edges = append(edges, userquotagrant.EdgeUser)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *UserQuotaGrantMutation) EdgeCleared(name string) bool {
+	switch name {
+	case userquotagrant.EdgeUser:
+		return m.cleareduser
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *UserQuotaGrantMutation) ClearEdge(name string) error {
+	switch name {
+	case userquotagrant.EdgeUser:
+		m.ClearUser()
+		return nil
+	}
+	return fmt.Errorf("unknown UserQuotaGrant unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *UserQuotaGrantMutation) ResetEdge(name string) error {
+	switch name {
+	case userquotagrant.EdgeUser:
+		m.ResetUser()
+		return nil
+	}
+	return fmt.Errorf("unknown UserQuotaGrant edge %s", name)
 }
 
 // UserSubscriptionMutation represents an operation that mutates the UserSubscription nodes in the graph.

@@ -1386,6 +1386,29 @@ func HasRedeemCodesWith(preds ...predicate.RedeemCode) predicate.User {
 	})
 }
 
+// HasQuotaGrants applies the HasEdge predicate on the "quota_grants" edge.
+func HasQuotaGrants() predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, QuotaGrantsTable, QuotaGrantsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasQuotaGrantsWith applies the HasEdge predicate on the "quota_grants" edge with a given conditions (other predicates).
+func HasQuotaGrantsWith(preds ...predicate.UserQuotaGrant) predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := newQuotaGrantsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // HasSubscriptions applies the HasEdge predicate on the "subscriptions" edge.
 func HasSubscriptions() predicate.User {
 	return predicate.User(func(s *sql.Selector) {

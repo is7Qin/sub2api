@@ -38,6 +38,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -137,6 +141,10 @@ func checkColumn(t, c string) error {
 			promocode.Table:                     promocode.ValidColumn,
 			promocodeusage.Table:                promocodeusage.ValidColumn,
 			proxy.Table:                         proxy.ValidColumn,
+			rankingrewardaward.Table:            rankingrewardaward.ValidColumn,
+			rankingrewardcampaign.Table:         rankingrewardcampaign.ValidColumn,
+			rankingrewardexcludeduser.Table:     rankingrewardexcludeduser.ValidColumn,
+			rankingrewardrun.Table:              rankingrewardrun.ValidColumn,
 			redeemcode.Table:                    redeemcode.ValidColumn,
 			securitysecret.Table:                securitysecret.ValidColumn,
 			setting.Table:                       setting.ValidColumn,

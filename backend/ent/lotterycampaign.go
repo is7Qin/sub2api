@@ -50,9 +50,13 @@ type LotteryCampaignEdges struct {
 	Chances []*LotteryChance `json:"chances,omitempty"`
 	// Draws holds the value of the draws edge.
 	Draws []*LotteryDraw `json:"draws,omitempty"`
+	// RankingRewardCampaigns holds the value of the ranking_reward_campaigns edge.
+	RankingRewardCampaigns []*RankingRewardCampaign `json:"ranking_reward_campaigns,omitempty"`
+	// RankingRewardAwards holds the value of the ranking_reward_awards edge.
+	RankingRewardAwards []*RankingRewardAward `json:"ranking_reward_awards,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [3]bool
+	loadedTypes [5]bool
 }
 
 // PrizesOrErr returns the Prizes value or an error if the edge
@@ -80,6 +84,24 @@ func (e LotteryCampaignEdges) DrawsOrErr() ([]*LotteryDraw, error) {
 		return e.Draws, nil
 	}
 	return nil, &NotLoadedError{edge: "draws"}
+}
+
+// RankingRewardCampaignsOrErr returns the RankingRewardCampaigns value or an error if the edge
+// was not loaded in eager-loading.
+func (e LotteryCampaignEdges) RankingRewardCampaignsOrErr() ([]*RankingRewardCampaign, error) {
+	if e.loadedTypes[3] {
+		return e.RankingRewardCampaigns, nil
+	}
+	return nil, &NotLoadedError{edge: "ranking_reward_campaigns"}
+}
+
+// RankingRewardAwardsOrErr returns the RankingRewardAwards value or an error if the edge
+// was not loaded in eager-loading.
+func (e LotteryCampaignEdges) RankingRewardAwardsOrErr() ([]*RankingRewardAward, error) {
+	if e.loadedTypes[4] {
+		return e.RankingRewardAwards, nil
+	}
+	return nil, &NotLoadedError{edge: "ranking_reward_awards"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -199,6 +221,16 @@ func (_m *LotteryCampaign) QueryChances() *LotteryChanceQuery {
 // QueryDraws queries the "draws" edge of the LotteryCampaign entity.
 func (_m *LotteryCampaign) QueryDraws() *LotteryDrawQuery {
 	return NewLotteryCampaignClient(_m.config).QueryDraws(_m)
+}
+
+// QueryRankingRewardCampaigns queries the "ranking_reward_campaigns" edge of the LotteryCampaign entity.
+func (_m *LotteryCampaign) QueryRankingRewardCampaigns() *RankingRewardCampaignQuery {
+	return NewLotteryCampaignClient(_m.config).QueryRankingRewardCampaigns(_m)
+}
+
+// QueryRankingRewardAwards queries the "ranking_reward_awards" edge of the LotteryCampaign entity.
+func (_m *LotteryCampaign) QueryRankingRewardAwards() *RankingRewardAwardQuery {
+	return NewLotteryCampaignClient(_m.config).QueryRankingRewardAwards(_m)
 }
 
 // Update returns a builder for updating this LotteryCampaign.

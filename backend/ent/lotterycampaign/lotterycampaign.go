@@ -38,6 +38,10 @@ const (
 	EdgeChances = "chances"
 	// EdgeDraws holds the string denoting the draws edge name in mutations.
 	EdgeDraws = "draws"
+	// EdgeRankingRewardCampaigns holds the string denoting the ranking_reward_campaigns edge name in mutations.
+	EdgeRankingRewardCampaigns = "ranking_reward_campaigns"
+	// EdgeRankingRewardAwards holds the string denoting the ranking_reward_awards edge name in mutations.
+	EdgeRankingRewardAwards = "ranking_reward_awards"
 	// Table holds the table name of the lotterycampaign in the database.
 	Table = "lottery_campaigns"
 	// PrizesTable is the table that holds the prizes relation/edge.
@@ -61,6 +65,20 @@ const (
 	DrawsInverseTable = "lottery_draws"
 	// DrawsColumn is the table column denoting the draws relation/edge.
 	DrawsColumn = "campaign_id"
+	// RankingRewardCampaignsTable is the table that holds the ranking_reward_campaigns relation/edge.
+	RankingRewardCampaignsTable = "ranking_reward_campaigns"
+	// RankingRewardCampaignsInverseTable is the table name for the RankingRewardCampaign entity.
+	// It exists in this package in order to avoid circular dependency with the "rankingrewardcampaign" package.
+	RankingRewardCampaignsInverseTable = "ranking_reward_campaigns"
+	// RankingRewardCampaignsColumn is the table column denoting the ranking_reward_campaigns relation/edge.
+	RankingRewardCampaignsColumn = "lottery_campaign_id"
+	// RankingRewardAwardsTable is the table that holds the ranking_reward_awards relation/edge.
+	RankingRewardAwardsTable = "ranking_reward_awards"
+	// RankingRewardAwardsInverseTable is the table name for the RankingRewardAward entity.
+	// It exists in this package in order to avoid circular dependency with the "rankingrewardaward" package.
+	RankingRewardAwardsInverseTable = "ranking_reward_awards"
+	// RankingRewardAwardsColumn is the table column denoting the ranking_reward_awards relation/edge.
+	RankingRewardAwardsColumn = "lottery_campaign_id"
 )
 
 // Columns holds all SQL columns for lotterycampaign fields.
@@ -197,6 +215,34 @@ func ByDraws(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newDrawsStep(), append([]sql.OrderTerm{term}, terms...)...)
 	}
 }
+
+// ByRankingRewardCampaignsCount orders the results by ranking_reward_campaigns count.
+func ByRankingRewardCampaignsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRankingRewardCampaignsStep(), opts...)
+	}
+}
+
+// ByRankingRewardCampaigns orders the results by ranking_reward_campaigns terms.
+func ByRankingRewardCampaigns(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRankingRewardCampaignsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByRankingRewardAwardsCount orders the results by ranking_reward_awards count.
+func ByRankingRewardAwardsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRankingRewardAwardsStep(), opts...)
+	}
+}
+
+// ByRankingRewardAwards orders the results by ranking_reward_awards terms.
+func ByRankingRewardAwards(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRankingRewardAwardsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newPrizesStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -216,5 +262,19 @@ func newDrawsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(DrawsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, DrawsTable, DrawsColumn),
+	)
+}
+func newRankingRewardCampaignsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RankingRewardCampaignsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardCampaignsTable, RankingRewardCampaignsColumn),
+	)
+}
+func newRankingRewardAwardsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RankingRewardAwardsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardAwardsTable, RankingRewardAwardsColumn),
 	)
 }

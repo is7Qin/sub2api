@@ -20,6 +20,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -415,6 +417,36 @@ func (_c *UserCreate) AddLotteryDraws(v ...*LotteryDraw) *UserCreate {
 		ids[i] = v[i].ID
 	}
 	return _c.AddLotteryDrawIDs(ids...)
+}
+
+// AddRankingRewardExclusionIDs adds the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity by IDs.
+func (_c *UserCreate) AddRankingRewardExclusionIDs(ids ...int64) *UserCreate {
+	_c.mutation.AddRankingRewardExclusionIDs(ids...)
+	return _c
+}
+
+// AddRankingRewardExclusions adds the "ranking_reward_exclusions" edges to the RankingRewardExcludedUser entity.
+func (_c *UserCreate) AddRankingRewardExclusions(v ...*RankingRewardExcludedUser) *UserCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRankingRewardExclusionIDs(ids...)
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (_c *UserCreate) AddRankingRewardAwardIDs(ids ...int64) *UserCreate {
+	_c.mutation.AddRankingRewardAwardIDs(ids...)
+	return _c
+}
+
+// AddRankingRewardAwards adds the "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_c *UserCreate) AddRankingRewardAwards(v ...*RankingRewardAward) *UserCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRankingRewardAwardIDs(ids...)
 }
 
 // AddSubscriptionIDs adds the "subscriptions" edge to the UserSubscription entity by IDs.
@@ -948,6 +980,38 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RankingRewardExclusionsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RankingRewardAwardsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

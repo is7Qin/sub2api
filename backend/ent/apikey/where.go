@@ -160,6 +160,11 @@ func Window7dStart(v time.Time) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldWindow7dStart, v))
 }
 
+// OpenaiForcePriorityTier applies equality check predicate on the "openai_force_priority_tier" field. It's identical to OpenaiForcePriorityTierEQ.
+func OpenaiForcePriorityTier(v bool) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldOpenaiForcePriorityTier, v))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldCreatedAt, v))
@@ -1123,6 +1128,16 @@ func Window7dStartIsNil() predicate.APIKey {
 // Window7dStartNotNil applies the NotNil predicate on the "window_7d_start" field.
 func Window7dStartNotNil() predicate.APIKey {
 	return predicate.APIKey(sql.FieldNotNull(FieldWindow7dStart))
+}
+
+// OpenaiForcePriorityTierEQ applies the EQ predicate on the "openai_force_priority_tier" field.
+func OpenaiForcePriorityTierEQ(v bool) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldOpenaiForcePriorityTier, v))
+}
+
+// OpenaiForcePriorityTierNEQ applies the NEQ predicate on the "openai_force_priority_tier" field.
+func OpenaiForcePriorityTierNEQ(v bool) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNEQ(FieldOpenaiForcePriorityTier, v))
 }
 
 // HasUser applies the HasEdge predicate on the "user" edge.

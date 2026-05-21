@@ -12,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -250,6 +251,21 @@ func (_u *RedeemCodeUpdate) SetGroup(v *Group) *RedeemCodeUpdate {
 	return _u.SetGroupID(v.ID)
 }
 
+// AddLotteryDrawIDs adds the "lottery_draws" edge to the LotteryDraw entity by IDs.
+func (_u *RedeemCodeUpdate) AddLotteryDrawIDs(ids ...int64) *RedeemCodeUpdate {
+	_u.mutation.AddLotteryDrawIDs(ids...)
+	return _u
+}
+
+// AddLotteryDraws adds the "lottery_draws" edges to the LotteryDraw entity.
+func (_u *RedeemCodeUpdate) AddLotteryDraws(v ...*LotteryDraw) *RedeemCodeUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddLotteryDrawIDs(ids...)
+}
+
 // Mutation returns the RedeemCodeMutation object of the builder.
 func (_u *RedeemCodeUpdate) Mutation() *RedeemCodeMutation {
 	return _u.mutation
@@ -265,6 +281,27 @@ func (_u *RedeemCodeUpdate) ClearUser() *RedeemCodeUpdate {
 func (_u *RedeemCodeUpdate) ClearGroup() *RedeemCodeUpdate {
 	_u.mutation.ClearGroup()
 	return _u
+}
+
+// ClearLotteryDraws clears all "lottery_draws" edges to the LotteryDraw entity.
+func (_u *RedeemCodeUpdate) ClearLotteryDraws() *RedeemCodeUpdate {
+	_u.mutation.ClearLotteryDraws()
+	return _u
+}
+
+// RemoveLotteryDrawIDs removes the "lottery_draws" edge to LotteryDraw entities by IDs.
+func (_u *RedeemCodeUpdate) RemoveLotteryDrawIDs(ids ...int64) *RedeemCodeUpdate {
+	_u.mutation.RemoveLotteryDrawIDs(ids...)
+	return _u
+}
+
+// RemoveLotteryDraws removes "lottery_draws" edges to LotteryDraw entities.
+func (_u *RedeemCodeUpdate) RemoveLotteryDraws(v ...*LotteryDraw) *RedeemCodeUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveLotteryDrawIDs(ids...)
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -422,6 +459,51 @@ func (_u *RedeemCodeUpdate) sqlSave(ctx context.Context) (_node int, err error) 
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.LotteryDrawsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.LotteryDrawsTable,
+			Columns: []string{redeemcode.LotteryDrawsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedLotteryDrawsIDs(); len(nodes) > 0 && !_u.mutation.LotteryDrawsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.LotteryDrawsTable,
+			Columns: []string{redeemcode.LotteryDrawsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.LotteryDrawsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.LotteryDrawsTable,
+			Columns: []string{redeemcode.LotteryDrawsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -669,6 +751,21 @@ func (_u *RedeemCodeUpdateOne) SetGroup(v *Group) *RedeemCodeUpdateOne {
 	return _u.SetGroupID(v.ID)
 }
 
+// AddLotteryDrawIDs adds the "lottery_draws" edge to the LotteryDraw entity by IDs.
+func (_u *RedeemCodeUpdateOne) AddLotteryDrawIDs(ids ...int64) *RedeemCodeUpdateOne {
+	_u.mutation.AddLotteryDrawIDs(ids...)
+	return _u
+}
+
+// AddLotteryDraws adds the "lottery_draws" edges to the LotteryDraw entity.
+func (_u *RedeemCodeUpdateOne) AddLotteryDraws(v ...*LotteryDraw) *RedeemCodeUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddLotteryDrawIDs(ids...)
+}
+
 // Mutation returns the RedeemCodeMutation object of the builder.
 func (_u *RedeemCodeUpdateOne) Mutation() *RedeemCodeMutation {
 	return _u.mutation
@@ -684,6 +781,27 @@ func (_u *RedeemCodeUpdateOne) ClearUser() *RedeemCodeUpdateOne {
 func (_u *RedeemCodeUpdateOne) ClearGroup() *RedeemCodeUpdateOne {
 	_u.mutation.ClearGroup()
 	return _u
+}
+
+// ClearLotteryDraws clears all "lottery_draws" edges to the LotteryDraw entity.
+func (_u *RedeemCodeUpdateOne) ClearLotteryDraws() *RedeemCodeUpdateOne {
+	_u.mutation.ClearLotteryDraws()
+	return _u
+}
+
+// RemoveLotteryDrawIDs removes the "lottery_draws" edge to LotteryDraw entities by IDs.
+func (_u *RedeemCodeUpdateOne) RemoveLotteryDrawIDs(ids ...int64) *RedeemCodeUpdateOne {
+	_u.mutation.RemoveLotteryDrawIDs(ids...)
+	return _u
+}
+
+// RemoveLotteryDraws removes "lottery_draws" edges to LotteryDraw entities.
+func (_u *RedeemCodeUpdateOne) RemoveLotteryDraws(v ...*LotteryDraw) *RedeemCodeUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveLotteryDrawIDs(ids...)
 }
 
 // Where appends a list predicates to the RedeemCodeUpdate builder.
@@ -871,6 +989,51 @@ func (_u *RedeemCodeUpdateOne) sqlSave(ctx context.Context) (_node *RedeemCode, 
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.LotteryDrawsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.LotteryDrawsTable,
+			Columns: []string{redeemcode.LotteryDrawsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedLotteryDrawsIDs(); len(nodes) > 0 && !_u.mutation.LotteryDrawsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.LotteryDrawsTable,
+			Columns: []string{redeemcode.LotteryDrawsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.LotteryDrawsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.LotteryDrawsTable,
+			Columns: []string{redeemcode.LotteryDrawsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

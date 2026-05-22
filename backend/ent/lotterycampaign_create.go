@@ -15,6 +15,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/lotterychance"
 	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
 	"github.com/Wei-Shaw/sub2api/ent/lotteryprize"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 )
 
 // LotteryCampaignCreate is the builder for creating a LotteryCampaign entity.
@@ -178,6 +180,36 @@ func (_c *LotteryCampaignCreate) AddDraws(v ...*LotteryDraw) *LotteryCampaignCre
 		ids[i] = v[i].ID
 	}
 	return _c.AddDrawIDs(ids...)
+}
+
+// AddRankingRewardCampaignIDs adds the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity by IDs.
+func (_c *LotteryCampaignCreate) AddRankingRewardCampaignIDs(ids ...int64) *LotteryCampaignCreate {
+	_c.mutation.AddRankingRewardCampaignIDs(ids...)
+	return _c
+}
+
+// AddRankingRewardCampaigns adds the "ranking_reward_campaigns" edges to the RankingRewardCampaign entity.
+func (_c *LotteryCampaignCreate) AddRankingRewardCampaigns(v ...*RankingRewardCampaign) *LotteryCampaignCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRankingRewardCampaignIDs(ids...)
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (_c *LotteryCampaignCreate) AddRankingRewardAwardIDs(ids ...int64) *LotteryCampaignCreate {
+	_c.mutation.AddRankingRewardAwardIDs(ids...)
+	return _c
+}
+
+// AddRankingRewardAwards adds the "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_c *LotteryCampaignCreate) AddRankingRewardAwards(v ...*RankingRewardAward) *LotteryCampaignCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRankingRewardAwardIDs(ids...)
 }
 
 // Mutation returns the LotteryCampaignMutation object of the builder.
@@ -378,6 +410,38 @@ func (_c *LotteryCampaignCreate) createSpec() (*LotteryCampaign, *sqlgraph.Creat
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RankingRewardCampaignsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RankingRewardAwardsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

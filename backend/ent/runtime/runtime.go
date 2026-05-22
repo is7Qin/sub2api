@@ -31,6 +31,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/schema"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
@@ -1544,6 +1548,158 @@ func init() {
 	proxy.DefaultStatus = proxyDescStatus.Default.(string)
 	// proxy.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	proxy.StatusValidator = proxyDescStatus.Validators[0].(func(string) error)
+	rankingrewardawardFields := schema.RankingRewardAward{}.Fields()
+	_ = rankingrewardawardFields
+	// rankingrewardawardDescActualCost is the schema descriptor for actual_cost field.
+	rankingrewardawardDescActualCost := rankingrewardawardFields[5].Descriptor()
+	// rankingrewardaward.DefaultActualCost holds the default value on creation for the actual_cost field.
+	rankingrewardaward.DefaultActualCost = rankingrewardawardDescActualCost.Default.(float64)
+	// rankingrewardawardDescRequests is the schema descriptor for requests field.
+	rankingrewardawardDescRequests := rankingrewardawardFields[6].Descriptor()
+	// rankingrewardaward.DefaultRequests holds the default value on creation for the requests field.
+	rankingrewardaward.DefaultRequests = rankingrewardawardDescRequests.Default.(int64)
+	// rankingrewardawardDescTokens is the schema descriptor for tokens field.
+	rankingrewardawardDescTokens := rankingrewardawardFields[7].Descriptor()
+	// rankingrewardaward.DefaultTokens holds the default value on creation for the tokens field.
+	rankingrewardaward.DefaultTokens = rankingrewardawardDescTokens.Default.(int64)
+	// rankingrewardawardDescChanceCount is the schema descriptor for chance_count field.
+	rankingrewardawardDescChanceCount := rankingrewardawardFields[8].Descriptor()
+	// rankingrewardaward.DefaultChanceCount holds the default value on creation for the chance_count field.
+	rankingrewardaward.DefaultChanceCount = rankingrewardawardDescChanceCount.Default.(int)
+	// rankingrewardawardDescCreatedAt is the schema descriptor for created_at field.
+	rankingrewardawardDescCreatedAt := rankingrewardawardFields[11].Descriptor()
+	// rankingrewardaward.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rankingrewardaward.DefaultCreatedAt = rankingrewardawardDescCreatedAt.Default.(func() time.Time)
+	rankingrewardcampaignFields := schema.RankingRewardCampaign{}.Fields()
+	_ = rankingrewardcampaignFields
+	// rankingrewardcampaignDescName is the schema descriptor for name field.
+	rankingrewardcampaignDescName := rankingrewardcampaignFields[0].Descriptor()
+	// rankingrewardcampaign.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	rankingrewardcampaign.NameValidator = func() func(string) error {
+		validators := rankingrewardcampaignDescName.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(name string) error {
+			for _, fn := range fns {
+				if err := fn(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// rankingrewardcampaignDescDescription is the schema descriptor for description field.
+	rankingrewardcampaignDescDescription := rankingrewardcampaignFields[1].Descriptor()
+	// rankingrewardcampaign.DefaultDescription holds the default value on creation for the description field.
+	rankingrewardcampaign.DefaultDescription = rankingrewardcampaignDescDescription.Default.(string)
+	// rankingrewardcampaignDescStatus is the schema descriptor for status field.
+	rankingrewardcampaignDescStatus := rankingrewardcampaignFields[2].Descriptor()
+	// rankingrewardcampaign.DefaultStatus holds the default value on creation for the status field.
+	rankingrewardcampaign.DefaultStatus = rankingrewardcampaignDescStatus.Default.(string)
+	// rankingrewardcampaign.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	rankingrewardcampaign.StatusValidator = rankingrewardcampaignDescStatus.Validators[0].(func(string) error)
+	// rankingrewardcampaignDescTopN is the schema descriptor for top_n field.
+	rankingrewardcampaignDescTopN := rankingrewardcampaignFields[4].Descriptor()
+	// rankingrewardcampaign.DefaultTopN holds the default value on creation for the top_n field.
+	rankingrewardcampaign.DefaultTopN = rankingrewardcampaignDescTopN.Default.(int)
+	// rankingrewardcampaign.TopNValidator is a validator for the "top_n" field. It is called by the builders before save.
+	rankingrewardcampaign.TopNValidator = rankingrewardcampaignDescTopN.Validators[0].(func(int) error)
+	// rankingrewardcampaignDescChanceCount is the schema descriptor for chance_count field.
+	rankingrewardcampaignDescChanceCount := rankingrewardcampaignFields[5].Descriptor()
+	// rankingrewardcampaign.DefaultChanceCount holds the default value on creation for the chance_count field.
+	rankingrewardcampaign.DefaultChanceCount = rankingrewardcampaignDescChanceCount.Default.(int)
+	// rankingrewardcampaign.ChanceCountValidator is a validator for the "chance_count" field. It is called by the builders before save.
+	rankingrewardcampaign.ChanceCountValidator = func() func(int) error {
+		validators := rankingrewardcampaignDescChanceCount.Validators
+		fns := [...]func(int) error{
+			validators[0].(func(int) error),
+			validators[1].(func(int) error),
+		}
+		return func(chance_count int) error {
+			for _, fn := range fns {
+				if err := fn(chance_count); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// rankingrewardcampaignDescMinActualCost is the schema descriptor for min_actual_cost field.
+	rankingrewardcampaignDescMinActualCost := rankingrewardcampaignFields[6].Descriptor()
+	// rankingrewardcampaign.DefaultMinActualCost holds the default value on creation for the min_actual_cost field.
+	rankingrewardcampaign.DefaultMinActualCost = rankingrewardcampaignDescMinActualCost.Default.(float64)
+	// rankingrewardcampaignDescStartsAt is the schema descriptor for starts_at field.
+	rankingrewardcampaignDescStartsAt := rankingrewardcampaignFields[7].Descriptor()
+	// rankingrewardcampaign.DefaultStartsAt holds the default value on creation for the starts_at field.
+	rankingrewardcampaign.DefaultStartsAt = rankingrewardcampaignDescStartsAt.Default.(func() time.Time)
+	// rankingrewardcampaignDescTimezone is the schema descriptor for timezone field.
+	rankingrewardcampaignDescTimezone := rankingrewardcampaignFields[9].Descriptor()
+	// rankingrewardcampaign.DefaultTimezone holds the default value on creation for the timezone field.
+	rankingrewardcampaign.DefaultTimezone = rankingrewardcampaignDescTimezone.Default.(string)
+	// rankingrewardcampaign.TimezoneValidator is a validator for the "timezone" field. It is called by the builders before save.
+	rankingrewardcampaign.TimezoneValidator = rankingrewardcampaignDescTimezone.Validators[0].(func(string) error)
+	// rankingrewardcampaignDescCreatedAt is the schema descriptor for created_at field.
+	rankingrewardcampaignDescCreatedAt := rankingrewardcampaignFields[12].Descriptor()
+	// rankingrewardcampaign.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rankingrewardcampaign.DefaultCreatedAt = rankingrewardcampaignDescCreatedAt.Default.(func() time.Time)
+	// rankingrewardcampaignDescUpdatedAt is the schema descriptor for updated_at field.
+	rankingrewardcampaignDescUpdatedAt := rankingrewardcampaignFields[13].Descriptor()
+	// rankingrewardcampaign.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	rankingrewardcampaign.DefaultUpdatedAt = rankingrewardcampaignDescUpdatedAt.Default.(func() time.Time)
+	// rankingrewardcampaign.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	rankingrewardcampaign.UpdateDefaultUpdatedAt = rankingrewardcampaignDescUpdatedAt.UpdateDefault.(func() time.Time)
+	rankingrewardexcludeduserFields := schema.RankingRewardExcludedUser{}.Fields()
+	_ = rankingrewardexcludeduserFields
+	// rankingrewardexcludeduserDescReason is the schema descriptor for reason field.
+	rankingrewardexcludeduserDescReason := rankingrewardexcludeduserFields[2].Descriptor()
+	// rankingrewardexcludeduser.DefaultReason holds the default value on creation for the reason field.
+	rankingrewardexcludeduser.DefaultReason = rankingrewardexcludeduserDescReason.Default.(string)
+	// rankingrewardexcludeduserDescCreatedAt is the schema descriptor for created_at field.
+	rankingrewardexcludeduserDescCreatedAt := rankingrewardexcludeduserFields[3].Descriptor()
+	// rankingrewardexcludeduser.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rankingrewardexcludeduser.DefaultCreatedAt = rankingrewardexcludeduserDescCreatedAt.Default.(func() time.Time)
+	// rankingrewardexcludeduserDescUpdatedAt is the schema descriptor for updated_at field.
+	rankingrewardexcludeduserDescUpdatedAt := rankingrewardexcludeduserFields[4].Descriptor()
+	// rankingrewardexcludeduser.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	rankingrewardexcludeduser.DefaultUpdatedAt = rankingrewardexcludeduserDescUpdatedAt.Default.(func() time.Time)
+	// rankingrewardexcludeduser.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	rankingrewardexcludeduser.UpdateDefaultUpdatedAt = rankingrewardexcludeduserDescUpdatedAt.UpdateDefault.(func() time.Time)
+	rankingrewardrunFields := schema.RankingRewardRun{}.Fields()
+	_ = rankingrewardrunFields
+	// rankingrewardrunDescStatus is the schema descriptor for status field.
+	rankingrewardrunDescStatus := rankingrewardrunFields[4].Descriptor()
+	// rankingrewardrun.DefaultStatus holds the default value on creation for the status field.
+	rankingrewardrun.DefaultStatus = rankingrewardrunDescStatus.Default.(string)
+	// rankingrewardrun.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	rankingrewardrun.StatusValidator = rankingrewardrunDescStatus.Validators[0].(func(string) error)
+	// rankingrewardrunDescAwardedCount is the schema descriptor for awarded_count field.
+	rankingrewardrunDescAwardedCount := rankingrewardrunFields[5].Descriptor()
+	// rankingrewardrun.DefaultAwardedCount holds the default value on creation for the awarded_count field.
+	rankingrewardrun.DefaultAwardedCount = rankingrewardrunDescAwardedCount.Default.(int)
+	// rankingrewardrunDescTotalActualCost is the schema descriptor for total_actual_cost field.
+	rankingrewardrunDescTotalActualCost := rankingrewardrunFields[6].Descriptor()
+	// rankingrewardrun.DefaultTotalActualCost holds the default value on creation for the total_actual_cost field.
+	rankingrewardrun.DefaultTotalActualCost = rankingrewardrunDescTotalActualCost.Default.(float64)
+	// rankingrewardrunDescErrorMessage is the schema descriptor for error_message field.
+	rankingrewardrunDescErrorMessage := rankingrewardrunFields[7].Descriptor()
+	// rankingrewardrun.DefaultErrorMessage holds the default value on creation for the error_message field.
+	rankingrewardrun.DefaultErrorMessage = rankingrewardrunDescErrorMessage.Default.(string)
+	// rankingrewardrunDescStartedAt is the schema descriptor for started_at field.
+	rankingrewardrunDescStartedAt := rankingrewardrunFields[9].Descriptor()
+	// rankingrewardrun.DefaultStartedAt holds the default value on creation for the started_at field.
+	rankingrewardrun.DefaultStartedAt = rankingrewardrunDescStartedAt.Default.(func() time.Time)
+	// rankingrewardrunDescCreatedAt is the schema descriptor for created_at field.
+	rankingrewardrunDescCreatedAt := rankingrewardrunFields[11].Descriptor()
+	// rankingrewardrun.DefaultCreatedAt holds the default value on creation for the created_at field.
+	rankingrewardrun.DefaultCreatedAt = rankingrewardrunDescCreatedAt.Default.(func() time.Time)
+	// rankingrewardrunDescUpdatedAt is the schema descriptor for updated_at field.
+	rankingrewardrunDescUpdatedAt := rankingrewardrunFields[12].Descriptor()
+	// rankingrewardrun.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	rankingrewardrun.DefaultUpdatedAt = rankingrewardrunDescUpdatedAt.Default.(func() time.Time)
+	// rankingrewardrun.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	rankingrewardrun.UpdateDefaultUpdatedAt = rankingrewardrunDescUpdatedAt.UpdateDefault.(func() time.Time)
 	redeemcodeFields := schema.RedeemCode{}.Fields()
 	_ = redeemcodeFields
 	// redeemcodeDescCode is the schema descriptor for code field.
@@ -2186,6 +2342,10 @@ func init() {
 	userattributevalue.DefaultValue = userattributevalueDescValue.Default.(string)
 	userquotagrantFields := schema.UserQuotaGrant{}.Fields()
 	_ = userquotagrantFields
+	// userquotagrantDescAmountUsd is the schema descriptor for amount_usd field.
+	userquotagrantDescAmountUsd := userquotagrantFields[1].Descriptor()
+	// userquotagrant.AmountUsdValidator is a validator for the "amount_usd" field. It is called by the builders before save.
+	userquotagrant.AmountUsdValidator = userquotagrantDescAmountUsd.Validators[0].(func(float64) error)
 	// userquotagrantDescUsedAmountUsd is the schema descriptor for used_amount_usd field.
 	userquotagrantDescUsedAmountUsd := userquotagrantFields[2].Descriptor()
 	// userquotagrant.DefaultUsedAmountUsd holds the default value on creation for the used_amount_usd field.

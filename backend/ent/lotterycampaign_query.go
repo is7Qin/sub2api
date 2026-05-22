@@ -18,19 +18,23 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
 	"github.com/Wei-Shaw/sub2api/ent/lotteryprize"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 )
 
 // LotteryCampaignQuery is the builder for querying LotteryCampaign entities.
 type LotteryCampaignQuery struct {
 	config
-	ctx         *QueryContext
-	order       []lotterycampaign.OrderOption
-	inters      []Interceptor
-	predicates  []predicate.LotteryCampaign
-	withPrizes  *LotteryPrizeQuery
-	withChances *LotteryChanceQuery
-	withDraws   *LotteryDrawQuery
-	modifiers   []func(*sql.Selector)
+	ctx                        *QueryContext
+	order                      []lotterycampaign.OrderOption
+	inters                     []Interceptor
+	predicates                 []predicate.LotteryCampaign
+	withPrizes                 *LotteryPrizeQuery
+	withChances                *LotteryChanceQuery
+	withDraws                  *LotteryDrawQuery
+	withRankingRewardCampaigns *RankingRewardCampaignQuery
+	withRankingRewardAwards    *RankingRewardAwardQuery
+	modifiers                  []func(*sql.Selector)
 	// intermediate query (i.e. traversal path).
 	sql  *sql.Selector
 	path func(context.Context) (*sql.Selector, error)
@@ -126,6 +130,50 @@ func (_q *LotteryCampaignQuery) QueryDraws() *LotteryDrawQuery {
 			sqlgraph.From(lotterycampaign.Table, lotterycampaign.FieldID, selector),
 			sqlgraph.To(lotterydraw.Table, lotterydraw.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, lotterycampaign.DrawsTable, lotterycampaign.DrawsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryRankingRewardCampaigns chains the current query on the "ranking_reward_campaigns" edge.
+func (_q *LotteryCampaignQuery) QueryRankingRewardCampaigns() *RankingRewardCampaignQuery {
+	query := (&RankingRewardCampaignClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(lotterycampaign.Table, lotterycampaign.FieldID, selector),
+			sqlgraph.To(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, lotterycampaign.RankingRewardCampaignsTable, lotterycampaign.RankingRewardCampaignsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryRankingRewardAwards chains the current query on the "ranking_reward_awards" edge.
+func (_q *LotteryCampaignQuery) QueryRankingRewardAwards() *RankingRewardAwardQuery {
+	query := (&RankingRewardAwardClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(lotterycampaign.Table, lotterycampaign.FieldID, selector),
+			sqlgraph.To(rankingrewardaward.Table, rankingrewardaward.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, lotterycampaign.RankingRewardAwardsTable, lotterycampaign.RankingRewardAwardsColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -320,14 +368,16 @@ func (_q *LotteryCampaignQuery) Clone() *LotteryCampaignQuery {
 		return nil
 	}
 	return &LotteryCampaignQuery{
-		config:      _q.config,
-		ctx:         _q.ctx.Clone(),
-		order:       append([]lotterycampaign.OrderOption{}, _q.order...),
-		inters:      append([]Interceptor{}, _q.inters...),
-		predicates:  append([]predicate.LotteryCampaign{}, _q.predicates...),
-		withPrizes:  _q.withPrizes.Clone(),
-		withChances: _q.withChances.Clone(),
-		withDraws:   _q.withDraws.Clone(),
+		config:                     _q.config,
+		ctx:                        _q.ctx.Clone(),
+		order:                      append([]lotterycampaign.OrderOption{}, _q.order...),
+		inters:                     append([]Interceptor{}, _q.inters...),
+		predicates:                 append([]predicate.LotteryCampaign{}, _q.predicates...),
+		withPrizes:                 _q.withPrizes.Clone(),
+		withChances:                _q.withChances.Clone(),
+		withDraws:                  _q.withDraws.Clone(),
+		withRankingRewardCampaigns: _q.withRankingRewardCampaigns.Clone(),
+		withRankingRewardAwards:    _q.withRankingRewardAwards.Clone(),
 		// clone intermediate query.
 		sql:  _q.sql.Clone(),
 		path: _q.path,
@@ -364,6 +414,28 @@ func (_q *LotteryCampaignQuery) WithDraws(opts ...func(*LotteryDrawQuery)) *Lott
 		opt(query)
 	}
 	_q.withDraws = query
+	return _q
+}
+
+// WithRankingRewardCampaigns tells the query-builder to eager-load the nodes that are connected to
+// the "ranking_reward_campaigns" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *LotteryCampaignQuery) WithRankingRewardCampaigns(opts ...func(*RankingRewardCampaignQuery)) *LotteryCampaignQuery {
+	query := (&RankingRewardCampaignClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withRankingRewardCampaigns = query
+	return _q
+}
+
+// WithRankingRewardAwards tells the query-builder to eager-load the nodes that are connected to
+// the "ranking_reward_awards" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *LotteryCampaignQuery) WithRankingRewardAwards(opts ...func(*RankingRewardAwardQuery)) *LotteryCampaignQuery {
+	query := (&RankingRewardAwardClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withRankingRewardAwards = query
 	return _q
 }
 
@@ -445,10 +517,12 @@ func (_q *LotteryCampaignQuery) sqlAll(ctx context.Context, hooks ...queryHook) 
 	var (
 		nodes       = []*LotteryCampaign{}
 		_spec       = _q.querySpec()
-		loadedTypes = [3]bool{
+		loadedTypes = [5]bool{
 			_q.withPrizes != nil,
 			_q.withChances != nil,
 			_q.withDraws != nil,
+			_q.withRankingRewardCampaigns != nil,
+			_q.withRankingRewardAwards != nil,
 		}
 	)
 	_spec.ScanValues = func(columns []string) ([]any, error) {
@@ -490,6 +564,24 @@ func (_q *LotteryCampaignQuery) sqlAll(ctx context.Context, hooks ...queryHook) 
 		if err := _q.loadDraws(ctx, query, nodes,
 			func(n *LotteryCampaign) { n.Edges.Draws = []*LotteryDraw{} },
 			func(n *LotteryCampaign, e *LotteryDraw) { n.Edges.Draws = append(n.Edges.Draws, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withRankingRewardCampaigns; query != nil {
+		if err := _q.loadRankingRewardCampaigns(ctx, query, nodes,
+			func(n *LotteryCampaign) { n.Edges.RankingRewardCampaigns = []*RankingRewardCampaign{} },
+			func(n *LotteryCampaign, e *RankingRewardCampaign) {
+				n.Edges.RankingRewardCampaigns = append(n.Edges.RankingRewardCampaigns, e)
+			}); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withRankingRewardAwards; query != nil {
+		if err := _q.loadRankingRewardAwards(ctx, query, nodes,
+			func(n *LotteryCampaign) { n.Edges.RankingRewardAwards = []*RankingRewardAward{} },
+			func(n *LotteryCampaign, e *RankingRewardAward) {
+				n.Edges.RankingRewardAwards = append(n.Edges.RankingRewardAwards, e)
+			}); err != nil {
 			return nil, err
 		}
 	}
@@ -581,6 +673,66 @@ func (_q *LotteryCampaignQuery) loadDraws(ctx context.Context, query *LotteryDra
 		node, ok := nodeids[fk]
 		if !ok {
 			return fmt.Errorf(`unexpected referenced foreign-key "campaign_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *LotteryCampaignQuery) loadRankingRewardCampaigns(ctx context.Context, query *RankingRewardCampaignQuery, nodes []*LotteryCampaign, init func(*LotteryCampaign), assign func(*LotteryCampaign, *RankingRewardCampaign)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*LotteryCampaign)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(rankingrewardcampaign.FieldLotteryCampaignID)
+	}
+	query.Where(predicate.RankingRewardCampaign(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(lotterycampaign.RankingRewardCampaignsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.LotteryCampaignID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "lottery_campaign_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *LotteryCampaignQuery) loadRankingRewardAwards(ctx context.Context, query *RankingRewardAwardQuery, nodes []*LotteryCampaign, init func(*LotteryCampaign), assign func(*LotteryCampaign, *RankingRewardAward)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*LotteryCampaign)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(rankingrewardaward.FieldLotteryCampaignID)
+	}
+	query.Where(predicate.RankingRewardAward(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(lotterycampaign.RankingRewardAwardsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.LotteryCampaignID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "lottery_campaign_id" returned %v for node %v`, fk, n.ID)
 		}
 		assign(node, n)
 	}

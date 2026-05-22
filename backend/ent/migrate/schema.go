@@ -1318,6 +1318,179 @@ var (
 			},
 		},
 	}
+	// RankingRewardAwardsColumns holds the columns for the "ranking_reward_awards" table.
+	RankingRewardAwardsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "rank", Type: field.TypeInt},
+		{Name: "actual_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
+		{Name: "requests", Type: field.TypeInt64, Default: 0},
+		{Name: "tokens", Type: field.TypeInt64, Default: 0},
+		{Name: "chance_count", Type: field.TypeInt, Default: 1},
+		{Name: "lottery_chance_ids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "lottery_campaign_id", Type: field.TypeInt64},
+		{Name: "campaign_id", Type: field.TypeInt64},
+		{Name: "run_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+	}
+	// RankingRewardAwardsTable holds the schema information for the "ranking_reward_awards" table.
+	RankingRewardAwardsTable = &schema.Table{
+		Name:       "ranking_reward_awards",
+		Columns:    RankingRewardAwardsColumns,
+		PrimaryKey: []*schema.Column{RankingRewardAwardsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "ranking_reward_awards_lottery_campaigns_ranking_reward_awards",
+				Columns:    []*schema.Column{RankingRewardAwardsColumns[9]},
+				RefColumns: []*schema.Column{LotteryCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "ranking_reward_awards_ranking_reward_campaigns_awards",
+				Columns:    []*schema.Column{RankingRewardAwardsColumns[10]},
+				RefColumns: []*schema.Column{RankingRewardCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "ranking_reward_awards_ranking_reward_runs_awards",
+				Columns:    []*schema.Column{RankingRewardAwardsColumns[11]},
+				RefColumns: []*schema.Column{RankingRewardRunsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "ranking_reward_awards_users_ranking_reward_awards",
+				Columns:    []*schema.Column{RankingRewardAwardsColumns[12]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rankingrewardaward_run_id_user_id",
+				Unique:  true,
+				Columns: []*schema.Column{RankingRewardAwardsColumns[11], RankingRewardAwardsColumns[12]},
+			},
+			{
+				Name:    "rankingrewardaward_campaign_id_user_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{RankingRewardAwardsColumns[10], RankingRewardAwardsColumns[12], RankingRewardAwardsColumns[8]},
+			},
+		},
+	}
+	// RankingRewardCampaignsColumns holds the columns for the "ranking_reward_campaigns" table.
+	RankingRewardCampaignsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "description", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "status", Type: field.TypeString, Size: 20, Default: "draft"},
+		{Name: "top_n", Type: field.TypeInt, Default: 10},
+		{Name: "chance_count", Type: field.TypeInt, Default: 1},
+		{Name: "min_actual_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
+		{Name: "starts_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "ends_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "timezone", Type: field.TypeString, Size: 64, Default: "Asia/Shanghai"},
+		{Name: "last_run_date", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "date"}},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "lottery_campaign_id", Type: field.TypeInt64},
+	}
+	// RankingRewardCampaignsTable holds the schema information for the "ranking_reward_campaigns" table.
+	RankingRewardCampaignsTable = &schema.Table{
+		Name:       "ranking_reward_campaigns",
+		Columns:    RankingRewardCampaignsColumns,
+		PrimaryKey: []*schema.Column{RankingRewardCampaignsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "ranking_reward_campaigns_lottery_campaigns_ranking_reward_campaigns",
+				Columns:    []*schema.Column{RankingRewardCampaignsColumns[14]},
+				RefColumns: []*schema.Column{LotteryCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rankingrewardcampaign_status_starts_at_ends_at",
+				Unique:  false,
+				Columns: []*schema.Column{RankingRewardCampaignsColumns[3], RankingRewardCampaignsColumns[7], RankingRewardCampaignsColumns[8]},
+			},
+		},
+	}
+	// RankingRewardExcludedUsersColumns holds the columns for the "ranking_reward_excluded_users" table.
+	RankingRewardExcludedUsersColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "reason", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "campaign_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+	}
+	// RankingRewardExcludedUsersTable holds the schema information for the "ranking_reward_excluded_users" table.
+	RankingRewardExcludedUsersTable = &schema.Table{
+		Name:       "ranking_reward_excluded_users",
+		Columns:    RankingRewardExcludedUsersColumns,
+		PrimaryKey: []*schema.Column{RankingRewardExcludedUsersColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "ranking_reward_excluded_users_ranking_reward_campaigns_excluded_users",
+				Columns:    []*schema.Column{RankingRewardExcludedUsersColumns[4]},
+				RefColumns: []*schema.Column{RankingRewardCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "ranking_reward_excluded_users_users_ranking_reward_exclusions",
+				Columns:    []*schema.Column{RankingRewardExcludedUsersColumns[5]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rankingrewardexcludeduser_campaign_id_user_id",
+				Unique:  true,
+				Columns: []*schema.Column{RankingRewardExcludedUsersColumns[4], RankingRewardExcludedUsersColumns[5]},
+			},
+		},
+	}
+	// RankingRewardRunsColumns holds the columns for the "ranking_reward_runs" table.
+	RankingRewardRunsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "reward_date", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "date"}},
+		{Name: "window_start", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "window_end", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "status", Type: field.TypeString, Size: 20, Default: "running"},
+		{Name: "awarded_count", Type: field.TypeInt, Default: 0},
+		{Name: "total_actual_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
+		{Name: "error_message", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "started_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "finished_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "campaign_id", Type: field.TypeInt64},
+	}
+	// RankingRewardRunsTable holds the schema information for the "ranking_reward_runs" table.
+	RankingRewardRunsTable = &schema.Table{
+		Name:       "ranking_reward_runs",
+		Columns:    RankingRewardRunsColumns,
+		PrimaryKey: []*schema.Column{RankingRewardRunsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "ranking_reward_runs_ranking_reward_campaigns_runs",
+				Columns:    []*schema.Column{RankingRewardRunsColumns[13]},
+				RefColumns: []*schema.Column{RankingRewardCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rankingrewardrun_campaign_id_reward_date",
+				Unique:  true,
+				Columns: []*schema.Column{RankingRewardRunsColumns[13], RankingRewardRunsColumns[1]},
+			},
+		},
+	}
 	// RedeemCodesColumns holds the columns for the "redeem_codes" table.
 	RedeemCodesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -1972,6 +2145,10 @@ var (
 		PromoCodesTable,
 		PromoCodeUsagesTable,
 		ProxiesTable,
+		RankingRewardAwardsTable,
+		RankingRewardCampaignsTable,
+		RankingRewardExcludedUsersTable,
+		RankingRewardRunsTable,
 		RedeemCodesTable,
 		SecuritySecretsTable,
 		SettingsTable,
@@ -2092,6 +2269,26 @@ func init() {
 	}
 	ProxiesTable.Annotation = &entsql.Annotation{
 		Table: "proxies",
+	}
+	RankingRewardAwardsTable.ForeignKeys[0].RefTable = LotteryCampaignsTable
+	RankingRewardAwardsTable.ForeignKeys[1].RefTable = RankingRewardCampaignsTable
+	RankingRewardAwardsTable.ForeignKeys[2].RefTable = RankingRewardRunsTable
+	RankingRewardAwardsTable.ForeignKeys[3].RefTable = UsersTable
+	RankingRewardAwardsTable.Annotation = &entsql.Annotation{
+		Table: "ranking_reward_awards",
+	}
+	RankingRewardCampaignsTable.ForeignKeys[0].RefTable = LotteryCampaignsTable
+	RankingRewardCampaignsTable.Annotation = &entsql.Annotation{
+		Table: "ranking_reward_campaigns",
+	}
+	RankingRewardExcludedUsersTable.ForeignKeys[0].RefTable = RankingRewardCampaignsTable
+	RankingRewardExcludedUsersTable.ForeignKeys[1].RefTable = UsersTable
+	RankingRewardExcludedUsersTable.Annotation = &entsql.Annotation{
+		Table: "ranking_reward_excluded_users",
+	}
+	RankingRewardRunsTable.ForeignKeys[0].RefTable = RankingRewardCampaignsTable
+	RankingRewardRunsTable.Annotation = &entsql.Annotation{
+		Table: "ranking_reward_runs",
 	}
 	RedeemCodesTable.ForeignKeys[0].RefTable = GroupsTable
 	RedeemCodesTable.ForeignKeys[1].RefTable = UsersTable

@@ -84,6 +84,18 @@ type PromoCodeUsage func(*sql.Selector)
 // Proxy is the predicate function for proxy builders.
 type Proxy func(*sql.Selector)
 
+// RankingRewardAward is the predicate function for rankingrewardaward builders.
+type RankingRewardAward func(*sql.Selector)
+
+// RankingRewardCampaign is the predicate function for rankingrewardcampaign builders.
+type RankingRewardCampaign func(*sql.Selector)
+
+// RankingRewardExcludedUser is the predicate function for rankingrewardexcludeduser builders.
+type RankingRewardExcludedUser func(*sql.Selector)
+
+// RankingRewardRun is the predicate function for rankingrewardrun builders.
+type RankingRewardRun func(*sql.Selector)
+
 // RedeemCode is the predicate function for redeemcode builders.
 type RedeemCode func(*sql.Selector)
 

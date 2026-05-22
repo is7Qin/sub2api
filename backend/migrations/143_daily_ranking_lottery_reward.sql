@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS ranking_reward_campaigns (
     CONSTRAINT ranking_reward_campaigns_status_check CHECK (status IN ('draft', 'active', 'disabled', 'ended')),
     CONSTRAINT ranking_reward_campaigns_top_n_positive CHECK (top_n > 0),
     CONSTRAINT ranking_reward_campaigns_chance_count_positive CHECK (chance_count > 0),
+    CONSTRAINT ranking_reward_campaigns_chance_count_limit CHECK (chance_count <= 1000),
+    CONSTRAINT ranking_reward_campaigns_total_chances_limit CHECK (top_n * chance_count <= 10000),
     CONSTRAINT ranking_reward_campaigns_min_actual_cost_non_negative CHECK (min_actual_cost >= 0),
     CONSTRAINT ranking_reward_campaigns_time_range CHECK (ends_at IS NULL OR ends_at > starts_at)
 );

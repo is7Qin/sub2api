@@ -348,8 +348,18 @@ func (_c *RankingRewardCampaignCreate) check() error {
 	if _, ok := _c.mutation.TopN(); !ok {
 		return &ValidationError{Name: "top_n", err: errors.New(`ent: missing required field "RankingRewardCampaign.top_n"`)}
 	}
+	if v, ok := _c.mutation.TopN(); ok {
+		if err := rankingrewardcampaign.TopNValidator(v); err != nil {
+			return &ValidationError{Name: "top_n", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.top_n": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.ChanceCount(); !ok {
 		return &ValidationError{Name: "chance_count", err: errors.New(`ent: missing required field "RankingRewardCampaign.chance_count"`)}
+	}
+	if v, ok := _c.mutation.ChanceCount(); ok {
+		if err := rankingrewardcampaign.ChanceCountValidator(v); err != nil {
+			return &ValidationError{Name: "chance_count", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.chance_count": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.MinActualCost(); !ok {
 		return &ValidationError{Name: "min_actual_cost", err: errors.New(`ent: missing required field "RankingRewardCampaign.min_actual_cost"`)}

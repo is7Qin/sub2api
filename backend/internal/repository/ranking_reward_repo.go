@@ -3,16 +3,21 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/lotterychance"
+	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+
+	entsql "entgo.io/ent/dialect/sql"
 )
 
 type rankingRewardRepository struct {
@@ -25,7 +30,8 @@ func NewRankingRewardRepository(client *dbent.Client, sqlDB *sql.DB) service.Ran
 }
 
 func (r *rankingRewardRepository) CreateCampaign(ctx context.Context, input *service.CreateRankingRewardCampaignInput) (*service.RankingRewardCampaign, error) {
-	create := r.client.RankingRewardCampaign.Create().
+	client := clientFromContext(ctx, r.client)
+	create := client.RankingRewardCampaign.Create().
 		SetName(input.Name).
 		SetDescription(input.Description).
 		SetStatus(input.Status).
@@ -47,7 +53,8 @@ func (r *rankingRewardRepository) CreateCampaign(ctx context.Context, input *ser
 }
 
 func (r *rankingRewardRepository) UpdateCampaign(ctx context.Context, id int64, input *service.UpdateRankingRewardCampaignInput) (*service.RankingRewardCampaign, error) {
-	up := r.client.RankingRewardCampaign.UpdateOneID(id)
+	client := clientFromContext(ctx, r.client)
+	up := client.RankingRewardCampaign.UpdateOneID(id)
 	if input.Name != nil {
 		up.SetName(strings.TrimSpace(*input.Name))
 	}
@@ -103,7 +110,8 @@ func (r *rankingRewardRepository) UpdateCampaign(ctx context.Context, id int64, 
 }
 
 func (r *rankingRewardRepository) GetCampaign(ctx context.Context, id int64) (*service.RankingRewardCampaign, error) {
-	m, err := r.client.RankingRewardCampaign.Query().Where(rankingrewardcampaign.IDEQ(id)).Only(ctx)
+	client := clientFromContext(ctx, r.client)
+	m, err := client.RankingRewardCampaign.Query().Where(rankingrewardcampaign.IDEQ(id)).Only(ctx)
 	if err != nil {
 		if dbent.IsNotFound(err) {
 			return nil, service.ErrRankingRewardCampaignNotFound
@@ -114,7 +122,8 @@ func (r *rankingRewardRepository) GetCampaign(ctx context.Context, id int64) (*s
 }
 
 func (r *rankingRewardRepository) ListCampaigns(ctx context.Context, params pagination.PaginationParams, status string) ([]service.RankingRewardCampaign, *pagination.PaginationResult, error) {
-	q := r.client.RankingRewardCampaign.Query()
+	client := clientFromContext(ctx, r.client)
+	q := client.RankingRewardCampaign.Query()
 	if status != "" {
 		q = q.Where(rankingrewardcampaign.StatusEQ(status))
 	}
@@ -130,7 +139,8 @@ func (r *rankingRewardRepository) ListCampaigns(ctx context.Context, params pagi
 }
 
 func (r *rankingRewardRepository) ListActiveCampaigns(ctx context.Context, now time.Time) ([]service.RankingRewardCampaign, error) {
-	items, err := r.client.RankingRewardCampaign.Query().
+	client := clientFromContext(ctx, r.client)
+	items, err := client.RankingRewardCampaign.Query().
 		Where(
 			rankingrewardcampaign.StatusEQ(service.RankingRewardCampaignStatusActive),
 			rankingrewardcampaign.StartsAtLTE(now),
@@ -145,7 +155,8 @@ func (r *rankingRewardRepository) ListActiveCampaigns(ctx context.Context, now t
 }
 
 func (r *rankingRewardRepository) CreateExclusion(ctx context.Context, input *service.CreateRankingRewardExclusionInput) (*service.RankingRewardExcludedUser, error) {
-	m, err := r.client.RankingRewardExcludedUser.Create().
+	client := clientFromContext(ctx, r.client)
+	m, err := client.RankingRewardExcludedUser.Create().
 		SetCampaignID(input.CampaignID).
 		SetUserID(input.UserID).
 		SetReason(strings.TrimSpace(input.Reason)).
@@ -157,7 +168,8 @@ func (r *rankingRewardRepository) CreateExclusion(ctx context.Context, input *se
 }
 
 func (r *rankingRewardRepository) UpdateExclusion(ctx context.Context, id int64, input *service.UpdateRankingRewardExclusionInput) (*service.RankingRewardExcludedUser, error) {
-	up := r.client.RankingRewardExcludedUser.UpdateOneID(id)
+	client := clientFromContext(ctx, r.client)
+	up := client.RankingRewardExcludedUser.UpdateOneID(id)
 	if input.Reason != nil {
 		up.SetReason(strings.TrimSpace(*input.Reason))
 	}
@@ -172,7 +184,8 @@ func (r *rankingRewardRepository) UpdateExclusion(ctx context.Context, id int64,
 }
 
 func (r *rankingRewardRepository) DeleteExclusion(ctx context.Context, id int64) error {
-	err := r.client.RankingRewardExcludedUser.DeleteOneID(id).Exec(ctx)
+	client := clientFromContext(ctx, r.client)
+	err := client.RankingRewardExcludedUser.DeleteOneID(id).Exec(ctx)
 	if err != nil && dbent.IsNotFound(err) {
 		return service.ErrRankingRewardExclusionNotFound
 	}
@@ -180,7 +193,8 @@ func (r *rankingRewardRepository) DeleteExclusion(ctx context.Context, id int64)
 }
 
 func (r *rankingRewardRepository) ListExclusions(ctx context.Context, campaignID int64, params pagination.PaginationParams) ([]service.RankingRewardExcludedUser, *pagination.PaginationResult, error) {
-	q := r.client.RankingRewardExcludedUser.Query().Where(rankingrewardexcludeduser.CampaignIDEQ(campaignID))
+	client := clientFromContext(ctx, r.client)
+	q := client.RankingRewardExcludedUser.Query().Where(rankingrewardexcludeduser.CampaignIDEQ(campaignID))
 	total, err := q.Count(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -193,7 +207,8 @@ func (r *rankingRewardRepository) ListExclusions(ctx context.Context, campaignID
 }
 
 func (r *rankingRewardRepository) ListRuns(ctx context.Context, campaignID int64, params pagination.PaginationParams) ([]service.RankingRewardRun, *pagination.PaginationResult, error) {
-	q := r.client.RankingRewardRun.Query().Where(rankingrewardrun.CampaignIDEQ(campaignID))
+	client := clientFromContext(ctx, r.client)
+	q := client.RankingRewardRun.Query().Where(rankingrewardrun.CampaignIDEQ(campaignID))
 	total, err := q.Count(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -206,7 +221,8 @@ func (r *rankingRewardRepository) ListRuns(ctx context.Context, campaignID int64
 }
 
 func (r *rankingRewardRepository) ListAwards(ctx context.Context, runID int64, params pagination.PaginationParams) ([]service.RankingRewardAward, *pagination.PaginationResult, error) {
-	q := r.client.RankingRewardAward.Query().Where(rankingrewardaward.RunIDEQ(runID))
+	client := clientFromContext(ctx, r.client)
+	q := client.RankingRewardAward.Query().Where(rankingrewardaward.RunIDEQ(runID))
 	total, err := q.Count(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -218,8 +234,20 @@ func (r *rankingRewardRepository) ListAwards(ctx context.Context, runID int64, p
 	return rankingRewardAwardEntitiesToService(items), paginationResultFromTotal(int64(total), params), nil
 }
 
+func (r *rankingRewardRepository) CountRunLotteryChances(ctx context.Context, runID int64) (int, error) {
+	client := clientFromContext(ctx, r.client)
+	return client.LotteryChance.Query().
+		Where(
+			lotterychance.SourceEQ(service.LotteryChanceSourceRanking),
+			lotterychance.MetadataNotNil(),
+			lotteryChanceRankingRunIDPredicate(runID),
+		).
+		Count(ctx)
+}
+
 func (r *rankingRewardRepository) CreateRun(ctx context.Context, campaign *service.RankingRewardCampaign, rewardDate, windowStart, windowEnd time.Time) (*service.RankingRewardRun, error) {
-	m, err := r.client.RankingRewardRun.Create().
+	client := clientFromContext(ctx, r.client)
+	m, err := client.RankingRewardRun.Create().
 		SetCampaignID(campaign.ID).
 		SetRewardDate(rewardDate).
 		SetWindowStart(windowStart).
@@ -238,9 +266,55 @@ func (r *rankingRewardRepository) CreateRun(ctx context.Context, campaign *servi
 	return rankingRewardRunEntityToService(m), nil
 }
 
+func (r *rankingRewardRepository) GetRunByCampaignDate(ctx context.Context, campaignID int64, rewardDate time.Time) (*service.RankingRewardRun, error) {
+	client := clientFromContext(ctx, r.client)
+	m, err := client.RankingRewardRun.Query().
+		Where(rankingrewardrun.CampaignIDEQ(campaignID), rankingrewardrun.RewardDateEQ(rewardDate)).
+		Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrRankingRewardRunNotFound
+		}
+		return nil, err
+	}
+	return rankingRewardRunEntityToService(m), nil
+}
+
+func (r *rankingRewardRepository) RestartRun(ctx context.Context, runID int64, windowStart, windowEnd time.Time) (*service.RankingRewardRun, error) {
+	client := clientFromContext(ctx, r.client)
+	now := time.Now().UTC()
+	affected, err := client.RankingRewardRun.Update().
+		Where(rankingrewardrun.IDEQ(runID), rankingrewardrun.StatusEQ(service.RankingRewardRunStatusFailed)).
+		SetStatus(service.RankingRewardRunStatusRunning).
+		SetWindowStart(windowStart).
+		SetWindowEnd(windowEnd).
+		SetAwardedCount(0).
+		SetTotalActualCost(0).
+		SetErrorMessage("").
+		SetStartedAt(now).
+		ClearFinishedAt().
+		Save(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, service.ErrRankingRewardRunExists
+	}
+	m, err := client.RankingRewardRun.Get(ctx, runID)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrRankingRewardRunNotFound
+		}
+		return nil, err
+	}
+	return rankingRewardRunEntityToService(m), nil
+}
+
 func (r *rankingRewardRepository) CompleteRun(ctx context.Context, runID int64, awardedCount int, totalActualCost float64, metadata map[string]any) (*service.RankingRewardRun, error) {
 	now := time.Now().UTC()
-	m, err := r.client.RankingRewardRun.UpdateOneID(runID).
+	client := clientFromContext(ctx, r.client)
+	affected, err := client.RankingRewardRun.Update().
+		Where(rankingrewardrun.IDEQ(runID), rankingrewardrun.StatusEQ(service.RankingRewardRunStatusRunning)).
 		SetStatus(service.RankingRewardRunStatusCompleted).
 		SetAwardedCount(awardedCount).
 		SetTotalActualCost(totalActualCost).
@@ -248,12 +322,19 @@ func (r *rankingRewardRepository) CompleteRun(ctx context.Context, runID int64, 
 		SetFinishedAt(now).
 		Save(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, service.ErrRankingRewardRunExists
+	}
+	m, err := client.RankingRewardRun.Get(ctx, runID)
+	if err != nil {
 		if dbent.IsNotFound(err) {
 			return nil, service.ErrRankingRewardRunNotFound
 		}
 		return nil, err
 	}
-	_, err = r.client.RankingRewardCampaign.UpdateOneID(m.CampaignID).
+	_, err = client.RankingRewardCampaign.UpdateOneID(m.CampaignID).
 		SetLastRunDate(m.RewardDate).
 		Save(ctx)
 	if err != nil {
@@ -264,14 +345,13 @@ func (r *rankingRewardRepository) CompleteRun(ctx context.Context, runID int64, 
 
 func (r *rankingRewardRepository) FailRun(ctx context.Context, runID int64, errMessage string) error {
 	now := time.Now().UTC()
-	_, err := r.client.RankingRewardRun.UpdateOneID(runID).
+	client := clientFromContext(ctx, r.client)
+	_, err := client.RankingRewardRun.Update().
+		Where(rankingrewardrun.IDEQ(runID), rankingrewardrun.StatusEQ(service.RankingRewardRunStatusRunning)).
 		SetStatus(service.RankingRewardRunStatusFailed).
 		SetErrorMessage(errMessage).
 		SetFinishedAt(now).
 		Save(ctx)
-	if err != nil && dbent.IsNotFound(err) {
-		return service.ErrRankingRewardRunNotFound
-	}
 	return err
 }
 
@@ -330,7 +410,8 @@ func (r *rankingRewardRepository) FindRankCandidates(ctx context.Context, campai
 }
 
 func (r *rankingRewardRepository) CreateAward(ctx context.Context, award *service.RankingRewardAward) (*service.RankingRewardAward, error) {
-	m, err := r.client.RankingRewardAward.Create().
+	client := clientFromContext(ctx, r.client)
+	m, err := client.RankingRewardAward.Create().
 		SetRunID(award.RunID).
 		SetCampaignID(award.CampaignID).
 		SetLotteryCampaignID(award.LotteryCampaignID).
@@ -345,11 +426,33 @@ func (r *rankingRewardRepository) CreateAward(ctx context.Context, award *servic
 		Save(ctx)
 	if err != nil {
 		if isUniqueConstraintViolation(err) {
-			return nil, service.ErrRankingRewardRunExists
+			return nil, service.ErrRankingRewardAwardExists
 		}
 		return nil, err
 	}
 	return rankingRewardAwardEntityToService(m), nil
+}
+
+func (r *rankingRewardRepository) GetAwardByRunUser(ctx context.Context, runID int64, userID int64) (*service.RankingRewardAward, error) {
+	client := clientFromContext(ctx, r.client)
+	m, err := client.RankingRewardAward.Query().
+		Where(rankingrewardaward.RunIDEQ(runID), rankingrewardaward.UserIDEQ(userID)).
+		Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrRankingRewardAwardNotFound
+		}
+		return nil, err
+	}
+	return rankingRewardAwardEntityToService(m), nil
+}
+
+func lotteryChanceRankingRunIDPredicate(runID int64) predicate.LotteryChance {
+	return predicate.LotteryChance(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			b.Ident(s.C(lotterychance.FieldMetadata)).WriteString(" ->> 'ranking_reward_run_id' = ").Arg(strconv.FormatInt(runID, 10))
+		}))
+	})
 }
 
 func rankingRewardCampaignEntityToService(m *dbent.RankingRewardCampaign) *service.RankingRewardCampaign {

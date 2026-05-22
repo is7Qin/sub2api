@@ -35,8 +35,11 @@ func (RankingRewardCampaign) Fields() []ent.Field {
 			Default("draft"),
 		field.Int64("lottery_campaign_id"),
 		field.Int("top_n").
+			Positive().
 			Default(10),
 		field.Int("chance_count").
+			Positive().
+			Max(1000).
 			Default(1),
 		field.Float("min_actual_cost").
 			Default(0).

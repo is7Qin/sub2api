@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,14 +26,18 @@ const (
 	RankingRewardRunStatusFailed    = "failed"
 
 	RankingRewardDefaultTimezone = "Asia/Shanghai"
+	RankingRewardMaxTotalChances = 10000
+	RankingRewardMaxChanceCount  = 1000
 )
 
 var (
 	ErrRankingRewardCampaignNotFound  = infraerrors.NotFound("RANKING_REWARD_CAMPAIGN_NOT_FOUND", "ranking reward campaign not found")
 	ErrRankingRewardExclusionNotFound = infraerrors.NotFound("RANKING_REWARD_EXCLUSION_NOT_FOUND", "ranking reward exclusion not found")
 	ErrRankingRewardRunNotFound       = infraerrors.NotFound("RANKING_REWARD_RUN_NOT_FOUND", "ranking reward run not found")
+	ErrRankingRewardAwardNotFound     = infraerrors.NotFound("RANKING_REWARD_AWARD_NOT_FOUND", "ranking reward award not found")
 	ErrRankingRewardInvalidPayload    = infraerrors.BadRequest("RANKING_REWARD_INVALID_PAYLOAD", "invalid ranking reward payload")
 	ErrRankingRewardRunExists         = infraerrors.Conflict("RANKING_REWARD_RUN_EXISTS", "ranking reward run already exists")
+	ErrRankingRewardAwardExists       = infraerrors.Conflict("RANKING_REWARD_AWARD_EXISTS", "ranking reward award already exists")
 	ErrRankingRewardCampaignInactive  = infraerrors.BadRequest("RANKING_REWARD_CAMPAIGN_INACTIVE", "ranking reward campaign is not active")
 	ErrRankingRewardWindowUnavailable = infraerrors.BadRequest("RANKING_REWARD_WINDOW_UNAVAILABLE", "ranking reward window is unavailable")
 )
@@ -168,11 +173,15 @@ type RankingRewardRepository interface {
 	ListExclusions(ctx context.Context, campaignID int64, params pagination.PaginationParams) ([]RankingRewardExcludedUser, *pagination.PaginationResult, error)
 	ListRuns(ctx context.Context, campaignID int64, params pagination.PaginationParams) ([]RankingRewardRun, *pagination.PaginationResult, error)
 	ListAwards(ctx context.Context, runID int64, params pagination.PaginationParams) ([]RankingRewardAward, *pagination.PaginationResult, error)
+	CountRunLotteryChances(ctx context.Context, runID int64) (int, error)
 	CreateRun(ctx context.Context, campaign *RankingRewardCampaign, rewardDate, windowStart, windowEnd time.Time) (*RankingRewardRun, error)
+	GetRunByCampaignDate(ctx context.Context, campaignID int64, rewardDate time.Time) (*RankingRewardRun, error)
+	RestartRun(ctx context.Context, runID int64, windowStart, windowEnd time.Time) (*RankingRewardRun, error)
 	CompleteRun(ctx context.Context, runID int64, awardedCount int, totalActualCost float64, metadata map[string]any) (*RankingRewardRun, error)
 	FailRun(ctx context.Context, runID int64, errMessage string) error
 	FindRankCandidates(ctx context.Context, campaignID int64, windowStart, windowEnd time.Time, limit int, minActualCost float64) ([]RankingRewardCandidate, error)
 	CreateAward(ctx context.Context, award *RankingRewardAward) (*RankingRewardAward, error)
+	GetAwardByRunUser(ctx context.Context, runID int64, userID int64) (*RankingRewardAward, error)
 }
 
 type RankingRewardService struct {
@@ -238,6 +247,21 @@ func (s *RankingRewardService) UpdateCampaign(ctx context.Context, id int64, inp
 		return nil, ErrRankingRewardInvalidPayload
 	}
 	if err := validateUpdateRankingRewardCampaign(input); err != nil {
+		return nil, err
+	}
+	current, err := s.repo.GetCampaign(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	topN := current.TopN
+	chanceCount := current.ChanceCount
+	if input.TopN != nil {
+		topN = *input.TopN
+	}
+	if input.ChanceCount != nil {
+		chanceCount = *input.ChanceCount
+	}
+	if err := current.ValidateRewardVolume(topN, chanceCount); err != nil {
 		return nil, err
 	}
 	return s.repo.UpdateCampaign(ctx, id, input)
@@ -358,7 +382,27 @@ func (s *RankingRewardService) runDueCampaigns() {
 func (s *RankingRewardService) runCampaignWindow(ctx context.Context, campaign *RankingRewardCampaign, rewardDate, windowStart, windowEnd time.Time) (*RankingRewardRunResult, error) {
 	run, err := s.repo.CreateRun(ctx, campaign, rewardDate, windowStart, windowEnd)
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, ErrRankingRewardRunExists) {
+			return nil, err
+		}
+		run, err = s.repo.GetRunByCampaignDate(ctx, campaign.ID, rewardDate)
+		if err != nil {
+			return nil, err
+		}
+		switch run.Status {
+		case RankingRewardRunStatusCompleted, RankingRewardRunStatusRunning:
+			return nil, ErrRankingRewardRunExists
+		case RankingRewardRunStatusFailed:
+		default:
+			return nil, ErrRankingRewardRunExists
+		}
+		if resumeErr := s.verifyFailedRunResume(ctx, run); resumeErr != nil {
+			return nil, resumeErr
+		}
+		run, err = s.repo.RestartRun(ctx, run.ID, windowStart, windowEnd)
+		if err != nil {
+			return nil, err
+		}
 	}
 	candidates, err := s.repo.FindRankCandidates(ctx, campaign.ID, windowStart, windowEnd, campaign.TopN, campaign.MinActualCost)
 	if err != nil {
@@ -376,7 +420,7 @@ func (s *RankingRewardService) runCampaignWindow(ctx context.Context, campaign *
 	awards := make([]RankingRewardAward, 0, len(candidates))
 	totalActualCost := 0.0
 	for _, candidate := range candidates {
-		chances, err := s.lotteryService.GrantChances(ctx, &GrantLotteryChanceInput{
+		grantInput := &GrantLotteryChanceInput{
 			CampaignID: campaign.LotteryCampaignID,
 			UserID:     candidate.UserID,
 			Count:      campaign.ChanceCount,
@@ -388,8 +432,27 @@ func (s *RankingRewardService) runCampaignWindow(ctx context.Context, campaign *
 				"reward_date":                rewardDate.Format("2006-01-02"),
 				"rank":                       candidate.Rank,
 			},
-		})
+		}
+		existing, err := s.repo.GetAwardByRunUser(ctx, run.ID, candidate.UserID)
+		if err != nil && !errors.Is(err, ErrRankingRewardAwardNotFound) {
+			_ = s.repo.FailRun(ctx, run.ID, err.Error())
+			return nil, err
+		}
+		if existing != nil {
+			awards = append(awards, *existing)
+			totalActualCost += existing.ActualCost
+			continue
+		}
+		chances, err := s.lotteryService.GrantChances(ctx, grantInput)
+		if errors.Is(err, ErrLotteryChanceGrantConflict) {
+			chances, err = s.lotteryService.ListChancesBySource(ctx, grantInput)
+		}
 		if err != nil {
+			_ = s.repo.FailRun(ctx, run.ID, err.Error())
+			return nil, err
+		}
+		if len(chances) != campaign.ChanceCount {
+			err := ErrLotteryChanceGrantConflict
 			_ = s.repo.FailRun(ctx, run.ID, err.Error())
 			return nil, err
 		}
@@ -412,18 +475,79 @@ func (s *RankingRewardService) runCampaignWindow(ctx context.Context, campaign *
 				"email": candidate.Email,
 			},
 		})
+		if errors.Is(err, ErrRankingRewardAwardExists) {
+			award, err = s.repo.GetAwardByRunUser(ctx, run.ID, candidate.UserID)
+		}
 		if err != nil {
 			_ = s.repo.FailRun(ctx, run.ID, err.Error())
 			return nil, err
 		}
 		awards = append(awards, *award)
-		totalActualCost += candidate.ActualCost
+		totalActualCost += award.ActualCost
 	}
 	completed, err := s.repo.CompleteRun(ctx, run.ID, len(awards), totalActualCost, map[string]any{"reward_date": rewardDate.Format("2006-01-02")})
 	if err != nil {
 		return nil, err
 	}
 	return &RankingRewardRunResult{Run: completed, Awards: awards, Ranks: candidates}, nil
+}
+
+func (s *RankingRewardService) verifyFailedRunResume(ctx context.Context, run *RankingRewardRun) error {
+	if run == nil {
+		return ErrRankingRewardRunNotFound
+	}
+	awards, err := s.listRunAwards(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	grantedCount, err := s.repo.CountRunLotteryChances(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if len(awards) == 0 {
+		if grantedCount > 0 {
+			return ErrRankingRewardRunExists
+		}
+		return nil
+	}
+	awardChanceCount, ok := sumRankingRewardAwardChanceCount(awards)
+	if !ok || awardChanceCount != grantedCount {
+		return ErrRankingRewardRunExists
+	}
+	return nil
+}
+
+func (s *RankingRewardService) listRunAwards(ctx context.Context, runID int64) ([]RankingRewardAward, error) {
+	awards := make([]RankingRewardAward, 0)
+	for page := 1; ; page++ {
+		items, result, err := s.repo.ListAwards(ctx, runID, pagination.PaginationParams{Page: page, PageSize: 1000})
+		if err != nil {
+			return nil, err
+		}
+		awards = append(awards, items...)
+		if result == nil || int64(len(awards)) >= result.Total || len(items) == 0 {
+			return awards, nil
+		}
+	}
+}
+
+func sumRankingRewardAwardChanceCount(awards []RankingRewardAward) (int, bool) {
+	total := 0
+	for _, award := range awards {
+		if award.ChanceCount <= 0 || len(award.LotteryChanceIDs) != award.ChanceCount {
+			return 0, false
+		}
+		total += award.ChanceCount
+	}
+	return total, true
+}
+
+func sumRankingRewardAwardsActualCost(awards []RankingRewardAward) float64 {
+	total := 0.0
+	for _, award := range awards {
+		total += award.ActualCost
+	}
+	return total
 }
 
 func (c *RankingRewardCampaign) IsActiveAt(at time.Time) bool {
@@ -460,6 +584,9 @@ func validateCreateRankingRewardCampaign(input *CreateRankingRewardCampaignInput
 	if input.Name == "" || input.LotteryCampaignID <= 0 || input.TopN <= 0 || input.ChanceCount <= 0 || input.MinActualCost < 0 {
 		return ErrRankingRewardInvalidPayload
 	}
+	if err := validateRankingRewardVolume(input.TopN, input.ChanceCount); err != nil {
+		return err
+	}
 	if input.Status == "" {
 		input.Status = RankingRewardCampaignStatusDraft
 	}
@@ -485,6 +612,23 @@ func validateCreateRankingRewardCampaign(input *CreateRankingRewardCampaignInput
 		return infraerrors.BadRequest("RANKING_REWARD_TIMEZONE_INVALID", "invalid ranking reward timezone")
 	}
 	input.Timezone = strings.TrimSpace(input.Timezone)
+	return nil
+}
+
+func (c *RankingRewardCampaign) ValidateRewardVolume(topN, chanceCount int) error {
+	return validateRankingRewardVolume(topN, chanceCount)
+}
+
+func validateRankingRewardVolume(topN, chanceCount int) error {
+	if topN <= 0 || chanceCount <= 0 {
+		return ErrRankingRewardInvalidPayload
+	}
+	if chanceCount > RankingRewardMaxChanceCount {
+		return infraerrors.BadRequest("RANKING_REWARD_CHANCE_COUNT_TOO_LARGE", "ranking reward chance_count cannot exceed 1000")
+	}
+	if topN*chanceCount > RankingRewardMaxTotalChances {
+		return infraerrors.BadRequest("RANKING_REWARD_TOTAL_CHANCES_TOO_LARGE", "ranking reward top_n multiplied by chance_count cannot exceed 10000")
+	}
 	return nil
 }
 

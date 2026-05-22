@@ -277,7 +277,11 @@ func (h *RankingRewardHandler) RunCampaign(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	executeAdminIdempotentJSON(c, "admin.ranking_reward.campaigns.run", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	idempotencyPayload := struct {
+		CampaignID int64                           `json:"campaign_id"`
+		Request    RunRankingRewardCampaignRequest `json:"request"`
+	}{CampaignID: campaignID, Request: req}
+	executeAdminIdempotentJSON(c, "admin.ranking_reward.campaigns.run", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		return h.rankingRewardService.RunCampaign(ctx, &service.RankingRewardRunInput{
 			CampaignID: campaignID,
 			RewardDate: req.RewardDate,

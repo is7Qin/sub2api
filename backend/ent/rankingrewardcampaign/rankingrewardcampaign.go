@@ -122,8 +122,12 @@ var (
 	StatusValidator func(string) error
 	// DefaultTopN holds the default value on creation for the "top_n" field.
 	DefaultTopN int
+	// TopNValidator is a validator for the "top_n" field. It is called by the builders before save.
+	TopNValidator func(int) error
 	// DefaultChanceCount holds the default value on creation for the "chance_count" field.
 	DefaultChanceCount int
+	// ChanceCountValidator is a validator for the "chance_count" field. It is called by the builders before save.
+	ChanceCountValidator func(int) error
 	// DefaultMinActualCost holds the default value on creation for the "min_actual_cost" field.
 	DefaultMinActualCost float64
 	// DefaultStartsAt holds the default value on creation for the "starts_at" field.

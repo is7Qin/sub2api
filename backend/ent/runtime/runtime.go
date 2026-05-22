@@ -1600,10 +1600,28 @@ func init() {
 	rankingrewardcampaignDescTopN := rankingrewardcampaignFields[4].Descriptor()
 	// rankingrewardcampaign.DefaultTopN holds the default value on creation for the top_n field.
 	rankingrewardcampaign.DefaultTopN = rankingrewardcampaignDescTopN.Default.(int)
+	// rankingrewardcampaign.TopNValidator is a validator for the "top_n" field. It is called by the builders before save.
+	rankingrewardcampaign.TopNValidator = rankingrewardcampaignDescTopN.Validators[0].(func(int) error)
 	// rankingrewardcampaignDescChanceCount is the schema descriptor for chance_count field.
 	rankingrewardcampaignDescChanceCount := rankingrewardcampaignFields[5].Descriptor()
 	// rankingrewardcampaign.DefaultChanceCount holds the default value on creation for the chance_count field.
 	rankingrewardcampaign.DefaultChanceCount = rankingrewardcampaignDescChanceCount.Default.(int)
+	// rankingrewardcampaign.ChanceCountValidator is a validator for the "chance_count" field. It is called by the builders before save.
+	rankingrewardcampaign.ChanceCountValidator = func() func(int) error {
+		validators := rankingrewardcampaignDescChanceCount.Validators
+		fns := [...]func(int) error{
+			validators[0].(func(int) error),
+			validators[1].(func(int) error),
+		}
+		return func(chance_count int) error {
+			for _, fn := range fns {
+				if err := fn(chance_count); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
 	// rankingrewardcampaignDescMinActualCost is the schema descriptor for min_actual_cost field.
 	rankingrewardcampaignDescMinActualCost := rankingrewardcampaignFields[6].Descriptor()
 	// rankingrewardcampaign.DefaultMinActualCost holds the default value on creation for the min_actual_cost field.
@@ -2320,6 +2338,10 @@ func init() {
 	userattributevalue.DefaultValue = userattributevalueDescValue.Default.(string)
 	userquotagrantFields := schema.UserQuotaGrant{}.Fields()
 	_ = userquotagrantFields
+	// userquotagrantDescAmountUsd is the schema descriptor for amount_usd field.
+	userquotagrantDescAmountUsd := userquotagrantFields[1].Descriptor()
+	// userquotagrant.AmountUsdValidator is a validator for the "amount_usd" field. It is called by the builders before save.
+	userquotagrant.AmountUsdValidator = userquotagrantDescAmountUsd.Validators[0].(func(float64) error)
 	// userquotagrantDescUsedAmountUsd is the schema descriptor for used_amount_usd field.
 	userquotagrantDescUsedAmountUsd := userquotagrantFields[2].Descriptor()
 	// userquotagrant.DefaultUsedAmountUsd holds the default value on creation for the used_amount_usd field.

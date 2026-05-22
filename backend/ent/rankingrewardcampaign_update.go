@@ -409,6 +409,16 @@ func (_u *RankingRewardCampaignUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.TopN(); ok {
+		if err := rankingrewardcampaign.TopNValidator(v); err != nil {
+			return &ValidationError{Name: "top_n", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.top_n": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ChanceCount(); ok {
+		if err := rankingrewardcampaign.ChanceCountValidator(v); err != nil {
+			return &ValidationError{Name: "chance_count", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.chance_count": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Timezone(); ok {
 		if err := rankingrewardcampaign.TimezoneValidator(v); err != nil {
 			return &ValidationError{Name: "timezone", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.timezone": %w`, err)}
@@ -1058,6 +1068,16 @@ func (_u *RankingRewardCampaignUpdateOne) check() error {
 	if v, ok := _u.mutation.Status(); ok {
 		if err := rankingrewardcampaign.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.status": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.TopN(); ok {
+		if err := rankingrewardcampaign.TopNValidator(v); err != nil {
+			return &ValidationError{Name: "top_n", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.top_n": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ChanceCount(); ok {
+		if err := rankingrewardcampaign.ChanceCountValidator(v); err != nil {
+			return &ValidationError{Name: "chance_count", err: fmt.Errorf(`ent: validator failed for field "RankingRewardCampaign.chance_count": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.Timezone(); ok {

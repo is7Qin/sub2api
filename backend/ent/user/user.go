@@ -67,6 +67,10 @@ const (
 	EdgeRedeemCodes = "redeem_codes"
 	// EdgeQuotaGrants holds the string denoting the quota_grants edge name in mutations.
 	EdgeQuotaGrants = "quota_grants"
+	// EdgeLotteryChances holds the string denoting the lottery_chances edge name in mutations.
+	EdgeLotteryChances = "lottery_chances"
+	// EdgeLotteryDraws holds the string denoting the lottery_draws edge name in mutations.
+	EdgeLotteryDraws = "lottery_draws"
 	// EdgeSubscriptions holds the string denoting the subscriptions edge name in mutations.
 	EdgeSubscriptions = "subscriptions"
 	// EdgeAssignedSubscriptions holds the string denoting the assigned_subscriptions edge name in mutations.
@@ -112,6 +116,20 @@ const (
 	QuotaGrantsInverseTable = "user_quota_grants"
 	// QuotaGrantsColumn is the table column denoting the quota_grants relation/edge.
 	QuotaGrantsColumn = "user_id"
+	// LotteryChancesTable is the table that holds the lottery_chances relation/edge.
+	LotteryChancesTable = "lottery_chances"
+	// LotteryChancesInverseTable is the table name for the LotteryChance entity.
+	// It exists in this package in order to avoid circular dependency with the "lotterychance" package.
+	LotteryChancesInverseTable = "lottery_chances"
+	// LotteryChancesColumn is the table column denoting the lottery_chances relation/edge.
+	LotteryChancesColumn = "user_id"
+	// LotteryDrawsTable is the table that holds the lottery_draws relation/edge.
+	LotteryDrawsTable = "lottery_draws"
+	// LotteryDrawsInverseTable is the table name for the LotteryDraw entity.
+	// It exists in this package in order to avoid circular dependency with the "lotterydraw" package.
+	LotteryDrawsInverseTable = "lottery_draws"
+	// LotteryDrawsColumn is the table column denoting the lottery_draws relation/edge.
+	LotteryDrawsColumn = "user_id"
 	// SubscriptionsTable is the table that holds the subscriptions relation/edge.
 	SubscriptionsTable = "user_subscriptions"
 	// SubscriptionsInverseTable is the table name for the UserSubscription entity.
@@ -452,6 +470,34 @@ func ByQuotaGrants(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByLotteryChancesCount orders the results by lottery_chances count.
+func ByLotteryChancesCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newLotteryChancesStep(), opts...)
+	}
+}
+
+// ByLotteryChances orders the results by lottery_chances terms.
+func ByLotteryChances(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newLotteryChancesStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByLotteryDrawsCount orders the results by lottery_draws count.
+func ByLotteryDrawsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newLotteryDrawsStep(), opts...)
+	}
+}
+
+// ByLotteryDraws orders the results by lottery_draws terms.
+func ByLotteryDraws(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newLotteryDrawsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // BySubscriptionsCount orders the results by subscriptions count.
 func BySubscriptionsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -624,6 +670,20 @@ func newQuotaGrantsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(QuotaGrantsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, QuotaGrantsTable, QuotaGrantsColumn),
+	)
+}
+func newLotteryChancesStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(LotteryChancesInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, LotteryChancesTable, LotteryChancesColumn),
+	)
+}
+func newLotteryDrawsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(LotteryDrawsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, LotteryDrawsTable, LotteryDrawsColumn),
 	)
 }
 func newSubscriptionsStep() *sqlgraph.Step {

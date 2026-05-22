@@ -42,6 +42,8 @@ const (
 	EdgeUser = "user"
 	// EdgeGroup holds the string denoting the group edge name in mutations.
 	EdgeGroup = "group"
+	// EdgeLotteryDraws holds the string denoting the lottery_draws edge name in mutations.
+	EdgeLotteryDraws = "lottery_draws"
 	// Table holds the table name of the redeemcode in the database.
 	Table = "redeem_codes"
 	// UserTable is the table that holds the user relation/edge.
@@ -58,6 +60,13 @@ const (
 	GroupInverseTable = "groups"
 	// GroupColumn is the table column denoting the group relation/edge.
 	GroupColumn = "group_id"
+	// LotteryDrawsTable is the table that holds the lottery_draws relation/edge.
+	LotteryDrawsTable = "lottery_draws"
+	// LotteryDrawsInverseTable is the table name for the LotteryDraw entity.
+	// It exists in this package in order to avoid circular dependency with the "lotterydraw" package.
+	LotteryDrawsInverseTable = "lottery_draws"
+	// LotteryDrawsColumn is the table column denoting the lottery_draws relation/edge.
+	LotteryDrawsColumn = "redeem_code_id"
 )
 
 // Columns holds all SQL columns for redeemcode fields.
@@ -182,6 +191,20 @@ func ByGroupField(field string, opts ...sql.OrderTermOption) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newGroupStep(), sql.OrderByField(field, opts...))
 	}
 }
+
+// ByLotteryDrawsCount orders the results by lottery_draws count.
+func ByLotteryDrawsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newLotteryDrawsStep(), opts...)
+	}
+}
+
+// ByLotteryDraws orders the results by lottery_draws terms.
+func ByLotteryDraws(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newLotteryDrawsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newUserStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -194,5 +217,12 @@ func newGroupStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(GroupInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2O, true, GroupTable, GroupColumn),
+	)
+}
+func newLotteryDrawsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(LotteryDrawsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, LotteryDrawsTable, LotteryDrawsColumn),
 	)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
@@ -190,10 +191,27 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 	if s == nil || s.repo == nil || s.subscriptionSvc == nil || input == nil || input.OrderID <= 0 || input.UserID <= 0 || input.RechargeAmount <= 0 {
 		return nil, nil
 	}
+	if dbent.TxFromContext(ctx) == nil && s.subscriptionSvc.entClient != nil {
+		tx, err := s.subscriptionSvc.entClient.Tx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		records, err := s.ApplyForRecharge(dbent.NewTxContext(ctx, tx), input)
+		if err != nil {
+			return records, err
+		}
+		if err := tx.Commit(); err != nil {
+			return records, err
+		}
+		s.invalidateRechargeResetRecordCaches(ctx, records)
+		return records, nil
+	}
 	at := input.OccurredAt
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
+	at = at.UTC()
 	campaigns, err := s.repo.ListActiveCampaigns(ctx, at)
 	if err != nil {
 		return nil, err
@@ -245,7 +263,7 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 				}
 				return records, err
 			}
-			if err := s.subscriptionSvc.AdminResetQuotaBySubscription(ctx, &sub, resetDaily, resetWeekly, resetMonthly); err != nil {
+			if err := s.subscriptionSvc.AdminResetQuotaBySubscriptionAt(ctx, &sub, at, resetDaily, resetWeekly, resetMonthly); err != nil {
 				return records, err
 			}
 			if record != nil {
@@ -254,6 +272,18 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 		}
 	}
 	return records, nil
+}
+
+func (s *RechargeResetCampaignService) invalidateRechargeResetRecordCaches(ctx context.Context, records []RechargeResetRecord) {
+	seen := make(map[[2]int64]struct{}, len(records))
+	for _, record := range records {
+		key := [2]int64{record.UserID, record.GroupID}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		s.subscriptionSvc.InvalidateSubscriptionCaches(ctx, record.UserID, record.GroupID)
+	}
 }
 
 func hasAnyRechargeResetWindow(daily, weekly, monthly bool) bool {

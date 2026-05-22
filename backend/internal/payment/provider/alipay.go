@@ -316,13 +316,18 @@ func (a *Alipay) VerifyNotification(ctx context.Context, rawBody string, _ map[s
 		metadata["app_id"] = appID
 	}
 
+	occurredAt, _ := parseProviderTime(values.Get("gmt_payment"))
+	if occurredAt.IsZero() {
+		occurredAt, _ = parseProviderTime(values.Get("notify_time"))
+	}
 	return &payment.PaymentNotification{
-		TradeNo:  notification.TradeNo,
-		OrderID:  notification.OutTradeNo,
-		Amount:   amount,
-		Status:   status,
-		RawData:  rawBody,
-		Metadata: metadata,
+		TradeNo:    notification.TradeNo,
+		OrderID:    notification.OutTradeNo,
+		Amount:     amount,
+		Status:     status,
+		OccurredAt: occurredAt,
+		RawData:    rawBody,
+		Metadata:   metadata,
 	}, nil
 }
 

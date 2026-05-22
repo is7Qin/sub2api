@@ -39,6 +39,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
 	"github.com/Wei-Shaw/sub2api/ent/userattributedefinition"
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
+	"github.com/Wei-Shaw/sub2api/ent/userquotagrant"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
@@ -2001,6 +2002,44 @@ func init() {
 	userattributevalueDescValue := userattributevalueFields[2].Descriptor()
 	// userattributevalue.DefaultValue holds the default value on creation for the value field.
 	userattributevalue.DefaultValue = userattributevalueDescValue.Default.(string)
+	userquotagrantFields := schema.UserQuotaGrant{}.Fields()
+	_ = userquotagrantFields
+	// userquotagrantDescUsedAmountUsd is the schema descriptor for used_amount_usd field.
+	userquotagrantDescUsedAmountUsd := userquotagrantFields[2].Descriptor()
+	// userquotagrant.DefaultUsedAmountUsd holds the default value on creation for the used_amount_usd field.
+	userquotagrant.DefaultUsedAmountUsd = userquotagrantDescUsedAmountUsd.Default.(float64)
+	// userquotagrantDescStartsAt is the schema descriptor for starts_at field.
+	userquotagrantDescStartsAt := userquotagrantFields[3].Descriptor()
+	// userquotagrant.DefaultStartsAt holds the default value on creation for the starts_at field.
+	userquotagrant.DefaultStartsAt = userquotagrantDescStartsAt.Default.(func() time.Time)
+	// userquotagrantDescSource is the schema descriptor for source field.
+	userquotagrantDescSource := userquotagrantFields[5].Descriptor()
+	// userquotagrant.DefaultSource holds the default value on creation for the source field.
+	userquotagrant.DefaultSource = userquotagrantDescSource.Default.(string)
+	// userquotagrant.SourceValidator is a validator for the "source" field. It is called by the builders before save.
+	userquotagrant.SourceValidator = userquotagrantDescSource.Validators[0].(func(string) error)
+	// userquotagrantDescSourceID is the schema descriptor for source_id field.
+	userquotagrantDescSourceID := userquotagrantFields[6].Descriptor()
+	// userquotagrant.DefaultSourceID holds the default value on creation for the source_id field.
+	userquotagrant.DefaultSourceID = userquotagrantDescSourceID.Default.(string)
+	// userquotagrant.SourceIDValidator is a validator for the "source_id" field. It is called by the builders before save.
+	userquotagrant.SourceIDValidator = userquotagrantDescSourceID.Validators[0].(func(string) error)
+	// userquotagrantDescStatus is the schema descriptor for status field.
+	userquotagrantDescStatus := userquotagrantFields[7].Descriptor()
+	// userquotagrant.DefaultStatus holds the default value on creation for the status field.
+	userquotagrant.DefaultStatus = userquotagrantDescStatus.Default.(string)
+	// userquotagrant.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	userquotagrant.StatusValidator = userquotagrantDescStatus.Validators[0].(func(string) error)
+	// userquotagrantDescCreatedAt is the schema descriptor for created_at field.
+	userquotagrantDescCreatedAt := userquotagrantFields[9].Descriptor()
+	// userquotagrant.DefaultCreatedAt holds the default value on creation for the created_at field.
+	userquotagrant.DefaultCreatedAt = userquotagrantDescCreatedAt.Default.(func() time.Time)
+	// userquotagrantDescUpdatedAt is the schema descriptor for updated_at field.
+	userquotagrantDescUpdatedAt := userquotagrantFields[10].Descriptor()
+	// userquotagrant.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	userquotagrant.DefaultUpdatedAt = userquotagrantDescUpdatedAt.Default.(func() time.Time)
+	// userquotagrant.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	userquotagrant.UpdateDefaultUpdatedAt = userquotagrantDescUpdatedAt.UpdateDefault.(func() time.Time)
 	usersubscriptionMixin := schema.UserSubscription{}.Mixin()
 	usersubscriptionMixinHooks1 := usersubscriptionMixin[1].Hooks()
 	usersubscription.Hooks[0] = usersubscriptionMixinHooks1[0]

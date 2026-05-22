@@ -106,18 +106,42 @@ func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *s
 }
 
 func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand, result *service.UsageBillingApplyResult) error {
-	if cmd.SubscriptionCost > 0 && cmd.SubscriptionID != nil {
-		if err := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, cmd.SubscriptionCost); err != nil {
+	subscriptionCost := cmd.SubscriptionCost
+	balanceCost := cmd.BalanceCost
+	quotaTargetCost := subscriptionCost + balanceCost
+	if quotaTargetCost > 0 {
+		applied, err := consumeUsageBillingTimedQuota(ctx, tx, cmd.UserID, quotaTargetCost)
+		if err != nil {
 			return err
+		}
+		result.TimedQuotaCostApplied = applied
+		if applied > 0 {
+			remainingApplied := applied
+			if subscriptionCost > 0 {
+				deduct := minUsageBillingCost(subscriptionCost, remainingApplied)
+				subscriptionCost -= deduct
+				remainingApplied -= deduct
+			}
+			if balanceCost > 0 && remainingApplied > 0 {
+				balanceCost -= minUsageBillingCost(balanceCost, remainingApplied)
+			}
 		}
 	}
 
-	if cmd.BalanceCost > 0 {
-		newBalance, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost)
+	if subscriptionCost > 0 && cmd.SubscriptionID != nil {
+		if err := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, subscriptionCost); err != nil {
+			return err
+		}
+		result.SubscriptionCostApplied = subscriptionCost
+	}
+
+	if balanceCost > 0 {
+		newBalance, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, balanceCost)
 		if err != nil {
 			return err
 		}
 		result.NewBalance = &newBalance
+		result.BalanceCostApplied = balanceCost
 	}
 
 	if cmd.APIKeyQuotaCost > 0 {
@@ -143,6 +167,94 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	return nil
+}
+
+func consumeUsageBillingTimedQuota(ctx context.Context, tx *sql.Tx, userID int64, amount float64) (float64, error) {
+	if userID <= 0 || amount <= 0 {
+		return 0, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, amount_usd::double precision, used_amount_usd::double precision
+		FROM user_quota_grants
+		WHERE user_id = $1
+			AND status = $2
+			AND starts_at <= NOW()
+			AND expires_at > NOW()
+			AND used_amount_usd < amount_usd
+		ORDER BY expires_at ASC, id ASC
+		FOR UPDATE
+	`, userID, service.TimedQuotaGrantStatusActive)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type grantRow struct {
+		id     int64
+		amount float64
+		used   float64
+	}
+	grants := make([]grantRow, 0)
+	remaining := amount
+	for rows.Next() {
+		var grant grantRow
+		if err := rows.Scan(&grant.id, &grant.amount, &grant.used); err != nil {
+			return 0, err
+		}
+		available := grant.amount - grant.used
+		if available <= 0 {
+			continue
+		}
+		grants = append(grants, grant)
+		remaining -= minUsageBillingCost(remaining, available)
+		if remaining <= 0 {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+
+	remaining = amount
+	applied := 0.0
+	for _, grant := range grants {
+		if remaining <= 0 {
+			break
+		}
+		available := grant.amount - grant.used
+		if available <= 0 {
+			continue
+		}
+		deduct := minUsageBillingCost(remaining, available)
+		remaining -= deduct
+		applied += deduct
+		status := service.TimedQuotaGrantStatusActive
+		if grant.used+deduct >= grant.amount {
+			status = service.TimedQuotaGrantStatusExhausted
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE user_quota_grants
+			SET used_amount_usd = used_amount_usd + $1,
+				status = $2,
+				updated_at = NOW()
+			WHERE id = $3
+		`, deduct, status, grant.id); err != nil {
+			return 0, err
+		}
+	}
+
+	return applied, nil
+}
+
+func minUsageBillingCost(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {

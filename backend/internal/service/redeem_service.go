@@ -3,9 +3,13 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +33,10 @@ const (
 	redeemMaxErrorsPerHour  = 20
 	redeemRateLimitDuration = time.Hour
 	redeemLockDuration      = 10 * time.Second // 锁超时时间，防止死锁
+
+	redeemMetadataKeyMinValue     = "min_value"
+	redeemMetadataKeyMaxValue     = "max_value"
+	redeemMetadataKeyValidityDays = "validity_days"
 )
 
 type ctxKeySkipRedeemAffiliate struct{}
@@ -195,8 +203,8 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 		return nil, errors.New("count must be greater than 0")
 	}
 
-	// 邀请码类型不需要数值，其他类型需要非零值（支持负数用于退款）
-	if req.Type != RedeemTypeInvitation && req.Value == 0 {
+	// 邀请码和随机限时额度类型不需要固定数值，其他类型需要非零值（支持负数用于退款）
+	if req.Type != RedeemTypeInvitation && req.Type != RedeemTypeRandomTimedQuota && req.Value == 0 {
 		return nil, errors.New("value must not be zero")
 	}
 
@@ -209,9 +217,9 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 		codeType = RedeemTypeBalance
 	}
 
-	// 邀请码类型的 value 设为 0
+	// 邀请码和随机限时额度类型的 value 设为 0
 	value := req.Value
-	if codeType == RedeemTypeInvitation {
+	if codeType == RedeemTypeInvitation || codeType == RedeemTypeRandomTimedQuota {
 		value = 0
 	}
 
@@ -252,8 +260,8 @@ func (s *RedeemService) CreateCode(ctx context.Context, code *RedeemCode) error 
 	if code.Type == "" {
 		code.Type = RedeemTypeBalance
 	}
-	if code.Type != RedeemTypeInvitation && code.Value == 0 {
-		return errors.New("value must not be zero")
+	if err := validateRedeemCodePayload(code); err != nil {
+		return err
 	}
 	if code.Status == "" {
 		code.Status = StatusUnused
@@ -266,6 +274,50 @@ func (s *RedeemService) CreateCode(ctx context.Context, code *RedeemCode) error 
 		return fmt.Errorf("create redeem code: %w", err)
 	}
 	return nil
+}
+
+func validateRedeemCodePayload(code *RedeemCode) error {
+	if code == nil {
+		return errors.New("redeem code is required")
+	}
+	switch code.Type {
+	case RedeemTypeInvitation:
+		return nil
+	case RedeemTypeSubscription:
+		if code.GroupID == nil {
+			return infraerrors.BadRequest("REDEEM_CODE_INVALID", "invalid subscription redeem code: missing group_id")
+		}
+		return nil
+	case RedeemTypeTimedQuota:
+		if code.Value <= 0 {
+			return infraerrors.BadRequest("REDEEM_CODE_INVALID", "timed quota value must be positive")
+		}
+		if redeemTimedQuotaValidityDays(code) <= 0 {
+			return infraerrors.BadRequest("REDEEM_CODE_INVALID", "timed quota validity_days must be positive")
+		}
+		return nil
+	case RedeemTypeRandomTimedQuota:
+		minValue, err := redeemMetadataFloat(code.Metadata, redeemMetadataKeyMinValue)
+		if err != nil {
+			return err
+		}
+		maxValue, err := redeemMetadataFloat(code.Metadata, redeemMetadataKeyMaxValue)
+		if err != nil {
+			return err
+		}
+		if minValue <= 0 || maxValue < minValue {
+			return infraerrors.BadRequest("REDEEM_CODE_INVALID", "random timed quota requires positive min_value and max_value >= min_value")
+		}
+		if redeemTimedQuotaValidityDays(code) <= 0 {
+			return infraerrors.BadRequest("REDEEM_CODE_INVALID", "random timed quota validity_days must be positive")
+		}
+		return nil
+	default:
+		if code.Value == 0 {
+			return errors.New("value must not be zero")
+		}
+		return nil
+	}
 }
 
 func (s *RedeemService) BatchUpdate(ctx context.Context, input *RedeemCodeBatchUpdateInput) (*RedeemCodeBatchUpdateResult, error) {
@@ -409,8 +461,8 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	}
 
 	// 验证兑换码类型的前置条件
-	if redeemCode.Type == RedeemTypeSubscription && redeemCode.GroupID == nil {
-		return nil, infraerrors.BadRequest("REDEEM_CODE_INVALID", "invalid subscription redeem code: missing group_id")
+	if err := validateRedeemCodePayload(redeemCode); err != nil {
+		return nil, err
 	}
 
 	// 获取用户信息
@@ -460,6 +512,32 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 			return nil, fmt.Errorf("update user concurrency: %w", err)
 		}
 
+	case RedeemTypeTimedQuota:
+		if err := s.grantTimedQuotaForRedeem(txCtx, userID, redeemCode, redeemCode.Value); err != nil {
+			return nil, fmt.Errorf("grant timed quota: %w", err)
+		}
+
+	case RedeemTypeRandomTimedQuota:
+		amount, err := redeemRandomTimedQuotaAmount(redeemCode.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		redeemCode.Value = amount
+		if redeemCode.Metadata == nil {
+			redeemCode.Metadata = map[string]any{}
+		}
+		redeemCode.Metadata["granted_value"] = amount
+		usedAt := time.Now().UTC()
+		redeemCode.Status = StatusUsed
+		redeemCode.UsedBy = &userID
+		redeemCode.UsedAt = &usedAt
+		if err := s.persistRandomTimedQuotaResult(txCtx, redeemCode); err != nil {
+			return nil, fmt.Errorf("update random timed quota redeem code: %w", err)
+		}
+		if err := s.grantTimedQuotaForRedeem(txCtx, userID, redeemCode, amount); err != nil {
+			return nil, fmt.Errorf("grant random timed quota: %w", err)
+		}
+
 	case RedeemTypeSubscription:
 		validityDays := redeemCode.ValidityDays
 		if validityDays < 0 {
@@ -506,10 +584,142 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	return redeemCode, nil
 }
 
+func (s *RedeemService) persistRandomTimedQuotaResult(ctx context.Context, redeemCode *RedeemCode) error {
+	return s.redeemRepo.Update(ctx, redeemCode)
+}
+
+func (s *RedeemService) grantTimedQuotaForRedeem(ctx context.Context, userID int64, redeemCode *RedeemCode, amount float64) error {
+	if s == nil || s.entClient == nil {
+		return infraerrors.ServiceUnavailable("TIMED_QUOTA_REPO_UNAVAILABLE", "timed quota repository not available")
+	}
+	client := s.entClient
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		client = tx.Client()
+	}
+	now := time.Now().UTC()
+	validityDays := redeemTimedQuotaValidityDays(redeemCode)
+	if validityDays <= 0 {
+		return infraerrors.BadRequest("REDEEM_CODE_INVALID", "timed quota validity_days must be positive")
+	}
+	metadata := map[string]any{
+		"redeem_code": redeemCode.Code,
+		"redeem_type": redeemCode.Type,
+	}
+	if redeemCode.Metadata != nil {
+		for k, v := range redeemCode.Metadata {
+			metadata[k] = v
+		}
+	}
+	_, err := client.UserQuotaGrant.Create().
+		SetUserID(userID).
+		SetAmountUsd(amount).
+		SetUsedAmountUsd(0).
+		SetStartsAt(now).
+		SetExpiresAt(now.AddDate(0, 0, validityDays)).
+		SetSource(TimedQuotaGrantSourceRedeemCode).
+		SetSourceID(redeemCode.Code).
+		SetStatus(TimedQuotaGrantStatusActive).
+		SetMetadata(metadata).
+		Save(ctx)
+	return err
+}
+
+func redeemTimedQuotaValidityDays(code *RedeemCode) int {
+	if code == nil {
+		return 0
+	}
+	if code.ValidityDays > 0 {
+		return code.ValidityDays
+	}
+	if v, ok := code.Metadata[redeemMetadataKeyValidityDays]; ok {
+		if days := redeemMetadataIntValue(v); days > 0 {
+			return days
+		}
+	}
+	return 0
+}
+
+func redeemMetadataFloat(metadata map[string]any, key string) (float64, error) {
+	v, ok := metadata[key]
+	if !ok {
+		return 0, infraerrors.BadRequest("REDEEM_CODE_INVALID", fmt.Sprintf("%s is required", key))
+	}
+	value, ok := redeemMetadataFloatValue(v)
+	if !ok {
+		return 0, infraerrors.BadRequest("REDEEM_CODE_INVALID", fmt.Sprintf("%s must be numeric", key))
+	}
+	return value, nil
+}
+
+func redeemMetadataFloatValue(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	case json.Number:
+		f, err := strconv.ParseFloat(string(t), 64)
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func redeemMetadataIntValue(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case float32:
+		return int(t)
+	case json.Number:
+		i, err := strconv.Atoi(string(t))
+		if err == nil {
+			return i
+		}
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(t))
+		if err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+func redeemRandomTimedQuotaAmount(metadata map[string]any) (float64, error) {
+	minValue, err := redeemMetadataFloat(metadata, redeemMetadataKeyMinValue)
+	if err != nil {
+		return 0, err
+	}
+	maxValue, err := redeemMetadataFloat(metadata, redeemMetadataKeyMaxValue)
+	if err != nil {
+		return 0, err
+	}
+	if maxValue == minValue {
+		return minValue, nil
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	ratio := float64(binary.BigEndian.Uint64(b[:])>>11) / float64(uint64(1)<<53)
+	return math.Round((minValue+ratio*(maxValue-minValue))*1e8) / 1e8, nil
+}
+
 // invalidateRedeemCaches 失效兑换相关的缓存
 func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64, redeemCode *RedeemCode) {
 	switch redeemCode.Type {
-	case RedeemTypeBalance:
+	case RedeemTypeBalance, RedeemTypeTimedQuota, RedeemTypeRandomTimedQuota:
 		if s.authCacheInvalidator != nil {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 		}

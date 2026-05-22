@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -640,6 +641,21 @@ func (_u *UserUpdate) AddPaymentOrders(v ...*PaymentOrder) *UserUpdate {
 	return _u.AddPaymentOrderIDs(ids...)
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_u *UserUpdate) AddRechargeResetRecordIDs(ids ...int64) *UserUpdate {
+	_u.mutation.AddRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *UserUpdate) AddRechargeResetRecords(v ...*RechargeResetRecord) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRecordIDs(ids...)
+}
+
 // AddAuthIdentityIDs adds the "auth_identities" edge to the AuthIdentity entity by IDs.
 func (_u *UserUpdate) AddAuthIdentityIDs(ids ...int64) *UserUpdate {
 	_u.mutation.AddAuthIdentityIDs(ids...)
@@ -988,6 +1004,27 @@ func (_u *UserUpdate) RemovePaymentOrders(v ...*PaymentOrder) *UserUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemovePaymentOrderIDs(ids...)
+}
+
+// ClearRechargeResetRecords clears all "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *UserUpdate) ClearRechargeResetRecords() *UserUpdate {
+	_u.mutation.ClearRechargeResetRecords()
+	return _u
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to RechargeResetRecord entities by IDs.
+func (_u *UserUpdate) RemoveRechargeResetRecordIDs(ids ...int64) *UserUpdate {
+	_u.mutation.RemoveRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRecords removes "recharge_reset_records" edges to RechargeResetRecord entities.
+func (_u *UserUpdate) RemoveRechargeResetRecords(v ...*RechargeResetRecord) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRecordIDs(ids...)
 }
 
 // ClearAuthIdentities clears all "auth_identities" edges to the AuthIdentity entity.
@@ -1907,6 +1944,51 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
+	if _u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RechargeResetRecordsTable,
+			Columns: []string{user.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRecordsIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RechargeResetRecordsTable,
+			Columns: []string{user.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RechargeResetRecordsTable,
+			Columns: []string{user.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
 	if _u.mutation.AuthIdentitiesCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.O2M,
@@ -2613,6 +2695,21 @@ func (_u *UserUpdateOne) AddPaymentOrders(v ...*PaymentOrder) *UserUpdateOne {
 	return _u.AddPaymentOrderIDs(ids...)
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_u *UserUpdateOne) AddRechargeResetRecordIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.AddRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *UserUpdateOne) AddRechargeResetRecords(v ...*RechargeResetRecord) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRecordIDs(ids...)
+}
+
 // AddAuthIdentityIDs adds the "auth_identities" edge to the AuthIdentity entity by IDs.
 func (_u *UserUpdateOne) AddAuthIdentityIDs(ids ...int64) *UserUpdateOne {
 	_u.mutation.AddAuthIdentityIDs(ids...)
@@ -2961,6 +3058,27 @@ func (_u *UserUpdateOne) RemovePaymentOrders(v ...*PaymentOrder) *UserUpdateOne 
 		ids[i] = v[i].ID
 	}
 	return _u.RemovePaymentOrderIDs(ids...)
+}
+
+// ClearRechargeResetRecords clears all "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *UserUpdateOne) ClearRechargeResetRecords() *UserUpdateOne {
+	_u.mutation.ClearRechargeResetRecords()
+	return _u
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to RechargeResetRecord entities by IDs.
+func (_u *UserUpdateOne) RemoveRechargeResetRecordIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.RemoveRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRecords removes "recharge_reset_records" edges to RechargeResetRecord entities.
+func (_u *UserUpdateOne) RemoveRechargeResetRecords(v ...*RechargeResetRecord) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRecordIDs(ids...)
 }
 
 // ClearAuthIdentities clears all "auth_identities" edges to the AuthIdentity entity.
@@ -3903,6 +4021,51 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RechargeResetRecordsTable,
+			Columns: []string{user.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRecordsIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RechargeResetRecordsTable,
+			Columns: []string{user.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RechargeResetRecordsTable,
+			Columns: []string{user.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

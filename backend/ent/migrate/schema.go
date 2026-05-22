@@ -1491,6 +1491,155 @@ var (
 			},
 		},
 	}
+	// RechargeResetCampaignsColumns holds the columns for the "recharge_reset_campaigns" table.
+	RechargeResetCampaignsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "description", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "status", Type: field.TypeString, Size: 20, Default: "draft"},
+		{Name: "starts_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "ends_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "reset_daily", Type: field.TypeBool, Default: true},
+		{Name: "reset_weekly", Type: field.TypeBool, Default: true},
+		{Name: "reset_monthly", Type: field.TypeBool, Default: true},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+	}
+	// RechargeResetCampaignsTable holds the schema information for the "recharge_reset_campaigns" table.
+	RechargeResetCampaignsTable = &schema.Table{
+		Name:       "recharge_reset_campaigns",
+		Columns:    RechargeResetCampaignsColumns,
+		PrimaryKey: []*schema.Column{RechargeResetCampaignsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rechargeresetcampaign_status_starts_at",
+				Unique:  false,
+				Columns: []*schema.Column{RechargeResetCampaignsColumns[3], RechargeResetCampaignsColumns[4]},
+			},
+		},
+	}
+	// RechargeResetCampaignRulesColumns holds the columns for the "recharge_reset_campaign_rules" table.
+	RechargeResetCampaignRulesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "threshold_amount", Type: field.TypeFloat64, SchemaType: map[string]string{"postgres": "decimal(20,2)"}},
+		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "group_id", Type: field.TypeInt64},
+		{Name: "campaign_id", Type: field.TypeInt64},
+	}
+	// RechargeResetCampaignRulesTable holds the schema information for the "recharge_reset_campaign_rules" table.
+	RechargeResetCampaignRulesTable = &schema.Table{
+		Name:       "recharge_reset_campaign_rules",
+		Columns:    RechargeResetCampaignRulesColumns,
+		PrimaryKey: []*schema.Column{RechargeResetCampaignRulesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "recharge_reset_campaign_rules_groups_recharge_reset_rules",
+				Columns:    []*schema.Column{RechargeResetCampaignRulesColumns[6]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "recharge_reset_campaign_rules_recharge_reset_campaigns_rules",
+				Columns:    []*schema.Column{RechargeResetCampaignRulesColumns[7]},
+				RefColumns: []*schema.Column{RechargeResetCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rechargeresetcampaignrule_campaign_id_group_id",
+				Unique:  true,
+				Columns: []*schema.Column{RechargeResetCampaignRulesColumns[7], RechargeResetCampaignRulesColumns[6]},
+			},
+			{
+				Name:    "rechargeresetcampaignrule_group_id_status",
+				Unique:  false,
+				Columns: []*schema.Column{RechargeResetCampaignRulesColumns[6], RechargeResetCampaignRulesColumns[2]},
+			},
+		},
+	}
+	// RechargeResetRecordsColumns holds the columns for the "recharge_reset_records" table.
+	RechargeResetRecordsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "recharge_amount", Type: field.TypeFloat64, SchemaType: map[string]string{"postgres": "decimal(20,2)"}},
+		{Name: "threshold_amount", Type: field.TypeFloat64, SchemaType: map[string]string{"postgres": "decimal(20,2)"}},
+		{Name: "reset_daily", Type: field.TypeBool, Default: false},
+		{Name: "reset_weekly", Type: field.TypeBool, Default: false},
+		{Name: "reset_monthly", Type: field.TypeBool, Default: false},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "group_id", Type: field.TypeInt64},
+		{Name: "order_id", Type: field.TypeInt64},
+		{Name: "campaign_id", Type: field.TypeInt64},
+		{Name: "rule_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "subscription_id", Type: field.TypeInt64},
+	}
+	// RechargeResetRecordsTable holds the schema information for the "recharge_reset_records" table.
+	RechargeResetRecordsTable = &schema.Table{
+		Name:       "recharge_reset_records",
+		Columns:    RechargeResetRecordsColumns,
+		PrimaryKey: []*schema.Column{RechargeResetRecordsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "recharge_reset_records_groups_recharge_reset_records",
+				Columns:    []*schema.Column{RechargeResetRecordsColumns[8]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "recharge_reset_records_payment_orders_recharge_reset_records",
+				Columns:    []*schema.Column{RechargeResetRecordsColumns[9]},
+				RefColumns: []*schema.Column{PaymentOrdersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "recharge_reset_records_recharge_reset_campaigns_records",
+				Columns:    []*schema.Column{RechargeResetRecordsColumns[10]},
+				RefColumns: []*schema.Column{RechargeResetCampaignsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "recharge_reset_records_recharge_reset_campaign_rules_records",
+				Columns:    []*schema.Column{RechargeResetRecordsColumns[11]},
+				RefColumns: []*schema.Column{RechargeResetCampaignRulesColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "recharge_reset_records_users_recharge_reset_records",
+				Columns:    []*schema.Column{RechargeResetRecordsColumns[12]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "recharge_reset_records_user_subscriptions_recharge_reset_records",
+				Columns:    []*schema.Column{RechargeResetRecordsColumns[13]},
+				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "rechargeresetrecord_order_id_rule_id",
+				Unique:  true,
+				Columns: []*schema.Column{RechargeResetRecordsColumns[9], RechargeResetRecordsColumns[11]},
+			},
+			{
+				Name:    "rechargeresetrecord_order_id_subscription_id",
+				Unique:  true,
+				Columns: []*schema.Column{RechargeResetRecordsColumns[9], RechargeResetRecordsColumns[13]},
+			},
+			{
+				Name:    "rechargeresetrecord_user_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{RechargeResetRecordsColumns[12], RechargeResetRecordsColumns[7]},
+			},
+		},
+	}
 	// RedeemCodesColumns holds the columns for the "redeem_codes" table.
 	RedeemCodesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -2149,6 +2298,9 @@ var (
 		RankingRewardCampaignsTable,
 		RankingRewardExcludedUsersTable,
 		RankingRewardRunsTable,
+		RechargeResetCampaignsTable,
+		RechargeResetCampaignRulesTable,
+		RechargeResetRecordsTable,
 		RedeemCodesTable,
 		SecuritySecretsTable,
 		SettingsTable,
@@ -2289,6 +2441,23 @@ func init() {
 	RankingRewardRunsTable.ForeignKeys[0].RefTable = RankingRewardCampaignsTable
 	RankingRewardRunsTable.Annotation = &entsql.Annotation{
 		Table: "ranking_reward_runs",
+	}
+	RechargeResetCampaignsTable.Annotation = &entsql.Annotation{
+		Table: "recharge_reset_campaigns",
+	}
+	RechargeResetCampaignRulesTable.ForeignKeys[0].RefTable = GroupsTable
+	RechargeResetCampaignRulesTable.ForeignKeys[1].RefTable = RechargeResetCampaignsTable
+	RechargeResetCampaignRulesTable.Annotation = &entsql.Annotation{
+		Table: "recharge_reset_campaign_rules",
+	}
+	RechargeResetRecordsTable.ForeignKeys[0].RefTable = GroupsTable
+	RechargeResetRecordsTable.ForeignKeys[1].RefTable = PaymentOrdersTable
+	RechargeResetRecordsTable.ForeignKeys[2].RefTable = RechargeResetCampaignsTable
+	RechargeResetRecordsTable.ForeignKeys[3].RefTable = RechargeResetCampaignRulesTable
+	RechargeResetRecordsTable.ForeignKeys[4].RefTable = UsersTable
+	RechargeResetRecordsTable.ForeignKeys[5].RefTable = UserSubscriptionsTable
+	RechargeResetRecordsTable.Annotation = &entsql.Annotation{
+		Table: "recharge_reset_records",
 	}
 	RedeemCodesTable.ForeignKeys[0].RefTable = GroupsTable
 	RedeemCodesTable.ForeignKeys[1].RefTable = UsersTable

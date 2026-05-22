@@ -74,6 +74,12 @@ type Tx struct {
 	RankingRewardExcludedUser *RankingRewardExcludedUserClient
 	// RankingRewardRun is the client for interacting with the RankingRewardRun builders.
 	RankingRewardRun *RankingRewardRunClient
+	// RechargeResetCampaign is the client for interacting with the RechargeResetCampaign builders.
+	RechargeResetCampaign *RechargeResetCampaignClient
+	// RechargeResetCampaignRule is the client for interacting with the RechargeResetCampaignRule builders.
+	RechargeResetCampaignRule *RechargeResetCampaignRuleClient
+	// RechargeResetRecord is the client for interacting with the RechargeResetRecord builders.
+	RechargeResetRecord *RechargeResetRecordClient
 	// RedeemCode is the client for interacting with the RedeemCode builders.
 	RedeemCode *RedeemCodeClient
 	// SecuritySecret is the client for interacting with the SecuritySecret builders.
@@ -261,6 +267,9 @@ func (tx *Tx) init() {
 	tx.RankingRewardCampaign = NewRankingRewardCampaignClient(tx.config)
 	tx.RankingRewardExcludedUser = NewRankingRewardExcludedUserClient(tx.config)
 	tx.RankingRewardRun = NewRankingRewardRunClient(tx.config)
+	tx.RechargeResetCampaign = NewRechargeResetCampaignClient(tx.config)
+	tx.RechargeResetCampaignRule = NewRechargeResetCampaignRuleClient(tx.config)
+	tx.RechargeResetRecord = NewRechargeResetRecordClient(tx.config)
 	tx.RedeemCode = NewRedeemCodeClient(tx.config)
 	tx.SecuritySecret = NewSecuritySecretClient(tx.config)
 	tx.Setting = NewSettingClient(tx.config)

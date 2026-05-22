@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/dgraph-io/ristretto"
 	"golang.org/x/sync/singleflight"
 )
@@ -814,34 +815,60 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 	if err != nil {
 		return nil, err
 	}
-	windowStart := startOfDay(time.Now())
-	if resetDaily {
-		if err := s.userSubRepo.ResetDailyUsage(ctx, sub.ID, windowStart); err != nil {
-			return nil, err
-		}
+	if err := s.AdminResetQuotaBySubscription(ctx, sub, resetDaily, resetWeekly, resetMonthly); err != nil {
+		return nil, err
 	}
-	if resetWeekly {
-		if err := s.userSubRepo.ResetWeeklyUsage(ctx, sub.ID, windowStart); err != nil {
-			return nil, err
-		}
-	}
-	if resetMonthly {
-		if err := s.userSubRepo.ResetMonthlyUsage(ctx, sub.ID, windowStart); err != nil {
-			return nil, err
-		}
-	}
-	// Invalidate L1 ristretto cache. Ristretto's Del() is asynchronous by design,
-	// so call Wait() immediately after to flush pending operations and guarantee
-	// the deleted key is not returned on the very next Get() call.
-	s.InvalidateSubCache(sub.UserID, sub.GroupID)
+	return s.userSubRepo.GetByID(ctx, subscriptionID)
+}
+
+func (s *SubscriptionService) AdminResetQuotaBySubscription(ctx context.Context, sub *UserSubscription, resetDaily, resetWeekly, resetMonthly bool) error {
+	return s.AdminResetQuotaBySubscriptionAt(ctx, sub, time.Now(), resetDaily, resetWeekly, resetMonthly)
+}
+
+func (s *SubscriptionService) InvalidateSubscriptionCaches(ctx context.Context, userID, groupID int64) {
+	s.invalidateSubscriptionCaches(ctx, userID, groupID)
+}
+
+func (s *SubscriptionService) invalidateSubscriptionCaches(ctx context.Context, userID, groupID int64) {
+	s.InvalidateSubCache(userID, groupID)
 	if s.subCacheL1 != nil {
 		s.subCacheL1.Wait()
 	}
 	if s.billingCacheService != nil {
-		_ = s.billingCacheService.InvalidateSubscription(ctx, sub.UserID, sub.GroupID)
+		_ = s.billingCacheService.InvalidateSubscription(ctx, userID, groupID)
 	}
-	// Return the refreshed subscription from DB
-	return s.userSubRepo.GetByID(ctx, subscriptionID)
+}
+
+func (s *SubscriptionService) AdminResetQuotaBySubscriptionAt(ctx context.Context, sub *UserSubscription, at time.Time, resetDaily, resetWeekly, resetMonthly bool) error {
+	if !resetDaily && !resetWeekly && !resetMonthly {
+		return ErrInvalidInput
+	}
+	if sub == nil {
+		return ErrSubscriptionNilInput
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	windowStart := timezone.StartOfDay(at)
+	if resetDaily {
+		if err := s.userSubRepo.ResetDailyUsage(ctx, sub.ID, windowStart); err != nil {
+			return err
+		}
+	}
+	if resetWeekly {
+		if err := s.userSubRepo.ResetWeeklyUsage(ctx, sub.ID, windowStart); err != nil {
+			return err
+		}
+	}
+	if resetMonthly {
+		if err := s.userSubRepo.ResetMonthlyUsage(ctx, sub.ID, windowStart); err != nil {
+			return err
+		}
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		s.invalidateSubscriptionCaches(ctx, sub.UserID, sub.GroupID)
+	}
+	return nil
 }
 
 // CheckAndResetWindows 检查并重置过期的窗口

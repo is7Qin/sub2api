@@ -41,6 +41,7 @@ func ProvideAdminHandlers(
 	affiliateHandler *admin.AffiliateHandler,
 	lotteryHandler *admin.LotteryHandler,
 	rankingRewardHandler *admin.RankingRewardHandler,
+	rechargeResetHandler *admin.RechargeResetHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -75,6 +76,7 @@ func ProvideAdminHandlers(
 		Affiliate:              affiliateHandler,
 		Lottery:                lotteryHandler,
 		RankingReward:          rankingRewardHandler,
+		RechargeReset:          rechargeResetHandler,
 	}
 }
 
@@ -193,6 +195,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAffiliateHandler,
 	admin.NewLotteryHandler,
 	admin.NewRankingRewardHandler,
+	admin.NewRechargeResetHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

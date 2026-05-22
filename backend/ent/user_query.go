@@ -25,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -56,6 +57,7 @@ type UserQuery struct {
 	withAttributeValues         *UserAttributeValueQuery
 	withPromoCodeUsages         *PromoCodeUsageQuery
 	withPaymentOrders           *PaymentOrderQuery
+	withRechargeResetRecords    *RechargeResetRecordQuery
 	withAuthIdentities          *AuthIdentityQuery
 	withPendingAuthSessions     *PendingAuthSessionQuery
 	withUserAllowedGroups       *UserAllowedGroupQuery
@@ -426,6 +428,28 @@ func (_q *UserQuery) QueryPaymentOrders() *PaymentOrderQuery {
 	return query
 }
 
+// QueryRechargeResetRecords chains the current query on the "recharge_reset_records" edge.
+func (_q *UserQuery) QueryRechargeResetRecords() *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.RechargeResetRecordsTable, user.RechargeResetRecordsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
 // QueryAuthIdentities chains the current query on the "auth_identities" edge.
 func (_q *UserQuery) QueryAuthIdentities() *AuthIdentityQuery {
 	query := (&AuthIdentityClient{config: _q.config}).Query()
@@ -699,6 +723,7 @@ func (_q *UserQuery) Clone() *UserQuery {
 		withAttributeValues:         _q.withAttributeValues.Clone(),
 		withPromoCodeUsages:         _q.withPromoCodeUsages.Clone(),
 		withPaymentOrders:           _q.withPaymentOrders.Clone(),
+		withRechargeResetRecords:    _q.withRechargeResetRecords.Clone(),
 		withAuthIdentities:          _q.withAuthIdentities.Clone(),
 		withPendingAuthSessions:     _q.withPendingAuthSessions.Clone(),
 		withUserAllowedGroups:       _q.withUserAllowedGroups.Clone(),
@@ -873,6 +898,17 @@ func (_q *UserQuery) WithPaymentOrders(opts ...func(*PaymentOrderQuery)) *UserQu
 	return _q
 }
 
+// WithRechargeResetRecords tells the query-builder to eager-load the nodes that are connected to
+// the "recharge_reset_records" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithRechargeResetRecords(opts ...func(*RechargeResetRecordQuery)) *UserQuery {
+	query := (&RechargeResetRecordClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withRechargeResetRecords = query
+	return _q
+}
+
 // WithAuthIdentities tells the query-builder to eager-load the nodes that are connected to
 // the "auth_identities" edge. The optional arguments are used to configure the query builder of the edge.
 func (_q *UserQuery) WithAuthIdentities(opts ...func(*AuthIdentityQuery)) *UserQuery {
@@ -984,7 +1020,7 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 	var (
 		nodes       = []*User{}
 		_spec       = _q.querySpec()
-		loadedTypes = [18]bool{
+		loadedTypes = [19]bool{
 			_q.withAPIKeys != nil,
 			_q.withRedeemCodes != nil,
 			_q.withQuotaGrants != nil,
@@ -1000,6 +1036,7 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 			_q.withAttributeValues != nil,
 			_q.withPromoCodeUsages != nil,
 			_q.withPaymentOrders != nil,
+			_q.withRechargeResetRecords != nil,
 			_q.withAuthIdentities != nil,
 			_q.withPendingAuthSessions != nil,
 			_q.withUserAllowedGroups != nil,
@@ -1134,6 +1171,15 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 		if err := _q.loadPaymentOrders(ctx, query, nodes,
 			func(n *User) { n.Edges.PaymentOrders = []*PaymentOrder{} },
 			func(n *User, e *PaymentOrder) { n.Edges.PaymentOrders = append(n.Edges.PaymentOrders, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withRechargeResetRecords; query != nil {
+		if err := _q.loadRechargeResetRecords(ctx, query, nodes,
+			func(n *User) { n.Edges.RechargeResetRecords = []*RechargeResetRecord{} },
+			func(n *User, e *RechargeResetRecord) {
+				n.Edges.RechargeResetRecords = append(n.Edges.RechargeResetRecords, e)
+			}); err != nil {
 			return nil, err
 		}
 	}
@@ -1635,6 +1681,36 @@ func (_q *UserQuery) loadPaymentOrders(ctx context.Context, query *PaymentOrderQ
 	}
 	query.Where(predicate.PaymentOrder(func(s *sql.Selector) {
 		s.Where(sql.InValues(s.C(user.PaymentOrdersColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadRechargeResetRecords(ctx context.Context, query *RechargeResetRecordQuery, nodes []*User, init func(*User), assign func(*User, *RechargeResetRecord)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(rechargeresetrecord.FieldUserID)
+	}
+	query.Where(predicate.RechargeResetRecord(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.RechargeResetRecordsColumn), fks...))
 	}))
 	neighbors, err := query.All(ctx)
 	if err != nil {

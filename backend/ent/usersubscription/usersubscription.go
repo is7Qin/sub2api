@@ -55,6 +55,8 @@ const (
 	EdgeGroup = "group"
 	// EdgeAssignedByUser holds the string denoting the assigned_by_user edge name in mutations.
 	EdgeAssignedByUser = "assigned_by_user"
+	// EdgeRechargeResetRecords holds the string denoting the recharge_reset_records edge name in mutations.
+	EdgeRechargeResetRecords = "recharge_reset_records"
 	// EdgeUsageLogs holds the string denoting the usage_logs edge name in mutations.
 	EdgeUsageLogs = "usage_logs"
 	// Table holds the table name of the usersubscription in the database.
@@ -80,6 +82,13 @@ const (
 	AssignedByUserInverseTable = "users"
 	// AssignedByUserColumn is the table column denoting the assigned_by_user relation/edge.
 	AssignedByUserColumn = "assigned_by"
+	// RechargeResetRecordsTable is the table that holds the recharge_reset_records relation/edge.
+	RechargeResetRecordsTable = "recharge_reset_records"
+	// RechargeResetRecordsInverseTable is the table name for the RechargeResetRecord entity.
+	// It exists in this package in order to avoid circular dependency with the "rechargeresetrecord" package.
+	RechargeResetRecordsInverseTable = "recharge_reset_records"
+	// RechargeResetRecordsColumn is the table column denoting the recharge_reset_records relation/edge.
+	RechargeResetRecordsColumn = "subscription_id"
 	// UsageLogsTable is the table that holds the usage_logs relation/edge.
 	UsageLogsTable = "usage_logs"
 	// UsageLogsInverseTable is the table name for the UsageLog entity.
@@ -263,6 +272,20 @@ func ByAssignedByUserField(field string, opts ...sql.OrderTermOption) OrderOptio
 	}
 }
 
+// ByRechargeResetRecordsCount orders the results by recharge_reset_records count.
+func ByRechargeResetRecordsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRechargeResetRecordsStep(), opts...)
+	}
+}
+
+// ByRechargeResetRecords orders the results by recharge_reset_records terms.
+func ByRechargeResetRecords(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRechargeResetRecordsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByUsageLogsCount orders the results by usage_logs count.
 func ByUsageLogsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -295,6 +318,13 @@ func newAssignedByUserStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(AssignedByUserInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2O, true, AssignedByUserTable, AssignedByUserColumn),
+	)
+}
+func newRechargeResetRecordsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RechargeResetRecordsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRecordsTable, RechargeResetRecordsColumn),
 	)
 }
 func newUsageLogsStep() *sqlgraph.Step {

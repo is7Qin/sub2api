@@ -38,6 +38,7 @@ type AdminHandlers struct {
 	Affiliate              *admin.AffiliateHandler
 	Lottery                *admin.LotteryHandler
 	RankingReward          *admin.RankingRewardHandler
+	RechargeReset          *admin.RechargeResetHandler
 }
 
 // Handlers contains all HTTP handlers

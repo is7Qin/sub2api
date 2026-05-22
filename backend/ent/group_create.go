@@ -14,6 +14,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -526,6 +528,36 @@ func (_c *GroupCreate) AddSubscriptions(v ...*UserSubscription) *GroupCreate {
 	return _c.AddSubscriptionIDs(ids...)
 }
 
+// AddRechargeResetRuleIDs adds the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity by IDs.
+func (_c *GroupCreate) AddRechargeResetRuleIDs(ids ...int64) *GroupCreate {
+	_c.mutation.AddRechargeResetRuleIDs(ids...)
+	return _c
+}
+
+// AddRechargeResetRules adds the "recharge_reset_rules" edges to the RechargeResetCampaignRule entity.
+func (_c *GroupCreate) AddRechargeResetRules(v ...*RechargeResetCampaignRule) *GroupCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRechargeResetRuleIDs(ids...)
+}
+
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_c *GroupCreate) AddRechargeResetRecordIDs(ids ...int64) *GroupCreate {
+	_c.mutation.AddRechargeResetRecordIDs(ids...)
+	return _c
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_c *GroupCreate) AddRechargeResetRecords(v ...*RechargeResetRecord) *GroupCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRechargeResetRecordIDs(ids...)
+}
+
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by IDs.
 func (_c *GroupCreate) AddUsageLogIDs(ids ...int64) *GroupCreate {
 	_c.mutation.AddUsageLogIDs(ids...)
@@ -1005,6 +1037,38 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usersubscription.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RechargeResetRulesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRulesTable,
+			Columns: []string{group.RechargeResetRulesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetcampaignrule.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.RechargeResetRecordsTable,
+			Columns: []string{group.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

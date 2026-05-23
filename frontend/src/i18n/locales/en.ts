@@ -1771,6 +1771,123 @@ export default {
     lottery: {
       title: 'Lottery',
       description: 'Manage lottery campaigns, prizes and user chances',
+      newCampaign: 'New Campaign',
+      noDescription: 'No description',
+      noLimit: 'No limit',
+      noGroup: 'No group',
+      userSelected: 'User selected',
+      fields: {
+        start: 'Start',
+        end: 'End',
+        name: 'Name',
+        description: 'Description',
+        status: 'Status',
+        chanceTtlDays: 'Chance TTL (days)',
+        chanceTtl: 'Chance TTL',
+        startsAt: 'Starts at',
+        endsAt: 'Ends at',
+        campaign: 'Campaign',
+        prizeName: 'Prize name',
+        rewardType: 'Reward type',
+        subscriptionGroup: 'Subscription group',
+        weight: 'Weight',
+        totalStock: 'Total stock',
+        rewardValue: 'Reward value',
+        minValue: 'Min value',
+        maxValue: 'Max value',
+        validityDays: 'Validity days',
+        sortOrder: 'Sort order',
+        selectUser: 'Select user',
+        count: 'Count',
+        expiresAt: 'Expires at'
+      },
+      columns: {
+        campaign: 'Campaign',
+        status: 'Status',
+        window: 'Window',
+        chanceTtl: 'Chance TTL',
+        prize: 'Prize',
+        weight: 'Weight',
+        stock: 'Stock',
+        reward: 'Reward'
+      },
+      actions: {
+        prizes: 'Prizes',
+        grant: 'Grant',
+        edit: 'Edit',
+        saveCampaign: 'Save Campaign',
+        createCampaign: 'Create Campaign',
+        addPrize: 'Add Prize',
+        savePrize: 'Save Prize',
+        grantChances: 'Grant Chances'
+      },
+      dialogs: {
+        editCampaign: 'Edit Campaign',
+        prizes: 'Prizes',
+        editPrize: 'Edit Prize',
+        grantChances: 'Grant Chances'
+      },
+      placeholders: {
+        selectGroup: 'Select group',
+        searchUser: 'Search email, username or notes'
+      },
+      filters: {
+        allStatus: 'All status'
+      },
+      empty: {
+        campaignsTitle: 'No lottery campaigns',
+        campaignsDescription: 'Create a campaign before configuring prizes or granting chances.',
+        noPrizes: 'No prizes for this campaign.',
+        noMatchingUsers: 'No matching users'
+      },
+      hints: {
+        userSearch: 'Type at least 2 characters to search users; no manual user ID lookup required.',
+        grantSource: 'The source is recorded automatically as an admin grant with a generated source ID.'
+      },
+      units: {
+        days: 'days',
+        daysShort: 'd'
+      },
+      status: {
+        draft: 'Draft',
+        active: 'Active',
+        disabled: 'Disabled',
+        ended: 'Ended'
+      },
+      prizeStatus: {
+        active: 'Active',
+        disabled: 'Disabled'
+      },
+      rewardTypes: {
+        balance: 'Balance',
+        concurrency: 'Concurrency',
+        subscription: 'Subscription',
+        invitation: 'Invitation',
+        timedQuota: 'Timed Quota',
+        randomTimedQuota: 'Random Timed Quota'
+      },
+      rewardUnits: {
+        concurrency: 'concurrency'
+      },
+      messages: {
+        campaignSaved: 'Campaign saved',
+        campaignCreated: 'Campaign created',
+        prizeSaved: 'Prize saved',
+        prizeAdded: 'Prize added',
+        grantSuccess: 'Granted {count} chances'
+      },
+      errors: {
+        loadCampaigns: 'Failed to load campaigns',
+        saveCampaign: 'Failed to save campaign',
+        loadPrizes: 'Failed to load prizes',
+        weightStockNonNegative: 'Weight and stock must be non-negative numbers',
+        validityDaysPositive: 'Validity days must be greater than 0',
+        selectSubscriptionGroup: 'Please select a subscription group',
+        rewardValuePositive: 'Reward value must be greater than 0',
+        randomTimedQuotaRange: 'Random timed quota range is invalid',
+        savePrize: 'Failed to save prize',
+        grantChances: 'Failed to grant chances'
+      }
     },
 
     affiliates: {

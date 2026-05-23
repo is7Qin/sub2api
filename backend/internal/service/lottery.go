@@ -480,7 +480,7 @@ func (s *LotteryService) awardPrize(ctx context.Context, userID int64, prize *Lo
 	if err := s.redeemService.CreateCode(ctx, redeemCode); err != nil {
 		return nil, fmt.Errorf("create lottery redeem code: %w", err)
 	}
-	redeemed, err := s.redeemService.Redeem(ctx, userID, code)
+	redeemed, err := s.redeemService.redeemLoadedCode(ctx, userID, redeemCode)
 	if err != nil {
 		return nil, fmt.Errorf("redeem lottery prize: %w", err)
 	}

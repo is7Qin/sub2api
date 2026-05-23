@@ -455,39 +455,37 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 		return nil, fmt.Errorf("get redeem code: %w", err)
 	}
 
-	// 检查兑换码状态和码本身的过期时间
-	if redeemCode.IsExpired() {
+	redeemed, err := s.redeemLoadedCode(ctx, userID, redeemCode)
+	if errors.Is(err, ErrRedeemCodeExpired) || errors.Is(err, ErrRedeemCodeUsed) {
 		s.incrementRedeemErrorCount(ctx, userID)
+	}
+	return redeemed, err
+}
+
+// 内部发奖复用已加载兑换码，避免走用户手动兑换的 Redis 锁和限流入口。
+func (s *RedeemService) redeemLoadedCode(ctx context.Context, userID int64, redeemCode *RedeemCode) (*RedeemCode, error) {
+	if redeemCode == nil || userID <= 0 {
+		return nil, ErrRedeemCodeNotFound
+	}
+	if redeemCode.IsExpired() {
 		return nil, ErrRedeemCodeExpired
 	}
 	if !redeemCode.CanUse() {
-		s.incrementRedeemErrorCount(ctx, userID)
 		return nil, ErrRedeemCodeUsed
 	}
-
-	// 验证兑换码类型的前置条件
 	if err := validateRedeemCodePayload(redeemCode); err != nil {
 		return nil, err
 	}
-
-	// 获取用户信息
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
-
-	// 使用数据库事务保证兑换码标记与权益发放的原子性
 	tx, err := s.entClient.Tx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	// 将事务放入 context，使 repository 方法能够使用同一事务
 	txCtx := dbent.NewTxContext(ctx, tx)
-
-	// 【关键】先标记兑换码为已使用，确保并发安全
-	// 利用数据库乐观锁（WHERE status = 'unused'）保证原子性
 	if err := s.redeemRepo.Use(txCtx, redeemCode.ID, userID); err != nil {
 		if errors.Is(err, ErrRedeemCodeNotFound) || errors.Is(err, ErrRedeemCodeUsed) {
 			return nil, ErrRedeemCodeUsed
@@ -496,12 +494,9 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 	}
 
 	redeemedAt := time.Now().UTC()
-
-	// 执行兑换逻辑（兑换码已被锁定，此时可安全操作）
 	switch redeemCode.Type {
 	case RedeemTypeBalance:
 		amount := redeemCode.Value
-		// 负数为退款扣减，余额最低为 0
 		if amount < 0 && user.Balance+amount < 0 {
 			amount = -user.Balance
 		}
@@ -516,19 +511,16 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 
 	case RedeemTypeConcurrency:
 		delta := int(redeemCode.Value)
-		// 负数为退款扣减，并发数最低为 0
 		if delta < 0 && user.Concurrency+delta < 0 {
 			delta = -user.Concurrency
 		}
 		if err := s.userRepo.UpdateConcurrency(txCtx, userID, delta); err != nil {
 			return nil, fmt.Errorf("update user concurrency: %w", err)
 		}
-
 	case RedeemTypeTimedQuota:
 		if err := s.grantTimedQuotaForRedeem(txCtx, userID, redeemCode, redeemCode.Value); err != nil {
 			return nil, fmt.Errorf("grant timed quota: %w", err)
 		}
-
 	case RedeemTypeRandomTimedQuota:
 		amount, err := redeemRandomTimedQuotaAmount(redeemCode.Metadata)
 		if err != nil {
@@ -549,11 +541,9 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 		if err := s.grantTimedQuotaForRedeem(txCtx, userID, redeemCode, amount); err != nil {
 			return nil, fmt.Errorf("grant random timed quota: %w", err)
 		}
-
 	case RedeemTypeSubscription:
 		validityDays := redeemCode.ValidityDays
 		if validityDays < 0 {
-			// 负数天数：缩短订阅，减到 0 则取消订阅
 			if err := s.reduceOrCancelSubscription(txCtx, userID, *redeemCode.GroupID, -validityDays, redeemCode.Code); err != nil {
 				return nil, fmt.Errorf("reduce or cancel subscription: %w", err)
 			}
@@ -565,34 +555,25 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 				UserID:       userID,
 				GroupID:      *redeemCode.GroupID,
 				ValidityDays: validityDays,
-				AssignedBy:   0, // 系统分配
+				AssignedBy:   0,
 				Notes:        fmt.Sprintf("通过兑换码 %s 兑换", redeemCode.Code),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("assign or extend subscription: %w", err)
 			}
 		}
-
 	default:
 		return nil, fmt.Errorf("unsupported redeem type: %s", redeemCode.Type)
 	}
-
-	// 提交事务
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
-
-	// 事务提交成功后失效缓存
 	s.invalidateRedeemCaches(ctx, userID, redeemCode)
-
 	s.tryAccrueAffiliateRebateForRedeemCode(ctx, userID, redeemCode)
-
-	// 重新获取更新后的兑换码
 	redeemCode, err = s.redeemRepo.GetByID(ctx, redeemCode.ID)
 	if err != nil {
 		return nil, fmt.Errorf("get updated redeem code: %w", err)
 	}
-
 	return redeemCode, nil
 }
 

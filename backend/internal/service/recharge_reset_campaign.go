@@ -132,13 +132,18 @@ type RechargeResetRepository interface {
 	CreateRecord(ctx context.Context, record *RechargeResetRecord) (*RechargeResetRecord, error)
 }
 
+type RechargeResetSettingService interface {
+	IsRechargeResetEnabled(ctx context.Context) bool
+}
+
 type RechargeResetCampaignService struct {
 	repo            RechargeResetRepository
 	subscriptionSvc *SubscriptionService
+	settingSvc      RechargeResetSettingService
 }
 
-func NewRechargeResetCampaignService(repo RechargeResetRepository, subscriptionSvc *SubscriptionService) *RechargeResetCampaignService {
-	return &RechargeResetCampaignService{repo: repo, subscriptionSvc: subscriptionSvc}
+func NewRechargeResetCampaignService(repo RechargeResetRepository, subscriptionSvc *SubscriptionService, settingSvc RechargeResetSettingService) *RechargeResetCampaignService {
+	return &RechargeResetCampaignService{repo: repo, subscriptionSvc: subscriptionSvc, settingSvc: settingSvc}
 }
 
 func (s *RechargeResetCampaignService) CreateCampaign(ctx context.Context, input *CreateRechargeResetCampaignInput) (*RechargeResetCampaign, error) {
@@ -189,6 +194,9 @@ func (s *RechargeResetCampaignService) ListRules(ctx context.Context, campaignID
 
 func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, input *ApplyRechargeResetInput) ([]RechargeResetRecord, error) {
 	if s == nil || s.repo == nil || s.subscriptionSvc == nil || input == nil || input.RedeemCodeID <= 0 || input.UserID <= 0 || input.RechargeAmount <= 0 {
+		return nil, nil
+	}
+	if s.settingSvc == nil || !s.settingSvc.IsRechargeResetEnabled(ctx) {
 		return nil, nil
 	}
 	if dbent.TxFromContext(ctx) == nil && s.subscriptionSvc.entClient != nil {

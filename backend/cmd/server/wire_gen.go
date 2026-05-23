@@ -238,7 +238,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	paymentHandler := admin.NewPaymentHandler(paymentService, paymentConfigService)
 	affiliateHandler := admin.NewAffiliateHandler(affiliateService, adminService)
 	rechargeResetRepository := repository.NewRechargeResetCampaignRepository(client)
-	rechargeResetCampaignService := service.ProvideRechargeResetCampaignService(rechargeResetRepository, subscriptionService, redeemService)
+	rechargeResetCampaignService := service.ProvideRechargeResetCampaignService(rechargeResetRepository, subscriptionService, settingService, redeemService)
 	rechargeResetHandler := admin.NewRechargeResetHandler(rechargeResetCampaignService)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, paymentHandler, affiliateHandler, rechargeResetHandler)
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)

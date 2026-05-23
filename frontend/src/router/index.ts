@@ -485,7 +485,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: true,
       title: 'Recharge Reset',
       titleKey: 'admin.rechargeReset.title',
-      descriptionKey: 'admin.rechargeReset.description'
+      descriptionKey: 'admin.rechargeReset.description',
+      requiresRechargeReset: true
     }
   },
   {
@@ -832,6 +833,14 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.requiresRiskControl) {
     const riskControlEnabled = appStore.cachedPublicSettings?.risk_control_enabled === true
     if (!riskControlEnabled) {
+      next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+      return
+    }
+  }
+
+  if (to.meta.requiresRechargeReset) {
+    const rechargeResetEnabled = appStore.cachedPublicSettings?.recharge_reset_enabled === true
+    if (!rechargeResetEnabled) {
       next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
       return
     }

@@ -5402,6 +5402,14 @@ export default {
           enabled: '启用风控中心',
           enabledHint: '关闭后管理员侧边栏入口隐藏，网关内容审计不会执行。',
         },
+        rechargeReset: {
+          title: '充值重置',
+          description: '用户余额充值达到规则阈值后重置订阅周期额度。默认关闭。',
+          configureLink: '前往 充值重置 配置活动',
+          configureDisabledHint: '启用充值重置后可配置活动。',
+          enabled: '启用充值重置',
+          enabledHint: '关闭后管理员侧边栏入口隐藏，充值重置活动不可配置。',
+        },
         affiliate: {
           title: '邀请返利',
           description: '老用户邀请新用户注册，新用户充值后老用户按比例获得返利额度。默认关闭。',

@@ -5131,6 +5131,43 @@
           </div>
         </div>
 
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.rechargeReset.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.rechargeReset.description') }}
+            </p>
+            <p class="mt-1.5 text-xs">
+              <router-link
+                v-if="form.recharge_reset_enabled"
+                to="/admin/recharge-reset"
+                class="inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
+              >
+                {{ t('admin.settings.features.rechargeReset.configureLink') }}
+                <span aria-hidden="true">→</span>
+              </router-link>
+              <span v-else class="text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.features.rechargeReset.configureDisabledHint') }}
+              </span>
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.rechargeReset.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.rechargeReset.enabledHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.recharge_reset_enabled" />
+            </div>
+          </div>
+        </div>
+
         <!-- Affiliate (邀请返利) feature card -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -7041,6 +7078,8 @@ const form = reactive<SettingsForm>({
   channel_monitor_default_interval_seconds: 60,
   // Available Channels feature switch
   available_channels_enabled: false,
+  // Recharge reset feature switch
+  recharge_reset_enabled: false,
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: false,
 });
@@ -8180,6 +8219,8 @@ async function saveSettings() {
         Number(form.channel_monitor_default_interval_seconds) || 60,
       // Available Channels feature switch
       available_channels_enabled: form.available_channels_enabled,
+      // Recharge reset feature switch
+      recharge_reset_enabled: form.recharge_reset_enabled,
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
     };

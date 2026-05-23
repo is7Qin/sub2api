@@ -56,6 +56,12 @@ declare module 'vue-router' {
     requiresRiskControl?: boolean
 
     /**
+     * 是否要求充值重置功能开关已启用
+     * @default false
+     */
+    requiresRechargeReset?: boolean
+
+    /**
      * i18n key for the page title
      */
     titleKey?: string

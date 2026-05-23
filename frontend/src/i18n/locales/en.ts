@@ -5239,6 +5239,14 @@ export default {
           enabled: 'Enable Risk Control',
           enabledHint: 'When off, the admin sidebar entry is hidden and gateway moderation is skipped.',
         },
+        rechargeReset: {
+          title: 'Recharge Reset',
+          description: 'Reset subscription quotas after qualifying balance recharges. Disabled by default.',
+          configureLink: 'Configure recharge reset campaigns',
+          configureDisabledHint: 'Enable Recharge Reset before configuring campaigns.',
+          enabled: 'Enable Recharge Reset',
+          enabledHint: 'When off, the admin sidebar entry is hidden and recharge reset campaigns cannot be configured.',
+        },
         affiliate: {
           title: 'Affiliate (Invite Rebate)',
           description: 'Existing users invite new ones; the inviter earns a percentage rebate on the invitee’s recharges. Disabled by default.',

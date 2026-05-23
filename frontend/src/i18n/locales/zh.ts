@@ -1111,23 +1111,27 @@ export default {
 
   rankingReward: {
     title: '排行榜奖励',
-    description: '查看每日排行榜，前 N 名获得抽奖机会，榜单显示数量可单独配置',
+    description: '查看每 5 分钟刷新的实时排行，前 N 名预计获得抽奖机会，历史发奖记录会在发放后保留。',
     loadFailed: '加载排行榜奖励失败',
     emptyTitle: '暂无排行榜奖励',
-    emptyDescription: '当前还没有已完成的排行榜奖励记录。',
+    emptyDescription: '当前还没有实时排行或已完成的排行榜奖励记录。',
     rewardDate: '奖励日期',
     displayLimit: '显示前 {count} 名',
     awardedCount: '共 {count} 人获奖',
+    liveBadge: '实时排行',
     anonymousUser: '用户 {code}',
     currentUser: '我',
     chanceCount: '{count} 次抽奖机会',
     noReward: '未获得奖励',
     awarded: '已发放',
     notAwarded: '未获奖',
+    inRewardRange: '奖励范围内',
+    outOfRewardRange: '未进奖励范围',
     columns: {
       rank: '排名',
       user: '用户',
       reward: '奖励',
+      estimatedReward: '预计奖励',
       status: '状态'
     }
   },
@@ -1526,6 +1530,130 @@ export default {
     rankingReward: {
       title: '排行榜奖励',
       description: '按每日用量排行榜向获奖用户发放抽奖机会',
+      newCampaign: '新建活动',
+      noLimit: '不限',
+      previousLocalDay: '上一自然日',
+      userSelected: '已选择用户',
+      stats: {
+        campaigns: '活动数',
+        active: '启用中',
+        lastAwards: '最近发放',
+        awardedCost: '发放消耗'
+      },
+      reward: {
+        winners: '获奖',
+        display: '展示',
+        chancesPerUser: '机会/人'
+      },
+      fields: {
+        name: '名称',
+        description: '说明',
+        status: '状态',
+        lotteryCampaign: '抽奖活动',
+        topN: '前 N 名',
+        publicDisplayTopN: '用户榜单显示前 N 名',
+        chancesPerUser: '每人机会数',
+        minActualCost: '最低实际消耗',
+        startsAt: '开始时间',
+        endsAt: '结束时间',
+        start: '开始',
+        end: '结束',
+        timezone: '时区',
+        selectUser: '选择用户',
+        reason: '原因'
+      },
+      actions: {
+        edit: '编辑',
+        exclusions: '排除用户',
+        runs: '运行记录',
+        run: '执行',
+        awards: '查看奖励'
+      },
+      columns: {
+        rewardRule: '奖励规则',
+        minCost: '最低消耗',
+        lastRun: '上次运行',
+        window: '活动时间',
+        user: '用户',
+        created: '创建时间',
+        rewardDate: '奖励日期',
+        awards: '发放人数',
+        cost: '总消耗',
+        finished: '完成时间',
+        rank: '名次',
+        actualCost: '实际消耗',
+        requests: '请求数',
+        chances: '机会数'
+      },
+      dialogs: {
+        createCampaign: '新建奖励活动',
+        editCampaign: '编辑奖励活动',
+        excludedUsers: '排除用户'
+      },
+      placeholders: {
+        selectLotteryCampaign: '选择抽奖活动',
+        searchUser: '搜索邮箱、用户名或备注'
+      },
+      hints: {
+        publicDisplayLimit: '仅影响用户可见榜单，不影响实际获奖人数'
+      },
+      empty: {
+        campaignsTitle: '暂无排行榜奖励活动',
+        campaignsDescription: '新建活动时可以直接选择抽奖活动，不需要手动查询 ID。',
+        noMatchingUsers: '没有匹配用户',
+        noExcludedUsers: '暂无排除用户',
+        noRuns: '暂无运行记录',
+        noAwards: '暂无发放明细'
+      },
+      manualRun: {
+        title: '手动执行',
+        description: '默认会发放上一自然日排行榜奖励。'
+      },
+      awardDetails: {
+        title: '发放明细',
+        runId: '运行ID'
+      },
+      filters: {
+        allStatus: '全部状态'
+      },
+      status: {
+        draft: '草稿',
+        active: '启用',
+        disabled: '停用',
+        ended: '已结束'
+      },
+      lotteryStatus: {
+        active: '进行中',
+        disabled: '已禁用'
+      },
+      runStatus: {
+        running: '运行中',
+        completed: '已完成',
+        failed: '失败'
+      },
+      confirmRun: {
+        title: '确认执行排行榜奖励',
+        message: '确认执行“{name}”在 {date} 的排行榜奖励？'
+      },
+      messages: {
+        campaignSaved: '排行榜奖励已保存',
+        runCompleted: '排行榜奖励执行完成'
+      },
+      errors: {
+        selectLotteryCampaign: '请选择抽奖活动',
+        positiveRewardNumbers: '前 N 名、榜单显示数量和每人机会数必须大于 0',
+        rewardNumbersMax: '前 N 名、榜单显示数量和每人机会数都不能超过 1000',
+        totalChancesMax: '总机会数不能超过 10000',
+        loadRankingRewards: '加载排行榜奖励失败',
+        loadLotteryCampaigns: '加载抽奖活动失败',
+        saveCampaign: '保存排行榜奖励失败',
+        loadExclusions: '加载排除用户失败',
+        addExclusion: '添加排除用户失败',
+        deleteExclusion: '删除排除用户失败',
+        loadRuns: '加载运行记录失败',
+        loadAwards: '加载发放明细失败',
+        runCampaign: '执行排行榜奖励失败'
+      }
     },
 
     backup: {

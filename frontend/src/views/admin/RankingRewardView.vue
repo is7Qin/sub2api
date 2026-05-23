@@ -6,9 +6,9 @@
           <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ t('admin.rankingReward.title') }}</h1>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.rankingReward.description') }}</p>
         </div>
-        <button class="btn btn-secondary" :disabled="loadingCampaigns" @click="loadCampaigns()">
-          <Icon name="refresh" size="sm" :class="loadingCampaigns ? 'animate-spin' : ''" />
-          <span>{{ t('common.refresh') }}</span>
+        <button class="btn btn-primary" type="button" @click="openCreateCampaignDialog">
+          <Icon name="plus" size="sm" />
+          <span>{{ tx('新建活动', 'New Campaign') }}</span>
         </button>
       </div>
 
@@ -23,289 +23,344 @@
         </div>
         <div class="card p-5">
           <p class="text-sm text-gray-500 dark:text-gray-400">{{ tx('最近发放', 'Last Awards') }}</p>
-          <p class="mt-2 text-2xl font-semibold text-primary-600 dark:text-primary-400">{{ selectedRun?.awarded_count ?? '-' }}</p>
+          <p class="mt-2 text-2xl font-semibold text-primary-600 dark:text-primary-400">{{ latestRun?.awarded_count ?? '-' }}</p>
         </div>
         <div class="card p-5">
           <p class="text-sm text-gray-500 dark:text-gray-400">{{ tx('发放消耗', 'Awarded Cost') }}</p>
-          <p class="mt-2 text-2xl font-semibold text-amber-600 dark:text-amber-400">{{ selectedRun ? formatMoney(selectedRun.total_actual_cost) : '-' }}</p>
+          <p class="mt-2 text-2xl font-semibold text-amber-600 dark:text-amber-400">{{ latestRun ? formatMoney(latestRun.total_actual_cost) : '-' }}</p>
         </div>
       </div>
 
-      <div class="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,0.85fr)]">
-        <div class="card overflow-hidden">
-          <div class="flex flex-col gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('排行榜奖励活动', 'Ranking Reward Campaigns') }}</h2>
-            <div class="flex gap-2">
-              <select v-model="statusFilter" class="input w-36" @change="loadCampaigns()">
-                <option value="">{{ tx('全部状态', 'All Status') }}</option>
-                <option value="draft">{{ statusLabel('draft') }}</option>
-                <option value="active">{{ statusLabel('active') }}</option>
-                <option value="disabled">{{ statusLabel('disabled') }}</option>
-                <option value="ended">{{ statusLabel('ended') }}</option>
-              </select>
-              <button class="btn btn-primary" @click="startCreateCampaign">
-                <Icon name="plus" size="sm" />
-                <span>{{ tx('新建活动', 'New Campaign') }}</span>
-              </button>
+      <TablePageLayout>
+        <template #filters>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="w-full sm:w-48">
+              <Select v-model="statusFilter" :options="statusFilterOptions" @change="loadCampaigns" />
             </div>
+            <button class="btn btn-secondary" :disabled="loadingCampaigns" type="button" @click="loadCampaigns">
+              <Icon name="refresh" size="sm" :class="loadingCampaigns ? 'animate-spin' : ''" />
+              <span>{{ t('common.refresh') }}</span>
+            </button>
           </div>
+        </template>
 
-          <div v-if="loadingCampaigns" class="flex justify-center py-12">
-            <div class="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
-          </div>
-          <div v-else-if="campaigns.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ tx('暂无排行榜奖励活动', 'No ranking reward campaigns yet.') }}
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full min-w-[900px] text-left text-sm">
-              <thead>
-                <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                  <th class="px-6 py-3 font-medium">{{ tx('名称', 'Name') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('状态', 'Status') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('抽奖活动ID', 'Lottery Campaign') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('名额/展示/机会', 'Top / Display / Chances') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('最低消耗', 'Min Cost') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('上次运行', 'Last Run') }}</th>
-                  <th class="px-6 py-3 text-right font-medium">{{ tx('操作', 'Actions') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="campaign in campaigns" :key="campaign.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                  <td class="px-6 py-4">
-                    <button class="text-left font-medium text-primary-600 hover:underline dark:text-primary-400" @click="selectCampaign(campaign)">
-                      {{ campaign.name }}
-                    </button>
-                    <p class="mt-1 max-w-xs truncate text-xs text-gray-500 dark:text-gray-400">{{ campaign.description || '-' }}</p>
-                  </td>
-                  <td class="px-4 py-4">
-                    <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="campaignStatusClass(campaign.status)">
-                      {{ statusLabel(campaign.status) }}
-                    </span>
-                  </td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">#{{ campaign.lottery_campaign_id }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ campaign.top_n }} / {{ campaign.public_display_limit }} / {{ campaign.chance_count }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatMoney(campaign.min_actual_cost) }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatDateOnly(campaign.last_run_date) || '-' }}</td>
-                  <td class="px-6 py-4">
-                    <div class="flex justify-end gap-2">
-                      <button class="btn btn-sm btn-secondary" @click="startEditCampaign(campaign)">{{ tx('编辑', 'Edit') }}</button>
-                      <button class="btn btn-sm btn-primary" :disabled="runningCampaignId === campaign.id" @click="confirmRun(campaign)">
-                        <Icon v-if="runningCampaignId === campaign.id" name="refresh" size="xs" class="animate-spin" />
-                        <span>{{ tx('执行', 'Run') }}</span>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <template #table>
+          <DataTable
+            :columns="campaignColumns"
+            :data="campaigns"
+            :loading="loadingCampaigns"
+            row-key="id"
+            sticky-actions-column
+            :actions-count="5"
+          >
+            <template #cell-name="{ row }">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="font-medium text-gray-900 dark:text-white">{{ row.name }}</span>
+                  <span class="text-xs text-gray-400 dark:text-gray-500">#{{ row.id }}</span>
+                </div>
+                <p class="mt-1 max-w-xl truncate text-xs text-gray-500 dark:text-gray-400">{{ row.description || '-' }}</p>
+              </div>
+            </template>
 
-        <div class="card">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ formMode === 'create' ? tx('新建奖励活动', 'Create Campaign') : tx('编辑奖励活动', 'Edit Campaign') }}</h2>
-          </div>
-          <form class="space-y-4 p-6" @submit.prevent="saveCampaign">
-            <div>
-              <label class="label">{{ tx('名称', 'Name') }}</label>
-              <input v-model="campaignForm.name" class="input" required />
-            </div>
-            <div>
-              <label class="label">{{ tx('说明', 'Description') }}</label>
-              <textarea v-model="campaignForm.description" class="input min-h-[80px]"></textarea>
-            </div>
-            <div class="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label class="label">{{ tx('状态', 'Status') }}</label>
-                <select v-model="campaignForm.status" class="input">
-                  <option value="draft">{{ statusLabel('draft') }}</option>
-                  <option value="active">{{ statusLabel('active') }}</option>
-                  <option value="disabled">{{ statusLabel('disabled') }}</option>
-                  <option value="ended">{{ statusLabel('ended') }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="label">{{ tx('抽奖活动ID', 'Lottery Campaign ID') }}</label>
-                <input v-model.number="campaignForm.lottery_campaign_id" class="input" min="1" required type="number" />
-              </div>
-            </div>
-            <div class="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label class="label">{{ tx('前 N 名', 'Top N') }}</label>
-                <input v-model.number="campaignForm.top_n" class="input" min="1" max="1000" type="number" />
-              </div>
-              <div>
-                <label class="label">{{ tx('用户榜单显示前 N 名', 'Public Display Top N') }}</label>
-                <input v-model.number="campaignForm.public_display_limit" class="input" min="1" max="1000" type="number" />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ tx('仅影响用户可见榜单，不影响实际获奖人数', 'Only affects the user-facing leaderboard, not winners.') }}</p>
-              </div>
-              <div>
-                <label class="label">{{ tx('每人机会数', 'Chances/User') }}</label>
-                <input v-model.number="campaignForm.chance_count" class="input" min="1" max="1000" type="number" />
-              </div>
-              <div>
-                <label class="label">{{ tx('最低实际消耗', 'Min Actual Cost') }}</label>
-                <input v-model.number="campaignForm.min_actual_cost" class="input" min="0" step="0.01" type="number" />
-              </div>
-            </div>
-            <div class="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label class="label">{{ tx('开始时间', 'Starts At') }}</label>
-                <input v-model="campaignForm.starts_at" class="input" type="datetime-local" />
-              </div>
-              <div>
-                <label class="label">{{ tx('结束时间', 'Ends At') }}</label>
-                <input v-model="campaignForm.ends_at" class="input" type="datetime-local" />
-              </div>
-            </div>
-            <div>
-              <label class="label">{{ tx('时区', 'Timezone') }}</label>
-              <input v-model="campaignForm.timezone" class="input" placeholder="Asia/Shanghai" />
-            </div>
-            <div class="flex justify-end gap-2">
-              <button v-if="formMode === 'edit'" class="btn btn-secondary" type="button" @click="startCreateCampaign">{{ tx('取消编辑', 'Cancel Edit') }}</button>
-              <button class="btn btn-primary" :disabled="savingCampaign" type="submit">
-                <Icon v-if="savingCampaign" name="refresh" size="sm" class="animate-spin" />
-                <span>{{ tx('保存', 'Save') }}</span>
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
+            <template #cell-status="{ row }">
+              <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="campaignStatusClass(row.status)">
+                {{ statusLabel(row.status) }}
+              </span>
+            </template>
 
-      <div v-if="selectedCampaign" class="grid gap-6 xl:grid-cols-2">
-        <div class="card overflow-hidden">
-          <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <div>
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('排除用户', 'Excluded Users') }}</h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ selectedCampaign.name }}</p>
-            </div>
-          </div>
-          <form class="grid gap-3 border-b border-gray-100 p-6 dark:border-dark-700 sm:grid-cols-[120px_minmax(0,1fr)_auto]" @submit.prevent="addExclusion">
-            <input v-model.number="exclusionForm.user_id" class="input" min="1" :placeholder="tx('用户ID', 'User ID')" required type="number" />
-            <input v-model="exclusionForm.reason" class="input" :placeholder="tx('原因', 'Reason')" />
-            <button class="btn btn-primary" :disabled="savingExclusion" type="submit">{{ tx('添加', 'Add') }}</button>
-          </form>
-          <div v-if="exclusions.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ tx('暂无排除用户', 'No excluded users.') }}
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full min-w-[520px] text-left text-sm">
-              <thead>
-                <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                  <th class="px-6 py-3 font-medium">{{ tx('用户ID', 'User ID') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('原因', 'Reason') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('创建时间', 'Created') }}</th>
-                  <th class="px-6 py-3 text-right font-medium">{{ tx('操作', 'Actions') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="item in exclusions" :key="item.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                  <td class="px-6 py-4 text-gray-900 dark:text-white">#{{ item.user_id }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ item.reason || '-' }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatDateTime(item.created_at) }}</td>
-                  <td class="px-6 py-4 text-right">
-                    <button class="text-sm text-red-600 hover:underline dark:text-red-400" @click="removeExclusion(item.id)">{{ tx('删除', 'Delete') }}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+            <template #cell-lottery_campaign_id="{ row }">
+              <div class="text-sm text-gray-700 dark:text-gray-300">
+                {{ lotteryCampaignLabel(row.lottery_campaign_id) }}
+              </div>
+            </template>
 
-        <div class="card overflow-hidden">
-          <div class="flex flex-col gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('运行记录', 'Runs') }}</h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('手动执行默认会发放上一自然日排行榜奖励', 'Manual run defaults to the previous local day.') }}</p>
-            </div>
-            <form class="flex gap-2" @submit.prevent="confirmRun(selectedCampaign, runDate)">
-              <input v-model="runDate" class="input w-40" type="date" />
-              <button class="btn btn-primary" :disabled="runningCampaignId === selectedCampaign.id" type="submit">{{ tx('执行', 'Run') }}</button>
-            </form>
-          </div>
-          <div v-if="runs.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ tx('暂无运行记录', 'No runs yet.') }}
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full min-w-[720px] text-left text-sm">
-              <thead>
-                <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                  <th class="px-6 py-3 font-medium">{{ tx('奖励日期', 'Reward Date') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('状态', 'Status') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('发放人数', 'Awards') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('总消耗', 'Cost') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('完成时间', 'Finished') }}</th>
-                  <th class="px-6 py-3 text-right font-medium">{{ tx('操作', 'Actions') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="run in runs" :key="run.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                  <td class="px-6 py-4 text-gray-900 dark:text-white">{{ formatDateOnly(run.reward_date) }}</td>
-                  <td class="px-4 py-4">
-                    <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="runStatusClass(run.status)">{{ runStatusLabel(run.status) }}</span>
-                  </td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ run.awarded_count }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatMoney(run.total_actual_cost) }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatDateTime(run.finished_at) || '-' }}</td>
-                  <td class="px-6 py-4 text-right">
-                    <button class="text-sm text-primary-600 hover:underline dark:text-primary-400" @click="selectRun(run)">{{ tx('查看奖励', 'Awards') }}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+            <template #cell-reward="{ row }">
+              <div class="space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                <div>{{ tx('获奖', 'Winners') }}: {{ row.top_n }}</div>
+                <div>{{ tx('展示', 'Display') }}: {{ row.public_display_limit }}</div>
+                <div>{{ tx('机会/人', 'Chances/User') }}: {{ row.chance_count }}</div>
+              </div>
+            </template>
 
-      <div v-if="selectedRun" class="card overflow-hidden">
-        <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('发放明细', 'Award Details') }}</h2>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('运行ID', 'Run ID') }} #{{ selectedRun.id }}</p>
-        </div>
-        <div v-if="awards.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-          {{ tx('暂无发放明细', 'No awards found.') }}
-        </div>
-        <div v-else class="overflow-x-auto">
-          <table class="w-full min-w-[900px] text-left text-sm">
-            <thead>
-              <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                <th class="px-6 py-3 font-medium">{{ tx('名次', 'Rank') }}</th>
-                <th class="px-4 py-3 font-medium">{{ tx('用户ID', 'User ID') }}</th>
-                <th class="px-4 py-3 font-medium">{{ tx('实际消耗', 'Actual Cost') }}</th>
-                <th class="px-4 py-3 font-medium">{{ tx('请求数', 'Requests') }}</th>
-                <th class="px-4 py-3 font-medium">{{ tx('Token', 'Tokens') }}</th>
-                <th class="px-4 py-3 font-medium">{{ tx('机会数', 'Chances') }}</th>
-                <th class="px-6 py-3 font-medium">{{ tx('抽奖机会ID', 'Lottery Chance IDs') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="award in awards" :key="award.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                <td class="px-6 py-4 font-semibold text-gray-900 dark:text-white">#{{ award.rank }}</td>
-                <td class="px-4 py-4 text-gray-700 dark:text-gray-300">#{{ award.user_id }}</td>
-                <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatMoney(award.actual_cost) }}</td>
-                <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatNumber(award.requests) }}</td>
-                <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatNumber(award.tokens) }}</td>
-                <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ award.chance_count }}</td>
-                <td class="px-6 py-4 font-mono text-xs text-gray-700 dark:text-gray-300">{{ award.lottery_chance_ids?.join(', ') || '-' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+            <template #cell-window="{ row }">
+              <div class="space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                <div>{{ tx('开始', 'Start') }}: {{ formatDateTime(row.starts_at) || '-' }}</div>
+                <div>{{ tx('结束', 'End') }}: {{ formatDateTime(row.ends_at) || tx('不限', 'No limit') }}</div>
+              </div>
+            </template>
+
+            <template #cell-actions="{ row }">
+              <div class="flex justify-end gap-2">
+                <button class="btn btn-sm btn-secondary" type="button" @click="openEditCampaignDialog(row)">{{ tx('编辑', 'Edit') }}</button>
+                <button class="btn btn-sm btn-secondary" type="button" @click="openExclusionsDialog(row)">{{ tx('排除用户', 'Exclusions') }}</button>
+                <button class="btn btn-sm btn-secondary" type="button" @click="openRunsDialog(row)">{{ tx('运行记录', 'Runs') }}</button>
+                <button class="btn btn-sm btn-primary" :disabled="runningCampaignId === row.id" type="button" @click="confirmRun(row)">
+                  <Icon v-if="runningCampaignId === row.id" name="refresh" size="xs" class="animate-spin" />
+                  <span>{{ tx('执行', 'Run') }}</span>
+                </button>
+              </div>
+            </template>
+
+            <template #empty>
+              <div class="flex flex-col items-center py-8 text-center">
+                <p class="text-base font-medium text-gray-900 dark:text-white">{{ tx('暂无排行榜奖励活动', 'No ranking reward campaigns yet.') }}</p>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('新建活动时可以直接选择抽奖活动，不需要手动查询 ID。', 'Create one by selecting a lottery campaign; no manual ID lookup required.') }}</p>
+                <button class="btn btn-primary mt-4" type="button" @click="openCreateCampaignDialog">
+                  <Icon name="plus" size="sm" />
+                  <span>{{ tx('新建活动', 'New Campaign') }}</span>
+                </button>
+              </div>
+            </template>
+          </DataTable>
+        </template>
+      </TablePageLayout>
     </div>
+
+    <BaseDialog
+      :show="showCampaignDialog"
+      :title="formMode === 'create' ? tx('新建奖励活动', 'Create Campaign') : tx('编辑奖励活动', 'Edit Campaign')"
+      width="wide"
+      @close="closeCampaignDialog"
+    >
+      <form id="ranking-reward-campaign-form" class="space-y-4" @submit.prevent="saveCampaign">
+        <div>
+          <label class="label">{{ tx('名称', 'Name') }}</label>
+          <input v-model.trim="campaignForm.name" class="input" required />
+        </div>
+        <div>
+          <label class="label">{{ tx('说明', 'Description') }}</label>
+          <textarea v-model="campaignForm.description" class="input min-h-[80px]"></textarea>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label">{{ tx('状态', 'Status') }}</label>
+            <Select v-model="campaignForm.status" :options="campaignStatusOptions" />
+          </div>
+          <div>
+            <label class="label">{{ tx('抽奖活动', 'Lottery Campaign') }}</label>
+            <Select
+              v-model="campaignForm.lottery_campaign_id"
+              :options="lotteryCampaignOptions"
+              searchable
+              :placeholder="tx('选择抽奖活动', 'Select lottery campaign')"
+            />
+          </div>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label">{{ tx('前 N 名', 'Top N') }}</label>
+            <input v-model.number="campaignForm.top_n" class="input" min="1" max="1000" type="number" />
+          </div>
+          <div>
+            <label class="label">{{ tx('用户榜单显示前 N 名', 'Public Display Top N') }}</label>
+            <input v-model.number="campaignForm.public_display_limit" class="input" min="1" max="1000" type="number" />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ tx('仅影响用户可见榜单，不影响实际获奖人数', 'Only affects the user-facing leaderboard, not winners.') }}</p>
+          </div>
+          <div>
+            <label class="label">{{ tx('每人机会数', 'Chances/User') }}</label>
+            <input v-model.number="campaignForm.chance_count" class="input" min="1" max="1000" type="number" />
+          </div>
+          <div>
+            <label class="label">{{ tx('最低实际消耗', 'Min Actual Cost') }}</label>
+            <input v-model.number="campaignForm.min_actual_cost" class="input" min="0" step="0.01" type="number" />
+          </div>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label">{{ tx('开始时间', 'Starts At') }}</label>
+            <input v-model="campaignForm.starts_at" class="input" type="datetime-local" />
+          </div>
+          <div>
+            <label class="label">{{ tx('结束时间', 'Ends At') }}</label>
+            <input v-model="campaignForm.ends_at" class="input" type="datetime-local" />
+          </div>
+        </div>
+        <div>
+          <label class="label">{{ tx('时区', 'Timezone') }}</label>
+          <input v-model.trim="campaignForm.timezone" class="input" placeholder="Asia/Shanghai" />
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeCampaignDialog">{{ tx('取消', 'Cancel') }}</button>
+        <button class="btn btn-primary" :disabled="savingCampaign" form="ranking-reward-campaign-form" type="submit">
+          <Icon v-if="savingCampaign" name="refresh" size="sm" class="animate-spin" />
+          <span>{{ tx('保存', 'Save') }}</span>
+        </button>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showExclusionsDialog"
+      :title="activeCampaign ? `${tx('排除用户', 'Excluded Users')} · ${activeCampaign.name}` : tx('排除用户', 'Excluded Users')"
+      width="extra-wide"
+      @close="closeExclusionsDialog"
+    >
+      <div class="space-y-4">
+        <form class="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_minmax(220px,1fr)_auto]" @submit.prevent="addExclusion">
+          <div>
+            <label class="label">{{ tx('选择用户', 'Select user') }}</label>
+            <div class="relative">
+              <input
+                v-model.trim="userSearchQuery"
+                class="input"
+                :placeholder="tx('搜索邮箱、用户名或备注', 'Search email, username or notes')"
+                autocomplete="off"
+                required
+                @input="handleUserSearch"
+                @focus="showUserResults = userSearchResults.length > 0"
+              />
+              <div
+                v-if="showUserResults"
+                class="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-dark-700 dark:bg-dark-800"
+              >
+                <button
+                  v-for="user in userSearchResults"
+                  :key="user.id"
+                  type="button"
+                  class="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-dark-700"
+                  @click="selectExclusionUser(user)"
+                >
+                  <span class="min-w-0">
+                    <span class="block truncate text-sm font-medium text-gray-900 dark:text-white">{{ user.email }}</span>
+                    <span class="block truncate text-xs text-gray-500 dark:text-gray-400">{{ user.username || user.notes || `#${user.id}` }}</span>
+                  </span>
+                  <span class="shrink-0 text-xs text-gray-400 dark:text-gray-500">#{{ user.id }}</span>
+                </button>
+                <div v-if="userSearchResults.length === 0 && !userSearchLoading" class="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">
+                  {{ tx('没有匹配用户', 'No matching users') }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label class="label">{{ tx('原因', 'Reason') }}</label>
+            <input v-model="exclusionForm.reason" class="input" :placeholder="tx('原因', 'Reason')" />
+          </div>
+          <div class="flex items-end">
+            <button class="btn btn-primary w-full" :disabled="!selectedExclusionUser || savingExclusion" type="submit">
+              <Icon v-if="savingExclusion" name="refresh" size="sm" class="animate-spin" />
+              <span>{{ tx('添加', 'Add') }}</span>
+            </button>
+          </div>
+        </form>
+
+        <div v-if="selectedExclusionUser" class="rounded-lg border border-primary-100 bg-primary-50 p-3 text-sm dark:border-primary-900/50 dark:bg-primary-900/20">
+          <div class="font-medium text-primary-700 dark:text-primary-300">{{ selectedExclusionUser.email }}</div>
+          <div class="mt-1 text-primary-600 dark:text-primary-400">{{ selectedExclusionUser.username || selectedExclusionUser.notes || tx('已选择用户', 'User selected') }} · #{{ selectedExclusionUser.id }}</div>
+        </div>
+
+        <DataTable :columns="exclusionColumns" :data="exclusions" row-key="id" :actions-count="1">
+          <template #cell-user_id="{ row }">
+            <span>#{{ row.user_id }}</span>
+          </template>
+          <template #cell-created_at="{ row }">
+            <span>{{ formatDateTime(row.created_at) }}</span>
+          </template>
+          <template #cell-actions="{ row }">
+            <div class="flex justify-end">
+              <button class="text-sm text-red-600 hover:underline dark:text-red-400" type="button" @click="removeExclusion(row.id)">{{ tx('删除', 'Delete') }}</button>
+            </div>
+          </template>
+          <template #empty>
+            <div class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ tx('暂无排除用户', 'No excluded users.') }}</div>
+          </template>
+        </DataTable>
+      </div>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showRunsDialog"
+      :title="activeCampaign ? `${tx('运行记录', 'Runs')} · ${activeCampaign.name}` : tx('运行记录', 'Runs')"
+      width="full"
+      @close="closeRunsDialog"
+    >
+      <div v-if="activeCampaign" class="space-y-6">
+        <div class="flex flex-col gap-3 rounded-lg bg-gray-50 p-4 dark:bg-dark-800 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p class="text-sm font-medium text-gray-900 dark:text-white">{{ tx('手动执行', 'Manual run') }}</p>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('默认会发放上一自然日排行榜奖励。', 'By default this awards the previous local day.') }}</p>
+          </div>
+          <form class="flex gap-2" @submit.prevent="confirmRun(activeCampaign, runDate)">
+            <input v-model="runDate" class="input w-40" type="date" />
+            <button class="btn btn-primary" :disabled="runningCampaignId === activeCampaign.id" type="submit">
+              <Icon v-if="runningCampaignId === activeCampaign.id" name="refresh" size="sm" class="animate-spin" />
+              <span>{{ tx('执行', 'Run') }}</span>
+            </button>
+          </form>
+        </div>
+
+        <DataTable :columns="runColumns" :data="runs" row-key="id" :actions-count="1">
+          <template #cell-reward_date="{ row }">
+            <span>{{ formatDateOnly(row.reward_date) }}</span>
+          </template>
+          <template #cell-status="{ row }">
+            <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="runStatusClass(row.status)">{{ runStatusLabel(row.status) }}</span>
+          </template>
+          <template #cell-total_actual_cost="{ row }">
+            <span>{{ formatMoney(row.total_actual_cost) }}</span>
+          </template>
+          <template #cell-finished_at="{ row }">
+            <span>{{ formatDateTime(row.finished_at) || '-' }}</span>
+          </template>
+          <template #cell-actions="{ row }">
+            <div class="flex justify-end">
+              <button class="text-sm text-primary-600 hover:underline dark:text-primary-400" type="button" @click="selectRun(row)">{{ tx('查看奖励', 'Awards') }}</button>
+            </div>
+          </template>
+          <template #empty>
+            <div class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ tx('暂无运行记录', 'No runs yet.') }}</div>
+          </template>
+        </DataTable>
+
+        <div v-if="selectedRun" class="space-y-3">
+          <div>
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ tx('发放明细', 'Award Details') }}</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('运行ID', 'Run ID') }} #{{ selectedRun.id }}</p>
+          </div>
+          <DataTable :columns="awardColumns" :data="awards" row-key="id">
+            <template #cell-rank="{ row }">
+              <span class="font-semibold">#{{ row.rank }}</span>
+            </template>
+            <template #cell-user_id="{ row }">
+              <span>#{{ row.user_id }}</span>
+            </template>
+            <template #cell-actual_cost="{ row }">
+              <span>{{ formatMoney(row.actual_cost) }}</span>
+            </template>
+            <template #cell-requests="{ row }">
+              <span>{{ formatNumber(row.requests) }}</span>
+            </template>
+            <template #cell-tokens="{ row }">
+              <span>{{ formatNumber(row.tokens) }}</span>
+            </template>
+            <template #empty>
+              <div class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ tx('暂无发放明细', 'No awards found.') }}</div>
+            </template>
+          </DataTable>
+        </div>
+      </div>
+    </BaseDialog>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import DataTable from '@/components/common/DataTable.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { adminAPI } from '@/api/admin'
 import rankingRewardAPI from '@/api/admin/rankingReward'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatCurrency, formatDateOnly, formatDateTime, formatNumber, formatDateTimeLocalInput } from '@/utils/format'
+import type { AdminUser } from '@/types'
+import type { Column } from '@/components/common/types'
+import type { LotteryCampaign } from '@/api/admin/lottery'
 import type {
   CreateRankingRewardCampaignRequest,
   RankingRewardAward,
@@ -326,19 +381,31 @@ const { t, locale } = useI18n()
 const appStore = useAppStore()
 
 const loadingCampaigns = ref(false)
+const loadingLotteryCampaigns = ref(false)
 const savingCampaign = ref(false)
 const savingExclusion = ref(false)
 const runningCampaignId = ref<number | null>(null)
-const statusFilter = ref('')
+const statusFilter = ref<string | null>('')
 const campaigns = ref<RankingRewardCampaign[]>([])
-const selectedCampaign = ref<RankingRewardCampaign | null>(null)
+const lotteryCampaigns = ref<LotteryCampaign[]>([])
+const activeCampaign = ref<RankingRewardCampaign | null>(null)
 const exclusions = ref<RankingRewardExclusion[]>([])
 const runs = ref<RankingRewardRun[]>([])
 const selectedRun = ref<RankingRewardRun | null>(null)
 const awards = ref<RankingRewardAward[]>([])
+const latestRun = ref<RankingRewardRun | null>(null)
 const formMode = ref<'create' | 'edit'>('create')
 const editingCampaignId = ref<number | null>(null)
 const runDate = ref('')
+const showCampaignDialog = ref(false)
+const showExclusionsDialog = ref(false)
+const showRunsDialog = ref(false)
+const userSearchQuery = ref('')
+const userSearchResults = ref<AdminUser[]>([])
+const userSearchLoading = ref(false)
+const showUserResults = ref(false)
+const selectedExclusionUser = ref<AdminUser | null>(null)
+let userSearchTimeout: ReturnType<typeof setTimeout> | null = null
 
 const activeCampaignCount = computed(() => campaigns.value.filter((item) => item.status === 'active').length)
 
@@ -346,7 +413,7 @@ const campaignForm = reactive({
   name: '',
   description: '',
   status: 'draft' as RankingRewardCampaignStatus,
-  lottery_campaign_id: 0,
+  lottery_campaign_id: null as number | null,
   top_n: 10,
   chance_count: 1,
   public_display_limit: 10,
@@ -357,9 +424,67 @@ const campaignForm = reactive({
 })
 
 const exclusionForm = reactive({
-  user_id: 0,
   reason: '',
 })
+
+const campaignColumns = computed<Column[]>(() => [
+  { key: 'name', label: tx('名称', 'Name'), sortable: true },
+  { key: 'status', label: tx('状态', 'Status'), sortable: true },
+  { key: 'lottery_campaign_id', label: tx('抽奖活动', 'Lottery Campaign') },
+  { key: 'reward', label: tx('奖励规则', 'Reward Rule') },
+  { key: 'min_actual_cost', label: tx('最低消耗', 'Min Cost'), formatter: (value) => formatMoney(Number(value)) },
+  { key: 'last_run_date', label: tx('上次运行', 'Last Run'), formatter: (value) => formatDateOnly(value) || '-' },
+  { key: 'window', label: tx('活动时间', 'Window') },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const exclusionColumns = computed<Column[]>(() => [
+  { key: 'user_id', label: tx('用户', 'User') },
+  { key: 'reason', label: tx('原因', 'Reason'), formatter: (value) => value || '-' },
+  { key: 'created_at', label: tx('创建时间', 'Created') },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const runColumns = computed<Column[]>(() => [
+  { key: 'reward_date', label: tx('奖励日期', 'Reward Date'), sortable: true },
+  { key: 'status', label: tx('状态', 'Status'), sortable: true },
+  { key: 'awarded_count', label: tx('发放人数', 'Awards'), sortable: true },
+  { key: 'total_actual_cost', label: tx('总消耗', 'Cost'), sortable: true },
+  { key: 'finished_at', label: tx('完成时间', 'Finished') },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const awardColumns = computed<Column[]>(() => [
+  { key: 'rank', label: tx('名次', 'Rank'), sortable: true },
+  { key: 'user_id', label: tx('用户', 'User') },
+  { key: 'actual_cost', label: tx('实际消耗', 'Actual Cost'), sortable: true },
+  { key: 'requests', label: tx('请求数', 'Requests'), sortable: true },
+  { key: 'tokens', label: 'Tokens', sortable: true },
+  { key: 'chance_count', label: tx('机会数', 'Chances'), sortable: true },
+])
+
+const statusFilterOptions = computed<SelectOption[]>(() => [
+  { value: '', label: tx('全部状态', 'All Status') },
+  { value: 'draft', label: statusLabel('draft') },
+  { value: 'active', label: statusLabel('active') },
+  { value: 'disabled', label: statusLabel('disabled') },
+  { value: 'ended', label: statusLabel('ended') },
+])
+
+const campaignStatusOptions = computed<SelectOption[]>(() => [
+  { value: 'draft', label: statusLabel('draft') },
+  { value: 'active', label: statusLabel('active') },
+  { value: 'disabled', label: statusLabel('disabled') },
+  { value: 'ended', label: statusLabel('ended') },
+])
+
+const lotteryCampaignOptions = computed<SelectOption[]>(() =>
+  lotteryCampaigns.value.map((campaign) => ({
+    value: campaign.id,
+    label: `${campaign.name} (#${campaign.id})`,
+    description: `${lotteryStatusLabel(campaign.status)} · ${formatDateTime(campaign.starts_at) || '-'} - ${formatDateTime(campaign.ends_at) || tx('不限', 'No limit')}`,
+  }))
+)
 
 function tx(zh: string, en: string): string {
   return String(locale.value).startsWith('zh') ? zh : en
@@ -429,6 +554,16 @@ function statusLabel(status: RankingRewardCampaignStatus): string {
   return tx(zh, en)
 }
 
+function lotteryStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    draft: tx('草稿', 'Draft'),
+    active: tx('进行中', 'Active'),
+    disabled: tx('已禁用', 'Disabled'),
+    ended: tx('已结束', 'Ended'),
+  }
+  return labels[status] || status
+}
+
 function runStatusLabel(status: RankingRewardRunStatus): string {
   const labels: Record<RankingRewardRunStatus, [string, string]> = {
     running: ['运行中', 'Running'],
@@ -452,12 +587,17 @@ function runStatusClass(status: string): string {
   return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
 }
 
+function lotteryCampaignLabel(id: number): string {
+  const campaign = lotteryCampaigns.value.find((item) => item.id === id)
+  return campaign ? `${campaign.name} (#${campaign.id})` : `#${id}`
+}
+
 function resetCampaignForm(): void {
   Object.assign(campaignForm, {
     name: '',
     description: '',
     status: 'draft',
-    lottery_campaign_id: 0,
+    lottery_campaign_id: null,
     top_n: 10,
     chance_count: 1,
     public_display_limit: 10,
@@ -468,13 +608,23 @@ function resetCampaignForm(): void {
   })
 }
 
-function startCreateCampaign(): void {
+function resetExclusionForm(): void {
+  exclusionForm.reason = ''
+  userSearchQuery.value = ''
+  userSearchResults.value = []
+  showUserResults.value = false
+  selectedExclusionUser.value = null
+}
+
+function openCreateCampaignDialog(): void {
   formMode.value = 'create'
   editingCampaignId.value = null
   resetCampaignForm()
+  showCampaignDialog.value = true
+  loadLotteryCampaigns()
 }
 
-function startEditCampaign(campaign: RankingRewardCampaign): void {
+function openEditCampaignDialog(campaign: RankingRewardCampaign): void {
   formMode.value = 'edit'
   editingCampaignId.value = campaign.id
   Object.assign(campaignForm, {
@@ -490,12 +640,22 @@ function startEditCampaign(campaign: RankingRewardCampaign): void {
     ends_at: toLocalInput(campaign.ends_at),
     timezone: campaign.timezone || 'Asia/Shanghai',
   })
+  showCampaignDialog.value = true
+  loadLotteryCampaigns()
+}
+
+function closeCampaignDialog(): void {
+  showCampaignDialog.value = false
 }
 
 function buildCampaignPayload(): CreateRankingRewardCampaignRequest | null {
   const topN = Number(campaignForm.top_n)
   const chanceCount = Number(campaignForm.chance_count)
   const publicDisplayLimit = Number(campaignForm.public_display_limit)
+  if (!campaignForm.lottery_campaign_id) {
+    appStore.showError(tx('请选择抽奖活动', 'Please select a lottery campaign'))
+    return null
+  }
   if (!Number.isFinite(topN) || !Number.isFinite(chanceCount) || !Number.isFinite(publicDisplayLimit) || topN <= 0 || chanceCount <= 0 || publicDisplayLimit <= 0) {
     appStore.showError(tx('前 N 名、榜单显示数量和每人机会数必须大于 0', 'Top N, public display count, and chances per user must be greater than 0'))
     return null
@@ -516,7 +676,7 @@ function buildCampaignPayload(): CreateRankingRewardCampaignRequest | null {
     name: campaignForm.name.trim(),
     description: campaignForm.description,
     status: campaignForm.status,
-    lottery_campaign_id: Number(campaignForm.lottery_campaign_id),
+    lottery_campaign_id: campaignForm.lottery_campaign_id,
     top_n: topN,
     chance_count: chanceCount,
     public_display_limit: publicDisplayLimit,
@@ -535,12 +695,7 @@ async function loadCampaigns(): Promise<void> {
   try {
     const result = await rankingRewardAPI.listCampaigns({ page: 1, page_size: 100, status: statusFilter.value || undefined })
     campaigns.value = result.items || []
-    if (!selectedCampaign.value && campaigns.value.length > 0) {
-      await selectCampaign(campaigns.value[0])
-    } else if (selectedCampaign.value) {
-      const updated = campaigns.value.find((item) => item.id === selectedCampaign.value?.id)
-      if (updated) selectedCampaign.value = updated
-    }
+    await updateLatestRunPreview()
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('加载排行榜奖励失败', 'Failed to load ranking rewards')))
   } finally {
@@ -548,8 +703,35 @@ async function loadCampaigns(): Promise<void> {
   }
 }
 
+async function loadLotteryCampaigns(): Promise<void> {
+  if (loadingLotteryCampaigns.value || lotteryCampaigns.value.length > 0) return
+  loadingLotteryCampaigns.value = true
+  try {
+    const result = await adminAPI.lottery.listCampaigns({ page: 1, page_size: 200 })
+    lotteryCampaigns.value = result.items || []
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, tx('加载抽奖活动失败', 'Failed to load lottery campaigns')))
+  } finally {
+    loadingLotteryCampaigns.value = false
+  }
+}
+
+async function updateLatestRunPreview(): Promise<void> {
+  const first = campaigns.value[0]
+  if (!first) {
+    latestRun.value = null
+    return
+  }
+  try {
+    const result = await rankingRewardAPI.listRuns(first.id, { page: 1, page_size: 1 })
+    latestRun.value = result.items?.[0] || null
+  } catch {
+    latestRun.value = null
+  }
+}
+
 async function saveCampaign(): Promise<void> {
-  if (!campaignForm.name.trim() || !campaignForm.lottery_campaign_id) return
+  if (!campaignForm.name.trim()) return
   savingCampaign.value = true
   try {
     const payload = buildCampaignPayload()
@@ -561,8 +743,9 @@ async function saveCampaign(): Promise<void> {
       })
       : await rankingRewardAPI.createCampaign(payload, { idempotencyKey: createIdempotencyKey('create-campaign') })
     appStore.showSuccess(tx('排行榜奖励已保存', 'Ranking reward campaign saved'))
+    showCampaignDialog.value = false
     await loadCampaigns()
-    await selectCampaign(item)
+    activeCampaign.value = item
     if (formMode.value === 'create') resetCampaignForm()
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('保存排行榜奖励失败', 'Failed to save ranking reward campaign')))
@@ -571,11 +754,16 @@ async function saveCampaign(): Promise<void> {
   }
 }
 
-async function selectCampaign(campaign: RankingRewardCampaign): Promise<void> {
-  selectedCampaign.value = campaign
-  selectedRun.value = null
-  awards.value = []
-  await Promise.all([loadExclusions(campaign.id), loadRuns(campaign.id)])
+async function openExclusionsDialog(campaign: RankingRewardCampaign): Promise<void> {
+  activeCampaign.value = campaign
+  resetExclusionForm()
+  showExclusionsDialog.value = true
+  await loadExclusions(campaign.id)
+}
+
+function closeExclusionsDialog(): void {
+  showExclusionsDialog.value = false
+  resetExclusionForm()
 }
 
 async function loadExclusions(campaignId: number): Promise<void> {
@@ -587,17 +775,47 @@ async function loadExclusions(campaignId: number): Promise<void> {
   }
 }
 
+function handleUserSearch(): void {
+  if (userSearchTimeout) clearTimeout(userSearchTimeout)
+  selectedExclusionUser.value = null
+  const query = userSearchQuery.value.trim()
+  if (query.length < 2) {
+    userSearchResults.value = []
+    showUserResults.value = false
+    return
+  }
+  userSearchTimeout = setTimeout(async () => {
+    userSearchLoading.value = true
+    try {
+      const result = await adminAPI.users.list(1, 10, { search: query })
+      userSearchResults.value = result.items || []
+      showUserResults.value = true
+    } catch {
+      userSearchResults.value = []
+      showUserResults.value = false
+    } finally {
+      userSearchLoading.value = false
+    }
+  }, 300)
+}
+
+function selectExclusionUser(user: AdminUser): void {
+  selectedExclusionUser.value = user
+  userSearchQuery.value = user.email
+  userSearchResults.value = []
+  showUserResults.value = false
+}
+
 async function addExclusion(): Promise<void> {
-  if (!selectedCampaign.value || !exclusionForm.user_id) return
+  if (!activeCampaign.value || !selectedExclusionUser.value) return
   savingExclusion.value = true
   try {
-    await rankingRewardAPI.createExclusion(selectedCampaign.value.id, {
-      user_id: Number(exclusionForm.user_id),
+    await rankingRewardAPI.createExclusion(activeCampaign.value.id, {
+      user_id: selectedExclusionUser.value.id,
       reason: exclusionForm.reason,
     }, { idempotencyKey: createIdempotencyKey('create-exclusion') })
-    exclusionForm.user_id = 0
-    exclusionForm.reason = ''
-    await loadExclusions(selectedCampaign.value.id)
+    resetExclusionForm()
+    await loadExclusions(activeCampaign.value.id)
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('添加排除用户失败', 'Failed to add exclusion')))
   } finally {
@@ -606,22 +824,33 @@ async function addExclusion(): Promise<void> {
 }
 
 async function removeExclusion(id: number): Promise<void> {
-  if (!selectedCampaign.value) return
+  if (!activeCampaign.value) return
   try {
     await rankingRewardAPI.deleteExclusion(id)
-    await loadExclusions(selectedCampaign.value.id)
+    await loadExclusions(activeCampaign.value.id)
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('删除排除用户失败', 'Failed to delete exclusion')))
   }
+}
+
+async function openRunsDialog(campaign: RankingRewardCampaign): Promise<void> {
+  activeCampaign.value = campaign
+  selectedRun.value = null
+  awards.value = []
+  runDate.value = ''
+  showRunsDialog.value = true
+  await loadRuns(campaign.id)
+}
+
+function closeRunsDialog(): void {
+  showRunsDialog.value = false
 }
 
 async function loadRuns(campaignId: number): Promise<void> {
   try {
     const result = await rankingRewardAPI.listRuns(campaignId, { page: 1, page_size: 50 })
     runs.value = result.items || []
-    if (!selectedRun.value && runs.value.length > 0) {
-      await selectRun(runs.value[0])
-    }
+    if (runs.value.length > 0) await selectRun(runs.value[0])
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('加载运行记录失败', 'Failed to load runs')))
   }
@@ -653,11 +882,12 @@ async function runNow(campaign: RankingRewardCampaign, rewardDate = ''): Promise
       { idempotencyKey: createIdempotencyKey('run-campaign') }
     )
     appStore.showSuccess(tx('排行榜奖励执行完成', 'Ranking reward run completed'))
-    selectedCampaign.value = campaign
+    activeCampaign.value = campaign
     selectedRun.value = result.run
+    latestRun.value = result.run
     awards.value = result.awards || []
     await loadCampaigns()
-    await loadRuns(campaign.id)
+    if (showRunsDialog.value) await loadRuns(campaign.id)
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('执行排行榜奖励失败', 'Failed to run ranking reward campaign')))
   } finally {
@@ -667,5 +897,10 @@ async function runNow(campaign: RankingRewardCampaign, rewardDate = ''): Promise
 
 onMounted(() => {
   loadCampaigns()
+  loadLotteryCampaigns()
+})
+
+onUnmounted(() => {
+  if (userSearchTimeout) clearTimeout(userSearchTimeout)
 })
 </script>

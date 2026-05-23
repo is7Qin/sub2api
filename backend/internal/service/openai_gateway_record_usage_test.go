@@ -49,7 +49,11 @@ func (s *openAIRecordUsageBillingRepoStub) Apply(ctx context.Context, cmd *Usage
 	if s.result != nil {
 		return s.result, nil
 	}
-	return &UsageBillingApplyResult{Applied: true}, nil
+	return &UsageBillingApplyResult{
+		Applied:                 true,
+		BalanceCostApplied:      cmd.BalanceCost,
+		SubscriptionCostApplied: cmd.SubscriptionCost,
+	}, nil
 }
 
 func TestOpenAIGatewayServiceRecordUsage_RejectsNilInput(t *testing.T) {

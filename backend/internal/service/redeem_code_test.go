@@ -7,6 +7,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRedeemTimedQuotaPayloadValidation(t *testing.T) {
+	require.NoError(t, validateRedeemCodePayload(&RedeemCode{
+		Type:         RedeemTypeTimedQuota,
+		Value:        3.5,
+		ValidityDays: 7,
+	}))
+
+	require.Error(t, validateRedeemCodePayload(&RedeemCode{
+		Type:         RedeemTypeTimedQuota,
+		Value:        0,
+		ValidityDays: 7,
+	}))
+	require.Error(t, validateRedeemCodePayload(&RedeemCode{
+		Type:  RedeemTypeTimedQuota,
+		Value: 3.5,
+	}))
+}
+
+func TestRedeemRandomTimedQuotaAmount(t *testing.T) {
+	metadata := map[string]any{
+		redeemMetadataKeyMinValue:     1.25,
+		redeemMetadataKeyMaxValue:     2.5,
+		redeemMetadataKeyValidityDays: 3,
+	}
+	require.NoError(t, validateRedeemCodePayload(&RedeemCode{
+		Type:     RedeemTypeRandomTimedQuota,
+		Metadata: metadata,
+	}))
+	amount, err := redeemRandomTimedQuotaAmount(metadata)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, amount, 1.25)
+	require.LessOrEqual(t, amount, 2.5)
+}
+
 func TestRedeemCodeExpiry(t *testing.T) {
 	now := time.Now().UTC()
 	past := now.Add(-time.Hour)

@@ -70,7 +70,8 @@ export async function generate(
   value: number,
   groupId?: number | null,
   validityDays?: number,
-  expiresInDays?: number | null
+  expiresInDays?: number | null,
+  metadata?: Record<string, unknown>
 ): Promise<RedeemCode[]> {
   const payload: GenerateRedeemCodesRequest = {
     count,
@@ -78,12 +79,14 @@ export async function generate(
     value
   }
 
-  // 订阅类型专用字段
   if (type === 'subscription') {
     payload.group_id = groupId
-    if (validityDays && validityDays > 0) {
-      payload.validity_days = validityDays
-    }
+  }
+  if ((type === 'subscription' || type === 'timed_quota' || type === 'random_timed_quota') && validityDays && validityDays > 0) {
+    payload.validity_days = validityDays
+  }
+  if (metadata && Object.keys(metadata).length > 0) {
+    payload.metadata = metadata
   }
   if (expiresInDays && expiresInDays > 0) {
     payload.expires_in_days = expiresInDays

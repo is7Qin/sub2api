@@ -72,6 +72,8 @@ func (RedeemCode) Fields() []ent.Field {
 			Nillable(),
 		field.Int("validity_days").
 			Default(30),
+		field.JSON("metadata", map[string]any{}).
+			Optional(),
 	}
 }
 

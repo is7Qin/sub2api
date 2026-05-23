@@ -65,6 +65,8 @@ const (
 	EdgeAPIKeys = "api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
 	EdgeRedeemCodes = "redeem_codes"
+	// EdgeQuotaGrants holds the string denoting the quota_grants edge name in mutations.
+	EdgeQuotaGrants = "quota_grants"
 	// EdgeSubscriptions holds the string denoting the subscriptions edge name in mutations.
 	EdgeSubscriptions = "subscriptions"
 	// EdgeAssignedSubscriptions holds the string denoting the assigned_subscriptions edge name in mutations.
@@ -103,6 +105,13 @@ const (
 	RedeemCodesInverseTable = "redeem_codes"
 	// RedeemCodesColumn is the table column denoting the redeem_codes relation/edge.
 	RedeemCodesColumn = "used_by"
+	// QuotaGrantsTable is the table that holds the quota_grants relation/edge.
+	QuotaGrantsTable = "user_quota_grants"
+	// QuotaGrantsInverseTable is the table name for the UserQuotaGrant entity.
+	// It exists in this package in order to avoid circular dependency with the "userquotagrant" package.
+	QuotaGrantsInverseTable = "user_quota_grants"
+	// QuotaGrantsColumn is the table column denoting the quota_grants relation/edge.
+	QuotaGrantsColumn = "user_id"
 	// SubscriptionsTable is the table that holds the subscriptions relation/edge.
 	SubscriptionsTable = "user_subscriptions"
 	// SubscriptionsInverseTable is the table name for the UserSubscription entity.
@@ -429,6 +438,20 @@ func ByRedeemCodes(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByQuotaGrantsCount orders the results by quota_grants count.
+func ByQuotaGrantsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newQuotaGrantsStep(), opts...)
+	}
+}
+
+// ByQuotaGrants orders the results by quota_grants terms.
+func ByQuotaGrants(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newQuotaGrantsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // BySubscriptionsCount orders the results by subscriptions count.
 func BySubscriptionsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -594,6 +617,13 @@ func newRedeemCodesStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(RedeemCodesInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, RedeemCodesTable, RedeemCodesColumn),
+	)
+}
+func newQuotaGrantsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(QuotaGrantsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, QuotaGrantsTable, QuotaGrantsColumn),
 	)
 }
 func newSubscriptionsStep() *sqlgraph.Step {

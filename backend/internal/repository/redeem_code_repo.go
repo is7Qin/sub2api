@@ -23,7 +23,7 @@ func NewRedeemCodeRepository(client *dbent.Client) service.RedeemCodeRepository 
 }
 
 func (r *redeemCodeRepository) Create(ctx context.Context, code *service.RedeemCode) error {
-	created, err := r.client.RedeemCode.Create().
+	create := r.client.RedeemCode.Create().
 		SetCode(code.Code).
 		SetType(code.Type).
 		SetValue(code.Value).
@@ -33,8 +33,11 @@ func (r *redeemCodeRepository) Create(ctx context.Context, code *service.RedeemC
 		SetNillableExpiresAt(code.ExpiresAt).
 		SetNillableUsedBy(code.UsedBy).
 		SetNillableUsedAt(code.UsedAt).
-		SetNillableGroupID(code.GroupID).
-		Save(ctx)
+		SetNillableGroupID(code.GroupID)
+	if code.Metadata != nil {
+		create.SetMetadata(code.Metadata)
+	}
+	created, err := create.Save(ctx)
 	if err == nil {
 		code.ID = created.ID
 		code.CreatedAt = created.CreatedAt
@@ -61,6 +64,9 @@ func (r *redeemCodeRepository) CreateBatch(ctx context.Context, codes []service.
 			SetNillableUsedBy(c.UsedBy).
 			SetNillableUsedAt(c.UsedAt).
 			SetNillableGroupID(c.GroupID)
+		if c.Metadata != nil {
+			b.SetMetadata(c.Metadata)
+		}
 		builders = append(builders, b)
 	}
 
@@ -203,6 +209,11 @@ func (r *redeemCodeRepository) Update(ctx context.Context, code *service.RedeemC
 		SetStatus(code.Status).
 		SetNotes(code.Notes).
 		SetValidityDays(code.ValidityDays)
+	if code.Metadata != nil {
+		up.SetMetadata(code.Metadata)
+	} else {
+		up.ClearMetadata()
+	}
 
 	if code.UsedBy != nil {
 		up.SetUsedBy(*code.UsedBy)
@@ -425,6 +436,7 @@ func redeemCodeEntityToService(m *dbent.RedeemCode) *service.RedeemCode {
 		ExpiresAt:    m.ExpiresAt,
 		GroupID:      m.GroupID,
 		ValidityDays: m.ValidityDays,
+		Metadata:     m.Metadata,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)

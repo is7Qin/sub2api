@@ -388,6 +388,7 @@ export default {
     channelMonitor: '渠道监控',
     channelStatus: '渠道状态',
     riskControl: '风控中心',
+    lottery: '抽奖中心',
   },
 
   // Auth
@@ -1044,6 +1045,69 @@ export default {
       unitPerMillion: '/ 1M token',
       unitPerRequest: '/ 次'
     }
+  },
+
+  lottery: {
+    title: '抽奖中心',
+    description: '使用抽奖机会参与活动并领取奖励',
+    days: '天',
+    loadFailed: '加载抽奖数据失败',
+    stats: {
+      activeCampaigns: '进行中活动',
+      availableChances: '可用机会',
+      awardedDraws: '中奖次数',
+    },
+    status: {
+      active: '进行中',
+    },
+    campaigns: {
+      title: '进行中活动',
+      empty: '暂无可参与的抽奖活动。',
+      noDescription: '无描述',
+      endsAt: '结束时间',
+      noEnd: '不限',
+      chanceExpires: '机会有效期',
+      availableChances: '可用机会',
+      prizes: '奖品',
+    },
+    draw: {
+      button: '立即抽奖',
+      noChance: '暂无抽奖机会',
+      resultTitle: '抽奖结果',
+      wonPrize: '恭喜获得：{prize}',
+      success: '恭喜获得 {prize}',
+      failed: '抽奖失败',
+    },
+    chances: {
+      title: '我的抽奖机会',
+      empty: '暂无抽奖机会。',
+    },
+    draws: {
+      title: '中奖记录',
+      empty: '暂无抽奖记录。',
+    },
+    columns: {
+      campaign: '活动',
+      status: '状态',
+      source: '来源',
+      expiresAt: '过期时间',
+      prize: '奖品',
+      redeemCode: '兑换码',
+      drawnAt: '抽奖时间',
+    },
+    chanceStatus: {
+      available: '可用',
+      used: '已使用',
+      expired: '已过期',
+    },
+    drawStatus: {
+      pending: '处理中',
+      awarded: '已发奖',
+      failed: '失败',
+    },
+    rewardTypes: {
+      invitation: '邀请码',
+    },
   },
 
   affiliate: {
@@ -1725,6 +1789,11 @@ export default {
         refreshJobs: '刷新任务',
         loadMore: '加载更多'
       }
+    },
+
+    lottery: {
+      title: '抽奖中心',
+      description: '管理抽奖活动、奖品和用户抽奖机会',
     },
 
     affiliates: {
@@ -5417,6 +5486,13 @@ export default {
           configureLink: '前往 风控中心 配置内容审计',
           enabled: '启用风控中心',
           enabledHint: '关闭后管理员侧边栏入口隐藏，网关内容审计不会执行。',
+        },
+        lottery: {
+          title: '抽奖中心',
+          description: '启用抽奖活动、用户抽奖入口和用户抽奖接口。默认关闭。',
+          configureLink: '配置抽奖活动',
+          enabled: '启用抽奖中心',
+          enabledHint: '关闭后抽奖侧边栏入口隐藏，用户抽奖接口返回无权限。',
         },
         affiliate: {
           title: '邀请返利',

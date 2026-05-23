@@ -113,6 +113,16 @@ func RegisterUserRoutes(
 			subscriptions.GET("/summary", h.Subscription.GetSummary)
 		}
 
+		// 抽奖
+		lottery := authenticated.Group("/lottery")
+		{
+			lottery.GET("/campaigns", h.Lottery.ListCampaigns)
+			lottery.GET("/campaigns/:id", h.Lottery.GetCampaign)
+			lottery.GET("/chances", h.Lottery.ListChances)
+			lottery.GET("/draws", h.Lottery.ListDraws)
+			lottery.POST("/draw", h.Lottery.Draw)
+		}
+
 		// 渠道监控（用户只读）
 		monitors := authenticated.Group("/channel-monitors")
 		{

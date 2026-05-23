@@ -87,6 +87,7 @@ func (RedeemCode) Edges() []ent.Edge {
 			Ref("redeem_codes").
 			Field("group_id").
 			Unique(),
+		edge.To("lottery_draws", LotteryDraw.Type),
 	}
 }
 

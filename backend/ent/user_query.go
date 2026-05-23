@@ -17,6 +17,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/authidentity"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/lotterychance"
+	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
@@ -40,6 +42,8 @@ type UserQuery struct {
 	withAPIKeys               *APIKeyQuery
 	withRedeemCodes           *RedeemCodeQuery
 	withQuotaGrants           *UserQuotaGrantQuery
+	withLotteryChances        *LotteryChanceQuery
+	withLotteryDraws          *LotteryDrawQuery
 	withSubscriptions         *UserSubscriptionQuery
 	withAssignedSubscriptions *UserSubscriptionQuery
 	withAnnouncementReads     *AnnouncementReadQuery
@@ -147,6 +151,50 @@ func (_q *UserQuery) QueryQuotaGrants() *UserQuotaGrantQuery {
 			sqlgraph.From(user.Table, user.FieldID, selector),
 			sqlgraph.To(userquotagrant.Table, userquotagrant.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, user.QuotaGrantsTable, user.QuotaGrantsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryLotteryChances chains the current query on the "lottery_chances" edge.
+func (_q *UserQuery) QueryLotteryChances() *LotteryChanceQuery {
+	query := (&LotteryChanceClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(lotterychance.Table, lotterychance.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.LotteryChancesTable, user.LotteryChancesColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryLotteryDraws chains the current query on the "lottery_draws" edge.
+func (_q *UserQuery) QueryLotteryDraws() *LotteryDrawQuery {
+	query := (&LotteryDrawClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(lotterydraw.Table, lotterydraw.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.LotteryDrawsTable, user.LotteryDrawsColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -591,6 +639,8 @@ func (_q *UserQuery) Clone() *UserQuery {
 		withAPIKeys:               _q.withAPIKeys.Clone(),
 		withRedeemCodes:           _q.withRedeemCodes.Clone(),
 		withQuotaGrants:           _q.withQuotaGrants.Clone(),
+		withLotteryChances:        _q.withLotteryChances.Clone(),
+		withLotteryDraws:          _q.withLotteryDraws.Clone(),
 		withSubscriptions:         _q.withSubscriptions.Clone(),
 		withAssignedSubscriptions: _q.withAssignedSubscriptions.Clone(),
 		withAnnouncementReads:     _q.withAnnouncementReads.Clone(),
@@ -638,6 +688,28 @@ func (_q *UserQuery) WithQuotaGrants(opts ...func(*UserQuotaGrantQuery)) *UserQu
 		opt(query)
 	}
 	_q.withQuotaGrants = query
+	return _q
+}
+
+// WithLotteryChances tells the query-builder to eager-load the nodes that are connected to
+// the "lottery_chances" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithLotteryChances(opts ...func(*LotteryChanceQuery)) *UserQuery {
+	query := (&LotteryChanceClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withLotteryChances = query
+	return _q
+}
+
+// WithLotteryDraws tells the query-builder to eager-load the nodes that are connected to
+// the "lottery_draws" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithLotteryDraws(opts ...func(*LotteryDrawQuery)) *UserQuery {
+	query := (&LotteryDrawClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withLotteryDraws = query
 	return _q
 }
 
@@ -840,10 +912,12 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 	var (
 		nodes       = []*User{}
 		_spec       = _q.querySpec()
-		loadedTypes = [14]bool{
+		loadedTypes = [16]bool{
 			_q.withAPIKeys != nil,
 			_q.withRedeemCodes != nil,
 			_q.withQuotaGrants != nil,
+			_q.withLotteryChances != nil,
+			_q.withLotteryDraws != nil,
 			_q.withSubscriptions != nil,
 			_q.withAssignedSubscriptions != nil,
 			_q.withAnnouncementReads != nil,
@@ -896,6 +970,20 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 		if err := _q.loadQuotaGrants(ctx, query, nodes,
 			func(n *User) { n.Edges.QuotaGrants = []*UserQuotaGrant{} },
 			func(n *User, e *UserQuotaGrant) { n.Edges.QuotaGrants = append(n.Edges.QuotaGrants, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withLotteryChances; query != nil {
+		if err := _q.loadLotteryChances(ctx, query, nodes,
+			func(n *User) { n.Edges.LotteryChances = []*LotteryChance{} },
+			func(n *User, e *LotteryChance) { n.Edges.LotteryChances = append(n.Edges.LotteryChances, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withLotteryDraws; query != nil {
+		if err := _q.loadLotteryDraws(ctx, query, nodes,
+			func(n *User) { n.Edges.LotteryDraws = []*LotteryDraw{} },
+			func(n *User, e *LotteryDraw) { n.Edges.LotteryDraws = append(n.Edges.LotteryDraws, e) }); err != nil {
 			return nil, err
 		}
 	}
@@ -1061,6 +1149,66 @@ func (_q *UserQuery) loadQuotaGrants(ctx context.Context, query *UserQuotaGrantQ
 	}
 	query.Where(predicate.UserQuotaGrant(func(s *sql.Selector) {
 		s.Where(sql.InValues(s.C(user.QuotaGrantsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadLotteryChances(ctx context.Context, query *LotteryChanceQuery, nodes []*User, init func(*User), assign func(*User, *LotteryChance)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(lotterychance.FieldUserID)
+	}
+	query.Where(predicate.LotteryChance(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.LotteryChancesColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadLotteryDraws(ctx context.Context, query *LotteryDrawQuery, nodes []*User, init func(*User), assign func(*User, *LotteryDraw)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(lotterydraw.FieldUserID)
+	}
+	query.Where(predicate.LotteryDraw(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.LotteryDrawsColumn), fks...))
 	}))
 	neighbors, err := query.All(ctx)
 	if err != nil {

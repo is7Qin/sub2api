@@ -39,6 +39,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -90,6 +94,10 @@ const (
 	TypePromoCode                     = "PromoCode"
 	TypePromoCodeUsage                = "PromoCodeUsage"
 	TypeProxy                         = "Proxy"
+	TypeRankingRewardAward            = "RankingRewardAward"
+	TypeRankingRewardCampaign         = "RankingRewardCampaign"
+	TypeRankingRewardExcludedUser     = "RankingRewardExcludedUser"
+	TypeRankingRewardRun              = "RankingRewardRun"
 	TypeRedeemCode                    = "RedeemCode"
 	TypeSecuritySecret                = "SecuritySecret"
 	TypeSetting                       = "Setting"
@@ -19955,32 +19963,38 @@ func (m *IdentityAdoptionDecisionMutation) ResetEdge(name string) error {
 // LotteryCampaignMutation represents an operation that mutates the LotteryCampaign nodes in the graph.
 type LotteryCampaignMutation struct {
 	config
-	op                        Op
-	typ                       string
-	id                        *int64
-	name                      *string
-	description               *string
-	status                    *string
-	starts_at                 *time.Time
-	ends_at                   *time.Time
-	chance_expires_in_days    *int
-	addchance_expires_in_days *int
-	metadata                  *map[string]interface{}
-	created_at                *time.Time
-	updated_at                *time.Time
-	clearedFields             map[string]struct{}
-	prizes                    map[int64]struct{}
-	removedprizes             map[int64]struct{}
-	clearedprizes             bool
-	chances                   map[int64]struct{}
-	removedchances            map[int64]struct{}
-	clearedchances            bool
-	draws                     map[int64]struct{}
-	removeddraws              map[int64]struct{}
-	cleareddraws              bool
-	done                      bool
-	oldValue                  func(context.Context) (*LotteryCampaign, error)
-	predicates                []predicate.LotteryCampaign
+	op                              Op
+	typ                             string
+	id                              *int64
+	name                            *string
+	description                     *string
+	status                          *string
+	starts_at                       *time.Time
+	ends_at                         *time.Time
+	chance_expires_in_days          *int
+	addchance_expires_in_days       *int
+	metadata                        *map[string]interface{}
+	created_at                      *time.Time
+	updated_at                      *time.Time
+	clearedFields                   map[string]struct{}
+	prizes                          map[int64]struct{}
+	removedprizes                   map[int64]struct{}
+	clearedprizes                   bool
+	chances                         map[int64]struct{}
+	removedchances                  map[int64]struct{}
+	clearedchances                  bool
+	draws                           map[int64]struct{}
+	removeddraws                    map[int64]struct{}
+	cleareddraws                    bool
+	ranking_reward_campaigns        map[int64]struct{}
+	removedranking_reward_campaigns map[int64]struct{}
+	clearedranking_reward_campaigns bool
+	ranking_reward_awards           map[int64]struct{}
+	removedranking_reward_awards    map[int64]struct{}
+	clearedranking_reward_awards    bool
+	done                            bool
+	oldValue                        func(context.Context) (*LotteryCampaign, error)
+	predicates                      []predicate.LotteryCampaign
 }
 
 var _ ent.Mutation = (*LotteryCampaignMutation)(nil)
@@ -20613,6 +20627,114 @@ func (m *LotteryCampaignMutation) ResetDraws() {
 	m.removeddraws = nil
 }
 
+// AddRankingRewardCampaignIDs adds the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity by ids.
+func (m *LotteryCampaignMutation) AddRankingRewardCampaignIDs(ids ...int64) {
+	if m.ranking_reward_campaigns == nil {
+		m.ranking_reward_campaigns = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.ranking_reward_campaigns[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRankingRewardCampaigns clears the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity.
+func (m *LotteryCampaignMutation) ClearRankingRewardCampaigns() {
+	m.clearedranking_reward_campaigns = true
+}
+
+// RankingRewardCampaignsCleared reports if the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity was cleared.
+func (m *LotteryCampaignMutation) RankingRewardCampaignsCleared() bool {
+	return m.clearedranking_reward_campaigns
+}
+
+// RemoveRankingRewardCampaignIDs removes the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity by IDs.
+func (m *LotteryCampaignMutation) RemoveRankingRewardCampaignIDs(ids ...int64) {
+	if m.removedranking_reward_campaigns == nil {
+		m.removedranking_reward_campaigns = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.ranking_reward_campaigns, ids[i])
+		m.removedranking_reward_campaigns[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRankingRewardCampaigns returns the removed IDs of the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity.
+func (m *LotteryCampaignMutation) RemovedRankingRewardCampaignsIDs() (ids []int64) {
+	for id := range m.removedranking_reward_campaigns {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RankingRewardCampaignsIDs returns the "ranking_reward_campaigns" edge IDs in the mutation.
+func (m *LotteryCampaignMutation) RankingRewardCampaignsIDs() (ids []int64) {
+	for id := range m.ranking_reward_campaigns {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRankingRewardCampaigns resets all changes to the "ranking_reward_campaigns" edge.
+func (m *LotteryCampaignMutation) ResetRankingRewardCampaigns() {
+	m.ranking_reward_campaigns = nil
+	m.clearedranking_reward_campaigns = false
+	m.removedranking_reward_campaigns = nil
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by ids.
+func (m *LotteryCampaignMutation) AddRankingRewardAwardIDs(ids ...int64) {
+	if m.ranking_reward_awards == nil {
+		m.ranking_reward_awards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.ranking_reward_awards[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRankingRewardAwards clears the "ranking_reward_awards" edge to the RankingRewardAward entity.
+func (m *LotteryCampaignMutation) ClearRankingRewardAwards() {
+	m.clearedranking_reward_awards = true
+}
+
+// RankingRewardAwardsCleared reports if the "ranking_reward_awards" edge to the RankingRewardAward entity was cleared.
+func (m *LotteryCampaignMutation) RankingRewardAwardsCleared() bool {
+	return m.clearedranking_reward_awards
+}
+
+// RemoveRankingRewardAwardIDs removes the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (m *LotteryCampaignMutation) RemoveRankingRewardAwardIDs(ids ...int64) {
+	if m.removedranking_reward_awards == nil {
+		m.removedranking_reward_awards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.ranking_reward_awards, ids[i])
+		m.removedranking_reward_awards[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRankingRewardAwards returns the removed IDs of the "ranking_reward_awards" edge to the RankingRewardAward entity.
+func (m *LotteryCampaignMutation) RemovedRankingRewardAwardsIDs() (ids []int64) {
+	for id := range m.removedranking_reward_awards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RankingRewardAwardsIDs returns the "ranking_reward_awards" edge IDs in the mutation.
+func (m *LotteryCampaignMutation) RankingRewardAwardsIDs() (ids []int64) {
+	for id := range m.ranking_reward_awards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRankingRewardAwards resets all changes to the "ranking_reward_awards" edge.
+func (m *LotteryCampaignMutation) ResetRankingRewardAwards() {
+	m.ranking_reward_awards = nil
+	m.clearedranking_reward_awards = false
+	m.removedranking_reward_awards = nil
+}
+
 // Where appends a list predicates to the LotteryCampaignMutation builder.
 func (m *LotteryCampaignMutation) Where(ps ...predicate.LotteryCampaign) {
 	m.predicates = append(m.predicates, ps...)
@@ -20912,7 +21034,7 @@ func (m *LotteryCampaignMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *LotteryCampaignMutation) AddedEdges() []string {
-	edges := make([]string, 0, 3)
+	edges := make([]string, 0, 5)
 	if m.prizes != nil {
 		edges = append(edges, lotterycampaign.EdgePrizes)
 	}
@@ -20921,6 +21043,12 @@ func (m *LotteryCampaignMutation) AddedEdges() []string {
 	}
 	if m.draws != nil {
 		edges = append(edges, lotterycampaign.EdgeDraws)
+	}
+	if m.ranking_reward_campaigns != nil {
+		edges = append(edges, lotterycampaign.EdgeRankingRewardCampaigns)
+	}
+	if m.ranking_reward_awards != nil {
+		edges = append(edges, lotterycampaign.EdgeRankingRewardAwards)
 	}
 	return edges
 }
@@ -20947,13 +21075,25 @@ func (m *LotteryCampaignMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case lotterycampaign.EdgeRankingRewardCampaigns:
+		ids := make([]ent.Value, 0, len(m.ranking_reward_campaigns))
+		for id := range m.ranking_reward_campaigns {
+			ids = append(ids, id)
+		}
+		return ids
+	case lotterycampaign.EdgeRankingRewardAwards:
+		ids := make([]ent.Value, 0, len(m.ranking_reward_awards))
+		for id := range m.ranking_reward_awards {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *LotteryCampaignMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 3)
+	edges := make([]string, 0, 5)
 	if m.removedprizes != nil {
 		edges = append(edges, lotterycampaign.EdgePrizes)
 	}
@@ -20962,6 +21102,12 @@ func (m *LotteryCampaignMutation) RemovedEdges() []string {
 	}
 	if m.removeddraws != nil {
 		edges = append(edges, lotterycampaign.EdgeDraws)
+	}
+	if m.removedranking_reward_campaigns != nil {
+		edges = append(edges, lotterycampaign.EdgeRankingRewardCampaigns)
+	}
+	if m.removedranking_reward_awards != nil {
+		edges = append(edges, lotterycampaign.EdgeRankingRewardAwards)
 	}
 	return edges
 }
@@ -20988,13 +21134,25 @@ func (m *LotteryCampaignMutation) RemovedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case lotterycampaign.EdgeRankingRewardCampaigns:
+		ids := make([]ent.Value, 0, len(m.removedranking_reward_campaigns))
+		for id := range m.removedranking_reward_campaigns {
+			ids = append(ids, id)
+		}
+		return ids
+	case lotterycampaign.EdgeRankingRewardAwards:
+		ids := make([]ent.Value, 0, len(m.removedranking_reward_awards))
+		for id := range m.removedranking_reward_awards {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *LotteryCampaignMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 3)
+	edges := make([]string, 0, 5)
 	if m.clearedprizes {
 		edges = append(edges, lotterycampaign.EdgePrizes)
 	}
@@ -21003,6 +21161,12 @@ func (m *LotteryCampaignMutation) ClearedEdges() []string {
 	}
 	if m.cleareddraws {
 		edges = append(edges, lotterycampaign.EdgeDraws)
+	}
+	if m.clearedranking_reward_campaigns {
+		edges = append(edges, lotterycampaign.EdgeRankingRewardCampaigns)
+	}
+	if m.clearedranking_reward_awards {
+		edges = append(edges, lotterycampaign.EdgeRankingRewardAwards)
 	}
 	return edges
 }
@@ -21017,6 +21181,10 @@ func (m *LotteryCampaignMutation) EdgeCleared(name string) bool {
 		return m.clearedchances
 	case lotterycampaign.EdgeDraws:
 		return m.cleareddraws
+	case lotterycampaign.EdgeRankingRewardCampaigns:
+		return m.clearedranking_reward_campaigns
+	case lotterycampaign.EdgeRankingRewardAwards:
+		return m.clearedranking_reward_awards
 	}
 	return false
 }
@@ -21041,6 +21209,12 @@ func (m *LotteryCampaignMutation) ResetEdge(name string) error {
 		return nil
 	case lotterycampaign.EdgeDraws:
 		m.ResetDraws()
+		return nil
+	case lotterycampaign.EdgeRankingRewardCampaigns:
+		m.ResetRankingRewardCampaigns()
+		return nil
+	case lotterycampaign.EdgeRankingRewardAwards:
+		m.ResetRankingRewardAwards()
 		return nil
 	}
 	return fmt.Errorf("unknown LotteryCampaign edge %s", name)
@@ -33673,6 +33847,4794 @@ func (m *ProxyMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown Proxy edge %s", name)
 }
 
+// RankingRewardAwardMutation represents an operation that mutates the RankingRewardAward nodes in the graph.
+type RankingRewardAwardMutation struct {
+	config
+	op                       Op
+	typ                      string
+	id                       *int64
+	rank                     *int
+	addrank                  *int
+	actual_cost              *float64
+	addactual_cost           *float64
+	requests                 *int64
+	addrequests              *int64
+	tokens                   *int64
+	addtokens                *int64
+	chance_count             *int
+	addchance_count          *int
+	lottery_chance_ids       *[]int64
+	appendlottery_chance_ids []int64
+	metadata                 *map[string]interface{}
+	created_at               *time.Time
+	clearedFields            map[string]struct{}
+	run                      *int64
+	clearedrun               bool
+	campaign                 *int64
+	clearedcampaign          bool
+	lottery_campaign         *int64
+	clearedlottery_campaign  bool
+	user                     *int64
+	cleareduser              bool
+	done                     bool
+	oldValue                 func(context.Context) (*RankingRewardAward, error)
+	predicates               []predicate.RankingRewardAward
+}
+
+var _ ent.Mutation = (*RankingRewardAwardMutation)(nil)
+
+// rankingrewardawardOption allows management of the mutation configuration using functional options.
+type rankingrewardawardOption func(*RankingRewardAwardMutation)
+
+// newRankingRewardAwardMutation creates new mutation for the RankingRewardAward entity.
+func newRankingRewardAwardMutation(c config, op Op, opts ...rankingrewardawardOption) *RankingRewardAwardMutation {
+	m := &RankingRewardAwardMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRankingRewardAward,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRankingRewardAwardID sets the ID field of the mutation.
+func withRankingRewardAwardID(id int64) rankingrewardawardOption {
+	return func(m *RankingRewardAwardMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RankingRewardAward
+		)
+		m.oldValue = func(ctx context.Context) (*RankingRewardAward, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RankingRewardAward.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRankingRewardAward sets the old RankingRewardAward of the mutation.
+func withRankingRewardAward(node *RankingRewardAward) rankingrewardawardOption {
+	return func(m *RankingRewardAwardMutation) {
+		m.oldValue = func(context.Context) (*RankingRewardAward, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RankingRewardAwardMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RankingRewardAwardMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RankingRewardAwardMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RankingRewardAwardMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RankingRewardAward.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetRunID sets the "run_id" field.
+func (m *RankingRewardAwardMutation) SetRunID(i int64) {
+	m.run = &i
+}
+
+// RunID returns the value of the "run_id" field in the mutation.
+func (m *RankingRewardAwardMutation) RunID() (r int64, exists bool) {
+	v := m.run
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRunID returns the old "run_id" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldRunID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRunID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRunID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRunID: %w", err)
+	}
+	return oldValue.RunID, nil
+}
+
+// ResetRunID resets all changes to the "run_id" field.
+func (m *RankingRewardAwardMutation) ResetRunID() {
+	m.run = nil
+}
+
+// SetCampaignID sets the "campaign_id" field.
+func (m *RankingRewardAwardMutation) SetCampaignID(i int64) {
+	m.campaign = &i
+}
+
+// CampaignID returns the value of the "campaign_id" field in the mutation.
+func (m *RankingRewardAwardMutation) CampaignID() (r int64, exists bool) {
+	v := m.campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCampaignID returns the old "campaign_id" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCampaignID: %w", err)
+	}
+	return oldValue.CampaignID, nil
+}
+
+// ResetCampaignID resets all changes to the "campaign_id" field.
+func (m *RankingRewardAwardMutation) ResetCampaignID() {
+	m.campaign = nil
+}
+
+// SetLotteryCampaignID sets the "lottery_campaign_id" field.
+func (m *RankingRewardAwardMutation) SetLotteryCampaignID(i int64) {
+	m.lottery_campaign = &i
+}
+
+// LotteryCampaignID returns the value of the "lottery_campaign_id" field in the mutation.
+func (m *RankingRewardAwardMutation) LotteryCampaignID() (r int64, exists bool) {
+	v := m.lottery_campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLotteryCampaignID returns the old "lottery_campaign_id" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldLotteryCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLotteryCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLotteryCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLotteryCampaignID: %w", err)
+	}
+	return oldValue.LotteryCampaignID, nil
+}
+
+// ResetLotteryCampaignID resets all changes to the "lottery_campaign_id" field.
+func (m *RankingRewardAwardMutation) ResetLotteryCampaignID() {
+	m.lottery_campaign = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *RankingRewardAwardMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *RankingRewardAwardMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *RankingRewardAwardMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetRank sets the "rank" field.
+func (m *RankingRewardAwardMutation) SetRank(i int) {
+	m.rank = &i
+	m.addrank = nil
+}
+
+// Rank returns the value of the "rank" field in the mutation.
+func (m *RankingRewardAwardMutation) Rank() (r int, exists bool) {
+	v := m.rank
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRank returns the old "rank" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldRank(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRank is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRank requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRank: %w", err)
+	}
+	return oldValue.Rank, nil
+}
+
+// AddRank adds i to the "rank" field.
+func (m *RankingRewardAwardMutation) AddRank(i int) {
+	if m.addrank != nil {
+		*m.addrank += i
+	} else {
+		m.addrank = &i
+	}
+}
+
+// AddedRank returns the value that was added to the "rank" field in this mutation.
+func (m *RankingRewardAwardMutation) AddedRank() (r int, exists bool) {
+	v := m.addrank
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetRank resets all changes to the "rank" field.
+func (m *RankingRewardAwardMutation) ResetRank() {
+	m.rank = nil
+	m.addrank = nil
+}
+
+// SetActualCost sets the "actual_cost" field.
+func (m *RankingRewardAwardMutation) SetActualCost(f float64) {
+	m.actual_cost = &f
+	m.addactual_cost = nil
+}
+
+// ActualCost returns the value of the "actual_cost" field in the mutation.
+func (m *RankingRewardAwardMutation) ActualCost() (r float64, exists bool) {
+	v := m.actual_cost
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldActualCost returns the old "actual_cost" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldActualCost(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldActualCost is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldActualCost requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldActualCost: %w", err)
+	}
+	return oldValue.ActualCost, nil
+}
+
+// AddActualCost adds f to the "actual_cost" field.
+func (m *RankingRewardAwardMutation) AddActualCost(f float64) {
+	if m.addactual_cost != nil {
+		*m.addactual_cost += f
+	} else {
+		m.addactual_cost = &f
+	}
+}
+
+// AddedActualCost returns the value that was added to the "actual_cost" field in this mutation.
+func (m *RankingRewardAwardMutation) AddedActualCost() (r float64, exists bool) {
+	v := m.addactual_cost
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetActualCost resets all changes to the "actual_cost" field.
+func (m *RankingRewardAwardMutation) ResetActualCost() {
+	m.actual_cost = nil
+	m.addactual_cost = nil
+}
+
+// SetRequests sets the "requests" field.
+func (m *RankingRewardAwardMutation) SetRequests(i int64) {
+	m.requests = &i
+	m.addrequests = nil
+}
+
+// Requests returns the value of the "requests" field in the mutation.
+func (m *RankingRewardAwardMutation) Requests() (r int64, exists bool) {
+	v := m.requests
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRequests returns the old "requests" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldRequests(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRequests is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRequests requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRequests: %w", err)
+	}
+	return oldValue.Requests, nil
+}
+
+// AddRequests adds i to the "requests" field.
+func (m *RankingRewardAwardMutation) AddRequests(i int64) {
+	if m.addrequests != nil {
+		*m.addrequests += i
+	} else {
+		m.addrequests = &i
+	}
+}
+
+// AddedRequests returns the value that was added to the "requests" field in this mutation.
+func (m *RankingRewardAwardMutation) AddedRequests() (r int64, exists bool) {
+	v := m.addrequests
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetRequests resets all changes to the "requests" field.
+func (m *RankingRewardAwardMutation) ResetRequests() {
+	m.requests = nil
+	m.addrequests = nil
+}
+
+// SetTokens sets the "tokens" field.
+func (m *RankingRewardAwardMutation) SetTokens(i int64) {
+	m.tokens = &i
+	m.addtokens = nil
+}
+
+// Tokens returns the value of the "tokens" field in the mutation.
+func (m *RankingRewardAwardMutation) Tokens() (r int64, exists bool) {
+	v := m.tokens
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTokens returns the old "tokens" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldTokens(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTokens is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTokens requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTokens: %w", err)
+	}
+	return oldValue.Tokens, nil
+}
+
+// AddTokens adds i to the "tokens" field.
+func (m *RankingRewardAwardMutation) AddTokens(i int64) {
+	if m.addtokens != nil {
+		*m.addtokens += i
+	} else {
+		m.addtokens = &i
+	}
+}
+
+// AddedTokens returns the value that was added to the "tokens" field in this mutation.
+func (m *RankingRewardAwardMutation) AddedTokens() (r int64, exists bool) {
+	v := m.addtokens
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetTokens resets all changes to the "tokens" field.
+func (m *RankingRewardAwardMutation) ResetTokens() {
+	m.tokens = nil
+	m.addtokens = nil
+}
+
+// SetChanceCount sets the "chance_count" field.
+func (m *RankingRewardAwardMutation) SetChanceCount(i int) {
+	m.chance_count = &i
+	m.addchance_count = nil
+}
+
+// ChanceCount returns the value of the "chance_count" field in the mutation.
+func (m *RankingRewardAwardMutation) ChanceCount() (r int, exists bool) {
+	v := m.chance_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldChanceCount returns the old "chance_count" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldChanceCount(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldChanceCount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldChanceCount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldChanceCount: %w", err)
+	}
+	return oldValue.ChanceCount, nil
+}
+
+// AddChanceCount adds i to the "chance_count" field.
+func (m *RankingRewardAwardMutation) AddChanceCount(i int) {
+	if m.addchance_count != nil {
+		*m.addchance_count += i
+	} else {
+		m.addchance_count = &i
+	}
+}
+
+// AddedChanceCount returns the value that was added to the "chance_count" field in this mutation.
+func (m *RankingRewardAwardMutation) AddedChanceCount() (r int, exists bool) {
+	v := m.addchance_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetChanceCount resets all changes to the "chance_count" field.
+func (m *RankingRewardAwardMutation) ResetChanceCount() {
+	m.chance_count = nil
+	m.addchance_count = nil
+}
+
+// SetLotteryChanceIds sets the "lottery_chance_ids" field.
+func (m *RankingRewardAwardMutation) SetLotteryChanceIds(i []int64) {
+	m.lottery_chance_ids = &i
+	m.appendlottery_chance_ids = nil
+}
+
+// LotteryChanceIds returns the value of the "lottery_chance_ids" field in the mutation.
+func (m *RankingRewardAwardMutation) LotteryChanceIds() (r []int64, exists bool) {
+	v := m.lottery_chance_ids
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLotteryChanceIds returns the old "lottery_chance_ids" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldLotteryChanceIds(ctx context.Context) (v []int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLotteryChanceIds is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLotteryChanceIds requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLotteryChanceIds: %w", err)
+	}
+	return oldValue.LotteryChanceIds, nil
+}
+
+// AppendLotteryChanceIds adds i to the "lottery_chance_ids" field.
+func (m *RankingRewardAwardMutation) AppendLotteryChanceIds(i []int64) {
+	m.appendlottery_chance_ids = append(m.appendlottery_chance_ids, i...)
+}
+
+// AppendedLotteryChanceIds returns the list of values that were appended to the "lottery_chance_ids" field in this mutation.
+func (m *RankingRewardAwardMutation) AppendedLotteryChanceIds() ([]int64, bool) {
+	if len(m.appendlottery_chance_ids) == 0 {
+		return nil, false
+	}
+	return m.appendlottery_chance_ids, true
+}
+
+// ClearLotteryChanceIds clears the value of the "lottery_chance_ids" field.
+func (m *RankingRewardAwardMutation) ClearLotteryChanceIds() {
+	m.lottery_chance_ids = nil
+	m.appendlottery_chance_ids = nil
+	m.clearedFields[rankingrewardaward.FieldLotteryChanceIds] = struct{}{}
+}
+
+// LotteryChanceIdsCleared returns if the "lottery_chance_ids" field was cleared in this mutation.
+func (m *RankingRewardAwardMutation) LotteryChanceIdsCleared() bool {
+	_, ok := m.clearedFields[rankingrewardaward.FieldLotteryChanceIds]
+	return ok
+}
+
+// ResetLotteryChanceIds resets all changes to the "lottery_chance_ids" field.
+func (m *RankingRewardAwardMutation) ResetLotteryChanceIds() {
+	m.lottery_chance_ids = nil
+	m.appendlottery_chance_ids = nil
+	delete(m.clearedFields, rankingrewardaward.FieldLotteryChanceIds)
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *RankingRewardAwardMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RankingRewardAwardMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RankingRewardAwardMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[rankingrewardaward.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RankingRewardAwardMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[rankingrewardaward.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RankingRewardAwardMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, rankingrewardaward.FieldMetadata)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RankingRewardAwardMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RankingRewardAwardMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RankingRewardAward entity.
+// If the RankingRewardAward object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardAwardMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RankingRewardAwardMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// ClearRun clears the "run" edge to the RankingRewardRun entity.
+func (m *RankingRewardAwardMutation) ClearRun() {
+	m.clearedrun = true
+	m.clearedFields[rankingrewardaward.FieldRunID] = struct{}{}
+}
+
+// RunCleared reports if the "run" edge to the RankingRewardRun entity was cleared.
+func (m *RankingRewardAwardMutation) RunCleared() bool {
+	return m.clearedrun
+}
+
+// RunIDs returns the "run" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// RunID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardAwardMutation) RunIDs() (ids []int64) {
+	if id := m.run; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetRun resets all changes to the "run" edge.
+func (m *RankingRewardAwardMutation) ResetRun() {
+	m.run = nil
+	m.clearedrun = false
+}
+
+// ClearCampaign clears the "campaign" edge to the RankingRewardCampaign entity.
+func (m *RankingRewardAwardMutation) ClearCampaign() {
+	m.clearedcampaign = true
+	m.clearedFields[rankingrewardaward.FieldCampaignID] = struct{}{}
+}
+
+// CampaignCleared reports if the "campaign" edge to the RankingRewardCampaign entity was cleared.
+func (m *RankingRewardAwardMutation) CampaignCleared() bool {
+	return m.clearedcampaign
+}
+
+// CampaignIDs returns the "campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// CampaignID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardAwardMutation) CampaignIDs() (ids []int64) {
+	if id := m.campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetCampaign resets all changes to the "campaign" edge.
+func (m *RankingRewardAwardMutation) ResetCampaign() {
+	m.campaign = nil
+	m.clearedcampaign = false
+}
+
+// ClearLotteryCampaign clears the "lottery_campaign" edge to the LotteryCampaign entity.
+func (m *RankingRewardAwardMutation) ClearLotteryCampaign() {
+	m.clearedlottery_campaign = true
+	m.clearedFields[rankingrewardaward.FieldLotteryCampaignID] = struct{}{}
+}
+
+// LotteryCampaignCleared reports if the "lottery_campaign" edge to the LotteryCampaign entity was cleared.
+func (m *RankingRewardAwardMutation) LotteryCampaignCleared() bool {
+	return m.clearedlottery_campaign
+}
+
+// LotteryCampaignIDs returns the "lottery_campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// LotteryCampaignID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardAwardMutation) LotteryCampaignIDs() (ids []int64) {
+	if id := m.lottery_campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetLotteryCampaign resets all changes to the "lottery_campaign" edge.
+func (m *RankingRewardAwardMutation) ResetLotteryCampaign() {
+	m.lottery_campaign = nil
+	m.clearedlottery_campaign = false
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *RankingRewardAwardMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[rankingrewardaward.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *RankingRewardAwardMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardAwardMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *RankingRewardAwardMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// Where appends a list predicates to the RankingRewardAwardMutation builder.
+func (m *RankingRewardAwardMutation) Where(ps ...predicate.RankingRewardAward) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RankingRewardAwardMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RankingRewardAwardMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RankingRewardAward, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RankingRewardAwardMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RankingRewardAwardMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RankingRewardAward).
+func (m *RankingRewardAwardMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RankingRewardAwardMutation) Fields() []string {
+	fields := make([]string, 0, 12)
+	if m.run != nil {
+		fields = append(fields, rankingrewardaward.FieldRunID)
+	}
+	if m.campaign != nil {
+		fields = append(fields, rankingrewardaward.FieldCampaignID)
+	}
+	if m.lottery_campaign != nil {
+		fields = append(fields, rankingrewardaward.FieldLotteryCampaignID)
+	}
+	if m.user != nil {
+		fields = append(fields, rankingrewardaward.FieldUserID)
+	}
+	if m.rank != nil {
+		fields = append(fields, rankingrewardaward.FieldRank)
+	}
+	if m.actual_cost != nil {
+		fields = append(fields, rankingrewardaward.FieldActualCost)
+	}
+	if m.requests != nil {
+		fields = append(fields, rankingrewardaward.FieldRequests)
+	}
+	if m.tokens != nil {
+		fields = append(fields, rankingrewardaward.FieldTokens)
+	}
+	if m.chance_count != nil {
+		fields = append(fields, rankingrewardaward.FieldChanceCount)
+	}
+	if m.lottery_chance_ids != nil {
+		fields = append(fields, rankingrewardaward.FieldLotteryChanceIds)
+	}
+	if m.metadata != nil {
+		fields = append(fields, rankingrewardaward.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rankingrewardaward.FieldCreatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RankingRewardAwardMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardaward.FieldRunID:
+		return m.RunID()
+	case rankingrewardaward.FieldCampaignID:
+		return m.CampaignID()
+	case rankingrewardaward.FieldLotteryCampaignID:
+		return m.LotteryCampaignID()
+	case rankingrewardaward.FieldUserID:
+		return m.UserID()
+	case rankingrewardaward.FieldRank:
+		return m.Rank()
+	case rankingrewardaward.FieldActualCost:
+		return m.ActualCost()
+	case rankingrewardaward.FieldRequests:
+		return m.Requests()
+	case rankingrewardaward.FieldTokens:
+		return m.Tokens()
+	case rankingrewardaward.FieldChanceCount:
+		return m.ChanceCount()
+	case rankingrewardaward.FieldLotteryChanceIds:
+		return m.LotteryChanceIds()
+	case rankingrewardaward.FieldMetadata:
+		return m.Metadata()
+	case rankingrewardaward.FieldCreatedAt:
+		return m.CreatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RankingRewardAwardMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rankingrewardaward.FieldRunID:
+		return m.OldRunID(ctx)
+	case rankingrewardaward.FieldCampaignID:
+		return m.OldCampaignID(ctx)
+	case rankingrewardaward.FieldLotteryCampaignID:
+		return m.OldLotteryCampaignID(ctx)
+	case rankingrewardaward.FieldUserID:
+		return m.OldUserID(ctx)
+	case rankingrewardaward.FieldRank:
+		return m.OldRank(ctx)
+	case rankingrewardaward.FieldActualCost:
+		return m.OldActualCost(ctx)
+	case rankingrewardaward.FieldRequests:
+		return m.OldRequests(ctx)
+	case rankingrewardaward.FieldTokens:
+		return m.OldTokens(ctx)
+	case rankingrewardaward.FieldChanceCount:
+		return m.OldChanceCount(ctx)
+	case rankingrewardaward.FieldLotteryChanceIds:
+		return m.OldLotteryChanceIds(ctx)
+	case rankingrewardaward.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case rankingrewardaward.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RankingRewardAward field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardAwardMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardaward.FieldRunID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRunID(v)
+		return nil
+	case rankingrewardaward.FieldCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCampaignID(v)
+		return nil
+	case rankingrewardaward.FieldLotteryCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLotteryCampaignID(v)
+		return nil
+	case rankingrewardaward.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case rankingrewardaward.FieldRank:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRank(v)
+		return nil
+	case rankingrewardaward.FieldActualCost:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetActualCost(v)
+		return nil
+	case rankingrewardaward.FieldRequests:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRequests(v)
+		return nil
+	case rankingrewardaward.FieldTokens:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTokens(v)
+		return nil
+	case rankingrewardaward.FieldChanceCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetChanceCount(v)
+		return nil
+	case rankingrewardaward.FieldLotteryChanceIds:
+		v, ok := value.([]int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLotteryChanceIds(v)
+		return nil
+	case rankingrewardaward.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case rankingrewardaward.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardAward field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RankingRewardAwardMutation) AddedFields() []string {
+	var fields []string
+	if m.addrank != nil {
+		fields = append(fields, rankingrewardaward.FieldRank)
+	}
+	if m.addactual_cost != nil {
+		fields = append(fields, rankingrewardaward.FieldActualCost)
+	}
+	if m.addrequests != nil {
+		fields = append(fields, rankingrewardaward.FieldRequests)
+	}
+	if m.addtokens != nil {
+		fields = append(fields, rankingrewardaward.FieldTokens)
+	}
+	if m.addchance_count != nil {
+		fields = append(fields, rankingrewardaward.FieldChanceCount)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RankingRewardAwardMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardaward.FieldRank:
+		return m.AddedRank()
+	case rankingrewardaward.FieldActualCost:
+		return m.AddedActualCost()
+	case rankingrewardaward.FieldRequests:
+		return m.AddedRequests()
+	case rankingrewardaward.FieldTokens:
+		return m.AddedTokens()
+	case rankingrewardaward.FieldChanceCount:
+		return m.AddedChanceCount()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardAwardMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardaward.FieldRank:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRank(v)
+		return nil
+	case rankingrewardaward.FieldActualCost:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddActualCost(v)
+		return nil
+	case rankingrewardaward.FieldRequests:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRequests(v)
+		return nil
+	case rankingrewardaward.FieldTokens:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTokens(v)
+		return nil
+	case rankingrewardaward.FieldChanceCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddChanceCount(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardAward numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RankingRewardAwardMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(rankingrewardaward.FieldLotteryChanceIds) {
+		fields = append(fields, rankingrewardaward.FieldLotteryChanceIds)
+	}
+	if m.FieldCleared(rankingrewardaward.FieldMetadata) {
+		fields = append(fields, rankingrewardaward.FieldMetadata)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RankingRewardAwardMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RankingRewardAwardMutation) ClearField(name string) error {
+	switch name {
+	case rankingrewardaward.FieldLotteryChanceIds:
+		m.ClearLotteryChanceIds()
+		return nil
+	case rankingrewardaward.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardAward nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RankingRewardAwardMutation) ResetField(name string) error {
+	switch name {
+	case rankingrewardaward.FieldRunID:
+		m.ResetRunID()
+		return nil
+	case rankingrewardaward.FieldCampaignID:
+		m.ResetCampaignID()
+		return nil
+	case rankingrewardaward.FieldLotteryCampaignID:
+		m.ResetLotteryCampaignID()
+		return nil
+	case rankingrewardaward.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case rankingrewardaward.FieldRank:
+		m.ResetRank()
+		return nil
+	case rankingrewardaward.FieldActualCost:
+		m.ResetActualCost()
+		return nil
+	case rankingrewardaward.FieldRequests:
+		m.ResetRequests()
+		return nil
+	case rankingrewardaward.FieldTokens:
+		m.ResetTokens()
+		return nil
+	case rankingrewardaward.FieldChanceCount:
+		m.ResetChanceCount()
+		return nil
+	case rankingrewardaward.FieldLotteryChanceIds:
+		m.ResetLotteryChanceIds()
+		return nil
+	case rankingrewardaward.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case rankingrewardaward.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardAward field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RankingRewardAwardMutation) AddedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.run != nil {
+		edges = append(edges, rankingrewardaward.EdgeRun)
+	}
+	if m.campaign != nil {
+		edges = append(edges, rankingrewardaward.EdgeCampaign)
+	}
+	if m.lottery_campaign != nil {
+		edges = append(edges, rankingrewardaward.EdgeLotteryCampaign)
+	}
+	if m.user != nil {
+		edges = append(edges, rankingrewardaward.EdgeUser)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RankingRewardAwardMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rankingrewardaward.EdgeRun:
+		if id := m.run; id != nil {
+			return []ent.Value{*id}
+		}
+	case rankingrewardaward.EdgeCampaign:
+		if id := m.campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rankingrewardaward.EdgeLotteryCampaign:
+		if id := m.lottery_campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rankingrewardaward.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RankingRewardAwardMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 4)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RankingRewardAwardMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RankingRewardAwardMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.clearedrun {
+		edges = append(edges, rankingrewardaward.EdgeRun)
+	}
+	if m.clearedcampaign {
+		edges = append(edges, rankingrewardaward.EdgeCampaign)
+	}
+	if m.clearedlottery_campaign {
+		edges = append(edges, rankingrewardaward.EdgeLotteryCampaign)
+	}
+	if m.cleareduser {
+		edges = append(edges, rankingrewardaward.EdgeUser)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RankingRewardAwardMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rankingrewardaward.EdgeRun:
+		return m.clearedrun
+	case rankingrewardaward.EdgeCampaign:
+		return m.clearedcampaign
+	case rankingrewardaward.EdgeLotteryCampaign:
+		return m.clearedlottery_campaign
+	case rankingrewardaward.EdgeUser:
+		return m.cleareduser
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RankingRewardAwardMutation) ClearEdge(name string) error {
+	switch name {
+	case rankingrewardaward.EdgeRun:
+		m.ClearRun()
+		return nil
+	case rankingrewardaward.EdgeCampaign:
+		m.ClearCampaign()
+		return nil
+	case rankingrewardaward.EdgeLotteryCampaign:
+		m.ClearLotteryCampaign()
+		return nil
+	case rankingrewardaward.EdgeUser:
+		m.ClearUser()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardAward unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RankingRewardAwardMutation) ResetEdge(name string) error {
+	switch name {
+	case rankingrewardaward.EdgeRun:
+		m.ResetRun()
+		return nil
+	case rankingrewardaward.EdgeCampaign:
+		m.ResetCampaign()
+		return nil
+	case rankingrewardaward.EdgeLotteryCampaign:
+		m.ResetLotteryCampaign()
+		return nil
+	case rankingrewardaward.EdgeUser:
+		m.ResetUser()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardAward edge %s", name)
+}
+
+// RankingRewardCampaignMutation represents an operation that mutates the RankingRewardCampaign nodes in the graph.
+type RankingRewardCampaignMutation struct {
+	config
+	op                      Op
+	typ                     string
+	id                      *int64
+	name                    *string
+	description             *string
+	status                  *string
+	top_n                   *int
+	addtop_n                *int
+	chance_count            *int
+	addchance_count         *int
+	public_display_limit    *int
+	addpublic_display_limit *int
+	min_actual_cost         *float64
+	addmin_actual_cost      *float64
+	starts_at               *time.Time
+	ends_at                 *time.Time
+	timezone                *string
+	last_run_date           *time.Time
+	metadata                *map[string]interface{}
+	created_at              *time.Time
+	updated_at              *time.Time
+	clearedFields           map[string]struct{}
+	lottery_campaign        *int64
+	clearedlottery_campaign bool
+	excluded_users          map[int64]struct{}
+	removedexcluded_users   map[int64]struct{}
+	clearedexcluded_users   bool
+	runs                    map[int64]struct{}
+	removedruns             map[int64]struct{}
+	clearedruns             bool
+	awards                  map[int64]struct{}
+	removedawards           map[int64]struct{}
+	clearedawards           bool
+	done                    bool
+	oldValue                func(context.Context) (*RankingRewardCampaign, error)
+	predicates              []predicate.RankingRewardCampaign
+}
+
+var _ ent.Mutation = (*RankingRewardCampaignMutation)(nil)
+
+// rankingrewardcampaignOption allows management of the mutation configuration using functional options.
+type rankingrewardcampaignOption func(*RankingRewardCampaignMutation)
+
+// newRankingRewardCampaignMutation creates new mutation for the RankingRewardCampaign entity.
+func newRankingRewardCampaignMutation(c config, op Op, opts ...rankingrewardcampaignOption) *RankingRewardCampaignMutation {
+	m := &RankingRewardCampaignMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRankingRewardCampaign,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRankingRewardCampaignID sets the ID field of the mutation.
+func withRankingRewardCampaignID(id int64) rankingrewardcampaignOption {
+	return func(m *RankingRewardCampaignMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RankingRewardCampaign
+		)
+		m.oldValue = func(ctx context.Context) (*RankingRewardCampaign, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RankingRewardCampaign.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRankingRewardCampaign sets the old RankingRewardCampaign of the mutation.
+func withRankingRewardCampaign(node *RankingRewardCampaign) rankingrewardcampaignOption {
+	return func(m *RankingRewardCampaignMutation) {
+		m.oldValue = func(context.Context) (*RankingRewardCampaign, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RankingRewardCampaignMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RankingRewardCampaignMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RankingRewardCampaignMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RankingRewardCampaignMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RankingRewardCampaign.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetName sets the "name" field.
+func (m *RankingRewardCampaignMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *RankingRewardCampaignMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *RankingRewardCampaignMutation) ResetName() {
+	m.name = nil
+}
+
+// SetDescription sets the "description" field.
+func (m *RankingRewardCampaignMutation) SetDescription(s string) {
+	m.description = &s
+}
+
+// Description returns the value of the "description" field in the mutation.
+func (m *RankingRewardCampaignMutation) Description() (r string, exists bool) {
+	v := m.description
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDescription returns the old "description" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldDescription(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDescription is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDescription requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDescription: %w", err)
+	}
+	return oldValue.Description, nil
+}
+
+// ResetDescription resets all changes to the "description" field.
+func (m *RankingRewardCampaignMutation) ResetDescription() {
+	m.description = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *RankingRewardCampaignMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *RankingRewardCampaignMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *RankingRewardCampaignMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetLotteryCampaignID sets the "lottery_campaign_id" field.
+func (m *RankingRewardCampaignMutation) SetLotteryCampaignID(i int64) {
+	m.lottery_campaign = &i
+}
+
+// LotteryCampaignID returns the value of the "lottery_campaign_id" field in the mutation.
+func (m *RankingRewardCampaignMutation) LotteryCampaignID() (r int64, exists bool) {
+	v := m.lottery_campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLotteryCampaignID returns the old "lottery_campaign_id" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldLotteryCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLotteryCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLotteryCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLotteryCampaignID: %w", err)
+	}
+	return oldValue.LotteryCampaignID, nil
+}
+
+// ResetLotteryCampaignID resets all changes to the "lottery_campaign_id" field.
+func (m *RankingRewardCampaignMutation) ResetLotteryCampaignID() {
+	m.lottery_campaign = nil
+}
+
+// SetTopN sets the "top_n" field.
+func (m *RankingRewardCampaignMutation) SetTopN(i int) {
+	m.top_n = &i
+	m.addtop_n = nil
+}
+
+// TopN returns the value of the "top_n" field in the mutation.
+func (m *RankingRewardCampaignMutation) TopN() (r int, exists bool) {
+	v := m.top_n
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTopN returns the old "top_n" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldTopN(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTopN is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTopN requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTopN: %w", err)
+	}
+	return oldValue.TopN, nil
+}
+
+// AddTopN adds i to the "top_n" field.
+func (m *RankingRewardCampaignMutation) AddTopN(i int) {
+	if m.addtop_n != nil {
+		*m.addtop_n += i
+	} else {
+		m.addtop_n = &i
+	}
+}
+
+// AddedTopN returns the value that was added to the "top_n" field in this mutation.
+func (m *RankingRewardCampaignMutation) AddedTopN() (r int, exists bool) {
+	v := m.addtop_n
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetTopN resets all changes to the "top_n" field.
+func (m *RankingRewardCampaignMutation) ResetTopN() {
+	m.top_n = nil
+	m.addtop_n = nil
+}
+
+// SetChanceCount sets the "chance_count" field.
+func (m *RankingRewardCampaignMutation) SetChanceCount(i int) {
+	m.chance_count = &i
+	m.addchance_count = nil
+}
+
+// ChanceCount returns the value of the "chance_count" field in the mutation.
+func (m *RankingRewardCampaignMutation) ChanceCount() (r int, exists bool) {
+	v := m.chance_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldChanceCount returns the old "chance_count" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldChanceCount(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldChanceCount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldChanceCount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldChanceCount: %w", err)
+	}
+	return oldValue.ChanceCount, nil
+}
+
+// AddChanceCount adds i to the "chance_count" field.
+func (m *RankingRewardCampaignMutation) AddChanceCount(i int) {
+	if m.addchance_count != nil {
+		*m.addchance_count += i
+	} else {
+		m.addchance_count = &i
+	}
+}
+
+// AddedChanceCount returns the value that was added to the "chance_count" field in this mutation.
+func (m *RankingRewardCampaignMutation) AddedChanceCount() (r int, exists bool) {
+	v := m.addchance_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetChanceCount resets all changes to the "chance_count" field.
+func (m *RankingRewardCampaignMutation) ResetChanceCount() {
+	m.chance_count = nil
+	m.addchance_count = nil
+}
+
+// SetPublicDisplayLimit sets the "public_display_limit" field.
+func (m *RankingRewardCampaignMutation) SetPublicDisplayLimit(i int) {
+	m.public_display_limit = &i
+	m.addpublic_display_limit = nil
+}
+
+// PublicDisplayLimit returns the value of the "public_display_limit" field in the mutation.
+func (m *RankingRewardCampaignMutation) PublicDisplayLimit() (r int, exists bool) {
+	v := m.public_display_limit
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPublicDisplayLimit returns the old "public_display_limit" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldPublicDisplayLimit(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPublicDisplayLimit is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPublicDisplayLimit requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPublicDisplayLimit: %w", err)
+	}
+	return oldValue.PublicDisplayLimit, nil
+}
+
+// AddPublicDisplayLimit adds i to the "public_display_limit" field.
+func (m *RankingRewardCampaignMutation) AddPublicDisplayLimit(i int) {
+	if m.addpublic_display_limit != nil {
+		*m.addpublic_display_limit += i
+	} else {
+		m.addpublic_display_limit = &i
+	}
+}
+
+// AddedPublicDisplayLimit returns the value that was added to the "public_display_limit" field in this mutation.
+func (m *RankingRewardCampaignMutation) AddedPublicDisplayLimit() (r int, exists bool) {
+	v := m.addpublic_display_limit
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetPublicDisplayLimit resets all changes to the "public_display_limit" field.
+func (m *RankingRewardCampaignMutation) ResetPublicDisplayLimit() {
+	m.public_display_limit = nil
+	m.addpublic_display_limit = nil
+}
+
+// SetMinActualCost sets the "min_actual_cost" field.
+func (m *RankingRewardCampaignMutation) SetMinActualCost(f float64) {
+	m.min_actual_cost = &f
+	m.addmin_actual_cost = nil
+}
+
+// MinActualCost returns the value of the "min_actual_cost" field in the mutation.
+func (m *RankingRewardCampaignMutation) MinActualCost() (r float64, exists bool) {
+	v := m.min_actual_cost
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMinActualCost returns the old "min_actual_cost" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldMinActualCost(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMinActualCost is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMinActualCost requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMinActualCost: %w", err)
+	}
+	return oldValue.MinActualCost, nil
+}
+
+// AddMinActualCost adds f to the "min_actual_cost" field.
+func (m *RankingRewardCampaignMutation) AddMinActualCost(f float64) {
+	if m.addmin_actual_cost != nil {
+		*m.addmin_actual_cost += f
+	} else {
+		m.addmin_actual_cost = &f
+	}
+}
+
+// AddedMinActualCost returns the value that was added to the "min_actual_cost" field in this mutation.
+func (m *RankingRewardCampaignMutation) AddedMinActualCost() (r float64, exists bool) {
+	v := m.addmin_actual_cost
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetMinActualCost resets all changes to the "min_actual_cost" field.
+func (m *RankingRewardCampaignMutation) ResetMinActualCost() {
+	m.min_actual_cost = nil
+	m.addmin_actual_cost = nil
+}
+
+// SetStartsAt sets the "starts_at" field.
+func (m *RankingRewardCampaignMutation) SetStartsAt(t time.Time) {
+	m.starts_at = &t
+}
+
+// StartsAt returns the value of the "starts_at" field in the mutation.
+func (m *RankingRewardCampaignMutation) StartsAt() (r time.Time, exists bool) {
+	v := m.starts_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStartsAt returns the old "starts_at" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldStartsAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStartsAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStartsAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStartsAt: %w", err)
+	}
+	return oldValue.StartsAt, nil
+}
+
+// ResetStartsAt resets all changes to the "starts_at" field.
+func (m *RankingRewardCampaignMutation) ResetStartsAt() {
+	m.starts_at = nil
+}
+
+// SetEndsAt sets the "ends_at" field.
+func (m *RankingRewardCampaignMutation) SetEndsAt(t time.Time) {
+	m.ends_at = &t
+}
+
+// EndsAt returns the value of the "ends_at" field in the mutation.
+func (m *RankingRewardCampaignMutation) EndsAt() (r time.Time, exists bool) {
+	v := m.ends_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEndsAt returns the old "ends_at" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldEndsAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEndsAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEndsAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEndsAt: %w", err)
+	}
+	return oldValue.EndsAt, nil
+}
+
+// ClearEndsAt clears the value of the "ends_at" field.
+func (m *RankingRewardCampaignMutation) ClearEndsAt() {
+	m.ends_at = nil
+	m.clearedFields[rankingrewardcampaign.FieldEndsAt] = struct{}{}
+}
+
+// EndsAtCleared returns if the "ends_at" field was cleared in this mutation.
+func (m *RankingRewardCampaignMutation) EndsAtCleared() bool {
+	_, ok := m.clearedFields[rankingrewardcampaign.FieldEndsAt]
+	return ok
+}
+
+// ResetEndsAt resets all changes to the "ends_at" field.
+func (m *RankingRewardCampaignMutation) ResetEndsAt() {
+	m.ends_at = nil
+	delete(m.clearedFields, rankingrewardcampaign.FieldEndsAt)
+}
+
+// SetTimezone sets the "timezone" field.
+func (m *RankingRewardCampaignMutation) SetTimezone(s string) {
+	m.timezone = &s
+}
+
+// Timezone returns the value of the "timezone" field in the mutation.
+func (m *RankingRewardCampaignMutation) Timezone() (r string, exists bool) {
+	v := m.timezone
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTimezone returns the old "timezone" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldTimezone(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTimezone is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTimezone requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTimezone: %w", err)
+	}
+	return oldValue.Timezone, nil
+}
+
+// ResetTimezone resets all changes to the "timezone" field.
+func (m *RankingRewardCampaignMutation) ResetTimezone() {
+	m.timezone = nil
+}
+
+// SetLastRunDate sets the "last_run_date" field.
+func (m *RankingRewardCampaignMutation) SetLastRunDate(t time.Time) {
+	m.last_run_date = &t
+}
+
+// LastRunDate returns the value of the "last_run_date" field in the mutation.
+func (m *RankingRewardCampaignMutation) LastRunDate() (r time.Time, exists bool) {
+	v := m.last_run_date
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLastRunDate returns the old "last_run_date" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldLastRunDate(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLastRunDate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLastRunDate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLastRunDate: %w", err)
+	}
+	return oldValue.LastRunDate, nil
+}
+
+// ClearLastRunDate clears the value of the "last_run_date" field.
+func (m *RankingRewardCampaignMutation) ClearLastRunDate() {
+	m.last_run_date = nil
+	m.clearedFields[rankingrewardcampaign.FieldLastRunDate] = struct{}{}
+}
+
+// LastRunDateCleared returns if the "last_run_date" field was cleared in this mutation.
+func (m *RankingRewardCampaignMutation) LastRunDateCleared() bool {
+	_, ok := m.clearedFields[rankingrewardcampaign.FieldLastRunDate]
+	return ok
+}
+
+// ResetLastRunDate resets all changes to the "last_run_date" field.
+func (m *RankingRewardCampaignMutation) ResetLastRunDate() {
+	m.last_run_date = nil
+	delete(m.clearedFields, rankingrewardcampaign.FieldLastRunDate)
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *RankingRewardCampaignMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RankingRewardCampaignMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RankingRewardCampaignMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[rankingrewardcampaign.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RankingRewardCampaignMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[rankingrewardcampaign.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RankingRewardCampaignMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, rankingrewardcampaign.FieldMetadata)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RankingRewardCampaignMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RankingRewardCampaignMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RankingRewardCampaignMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *RankingRewardCampaignMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *RankingRewardCampaignMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the RankingRewardCampaign entity.
+// If the RankingRewardCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardCampaignMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *RankingRewardCampaignMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// ClearLotteryCampaign clears the "lottery_campaign" edge to the LotteryCampaign entity.
+func (m *RankingRewardCampaignMutation) ClearLotteryCampaign() {
+	m.clearedlottery_campaign = true
+	m.clearedFields[rankingrewardcampaign.FieldLotteryCampaignID] = struct{}{}
+}
+
+// LotteryCampaignCleared reports if the "lottery_campaign" edge to the LotteryCampaign entity was cleared.
+func (m *RankingRewardCampaignMutation) LotteryCampaignCleared() bool {
+	return m.clearedlottery_campaign
+}
+
+// LotteryCampaignIDs returns the "lottery_campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// LotteryCampaignID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardCampaignMutation) LotteryCampaignIDs() (ids []int64) {
+	if id := m.lottery_campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetLotteryCampaign resets all changes to the "lottery_campaign" edge.
+func (m *RankingRewardCampaignMutation) ResetLotteryCampaign() {
+	m.lottery_campaign = nil
+	m.clearedlottery_campaign = false
+}
+
+// AddExcludedUserIDs adds the "excluded_users" edge to the RankingRewardExcludedUser entity by ids.
+func (m *RankingRewardCampaignMutation) AddExcludedUserIDs(ids ...int64) {
+	if m.excluded_users == nil {
+		m.excluded_users = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.excluded_users[ids[i]] = struct{}{}
+	}
+}
+
+// ClearExcludedUsers clears the "excluded_users" edge to the RankingRewardExcludedUser entity.
+func (m *RankingRewardCampaignMutation) ClearExcludedUsers() {
+	m.clearedexcluded_users = true
+}
+
+// ExcludedUsersCleared reports if the "excluded_users" edge to the RankingRewardExcludedUser entity was cleared.
+func (m *RankingRewardCampaignMutation) ExcludedUsersCleared() bool {
+	return m.clearedexcluded_users
+}
+
+// RemoveExcludedUserIDs removes the "excluded_users" edge to the RankingRewardExcludedUser entity by IDs.
+func (m *RankingRewardCampaignMutation) RemoveExcludedUserIDs(ids ...int64) {
+	if m.removedexcluded_users == nil {
+		m.removedexcluded_users = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.excluded_users, ids[i])
+		m.removedexcluded_users[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedExcludedUsers returns the removed IDs of the "excluded_users" edge to the RankingRewardExcludedUser entity.
+func (m *RankingRewardCampaignMutation) RemovedExcludedUsersIDs() (ids []int64) {
+	for id := range m.removedexcluded_users {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ExcludedUsersIDs returns the "excluded_users" edge IDs in the mutation.
+func (m *RankingRewardCampaignMutation) ExcludedUsersIDs() (ids []int64) {
+	for id := range m.excluded_users {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetExcludedUsers resets all changes to the "excluded_users" edge.
+func (m *RankingRewardCampaignMutation) ResetExcludedUsers() {
+	m.excluded_users = nil
+	m.clearedexcluded_users = false
+	m.removedexcluded_users = nil
+}
+
+// AddRunIDs adds the "runs" edge to the RankingRewardRun entity by ids.
+func (m *RankingRewardCampaignMutation) AddRunIDs(ids ...int64) {
+	if m.runs == nil {
+		m.runs = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.runs[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRuns clears the "runs" edge to the RankingRewardRun entity.
+func (m *RankingRewardCampaignMutation) ClearRuns() {
+	m.clearedruns = true
+}
+
+// RunsCleared reports if the "runs" edge to the RankingRewardRun entity was cleared.
+func (m *RankingRewardCampaignMutation) RunsCleared() bool {
+	return m.clearedruns
+}
+
+// RemoveRunIDs removes the "runs" edge to the RankingRewardRun entity by IDs.
+func (m *RankingRewardCampaignMutation) RemoveRunIDs(ids ...int64) {
+	if m.removedruns == nil {
+		m.removedruns = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.runs, ids[i])
+		m.removedruns[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRuns returns the removed IDs of the "runs" edge to the RankingRewardRun entity.
+func (m *RankingRewardCampaignMutation) RemovedRunsIDs() (ids []int64) {
+	for id := range m.removedruns {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RunsIDs returns the "runs" edge IDs in the mutation.
+func (m *RankingRewardCampaignMutation) RunsIDs() (ids []int64) {
+	for id := range m.runs {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRuns resets all changes to the "runs" edge.
+func (m *RankingRewardCampaignMutation) ResetRuns() {
+	m.runs = nil
+	m.clearedruns = false
+	m.removedruns = nil
+}
+
+// AddAwardIDs adds the "awards" edge to the RankingRewardAward entity by ids.
+func (m *RankingRewardCampaignMutation) AddAwardIDs(ids ...int64) {
+	if m.awards == nil {
+		m.awards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.awards[ids[i]] = struct{}{}
+	}
+}
+
+// ClearAwards clears the "awards" edge to the RankingRewardAward entity.
+func (m *RankingRewardCampaignMutation) ClearAwards() {
+	m.clearedawards = true
+}
+
+// AwardsCleared reports if the "awards" edge to the RankingRewardAward entity was cleared.
+func (m *RankingRewardCampaignMutation) AwardsCleared() bool {
+	return m.clearedawards
+}
+
+// RemoveAwardIDs removes the "awards" edge to the RankingRewardAward entity by IDs.
+func (m *RankingRewardCampaignMutation) RemoveAwardIDs(ids ...int64) {
+	if m.removedawards == nil {
+		m.removedawards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.awards, ids[i])
+		m.removedawards[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedAwards returns the removed IDs of the "awards" edge to the RankingRewardAward entity.
+func (m *RankingRewardCampaignMutation) RemovedAwardsIDs() (ids []int64) {
+	for id := range m.removedawards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// AwardsIDs returns the "awards" edge IDs in the mutation.
+func (m *RankingRewardCampaignMutation) AwardsIDs() (ids []int64) {
+	for id := range m.awards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetAwards resets all changes to the "awards" edge.
+func (m *RankingRewardCampaignMutation) ResetAwards() {
+	m.awards = nil
+	m.clearedawards = false
+	m.removedawards = nil
+}
+
+// Where appends a list predicates to the RankingRewardCampaignMutation builder.
+func (m *RankingRewardCampaignMutation) Where(ps ...predicate.RankingRewardCampaign) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RankingRewardCampaignMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RankingRewardCampaignMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RankingRewardCampaign, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RankingRewardCampaignMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RankingRewardCampaignMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RankingRewardCampaign).
+func (m *RankingRewardCampaignMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RankingRewardCampaignMutation) Fields() []string {
+	fields := make([]string, 0, 15)
+	if m.name != nil {
+		fields = append(fields, rankingrewardcampaign.FieldName)
+	}
+	if m.description != nil {
+		fields = append(fields, rankingrewardcampaign.FieldDescription)
+	}
+	if m.status != nil {
+		fields = append(fields, rankingrewardcampaign.FieldStatus)
+	}
+	if m.lottery_campaign != nil {
+		fields = append(fields, rankingrewardcampaign.FieldLotteryCampaignID)
+	}
+	if m.top_n != nil {
+		fields = append(fields, rankingrewardcampaign.FieldTopN)
+	}
+	if m.chance_count != nil {
+		fields = append(fields, rankingrewardcampaign.FieldChanceCount)
+	}
+	if m.public_display_limit != nil {
+		fields = append(fields, rankingrewardcampaign.FieldPublicDisplayLimit)
+	}
+	if m.min_actual_cost != nil {
+		fields = append(fields, rankingrewardcampaign.FieldMinActualCost)
+	}
+	if m.starts_at != nil {
+		fields = append(fields, rankingrewardcampaign.FieldStartsAt)
+	}
+	if m.ends_at != nil {
+		fields = append(fields, rankingrewardcampaign.FieldEndsAt)
+	}
+	if m.timezone != nil {
+		fields = append(fields, rankingrewardcampaign.FieldTimezone)
+	}
+	if m.last_run_date != nil {
+		fields = append(fields, rankingrewardcampaign.FieldLastRunDate)
+	}
+	if m.metadata != nil {
+		fields = append(fields, rankingrewardcampaign.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rankingrewardcampaign.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, rankingrewardcampaign.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RankingRewardCampaignMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardcampaign.FieldName:
+		return m.Name()
+	case rankingrewardcampaign.FieldDescription:
+		return m.Description()
+	case rankingrewardcampaign.FieldStatus:
+		return m.Status()
+	case rankingrewardcampaign.FieldLotteryCampaignID:
+		return m.LotteryCampaignID()
+	case rankingrewardcampaign.FieldTopN:
+		return m.TopN()
+	case rankingrewardcampaign.FieldChanceCount:
+		return m.ChanceCount()
+	case rankingrewardcampaign.FieldPublicDisplayLimit:
+		return m.PublicDisplayLimit()
+	case rankingrewardcampaign.FieldMinActualCost:
+		return m.MinActualCost()
+	case rankingrewardcampaign.FieldStartsAt:
+		return m.StartsAt()
+	case rankingrewardcampaign.FieldEndsAt:
+		return m.EndsAt()
+	case rankingrewardcampaign.FieldTimezone:
+		return m.Timezone()
+	case rankingrewardcampaign.FieldLastRunDate:
+		return m.LastRunDate()
+	case rankingrewardcampaign.FieldMetadata:
+		return m.Metadata()
+	case rankingrewardcampaign.FieldCreatedAt:
+		return m.CreatedAt()
+	case rankingrewardcampaign.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RankingRewardCampaignMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rankingrewardcampaign.FieldName:
+		return m.OldName(ctx)
+	case rankingrewardcampaign.FieldDescription:
+		return m.OldDescription(ctx)
+	case rankingrewardcampaign.FieldStatus:
+		return m.OldStatus(ctx)
+	case rankingrewardcampaign.FieldLotteryCampaignID:
+		return m.OldLotteryCampaignID(ctx)
+	case rankingrewardcampaign.FieldTopN:
+		return m.OldTopN(ctx)
+	case rankingrewardcampaign.FieldChanceCount:
+		return m.OldChanceCount(ctx)
+	case rankingrewardcampaign.FieldPublicDisplayLimit:
+		return m.OldPublicDisplayLimit(ctx)
+	case rankingrewardcampaign.FieldMinActualCost:
+		return m.OldMinActualCost(ctx)
+	case rankingrewardcampaign.FieldStartsAt:
+		return m.OldStartsAt(ctx)
+	case rankingrewardcampaign.FieldEndsAt:
+		return m.OldEndsAt(ctx)
+	case rankingrewardcampaign.FieldTimezone:
+		return m.OldTimezone(ctx)
+	case rankingrewardcampaign.FieldLastRunDate:
+		return m.OldLastRunDate(ctx)
+	case rankingrewardcampaign.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case rankingrewardcampaign.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case rankingrewardcampaign.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RankingRewardCampaign field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardCampaignMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardcampaign.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case rankingrewardcampaign.FieldDescription:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDescription(v)
+		return nil
+	case rankingrewardcampaign.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case rankingrewardcampaign.FieldLotteryCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLotteryCampaignID(v)
+		return nil
+	case rankingrewardcampaign.FieldTopN:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTopN(v)
+		return nil
+	case rankingrewardcampaign.FieldChanceCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetChanceCount(v)
+		return nil
+	case rankingrewardcampaign.FieldPublicDisplayLimit:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPublicDisplayLimit(v)
+		return nil
+	case rankingrewardcampaign.FieldMinActualCost:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMinActualCost(v)
+		return nil
+	case rankingrewardcampaign.FieldStartsAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStartsAt(v)
+		return nil
+	case rankingrewardcampaign.FieldEndsAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEndsAt(v)
+		return nil
+	case rankingrewardcampaign.FieldTimezone:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTimezone(v)
+		return nil
+	case rankingrewardcampaign.FieldLastRunDate:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLastRunDate(v)
+		return nil
+	case rankingrewardcampaign.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case rankingrewardcampaign.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case rankingrewardcampaign.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardCampaign field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RankingRewardCampaignMutation) AddedFields() []string {
+	var fields []string
+	if m.addtop_n != nil {
+		fields = append(fields, rankingrewardcampaign.FieldTopN)
+	}
+	if m.addchance_count != nil {
+		fields = append(fields, rankingrewardcampaign.FieldChanceCount)
+	}
+	if m.addpublic_display_limit != nil {
+		fields = append(fields, rankingrewardcampaign.FieldPublicDisplayLimit)
+	}
+	if m.addmin_actual_cost != nil {
+		fields = append(fields, rankingrewardcampaign.FieldMinActualCost)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RankingRewardCampaignMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardcampaign.FieldTopN:
+		return m.AddedTopN()
+	case rankingrewardcampaign.FieldChanceCount:
+		return m.AddedChanceCount()
+	case rankingrewardcampaign.FieldPublicDisplayLimit:
+		return m.AddedPublicDisplayLimit()
+	case rankingrewardcampaign.FieldMinActualCost:
+		return m.AddedMinActualCost()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardCampaignMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardcampaign.FieldTopN:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTopN(v)
+		return nil
+	case rankingrewardcampaign.FieldChanceCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddChanceCount(v)
+		return nil
+	case rankingrewardcampaign.FieldPublicDisplayLimit:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddPublicDisplayLimit(v)
+		return nil
+	case rankingrewardcampaign.FieldMinActualCost:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddMinActualCost(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardCampaign numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RankingRewardCampaignMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(rankingrewardcampaign.FieldEndsAt) {
+		fields = append(fields, rankingrewardcampaign.FieldEndsAt)
+	}
+	if m.FieldCleared(rankingrewardcampaign.FieldLastRunDate) {
+		fields = append(fields, rankingrewardcampaign.FieldLastRunDate)
+	}
+	if m.FieldCleared(rankingrewardcampaign.FieldMetadata) {
+		fields = append(fields, rankingrewardcampaign.FieldMetadata)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RankingRewardCampaignMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RankingRewardCampaignMutation) ClearField(name string) error {
+	switch name {
+	case rankingrewardcampaign.FieldEndsAt:
+		m.ClearEndsAt()
+		return nil
+	case rankingrewardcampaign.FieldLastRunDate:
+		m.ClearLastRunDate()
+		return nil
+	case rankingrewardcampaign.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardCampaign nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RankingRewardCampaignMutation) ResetField(name string) error {
+	switch name {
+	case rankingrewardcampaign.FieldName:
+		m.ResetName()
+		return nil
+	case rankingrewardcampaign.FieldDescription:
+		m.ResetDescription()
+		return nil
+	case rankingrewardcampaign.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case rankingrewardcampaign.FieldLotteryCampaignID:
+		m.ResetLotteryCampaignID()
+		return nil
+	case rankingrewardcampaign.FieldTopN:
+		m.ResetTopN()
+		return nil
+	case rankingrewardcampaign.FieldChanceCount:
+		m.ResetChanceCount()
+		return nil
+	case rankingrewardcampaign.FieldPublicDisplayLimit:
+		m.ResetPublicDisplayLimit()
+		return nil
+	case rankingrewardcampaign.FieldMinActualCost:
+		m.ResetMinActualCost()
+		return nil
+	case rankingrewardcampaign.FieldStartsAt:
+		m.ResetStartsAt()
+		return nil
+	case rankingrewardcampaign.FieldEndsAt:
+		m.ResetEndsAt()
+		return nil
+	case rankingrewardcampaign.FieldTimezone:
+		m.ResetTimezone()
+		return nil
+	case rankingrewardcampaign.FieldLastRunDate:
+		m.ResetLastRunDate()
+		return nil
+	case rankingrewardcampaign.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case rankingrewardcampaign.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case rankingrewardcampaign.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardCampaign field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RankingRewardCampaignMutation) AddedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.lottery_campaign != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeLotteryCampaign)
+	}
+	if m.excluded_users != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeExcludedUsers)
+	}
+	if m.runs != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeRuns)
+	}
+	if m.awards != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeAwards)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RankingRewardCampaignMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rankingrewardcampaign.EdgeLotteryCampaign:
+		if id := m.lottery_campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rankingrewardcampaign.EdgeExcludedUsers:
+		ids := make([]ent.Value, 0, len(m.excluded_users))
+		for id := range m.excluded_users {
+			ids = append(ids, id)
+		}
+		return ids
+	case rankingrewardcampaign.EdgeRuns:
+		ids := make([]ent.Value, 0, len(m.runs))
+		for id := range m.runs {
+			ids = append(ids, id)
+		}
+		return ids
+	case rankingrewardcampaign.EdgeAwards:
+		ids := make([]ent.Value, 0, len(m.awards))
+		for id := range m.awards {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RankingRewardCampaignMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.removedexcluded_users != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeExcludedUsers)
+	}
+	if m.removedruns != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeRuns)
+	}
+	if m.removedawards != nil {
+		edges = append(edges, rankingrewardcampaign.EdgeAwards)
+	}
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RankingRewardCampaignMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case rankingrewardcampaign.EdgeExcludedUsers:
+		ids := make([]ent.Value, 0, len(m.removedexcluded_users))
+		for id := range m.removedexcluded_users {
+			ids = append(ids, id)
+		}
+		return ids
+	case rankingrewardcampaign.EdgeRuns:
+		ids := make([]ent.Value, 0, len(m.removedruns))
+		for id := range m.removedruns {
+			ids = append(ids, id)
+		}
+		return ids
+	case rankingrewardcampaign.EdgeAwards:
+		ids := make([]ent.Value, 0, len(m.removedawards))
+		for id := range m.removedawards {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RankingRewardCampaignMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.clearedlottery_campaign {
+		edges = append(edges, rankingrewardcampaign.EdgeLotteryCampaign)
+	}
+	if m.clearedexcluded_users {
+		edges = append(edges, rankingrewardcampaign.EdgeExcludedUsers)
+	}
+	if m.clearedruns {
+		edges = append(edges, rankingrewardcampaign.EdgeRuns)
+	}
+	if m.clearedawards {
+		edges = append(edges, rankingrewardcampaign.EdgeAwards)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RankingRewardCampaignMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rankingrewardcampaign.EdgeLotteryCampaign:
+		return m.clearedlottery_campaign
+	case rankingrewardcampaign.EdgeExcludedUsers:
+		return m.clearedexcluded_users
+	case rankingrewardcampaign.EdgeRuns:
+		return m.clearedruns
+	case rankingrewardcampaign.EdgeAwards:
+		return m.clearedawards
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RankingRewardCampaignMutation) ClearEdge(name string) error {
+	switch name {
+	case rankingrewardcampaign.EdgeLotteryCampaign:
+		m.ClearLotteryCampaign()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardCampaign unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RankingRewardCampaignMutation) ResetEdge(name string) error {
+	switch name {
+	case rankingrewardcampaign.EdgeLotteryCampaign:
+		m.ResetLotteryCampaign()
+		return nil
+	case rankingrewardcampaign.EdgeExcludedUsers:
+		m.ResetExcludedUsers()
+		return nil
+	case rankingrewardcampaign.EdgeRuns:
+		m.ResetRuns()
+		return nil
+	case rankingrewardcampaign.EdgeAwards:
+		m.ResetAwards()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardCampaign edge %s", name)
+}
+
+// RankingRewardExcludedUserMutation represents an operation that mutates the RankingRewardExcludedUser nodes in the graph.
+type RankingRewardExcludedUserMutation struct {
+	config
+	op              Op
+	typ             string
+	id              *int64
+	reason          *string
+	created_at      *time.Time
+	updated_at      *time.Time
+	clearedFields   map[string]struct{}
+	campaign        *int64
+	clearedcampaign bool
+	user            *int64
+	cleareduser     bool
+	done            bool
+	oldValue        func(context.Context) (*RankingRewardExcludedUser, error)
+	predicates      []predicate.RankingRewardExcludedUser
+}
+
+var _ ent.Mutation = (*RankingRewardExcludedUserMutation)(nil)
+
+// rankingrewardexcludeduserOption allows management of the mutation configuration using functional options.
+type rankingrewardexcludeduserOption func(*RankingRewardExcludedUserMutation)
+
+// newRankingRewardExcludedUserMutation creates new mutation for the RankingRewardExcludedUser entity.
+func newRankingRewardExcludedUserMutation(c config, op Op, opts ...rankingrewardexcludeduserOption) *RankingRewardExcludedUserMutation {
+	m := &RankingRewardExcludedUserMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRankingRewardExcludedUser,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRankingRewardExcludedUserID sets the ID field of the mutation.
+func withRankingRewardExcludedUserID(id int64) rankingrewardexcludeduserOption {
+	return func(m *RankingRewardExcludedUserMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RankingRewardExcludedUser
+		)
+		m.oldValue = func(ctx context.Context) (*RankingRewardExcludedUser, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RankingRewardExcludedUser.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRankingRewardExcludedUser sets the old RankingRewardExcludedUser of the mutation.
+func withRankingRewardExcludedUser(node *RankingRewardExcludedUser) rankingrewardexcludeduserOption {
+	return func(m *RankingRewardExcludedUserMutation) {
+		m.oldValue = func(context.Context) (*RankingRewardExcludedUser, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RankingRewardExcludedUserMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RankingRewardExcludedUserMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RankingRewardExcludedUserMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RankingRewardExcludedUserMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RankingRewardExcludedUser.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCampaignID sets the "campaign_id" field.
+func (m *RankingRewardExcludedUserMutation) SetCampaignID(i int64) {
+	m.campaign = &i
+}
+
+// CampaignID returns the value of the "campaign_id" field in the mutation.
+func (m *RankingRewardExcludedUserMutation) CampaignID() (r int64, exists bool) {
+	v := m.campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCampaignID returns the old "campaign_id" field's value of the RankingRewardExcludedUser entity.
+// If the RankingRewardExcludedUser object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardExcludedUserMutation) OldCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCampaignID: %w", err)
+	}
+	return oldValue.CampaignID, nil
+}
+
+// ResetCampaignID resets all changes to the "campaign_id" field.
+func (m *RankingRewardExcludedUserMutation) ResetCampaignID() {
+	m.campaign = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *RankingRewardExcludedUserMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *RankingRewardExcludedUserMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the RankingRewardExcludedUser entity.
+// If the RankingRewardExcludedUser object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardExcludedUserMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *RankingRewardExcludedUserMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetReason sets the "reason" field.
+func (m *RankingRewardExcludedUserMutation) SetReason(s string) {
+	m.reason = &s
+}
+
+// Reason returns the value of the "reason" field in the mutation.
+func (m *RankingRewardExcludedUserMutation) Reason() (r string, exists bool) {
+	v := m.reason
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReason returns the old "reason" field's value of the RankingRewardExcludedUser entity.
+// If the RankingRewardExcludedUser object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardExcludedUserMutation) OldReason(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReason is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReason requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReason: %w", err)
+	}
+	return oldValue.Reason, nil
+}
+
+// ResetReason resets all changes to the "reason" field.
+func (m *RankingRewardExcludedUserMutation) ResetReason() {
+	m.reason = nil
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RankingRewardExcludedUserMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RankingRewardExcludedUserMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RankingRewardExcludedUser entity.
+// If the RankingRewardExcludedUser object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardExcludedUserMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RankingRewardExcludedUserMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *RankingRewardExcludedUserMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *RankingRewardExcludedUserMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the RankingRewardExcludedUser entity.
+// If the RankingRewardExcludedUser object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardExcludedUserMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *RankingRewardExcludedUserMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// ClearCampaign clears the "campaign" edge to the RankingRewardCampaign entity.
+func (m *RankingRewardExcludedUserMutation) ClearCampaign() {
+	m.clearedcampaign = true
+	m.clearedFields[rankingrewardexcludeduser.FieldCampaignID] = struct{}{}
+}
+
+// CampaignCleared reports if the "campaign" edge to the RankingRewardCampaign entity was cleared.
+func (m *RankingRewardExcludedUserMutation) CampaignCleared() bool {
+	return m.clearedcampaign
+}
+
+// CampaignIDs returns the "campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// CampaignID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardExcludedUserMutation) CampaignIDs() (ids []int64) {
+	if id := m.campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetCampaign resets all changes to the "campaign" edge.
+func (m *RankingRewardExcludedUserMutation) ResetCampaign() {
+	m.campaign = nil
+	m.clearedcampaign = false
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *RankingRewardExcludedUserMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[rankingrewardexcludeduser.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *RankingRewardExcludedUserMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardExcludedUserMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *RankingRewardExcludedUserMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// Where appends a list predicates to the RankingRewardExcludedUserMutation builder.
+func (m *RankingRewardExcludedUserMutation) Where(ps ...predicate.RankingRewardExcludedUser) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RankingRewardExcludedUserMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RankingRewardExcludedUserMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RankingRewardExcludedUser, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RankingRewardExcludedUserMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RankingRewardExcludedUserMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RankingRewardExcludedUser).
+func (m *RankingRewardExcludedUserMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RankingRewardExcludedUserMutation) Fields() []string {
+	fields := make([]string, 0, 5)
+	if m.campaign != nil {
+		fields = append(fields, rankingrewardexcludeduser.FieldCampaignID)
+	}
+	if m.user != nil {
+		fields = append(fields, rankingrewardexcludeduser.FieldUserID)
+	}
+	if m.reason != nil {
+		fields = append(fields, rankingrewardexcludeduser.FieldReason)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rankingrewardexcludeduser.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, rankingrewardexcludeduser.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RankingRewardExcludedUserMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardexcludeduser.FieldCampaignID:
+		return m.CampaignID()
+	case rankingrewardexcludeduser.FieldUserID:
+		return m.UserID()
+	case rankingrewardexcludeduser.FieldReason:
+		return m.Reason()
+	case rankingrewardexcludeduser.FieldCreatedAt:
+		return m.CreatedAt()
+	case rankingrewardexcludeduser.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RankingRewardExcludedUserMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rankingrewardexcludeduser.FieldCampaignID:
+		return m.OldCampaignID(ctx)
+	case rankingrewardexcludeduser.FieldUserID:
+		return m.OldUserID(ctx)
+	case rankingrewardexcludeduser.FieldReason:
+		return m.OldReason(ctx)
+	case rankingrewardexcludeduser.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case rankingrewardexcludeduser.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RankingRewardExcludedUser field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardExcludedUserMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardexcludeduser.FieldCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCampaignID(v)
+		return nil
+	case rankingrewardexcludeduser.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case rankingrewardexcludeduser.FieldReason:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReason(v)
+		return nil
+	case rankingrewardexcludeduser.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case rankingrewardexcludeduser.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardExcludedUser field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RankingRewardExcludedUserMutation) AddedFields() []string {
+	var fields []string
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RankingRewardExcludedUserMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardExcludedUserMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown RankingRewardExcludedUser numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RankingRewardExcludedUserMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RankingRewardExcludedUserMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RankingRewardExcludedUserMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown RankingRewardExcludedUser nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RankingRewardExcludedUserMutation) ResetField(name string) error {
+	switch name {
+	case rankingrewardexcludeduser.FieldCampaignID:
+		m.ResetCampaignID()
+		return nil
+	case rankingrewardexcludeduser.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case rankingrewardexcludeduser.FieldReason:
+		m.ResetReason()
+		return nil
+	case rankingrewardexcludeduser.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case rankingrewardexcludeduser.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardExcludedUser field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RankingRewardExcludedUserMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.campaign != nil {
+		edges = append(edges, rankingrewardexcludeduser.EdgeCampaign)
+	}
+	if m.user != nil {
+		edges = append(edges, rankingrewardexcludeduser.EdgeUser)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RankingRewardExcludedUserMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rankingrewardexcludeduser.EdgeCampaign:
+		if id := m.campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rankingrewardexcludeduser.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RankingRewardExcludedUserMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RankingRewardExcludedUserMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RankingRewardExcludedUserMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.clearedcampaign {
+		edges = append(edges, rankingrewardexcludeduser.EdgeCampaign)
+	}
+	if m.cleareduser {
+		edges = append(edges, rankingrewardexcludeduser.EdgeUser)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RankingRewardExcludedUserMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rankingrewardexcludeduser.EdgeCampaign:
+		return m.clearedcampaign
+	case rankingrewardexcludeduser.EdgeUser:
+		return m.cleareduser
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RankingRewardExcludedUserMutation) ClearEdge(name string) error {
+	switch name {
+	case rankingrewardexcludeduser.EdgeCampaign:
+		m.ClearCampaign()
+		return nil
+	case rankingrewardexcludeduser.EdgeUser:
+		m.ClearUser()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardExcludedUser unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RankingRewardExcludedUserMutation) ResetEdge(name string) error {
+	switch name {
+	case rankingrewardexcludeduser.EdgeCampaign:
+		m.ResetCampaign()
+		return nil
+	case rankingrewardexcludeduser.EdgeUser:
+		m.ResetUser()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardExcludedUser edge %s", name)
+}
+
+// RankingRewardRunMutation represents an operation that mutates the RankingRewardRun nodes in the graph.
+type RankingRewardRunMutation struct {
+	config
+	op                   Op
+	typ                  string
+	id                   *int64
+	reward_date          *time.Time
+	window_start         *time.Time
+	window_end           *time.Time
+	status               *string
+	awarded_count        *int
+	addawarded_count     *int
+	total_actual_cost    *float64
+	addtotal_actual_cost *float64
+	error_message        *string
+	metadata             *map[string]interface{}
+	started_at           *time.Time
+	finished_at          *time.Time
+	created_at           *time.Time
+	updated_at           *time.Time
+	clearedFields        map[string]struct{}
+	campaign             *int64
+	clearedcampaign      bool
+	awards               map[int64]struct{}
+	removedawards        map[int64]struct{}
+	clearedawards        bool
+	done                 bool
+	oldValue             func(context.Context) (*RankingRewardRun, error)
+	predicates           []predicate.RankingRewardRun
+}
+
+var _ ent.Mutation = (*RankingRewardRunMutation)(nil)
+
+// rankingrewardrunOption allows management of the mutation configuration using functional options.
+type rankingrewardrunOption func(*RankingRewardRunMutation)
+
+// newRankingRewardRunMutation creates new mutation for the RankingRewardRun entity.
+func newRankingRewardRunMutation(c config, op Op, opts ...rankingrewardrunOption) *RankingRewardRunMutation {
+	m := &RankingRewardRunMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRankingRewardRun,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRankingRewardRunID sets the ID field of the mutation.
+func withRankingRewardRunID(id int64) rankingrewardrunOption {
+	return func(m *RankingRewardRunMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RankingRewardRun
+		)
+		m.oldValue = func(ctx context.Context) (*RankingRewardRun, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RankingRewardRun.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRankingRewardRun sets the old RankingRewardRun of the mutation.
+func withRankingRewardRun(node *RankingRewardRun) rankingrewardrunOption {
+	return func(m *RankingRewardRunMutation) {
+		m.oldValue = func(context.Context) (*RankingRewardRun, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RankingRewardRunMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RankingRewardRunMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RankingRewardRunMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RankingRewardRunMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RankingRewardRun.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCampaignID sets the "campaign_id" field.
+func (m *RankingRewardRunMutation) SetCampaignID(i int64) {
+	m.campaign = &i
+}
+
+// CampaignID returns the value of the "campaign_id" field in the mutation.
+func (m *RankingRewardRunMutation) CampaignID() (r int64, exists bool) {
+	v := m.campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCampaignID returns the old "campaign_id" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCampaignID: %w", err)
+	}
+	return oldValue.CampaignID, nil
+}
+
+// ResetCampaignID resets all changes to the "campaign_id" field.
+func (m *RankingRewardRunMutation) ResetCampaignID() {
+	m.campaign = nil
+}
+
+// SetRewardDate sets the "reward_date" field.
+func (m *RankingRewardRunMutation) SetRewardDate(t time.Time) {
+	m.reward_date = &t
+}
+
+// RewardDate returns the value of the "reward_date" field in the mutation.
+func (m *RankingRewardRunMutation) RewardDate() (r time.Time, exists bool) {
+	v := m.reward_date
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRewardDate returns the old "reward_date" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldRewardDate(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRewardDate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRewardDate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRewardDate: %w", err)
+	}
+	return oldValue.RewardDate, nil
+}
+
+// ResetRewardDate resets all changes to the "reward_date" field.
+func (m *RankingRewardRunMutation) ResetRewardDate() {
+	m.reward_date = nil
+}
+
+// SetWindowStart sets the "window_start" field.
+func (m *RankingRewardRunMutation) SetWindowStart(t time.Time) {
+	m.window_start = &t
+}
+
+// WindowStart returns the value of the "window_start" field in the mutation.
+func (m *RankingRewardRunMutation) WindowStart() (r time.Time, exists bool) {
+	v := m.window_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldWindowStart returns the old "window_start" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldWindowStart(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldWindowStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldWindowStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldWindowStart: %w", err)
+	}
+	return oldValue.WindowStart, nil
+}
+
+// ResetWindowStart resets all changes to the "window_start" field.
+func (m *RankingRewardRunMutation) ResetWindowStart() {
+	m.window_start = nil
+}
+
+// SetWindowEnd sets the "window_end" field.
+func (m *RankingRewardRunMutation) SetWindowEnd(t time.Time) {
+	m.window_end = &t
+}
+
+// WindowEnd returns the value of the "window_end" field in the mutation.
+func (m *RankingRewardRunMutation) WindowEnd() (r time.Time, exists bool) {
+	v := m.window_end
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldWindowEnd returns the old "window_end" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldWindowEnd(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldWindowEnd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldWindowEnd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldWindowEnd: %w", err)
+	}
+	return oldValue.WindowEnd, nil
+}
+
+// ResetWindowEnd resets all changes to the "window_end" field.
+func (m *RankingRewardRunMutation) ResetWindowEnd() {
+	m.window_end = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *RankingRewardRunMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *RankingRewardRunMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *RankingRewardRunMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetAwardedCount sets the "awarded_count" field.
+func (m *RankingRewardRunMutation) SetAwardedCount(i int) {
+	m.awarded_count = &i
+	m.addawarded_count = nil
+}
+
+// AwardedCount returns the value of the "awarded_count" field in the mutation.
+func (m *RankingRewardRunMutation) AwardedCount() (r int, exists bool) {
+	v := m.awarded_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAwardedCount returns the old "awarded_count" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldAwardedCount(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAwardedCount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAwardedCount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAwardedCount: %w", err)
+	}
+	return oldValue.AwardedCount, nil
+}
+
+// AddAwardedCount adds i to the "awarded_count" field.
+func (m *RankingRewardRunMutation) AddAwardedCount(i int) {
+	if m.addawarded_count != nil {
+		*m.addawarded_count += i
+	} else {
+		m.addawarded_count = &i
+	}
+}
+
+// AddedAwardedCount returns the value that was added to the "awarded_count" field in this mutation.
+func (m *RankingRewardRunMutation) AddedAwardedCount() (r int, exists bool) {
+	v := m.addawarded_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetAwardedCount resets all changes to the "awarded_count" field.
+func (m *RankingRewardRunMutation) ResetAwardedCount() {
+	m.awarded_count = nil
+	m.addawarded_count = nil
+}
+
+// SetTotalActualCost sets the "total_actual_cost" field.
+func (m *RankingRewardRunMutation) SetTotalActualCost(f float64) {
+	m.total_actual_cost = &f
+	m.addtotal_actual_cost = nil
+}
+
+// TotalActualCost returns the value of the "total_actual_cost" field in the mutation.
+func (m *RankingRewardRunMutation) TotalActualCost() (r float64, exists bool) {
+	v := m.total_actual_cost
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTotalActualCost returns the old "total_actual_cost" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldTotalActualCost(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTotalActualCost is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTotalActualCost requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTotalActualCost: %w", err)
+	}
+	return oldValue.TotalActualCost, nil
+}
+
+// AddTotalActualCost adds f to the "total_actual_cost" field.
+func (m *RankingRewardRunMutation) AddTotalActualCost(f float64) {
+	if m.addtotal_actual_cost != nil {
+		*m.addtotal_actual_cost += f
+	} else {
+		m.addtotal_actual_cost = &f
+	}
+}
+
+// AddedTotalActualCost returns the value that was added to the "total_actual_cost" field in this mutation.
+func (m *RankingRewardRunMutation) AddedTotalActualCost() (r float64, exists bool) {
+	v := m.addtotal_actual_cost
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetTotalActualCost resets all changes to the "total_actual_cost" field.
+func (m *RankingRewardRunMutation) ResetTotalActualCost() {
+	m.total_actual_cost = nil
+	m.addtotal_actual_cost = nil
+}
+
+// SetErrorMessage sets the "error_message" field.
+func (m *RankingRewardRunMutation) SetErrorMessage(s string) {
+	m.error_message = &s
+}
+
+// ErrorMessage returns the value of the "error_message" field in the mutation.
+func (m *RankingRewardRunMutation) ErrorMessage() (r string, exists bool) {
+	v := m.error_message
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldErrorMessage returns the old "error_message" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldErrorMessage(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldErrorMessage is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldErrorMessage requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldErrorMessage: %w", err)
+	}
+	return oldValue.ErrorMessage, nil
+}
+
+// ResetErrorMessage resets all changes to the "error_message" field.
+func (m *RankingRewardRunMutation) ResetErrorMessage() {
+	m.error_message = nil
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *RankingRewardRunMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RankingRewardRunMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RankingRewardRunMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[rankingrewardrun.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RankingRewardRunMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[rankingrewardrun.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RankingRewardRunMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, rankingrewardrun.FieldMetadata)
+}
+
+// SetStartedAt sets the "started_at" field.
+func (m *RankingRewardRunMutation) SetStartedAt(t time.Time) {
+	m.started_at = &t
+}
+
+// StartedAt returns the value of the "started_at" field in the mutation.
+func (m *RankingRewardRunMutation) StartedAt() (r time.Time, exists bool) {
+	v := m.started_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStartedAt returns the old "started_at" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldStartedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStartedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStartedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStartedAt: %w", err)
+	}
+	return oldValue.StartedAt, nil
+}
+
+// ResetStartedAt resets all changes to the "started_at" field.
+func (m *RankingRewardRunMutation) ResetStartedAt() {
+	m.started_at = nil
+}
+
+// SetFinishedAt sets the "finished_at" field.
+func (m *RankingRewardRunMutation) SetFinishedAt(t time.Time) {
+	m.finished_at = &t
+}
+
+// FinishedAt returns the value of the "finished_at" field in the mutation.
+func (m *RankingRewardRunMutation) FinishedAt() (r time.Time, exists bool) {
+	v := m.finished_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFinishedAt returns the old "finished_at" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldFinishedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFinishedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFinishedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFinishedAt: %w", err)
+	}
+	return oldValue.FinishedAt, nil
+}
+
+// ClearFinishedAt clears the value of the "finished_at" field.
+func (m *RankingRewardRunMutation) ClearFinishedAt() {
+	m.finished_at = nil
+	m.clearedFields[rankingrewardrun.FieldFinishedAt] = struct{}{}
+}
+
+// FinishedAtCleared returns if the "finished_at" field was cleared in this mutation.
+func (m *RankingRewardRunMutation) FinishedAtCleared() bool {
+	_, ok := m.clearedFields[rankingrewardrun.FieldFinishedAt]
+	return ok
+}
+
+// ResetFinishedAt resets all changes to the "finished_at" field.
+func (m *RankingRewardRunMutation) ResetFinishedAt() {
+	m.finished_at = nil
+	delete(m.clearedFields, rankingrewardrun.FieldFinishedAt)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RankingRewardRunMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RankingRewardRunMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RankingRewardRunMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *RankingRewardRunMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *RankingRewardRunMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the RankingRewardRun entity.
+// If the RankingRewardRun object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RankingRewardRunMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *RankingRewardRunMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// ClearCampaign clears the "campaign" edge to the RankingRewardCampaign entity.
+func (m *RankingRewardRunMutation) ClearCampaign() {
+	m.clearedcampaign = true
+	m.clearedFields[rankingrewardrun.FieldCampaignID] = struct{}{}
+}
+
+// CampaignCleared reports if the "campaign" edge to the RankingRewardCampaign entity was cleared.
+func (m *RankingRewardRunMutation) CampaignCleared() bool {
+	return m.clearedcampaign
+}
+
+// CampaignIDs returns the "campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// CampaignID instead. It exists only for internal usage by the builders.
+func (m *RankingRewardRunMutation) CampaignIDs() (ids []int64) {
+	if id := m.campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetCampaign resets all changes to the "campaign" edge.
+func (m *RankingRewardRunMutation) ResetCampaign() {
+	m.campaign = nil
+	m.clearedcampaign = false
+}
+
+// AddAwardIDs adds the "awards" edge to the RankingRewardAward entity by ids.
+func (m *RankingRewardRunMutation) AddAwardIDs(ids ...int64) {
+	if m.awards == nil {
+		m.awards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.awards[ids[i]] = struct{}{}
+	}
+}
+
+// ClearAwards clears the "awards" edge to the RankingRewardAward entity.
+func (m *RankingRewardRunMutation) ClearAwards() {
+	m.clearedawards = true
+}
+
+// AwardsCleared reports if the "awards" edge to the RankingRewardAward entity was cleared.
+func (m *RankingRewardRunMutation) AwardsCleared() bool {
+	return m.clearedawards
+}
+
+// RemoveAwardIDs removes the "awards" edge to the RankingRewardAward entity by IDs.
+func (m *RankingRewardRunMutation) RemoveAwardIDs(ids ...int64) {
+	if m.removedawards == nil {
+		m.removedawards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.awards, ids[i])
+		m.removedawards[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedAwards returns the removed IDs of the "awards" edge to the RankingRewardAward entity.
+func (m *RankingRewardRunMutation) RemovedAwardsIDs() (ids []int64) {
+	for id := range m.removedawards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// AwardsIDs returns the "awards" edge IDs in the mutation.
+func (m *RankingRewardRunMutation) AwardsIDs() (ids []int64) {
+	for id := range m.awards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetAwards resets all changes to the "awards" edge.
+func (m *RankingRewardRunMutation) ResetAwards() {
+	m.awards = nil
+	m.clearedawards = false
+	m.removedawards = nil
+}
+
+// Where appends a list predicates to the RankingRewardRunMutation builder.
+func (m *RankingRewardRunMutation) Where(ps ...predicate.RankingRewardRun) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RankingRewardRunMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RankingRewardRunMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RankingRewardRun, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RankingRewardRunMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RankingRewardRunMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RankingRewardRun).
+func (m *RankingRewardRunMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RankingRewardRunMutation) Fields() []string {
+	fields := make([]string, 0, 13)
+	if m.campaign != nil {
+		fields = append(fields, rankingrewardrun.FieldCampaignID)
+	}
+	if m.reward_date != nil {
+		fields = append(fields, rankingrewardrun.FieldRewardDate)
+	}
+	if m.window_start != nil {
+		fields = append(fields, rankingrewardrun.FieldWindowStart)
+	}
+	if m.window_end != nil {
+		fields = append(fields, rankingrewardrun.FieldWindowEnd)
+	}
+	if m.status != nil {
+		fields = append(fields, rankingrewardrun.FieldStatus)
+	}
+	if m.awarded_count != nil {
+		fields = append(fields, rankingrewardrun.FieldAwardedCount)
+	}
+	if m.total_actual_cost != nil {
+		fields = append(fields, rankingrewardrun.FieldTotalActualCost)
+	}
+	if m.error_message != nil {
+		fields = append(fields, rankingrewardrun.FieldErrorMessage)
+	}
+	if m.metadata != nil {
+		fields = append(fields, rankingrewardrun.FieldMetadata)
+	}
+	if m.started_at != nil {
+		fields = append(fields, rankingrewardrun.FieldStartedAt)
+	}
+	if m.finished_at != nil {
+		fields = append(fields, rankingrewardrun.FieldFinishedAt)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rankingrewardrun.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, rankingrewardrun.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RankingRewardRunMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardrun.FieldCampaignID:
+		return m.CampaignID()
+	case rankingrewardrun.FieldRewardDate:
+		return m.RewardDate()
+	case rankingrewardrun.FieldWindowStart:
+		return m.WindowStart()
+	case rankingrewardrun.FieldWindowEnd:
+		return m.WindowEnd()
+	case rankingrewardrun.FieldStatus:
+		return m.Status()
+	case rankingrewardrun.FieldAwardedCount:
+		return m.AwardedCount()
+	case rankingrewardrun.FieldTotalActualCost:
+		return m.TotalActualCost()
+	case rankingrewardrun.FieldErrorMessage:
+		return m.ErrorMessage()
+	case rankingrewardrun.FieldMetadata:
+		return m.Metadata()
+	case rankingrewardrun.FieldStartedAt:
+		return m.StartedAt()
+	case rankingrewardrun.FieldFinishedAt:
+		return m.FinishedAt()
+	case rankingrewardrun.FieldCreatedAt:
+		return m.CreatedAt()
+	case rankingrewardrun.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RankingRewardRunMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rankingrewardrun.FieldCampaignID:
+		return m.OldCampaignID(ctx)
+	case rankingrewardrun.FieldRewardDate:
+		return m.OldRewardDate(ctx)
+	case rankingrewardrun.FieldWindowStart:
+		return m.OldWindowStart(ctx)
+	case rankingrewardrun.FieldWindowEnd:
+		return m.OldWindowEnd(ctx)
+	case rankingrewardrun.FieldStatus:
+		return m.OldStatus(ctx)
+	case rankingrewardrun.FieldAwardedCount:
+		return m.OldAwardedCount(ctx)
+	case rankingrewardrun.FieldTotalActualCost:
+		return m.OldTotalActualCost(ctx)
+	case rankingrewardrun.FieldErrorMessage:
+		return m.OldErrorMessage(ctx)
+	case rankingrewardrun.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case rankingrewardrun.FieldStartedAt:
+		return m.OldStartedAt(ctx)
+	case rankingrewardrun.FieldFinishedAt:
+		return m.OldFinishedAt(ctx)
+	case rankingrewardrun.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case rankingrewardrun.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RankingRewardRun field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardRunMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardrun.FieldCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCampaignID(v)
+		return nil
+	case rankingrewardrun.FieldRewardDate:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRewardDate(v)
+		return nil
+	case rankingrewardrun.FieldWindowStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetWindowStart(v)
+		return nil
+	case rankingrewardrun.FieldWindowEnd:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetWindowEnd(v)
+		return nil
+	case rankingrewardrun.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case rankingrewardrun.FieldAwardedCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAwardedCount(v)
+		return nil
+	case rankingrewardrun.FieldTotalActualCost:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTotalActualCost(v)
+		return nil
+	case rankingrewardrun.FieldErrorMessage:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetErrorMessage(v)
+		return nil
+	case rankingrewardrun.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case rankingrewardrun.FieldStartedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStartedAt(v)
+		return nil
+	case rankingrewardrun.FieldFinishedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFinishedAt(v)
+		return nil
+	case rankingrewardrun.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case rankingrewardrun.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardRun field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RankingRewardRunMutation) AddedFields() []string {
+	var fields []string
+	if m.addawarded_count != nil {
+		fields = append(fields, rankingrewardrun.FieldAwardedCount)
+	}
+	if m.addtotal_actual_cost != nil {
+		fields = append(fields, rankingrewardrun.FieldTotalActualCost)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RankingRewardRunMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case rankingrewardrun.FieldAwardedCount:
+		return m.AddedAwardedCount()
+	case rankingrewardrun.FieldTotalActualCost:
+		return m.AddedTotalActualCost()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RankingRewardRunMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case rankingrewardrun.FieldAwardedCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddAwardedCount(v)
+		return nil
+	case rankingrewardrun.FieldTotalActualCost:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTotalActualCost(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardRun numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RankingRewardRunMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(rankingrewardrun.FieldMetadata) {
+		fields = append(fields, rankingrewardrun.FieldMetadata)
+	}
+	if m.FieldCleared(rankingrewardrun.FieldFinishedAt) {
+		fields = append(fields, rankingrewardrun.FieldFinishedAt)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RankingRewardRunMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RankingRewardRunMutation) ClearField(name string) error {
+	switch name {
+	case rankingrewardrun.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	case rankingrewardrun.FieldFinishedAt:
+		m.ClearFinishedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardRun nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RankingRewardRunMutation) ResetField(name string) error {
+	switch name {
+	case rankingrewardrun.FieldCampaignID:
+		m.ResetCampaignID()
+		return nil
+	case rankingrewardrun.FieldRewardDate:
+		m.ResetRewardDate()
+		return nil
+	case rankingrewardrun.FieldWindowStart:
+		m.ResetWindowStart()
+		return nil
+	case rankingrewardrun.FieldWindowEnd:
+		m.ResetWindowEnd()
+		return nil
+	case rankingrewardrun.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case rankingrewardrun.FieldAwardedCount:
+		m.ResetAwardedCount()
+		return nil
+	case rankingrewardrun.FieldTotalActualCost:
+		m.ResetTotalActualCost()
+		return nil
+	case rankingrewardrun.FieldErrorMessage:
+		m.ResetErrorMessage()
+		return nil
+	case rankingrewardrun.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case rankingrewardrun.FieldStartedAt:
+		m.ResetStartedAt()
+		return nil
+	case rankingrewardrun.FieldFinishedAt:
+		m.ResetFinishedAt()
+		return nil
+	case rankingrewardrun.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case rankingrewardrun.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardRun field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RankingRewardRunMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.campaign != nil {
+		edges = append(edges, rankingrewardrun.EdgeCampaign)
+	}
+	if m.awards != nil {
+		edges = append(edges, rankingrewardrun.EdgeAwards)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RankingRewardRunMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rankingrewardrun.EdgeCampaign:
+		if id := m.campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rankingrewardrun.EdgeAwards:
+		ids := make([]ent.Value, 0, len(m.awards))
+		for id := range m.awards {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RankingRewardRunMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.removedawards != nil {
+		edges = append(edges, rankingrewardrun.EdgeAwards)
+	}
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RankingRewardRunMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case rankingrewardrun.EdgeAwards:
+		ids := make([]ent.Value, 0, len(m.removedawards))
+		for id := range m.removedawards {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RankingRewardRunMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.clearedcampaign {
+		edges = append(edges, rankingrewardrun.EdgeCampaign)
+	}
+	if m.clearedawards {
+		edges = append(edges, rankingrewardrun.EdgeAwards)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RankingRewardRunMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rankingrewardrun.EdgeCampaign:
+		return m.clearedcampaign
+	case rankingrewardrun.EdgeAwards:
+		return m.clearedawards
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RankingRewardRunMutation) ClearEdge(name string) error {
+	switch name {
+	case rankingrewardrun.EdgeCampaign:
+		m.ClearCampaign()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardRun unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RankingRewardRunMutation) ResetEdge(name string) error {
+	switch name {
+	case rankingrewardrun.EdgeCampaign:
+		m.ResetCampaign()
+		return nil
+	case rankingrewardrun.EdgeAwards:
+		m.ResetAwards()
+		return nil
+	}
+	return fmt.Errorf("unknown RankingRewardRun edge %s", name)
+}
+
 // RedeemCodeMutation represents an operation that mutates the RedeemCode nodes in the graph.
 type RedeemCodeMutation struct {
 	config
@@ -43227,86 +48189,92 @@ func (m *UsageLogMutation) ResetEdge(name string) error {
 // UserMutation represents an operation that mutates the User nodes in the graph.
 type UserMutation struct {
 	config
-	op                            Op
-	typ                           string
-	id                            *int64
-	created_at                    *time.Time
-	updated_at                    *time.Time
-	deleted_at                    *time.Time
-	email                         *string
-	password_hash                 *string
-	role                          *string
-	balance                       *float64
-	addbalance                    *float64
-	concurrency                   *int
-	addconcurrency                *int
-	status                        *string
-	username                      *string
-	notes                         *string
-	totp_secret_encrypted         *string
-	totp_enabled                  *bool
-	totp_enabled_at               *time.Time
-	signup_source                 *string
-	last_login_at                 *time.Time
-	last_active_at                *time.Time
-	balance_notify_enabled        *bool
-	balance_notify_threshold_type *string
-	balance_notify_threshold      *float64
-	addbalance_notify_threshold   *float64
-	balance_notify_extra_emails   *string
-	total_recharged               *float64
-	addtotal_recharged            *float64
-	rpm_limit                     *int
-	addrpm_limit                  *int
-	clearedFields                 map[string]struct{}
-	api_keys                      map[int64]struct{}
-	removedapi_keys               map[int64]struct{}
-	clearedapi_keys               bool
-	redeem_codes                  map[int64]struct{}
-	removedredeem_codes           map[int64]struct{}
-	clearedredeem_codes           bool
-	quota_grants                  map[int64]struct{}
-	removedquota_grants           map[int64]struct{}
-	clearedquota_grants           bool
-	lottery_chances               map[int64]struct{}
-	removedlottery_chances        map[int64]struct{}
-	clearedlottery_chances        bool
-	lottery_draws                 map[int64]struct{}
-	removedlottery_draws          map[int64]struct{}
-	clearedlottery_draws          bool
-	subscriptions                 map[int64]struct{}
-	removedsubscriptions          map[int64]struct{}
-	clearedsubscriptions          bool
-	assigned_subscriptions        map[int64]struct{}
-	removedassigned_subscriptions map[int64]struct{}
-	clearedassigned_subscriptions bool
-	announcement_reads            map[int64]struct{}
-	removedannouncement_reads     map[int64]struct{}
-	clearedannouncement_reads     bool
-	allowed_groups                map[int64]struct{}
-	removedallowed_groups         map[int64]struct{}
-	clearedallowed_groups         bool
-	usage_logs                    map[int64]struct{}
-	removedusage_logs             map[int64]struct{}
-	clearedusage_logs             bool
-	attribute_values              map[int64]struct{}
-	removedattribute_values       map[int64]struct{}
-	clearedattribute_values       bool
-	promo_code_usages             map[int64]struct{}
-	removedpromo_code_usages      map[int64]struct{}
-	clearedpromo_code_usages      bool
-	payment_orders                map[int64]struct{}
-	removedpayment_orders         map[int64]struct{}
-	clearedpayment_orders         bool
-	auth_identities               map[int64]struct{}
-	removedauth_identities        map[int64]struct{}
-	clearedauth_identities        bool
-	pending_auth_sessions         map[int64]struct{}
-	removedpending_auth_sessions  map[int64]struct{}
-	clearedpending_auth_sessions  bool
-	done                          bool
-	oldValue                      func(context.Context) (*User, error)
-	predicates                    []predicate.User
+	op                               Op
+	typ                              string
+	id                               *int64
+	created_at                       *time.Time
+	updated_at                       *time.Time
+	deleted_at                       *time.Time
+	email                            *string
+	password_hash                    *string
+	role                             *string
+	balance                          *float64
+	addbalance                       *float64
+	concurrency                      *int
+	addconcurrency                   *int
+	status                           *string
+	username                         *string
+	notes                            *string
+	totp_secret_encrypted            *string
+	totp_enabled                     *bool
+	totp_enabled_at                  *time.Time
+	signup_source                    *string
+	last_login_at                    *time.Time
+	last_active_at                   *time.Time
+	balance_notify_enabled           *bool
+	balance_notify_threshold_type    *string
+	balance_notify_threshold         *float64
+	addbalance_notify_threshold      *float64
+	balance_notify_extra_emails      *string
+	total_recharged                  *float64
+	addtotal_recharged               *float64
+	rpm_limit                        *int
+	addrpm_limit                     *int
+	clearedFields                    map[string]struct{}
+	api_keys                         map[int64]struct{}
+	removedapi_keys                  map[int64]struct{}
+	clearedapi_keys                  bool
+	redeem_codes                     map[int64]struct{}
+	removedredeem_codes              map[int64]struct{}
+	clearedredeem_codes              bool
+	quota_grants                     map[int64]struct{}
+	removedquota_grants              map[int64]struct{}
+	clearedquota_grants              bool
+	lottery_chances                  map[int64]struct{}
+	removedlottery_chances           map[int64]struct{}
+	clearedlottery_chances           bool
+	lottery_draws                    map[int64]struct{}
+	removedlottery_draws             map[int64]struct{}
+	clearedlottery_draws             bool
+	ranking_reward_exclusions        map[int64]struct{}
+	removedranking_reward_exclusions map[int64]struct{}
+	clearedranking_reward_exclusions bool
+	ranking_reward_awards            map[int64]struct{}
+	removedranking_reward_awards     map[int64]struct{}
+	clearedranking_reward_awards     bool
+	subscriptions                    map[int64]struct{}
+	removedsubscriptions             map[int64]struct{}
+	clearedsubscriptions             bool
+	assigned_subscriptions           map[int64]struct{}
+	removedassigned_subscriptions    map[int64]struct{}
+	clearedassigned_subscriptions    bool
+	announcement_reads               map[int64]struct{}
+	removedannouncement_reads        map[int64]struct{}
+	clearedannouncement_reads        bool
+	allowed_groups                   map[int64]struct{}
+	removedallowed_groups            map[int64]struct{}
+	clearedallowed_groups            bool
+	usage_logs                       map[int64]struct{}
+	removedusage_logs                map[int64]struct{}
+	clearedusage_logs                bool
+	attribute_values                 map[int64]struct{}
+	removedattribute_values          map[int64]struct{}
+	clearedattribute_values          bool
+	promo_code_usages                map[int64]struct{}
+	removedpromo_code_usages         map[int64]struct{}
+	clearedpromo_code_usages         bool
+	payment_orders                   map[int64]struct{}
+	removedpayment_orders            map[int64]struct{}
+	clearedpayment_orders            bool
+	auth_identities                  map[int64]struct{}
+	removedauth_identities           map[int64]struct{}
+	clearedauth_identities           bool
+	pending_auth_sessions            map[int64]struct{}
+	removedpending_auth_sessions     map[int64]struct{}
+	clearedpending_auth_sessions     bool
+	done                             bool
+	oldValue                         func(context.Context) (*User, error)
+	predicates                       []predicate.User
 }
 
 var _ ent.Mutation = (*UserMutation)(nil)
@@ -44684,6 +49652,114 @@ func (m *UserMutation) ResetLotteryDraws() {
 	m.removedlottery_draws = nil
 }
 
+// AddRankingRewardExclusionIDs adds the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity by ids.
+func (m *UserMutation) AddRankingRewardExclusionIDs(ids ...int64) {
+	if m.ranking_reward_exclusions == nil {
+		m.ranking_reward_exclusions = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.ranking_reward_exclusions[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRankingRewardExclusions clears the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity.
+func (m *UserMutation) ClearRankingRewardExclusions() {
+	m.clearedranking_reward_exclusions = true
+}
+
+// RankingRewardExclusionsCleared reports if the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity was cleared.
+func (m *UserMutation) RankingRewardExclusionsCleared() bool {
+	return m.clearedranking_reward_exclusions
+}
+
+// RemoveRankingRewardExclusionIDs removes the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity by IDs.
+func (m *UserMutation) RemoveRankingRewardExclusionIDs(ids ...int64) {
+	if m.removedranking_reward_exclusions == nil {
+		m.removedranking_reward_exclusions = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.ranking_reward_exclusions, ids[i])
+		m.removedranking_reward_exclusions[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRankingRewardExclusions returns the removed IDs of the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity.
+func (m *UserMutation) RemovedRankingRewardExclusionsIDs() (ids []int64) {
+	for id := range m.removedranking_reward_exclusions {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RankingRewardExclusionsIDs returns the "ranking_reward_exclusions" edge IDs in the mutation.
+func (m *UserMutation) RankingRewardExclusionsIDs() (ids []int64) {
+	for id := range m.ranking_reward_exclusions {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRankingRewardExclusions resets all changes to the "ranking_reward_exclusions" edge.
+func (m *UserMutation) ResetRankingRewardExclusions() {
+	m.ranking_reward_exclusions = nil
+	m.clearedranking_reward_exclusions = false
+	m.removedranking_reward_exclusions = nil
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by ids.
+func (m *UserMutation) AddRankingRewardAwardIDs(ids ...int64) {
+	if m.ranking_reward_awards == nil {
+		m.ranking_reward_awards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.ranking_reward_awards[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRankingRewardAwards clears the "ranking_reward_awards" edge to the RankingRewardAward entity.
+func (m *UserMutation) ClearRankingRewardAwards() {
+	m.clearedranking_reward_awards = true
+}
+
+// RankingRewardAwardsCleared reports if the "ranking_reward_awards" edge to the RankingRewardAward entity was cleared.
+func (m *UserMutation) RankingRewardAwardsCleared() bool {
+	return m.clearedranking_reward_awards
+}
+
+// RemoveRankingRewardAwardIDs removes the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (m *UserMutation) RemoveRankingRewardAwardIDs(ids ...int64) {
+	if m.removedranking_reward_awards == nil {
+		m.removedranking_reward_awards = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.ranking_reward_awards, ids[i])
+		m.removedranking_reward_awards[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRankingRewardAwards returns the removed IDs of the "ranking_reward_awards" edge to the RankingRewardAward entity.
+func (m *UserMutation) RemovedRankingRewardAwardsIDs() (ids []int64) {
+	for id := range m.removedranking_reward_awards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RankingRewardAwardsIDs returns the "ranking_reward_awards" edge IDs in the mutation.
+func (m *UserMutation) RankingRewardAwardsIDs() (ids []int64) {
+	for id := range m.ranking_reward_awards {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRankingRewardAwards resets all changes to the "ranking_reward_awards" edge.
+func (m *UserMutation) ResetRankingRewardAwards() {
+	m.ranking_reward_awards = nil
+	m.clearedranking_reward_awards = false
+	m.removedranking_reward_awards = nil
+}
+
 // AddSubscriptionIDs adds the "subscriptions" edge to the UserSubscription entity by ids.
 func (m *UserMutation) AddSubscriptionIDs(ids ...int64) {
 	if m.subscriptions == nil {
@@ -45833,7 +50909,7 @@ func (m *UserMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *UserMutation) AddedEdges() []string {
-	edges := make([]string, 0, 15)
+	edges := make([]string, 0, 17)
 	if m.api_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -45848,6 +50924,12 @@ func (m *UserMutation) AddedEdges() []string {
 	}
 	if m.lottery_draws != nil {
 		edges = append(edges, user.EdgeLotteryDraws)
+	}
+	if m.ranking_reward_exclusions != nil {
+		edges = append(edges, user.EdgeRankingRewardExclusions)
+	}
+	if m.ranking_reward_awards != nil {
+		edges = append(edges, user.EdgeRankingRewardAwards)
 	}
 	if m.subscriptions != nil {
 		edges = append(edges, user.EdgeSubscriptions)
@@ -45913,6 +50995,18 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 	case user.EdgeLotteryDraws:
 		ids := make([]ent.Value, 0, len(m.lottery_draws))
 		for id := range m.lottery_draws {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeRankingRewardExclusions:
+		ids := make([]ent.Value, 0, len(m.ranking_reward_exclusions))
+		for id := range m.ranking_reward_exclusions {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeRankingRewardAwards:
+		ids := make([]ent.Value, 0, len(m.ranking_reward_awards))
+		for id := range m.ranking_reward_awards {
 			ids = append(ids, id)
 		}
 		return ids
@@ -45982,7 +51076,7 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *UserMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 15)
+	edges := make([]string, 0, 17)
 	if m.removedapi_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -45997,6 +51091,12 @@ func (m *UserMutation) RemovedEdges() []string {
 	}
 	if m.removedlottery_draws != nil {
 		edges = append(edges, user.EdgeLotteryDraws)
+	}
+	if m.removedranking_reward_exclusions != nil {
+		edges = append(edges, user.EdgeRankingRewardExclusions)
+	}
+	if m.removedranking_reward_awards != nil {
+		edges = append(edges, user.EdgeRankingRewardAwards)
 	}
 	if m.removedsubscriptions != nil {
 		edges = append(edges, user.EdgeSubscriptions)
@@ -46062,6 +51162,18 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 	case user.EdgeLotteryDraws:
 		ids := make([]ent.Value, 0, len(m.removedlottery_draws))
 		for id := range m.removedlottery_draws {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeRankingRewardExclusions:
+		ids := make([]ent.Value, 0, len(m.removedranking_reward_exclusions))
+		for id := range m.removedranking_reward_exclusions {
+			ids = append(ids, id)
+		}
+		return ids
+	case user.EdgeRankingRewardAwards:
+		ids := make([]ent.Value, 0, len(m.removedranking_reward_awards))
+		for id := range m.removedranking_reward_awards {
 			ids = append(ids, id)
 		}
 		return ids
@@ -46131,7 +51243,7 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *UserMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 15)
+	edges := make([]string, 0, 17)
 	if m.clearedapi_keys {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -46146,6 +51258,12 @@ func (m *UserMutation) ClearedEdges() []string {
 	}
 	if m.clearedlottery_draws {
 		edges = append(edges, user.EdgeLotteryDraws)
+	}
+	if m.clearedranking_reward_exclusions {
+		edges = append(edges, user.EdgeRankingRewardExclusions)
+	}
+	if m.clearedranking_reward_awards {
+		edges = append(edges, user.EdgeRankingRewardAwards)
 	}
 	if m.clearedsubscriptions {
 		edges = append(edges, user.EdgeSubscriptions)
@@ -46194,6 +51312,10 @@ func (m *UserMutation) EdgeCleared(name string) bool {
 		return m.clearedlottery_chances
 	case user.EdgeLotteryDraws:
 		return m.clearedlottery_draws
+	case user.EdgeRankingRewardExclusions:
+		return m.clearedranking_reward_exclusions
+	case user.EdgeRankingRewardAwards:
+		return m.clearedranking_reward_awards
 	case user.EdgeSubscriptions:
 		return m.clearedsubscriptions
 	case user.EdgeAssignedSubscriptions:
@@ -46244,6 +51366,12 @@ func (m *UserMutation) ResetEdge(name string) error {
 		return nil
 	case user.EdgeLotteryDraws:
 		m.ResetLotteryDraws()
+		return nil
+	case user.EdgeRankingRewardExclusions:
+		m.ResetRankingRewardExclusions()
+		return nil
+	case user.EdgeRankingRewardAwards:
+		m.ResetRankingRewardAwards()
 		return nil
 	case user.EdgeSubscriptions:
 		m.ResetSubscriptions()

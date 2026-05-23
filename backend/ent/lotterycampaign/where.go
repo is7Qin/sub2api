@@ -579,6 +579,52 @@ func HasDrawsWith(preds ...predicate.LotteryDraw) predicate.LotteryCampaign {
 	})
 }
 
+// HasRankingRewardCampaigns applies the HasEdge predicate on the "ranking_reward_campaigns" edge.
+func HasRankingRewardCampaigns() predicate.LotteryCampaign {
+	return predicate.LotteryCampaign(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardCampaignsTable, RankingRewardCampaignsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasRankingRewardCampaignsWith applies the HasEdge predicate on the "ranking_reward_campaigns" edge with a given conditions (other predicates).
+func HasRankingRewardCampaignsWith(preds ...predicate.RankingRewardCampaign) predicate.LotteryCampaign {
+	return predicate.LotteryCampaign(func(s *sql.Selector) {
+		step := newRankingRewardCampaignsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasRankingRewardAwards applies the HasEdge predicate on the "ranking_reward_awards" edge.
+func HasRankingRewardAwards() predicate.LotteryCampaign {
+	return predicate.LotteryCampaign(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardAwardsTable, RankingRewardAwardsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasRankingRewardAwardsWith applies the HasEdge predicate on the "ranking_reward_awards" edge with a given conditions (other predicates).
+func HasRankingRewardAwardsWith(preds ...predicate.RankingRewardAward) predicate.LotteryCampaign {
+	return predicate.LotteryCampaign(func(s *sql.Selector) {
+		step := newRankingRewardAwardsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // And groups predicates with the AND operator between them.
 func And(predicates ...predicate.LotteryCampaign) predicate.LotteryCampaign {
 	return predicate.LotteryCampaign(sql.AndPredicates(predicates...))

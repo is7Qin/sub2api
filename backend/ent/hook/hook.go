@@ -321,6 +321,54 @@ func (f ProxyFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ProxyMutation", m)
 }
 
+// The RankingRewardAwardFunc type is an adapter to allow the use of ordinary
+// function as RankingRewardAward mutator.
+type RankingRewardAwardFunc func(context.Context, *ent.RankingRewardAwardMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f RankingRewardAwardFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.RankingRewardAwardMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RankingRewardAwardMutation", m)
+}
+
+// The RankingRewardCampaignFunc type is an adapter to allow the use of ordinary
+// function as RankingRewardCampaign mutator.
+type RankingRewardCampaignFunc func(context.Context, *ent.RankingRewardCampaignMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f RankingRewardCampaignFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.RankingRewardCampaignMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RankingRewardCampaignMutation", m)
+}
+
+// The RankingRewardExcludedUserFunc type is an adapter to allow the use of ordinary
+// function as RankingRewardExcludedUser mutator.
+type RankingRewardExcludedUserFunc func(context.Context, *ent.RankingRewardExcludedUserMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f RankingRewardExcludedUserFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.RankingRewardExcludedUserMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RankingRewardExcludedUserMutation", m)
+}
+
+// The RankingRewardRunFunc type is an adapter to allow the use of ordinary
+// function as RankingRewardRun mutator.
+type RankingRewardRunFunc func(context.Context, *ent.RankingRewardRunMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f RankingRewardRunFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.RankingRewardRunMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RankingRewardRunMutation", m)
+}
+
 // The RedeemCodeFunc type is an adapter to allow the use of ordinary
 // function as RedeemCode mutator.
 type RedeemCodeFunc func(context.Context, *ent.RedeemCodeMutation) (ent.Value, error)

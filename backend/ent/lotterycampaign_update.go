@@ -16,6 +16,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
 	"github.com/Wei-Shaw/sub2api/ent/lotteryprize"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 )
 
 // LotteryCampaignUpdate is the builder for updating LotteryCampaign entities.
@@ -191,6 +193,36 @@ func (_u *LotteryCampaignUpdate) AddDraws(v ...*LotteryDraw) *LotteryCampaignUpd
 	return _u.AddDrawIDs(ids...)
 }
 
+// AddRankingRewardCampaignIDs adds the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity by IDs.
+func (_u *LotteryCampaignUpdate) AddRankingRewardCampaignIDs(ids ...int64) *LotteryCampaignUpdate {
+	_u.mutation.AddRankingRewardCampaignIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardCampaigns adds the "ranking_reward_campaigns" edges to the RankingRewardCampaign entity.
+func (_u *LotteryCampaignUpdate) AddRankingRewardCampaigns(v ...*RankingRewardCampaign) *LotteryCampaignUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardCampaignIDs(ids...)
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (_u *LotteryCampaignUpdate) AddRankingRewardAwardIDs(ids ...int64) *LotteryCampaignUpdate {
+	_u.mutation.AddRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardAwards adds the "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *LotteryCampaignUpdate) AddRankingRewardAwards(v ...*RankingRewardAward) *LotteryCampaignUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardAwardIDs(ids...)
+}
+
 // Mutation returns the LotteryCampaignMutation object of the builder.
 func (_u *LotteryCampaignUpdate) Mutation() *LotteryCampaignMutation {
 	return _u.mutation
@@ -257,6 +289,48 @@ func (_u *LotteryCampaignUpdate) RemoveDraws(v ...*LotteryDraw) *LotteryCampaign
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveDrawIDs(ids...)
+}
+
+// ClearRankingRewardCampaigns clears all "ranking_reward_campaigns" edges to the RankingRewardCampaign entity.
+func (_u *LotteryCampaignUpdate) ClearRankingRewardCampaigns() *LotteryCampaignUpdate {
+	_u.mutation.ClearRankingRewardCampaigns()
+	return _u
+}
+
+// RemoveRankingRewardCampaignIDs removes the "ranking_reward_campaigns" edge to RankingRewardCampaign entities by IDs.
+func (_u *LotteryCampaignUpdate) RemoveRankingRewardCampaignIDs(ids ...int64) *LotteryCampaignUpdate {
+	_u.mutation.RemoveRankingRewardCampaignIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardCampaigns removes "ranking_reward_campaigns" edges to RankingRewardCampaign entities.
+func (_u *LotteryCampaignUpdate) RemoveRankingRewardCampaigns(v ...*RankingRewardCampaign) *LotteryCampaignUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardCampaignIDs(ids...)
+}
+
+// ClearRankingRewardAwards clears all "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *LotteryCampaignUpdate) ClearRankingRewardAwards() *LotteryCampaignUpdate {
+	_u.mutation.ClearRankingRewardAwards()
+	return _u
+}
+
+// RemoveRankingRewardAwardIDs removes the "ranking_reward_awards" edge to RankingRewardAward entities by IDs.
+func (_u *LotteryCampaignUpdate) RemoveRankingRewardAwardIDs(ids ...int64) *LotteryCampaignUpdate {
+	_u.mutation.RemoveRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardAwards removes "ranking_reward_awards" edges to RankingRewardAward entities.
+func (_u *LotteryCampaignUpdate) RemoveRankingRewardAwards(v ...*RankingRewardAward) *LotteryCampaignUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardAwardIDs(ids...)
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -490,6 +564,96 @@ func (_u *LotteryCampaignUpdate) sqlSave(ctx context.Context) (_node int, err er
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
+	if _u.mutation.RankingRewardCampaignsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardCampaignsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardCampaignsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardCampaignsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardAwardsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardAwardsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
 	if _node, err = sqlgraph.UpdateNodes(ctx, _u.driver, _spec); err != nil {
 		if _, ok := err.(*sqlgraph.NotFoundError); ok {
 			err = &NotFoundError{lotterycampaign.Label}
@@ -670,6 +834,36 @@ func (_u *LotteryCampaignUpdateOne) AddDraws(v ...*LotteryDraw) *LotteryCampaign
 	return _u.AddDrawIDs(ids...)
 }
 
+// AddRankingRewardCampaignIDs adds the "ranking_reward_campaigns" edge to the RankingRewardCampaign entity by IDs.
+func (_u *LotteryCampaignUpdateOne) AddRankingRewardCampaignIDs(ids ...int64) *LotteryCampaignUpdateOne {
+	_u.mutation.AddRankingRewardCampaignIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardCampaigns adds the "ranking_reward_campaigns" edges to the RankingRewardCampaign entity.
+func (_u *LotteryCampaignUpdateOne) AddRankingRewardCampaigns(v ...*RankingRewardCampaign) *LotteryCampaignUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardCampaignIDs(ids...)
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (_u *LotteryCampaignUpdateOne) AddRankingRewardAwardIDs(ids ...int64) *LotteryCampaignUpdateOne {
+	_u.mutation.AddRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardAwards adds the "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *LotteryCampaignUpdateOne) AddRankingRewardAwards(v ...*RankingRewardAward) *LotteryCampaignUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardAwardIDs(ids...)
+}
+
 // Mutation returns the LotteryCampaignMutation object of the builder.
 func (_u *LotteryCampaignUpdateOne) Mutation() *LotteryCampaignMutation {
 	return _u.mutation
@@ -736,6 +930,48 @@ func (_u *LotteryCampaignUpdateOne) RemoveDraws(v ...*LotteryDraw) *LotteryCampa
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveDrawIDs(ids...)
+}
+
+// ClearRankingRewardCampaigns clears all "ranking_reward_campaigns" edges to the RankingRewardCampaign entity.
+func (_u *LotteryCampaignUpdateOne) ClearRankingRewardCampaigns() *LotteryCampaignUpdateOne {
+	_u.mutation.ClearRankingRewardCampaigns()
+	return _u
+}
+
+// RemoveRankingRewardCampaignIDs removes the "ranking_reward_campaigns" edge to RankingRewardCampaign entities by IDs.
+func (_u *LotteryCampaignUpdateOne) RemoveRankingRewardCampaignIDs(ids ...int64) *LotteryCampaignUpdateOne {
+	_u.mutation.RemoveRankingRewardCampaignIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardCampaigns removes "ranking_reward_campaigns" edges to RankingRewardCampaign entities.
+func (_u *LotteryCampaignUpdateOne) RemoveRankingRewardCampaigns(v ...*RankingRewardCampaign) *LotteryCampaignUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardCampaignIDs(ids...)
+}
+
+// ClearRankingRewardAwards clears all "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *LotteryCampaignUpdateOne) ClearRankingRewardAwards() *LotteryCampaignUpdateOne {
+	_u.mutation.ClearRankingRewardAwards()
+	return _u
+}
+
+// RemoveRankingRewardAwardIDs removes the "ranking_reward_awards" edge to RankingRewardAward entities by IDs.
+func (_u *LotteryCampaignUpdateOne) RemoveRankingRewardAwardIDs(ids ...int64) *LotteryCampaignUpdateOne {
+	_u.mutation.RemoveRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardAwards removes "ranking_reward_awards" edges to RankingRewardAward entities.
+func (_u *LotteryCampaignUpdateOne) RemoveRankingRewardAwards(v ...*RankingRewardAward) *LotteryCampaignUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardAwardIDs(ids...)
 }
 
 // Where appends a list predicates to the LotteryCampaignUpdate builder.
@@ -992,6 +1228,96 @@ func (_u *LotteryCampaignUpdateOne) sqlSave(ctx context.Context) (_node *Lottery
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardCampaignsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardCampaignsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardCampaignsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardCampaignsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardCampaignsTable,
+			Columns: []string{lotterycampaign.RankingRewardCampaignsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardcampaign.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardAwardsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardAwardsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   lotterycampaign.RankingRewardAwardsTable,
+			Columns: []string{lotterycampaign.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

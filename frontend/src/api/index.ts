@@ -20,7 +20,11 @@ export { userChannelsAPI } from './channels'
 export { totpAPI } from './totp'
 export { default as announcementsAPI } from './announcements'
 export { channelMonitorUserAPI } from './channelMonitor'
+<<<<<<< HEAD
 export { lotteryAPI } from './lottery'
+=======
+export { rankingRewardAPI } from './rankingReward'
+>>>>>>> 72e52528 (chore: stage ranking follow-up changes)
 
 // Admin APIs
 export { adminAPI } from './admin'

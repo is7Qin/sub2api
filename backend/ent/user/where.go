@@ -1455,6 +1455,52 @@ func HasLotteryDrawsWith(preds ...predicate.LotteryDraw) predicate.User {
 	})
 }
 
+// HasRankingRewardExclusions applies the HasEdge predicate on the "ranking_reward_exclusions" edge.
+func HasRankingRewardExclusions() predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardExclusionsTable, RankingRewardExclusionsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasRankingRewardExclusionsWith applies the HasEdge predicate on the "ranking_reward_exclusions" edge with a given conditions (other predicates).
+func HasRankingRewardExclusionsWith(preds ...predicate.RankingRewardExcludedUser) predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := newRankingRewardExclusionsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasRankingRewardAwards applies the HasEdge predicate on the "ranking_reward_awards" edge.
+func HasRankingRewardAwards() predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardAwardsTable, RankingRewardAwardsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasRankingRewardAwardsWith applies the HasEdge predicate on the "ranking_reward_awards" edge with a given conditions (other predicates).
+func HasRankingRewardAwardsWith(preds ...predicate.RankingRewardAward) predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := newRankingRewardAwardsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // HasSubscriptions applies the HasEdge predicate on the "subscriptions" edge.
 func HasSubscriptions() predicate.User {
 	return predicate.User(func(s *sql.Selector) {

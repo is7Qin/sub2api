@@ -358,7 +358,11 @@ export const useAppStore = defineStore('app', () => {
         channel_monitor_default_interval_seconds: 60,
         available_channels_enabled: false,
         risk_control_enabled: false,
+<<<<<<< HEAD
         lottery_enabled: false,
+=======
+        ranking_reward_enabled: false,
+>>>>>>> 72e52528 (chore: stage ranking follow-up changes)
         affiliate_enabled: false,
       }
     }

@@ -21,6 +21,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -488,6 +490,36 @@ func (_u *UserUpdate) AddLotteryDraws(v ...*LotteryDraw) *UserUpdate {
 	return _u.AddLotteryDrawIDs(ids...)
 }
 
+// AddRankingRewardExclusionIDs adds the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity by IDs.
+func (_u *UserUpdate) AddRankingRewardExclusionIDs(ids ...int64) *UserUpdate {
+	_u.mutation.AddRankingRewardExclusionIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardExclusions adds the "ranking_reward_exclusions" edges to the RankingRewardExcludedUser entity.
+func (_u *UserUpdate) AddRankingRewardExclusions(v ...*RankingRewardExcludedUser) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardExclusionIDs(ids...)
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (_u *UserUpdate) AddRankingRewardAwardIDs(ids ...int64) *UserUpdate {
+	_u.mutation.AddRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardAwards adds the "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *UserUpdate) AddRankingRewardAwards(v ...*RankingRewardAward) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardAwardIDs(ids...)
+}
+
 // AddSubscriptionIDs adds the "subscriptions" edge to the UserSubscription entity by IDs.
 func (_u *UserUpdate) AddSubscriptionIDs(ids ...int64) *UserUpdate {
 	_u.mutation.AddSubscriptionIDs(ids...)
@@ -746,6 +778,48 @@ func (_u *UserUpdate) RemoveLotteryDraws(v ...*LotteryDraw) *UserUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveLotteryDrawIDs(ids...)
+}
+
+// ClearRankingRewardExclusions clears all "ranking_reward_exclusions" edges to the RankingRewardExcludedUser entity.
+func (_u *UserUpdate) ClearRankingRewardExclusions() *UserUpdate {
+	_u.mutation.ClearRankingRewardExclusions()
+	return _u
+}
+
+// RemoveRankingRewardExclusionIDs removes the "ranking_reward_exclusions" edge to RankingRewardExcludedUser entities by IDs.
+func (_u *UserUpdate) RemoveRankingRewardExclusionIDs(ids ...int64) *UserUpdate {
+	_u.mutation.RemoveRankingRewardExclusionIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardExclusions removes "ranking_reward_exclusions" edges to RankingRewardExcludedUser entities.
+func (_u *UserUpdate) RemoveRankingRewardExclusions(v ...*RankingRewardExcludedUser) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardExclusionIDs(ids...)
+}
+
+// ClearRankingRewardAwards clears all "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *UserUpdate) ClearRankingRewardAwards() *UserUpdate {
+	_u.mutation.ClearRankingRewardAwards()
+	return _u
+}
+
+// RemoveRankingRewardAwardIDs removes the "ranking_reward_awards" edge to RankingRewardAward entities by IDs.
+func (_u *UserUpdate) RemoveRankingRewardAwardIDs(ids ...int64) *UserUpdate {
+	_u.mutation.RemoveRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardAwards removes "ranking_reward_awards" edges to RankingRewardAward entities.
+func (_u *UserUpdate) RemoveRankingRewardAwards(v ...*RankingRewardAward) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardAwardIDs(ids...)
 }
 
 // ClearSubscriptions clears all "subscriptions" edges to the UserSubscription entity.
@@ -1364,6 +1438,96 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardExclusionsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardExclusionsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardExclusionsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardExclusionsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardAwardsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardAwardsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -2299,6 +2463,36 @@ func (_u *UserUpdateOne) AddLotteryDraws(v ...*LotteryDraw) *UserUpdateOne {
 	return _u.AddLotteryDrawIDs(ids...)
 }
 
+// AddRankingRewardExclusionIDs adds the "ranking_reward_exclusions" edge to the RankingRewardExcludedUser entity by IDs.
+func (_u *UserUpdateOne) AddRankingRewardExclusionIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.AddRankingRewardExclusionIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardExclusions adds the "ranking_reward_exclusions" edges to the RankingRewardExcludedUser entity.
+func (_u *UserUpdateOne) AddRankingRewardExclusions(v ...*RankingRewardExcludedUser) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardExclusionIDs(ids...)
+}
+
+// AddRankingRewardAwardIDs adds the "ranking_reward_awards" edge to the RankingRewardAward entity by IDs.
+func (_u *UserUpdateOne) AddRankingRewardAwardIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.AddRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// AddRankingRewardAwards adds the "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *UserUpdateOne) AddRankingRewardAwards(v ...*RankingRewardAward) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRankingRewardAwardIDs(ids...)
+}
+
 // AddSubscriptionIDs adds the "subscriptions" edge to the UserSubscription entity by IDs.
 func (_u *UserUpdateOne) AddSubscriptionIDs(ids ...int64) *UserUpdateOne {
 	_u.mutation.AddSubscriptionIDs(ids...)
@@ -2557,6 +2751,48 @@ func (_u *UserUpdateOne) RemoveLotteryDraws(v ...*LotteryDraw) *UserUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveLotteryDrawIDs(ids...)
+}
+
+// ClearRankingRewardExclusions clears all "ranking_reward_exclusions" edges to the RankingRewardExcludedUser entity.
+func (_u *UserUpdateOne) ClearRankingRewardExclusions() *UserUpdateOne {
+	_u.mutation.ClearRankingRewardExclusions()
+	return _u
+}
+
+// RemoveRankingRewardExclusionIDs removes the "ranking_reward_exclusions" edge to RankingRewardExcludedUser entities by IDs.
+func (_u *UserUpdateOne) RemoveRankingRewardExclusionIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.RemoveRankingRewardExclusionIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardExclusions removes "ranking_reward_exclusions" edges to RankingRewardExcludedUser entities.
+func (_u *UserUpdateOne) RemoveRankingRewardExclusions(v ...*RankingRewardExcludedUser) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardExclusionIDs(ids...)
+}
+
+// ClearRankingRewardAwards clears all "ranking_reward_awards" edges to the RankingRewardAward entity.
+func (_u *UserUpdateOne) ClearRankingRewardAwards() *UserUpdateOne {
+	_u.mutation.ClearRankingRewardAwards()
+	return _u
+}
+
+// RemoveRankingRewardAwardIDs removes the "ranking_reward_awards" edge to RankingRewardAward entities by IDs.
+func (_u *UserUpdateOne) RemoveRankingRewardAwardIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.RemoveRankingRewardAwardIDs(ids...)
+	return _u
+}
+
+// RemoveRankingRewardAwards removes "ranking_reward_awards" edges to RankingRewardAward entities.
+func (_u *UserUpdateOne) RemoveRankingRewardAwards(v ...*RankingRewardAward) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRankingRewardAwardIDs(ids...)
 }
 
 // ClearSubscriptions clears all "subscriptions" edges to the UserSubscription entity.
@@ -3205,6 +3441,96 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardExclusionsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardExclusionsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardExclusionsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardExclusionsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardExclusionsTable,
+			Columns: []string{user.RankingRewardExclusionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardexcludeduser.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRankingRewardAwardsIDs(); len(nodes) > 0 && !_u.mutation.RankingRewardAwardsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RankingRewardAwardsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.RankingRewardAwardsTable,
+			Columns: []string{user.RankingRewardAwardsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rankingrewardaward.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

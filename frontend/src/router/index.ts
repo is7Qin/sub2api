@@ -266,6 +266,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/ranking-rewards',
+    name: 'UserRankingRewards',
+    component: () => import('@/views/user/RankingRewardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Ranking Rewards',
+      titleKey: 'rankingReward.title',
+      descriptionKey: 'rankingReward.description',
+      requiresRankingReward: true
+    }
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),
@@ -547,6 +560,19 @@ const routes: RouteRecordRaw[] = [
       title: 'Promo Code Management',
       titleKey: 'admin.promo.title',
       descriptionKey: 'admin.promo.description'
+    }
+  },
+  {
+    path: '/admin/ranking-rewards',
+    name: 'AdminRankingRewards',
+    component: () => import('@/views/admin/RankingRewardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Ranking Rewards',
+      titleKey: 'admin.rankingReward.title',
+      descriptionKey: 'admin.rankingReward.description',
+      requiresRankingReward: true
     }
   },
   {
@@ -851,10 +877,17 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
+<<<<<<< HEAD
   if (to.meta.requiresLottery) {
     const publicSettings = appStore.cachedPublicSettings || await appStore.fetchPublicSettings()
     const lotteryEnabled = publicSettings?.lottery_enabled === true
     if (!lotteryEnabled) {
+=======
+  if (to.meta.requiresRankingReward) {
+    const publicSettings = appStore.cachedPublicSettings || await appStore.fetchPublicSettings()
+    const rankingRewardEnabled = publicSettings?.ranking_reward_enabled === true
+    if (!rankingRewardEnabled) {
+>>>>>>> 72e52528 (chore: stage ranking follow-up changes)
       next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
       return
     }
@@ -866,10 +899,17 @@ router.beforeEach(async (to, _from, next) => {
       '/admin/groups',
       '/admin/subscriptions',
       '/admin/redeem',
+<<<<<<< HEAD
       '/admin/lottery',
       '/subscriptions',
       '/redeem',
       '/lottery'
+=======
+      '/admin/ranking-rewards',
+      '/subscriptions',
+      '/ranking-rewards',
+      '/redeem'
+>>>>>>> 72e52528 (chore: stage ranking follow-up changes)
     ]
 
     if (restrictedPaths.some((path) => to.path.startsWith(path))) {

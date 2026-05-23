@@ -35,6 +35,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -808,6 +812,114 @@ func (f TraverseProxy) Traverse(ctx context.Context, q ent.Query) error {
 	return fmt.Errorf("unexpected query type %T. expect *ent.ProxyQuery", q)
 }
 
+// The RankingRewardAwardFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RankingRewardAwardFunc func(context.Context, *ent.RankingRewardAwardQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RankingRewardAwardFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RankingRewardAwardQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardAwardQuery", q)
+}
+
+// The TraverseRankingRewardAward type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRankingRewardAward func(context.Context, *ent.RankingRewardAwardQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRankingRewardAward) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRankingRewardAward) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RankingRewardAwardQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardAwardQuery", q)
+}
+
+// The RankingRewardCampaignFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RankingRewardCampaignFunc func(context.Context, *ent.RankingRewardCampaignQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RankingRewardCampaignFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RankingRewardCampaignQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardCampaignQuery", q)
+}
+
+// The TraverseRankingRewardCampaign type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRankingRewardCampaign func(context.Context, *ent.RankingRewardCampaignQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRankingRewardCampaign) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRankingRewardCampaign) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RankingRewardCampaignQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardCampaignQuery", q)
+}
+
+// The RankingRewardExcludedUserFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RankingRewardExcludedUserFunc func(context.Context, *ent.RankingRewardExcludedUserQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RankingRewardExcludedUserFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RankingRewardExcludedUserQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardExcludedUserQuery", q)
+}
+
+// The TraverseRankingRewardExcludedUser type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRankingRewardExcludedUser func(context.Context, *ent.RankingRewardExcludedUserQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRankingRewardExcludedUser) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRankingRewardExcludedUser) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RankingRewardExcludedUserQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardExcludedUserQuery", q)
+}
+
+// The RankingRewardRunFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RankingRewardRunFunc func(context.Context, *ent.RankingRewardRunQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RankingRewardRunFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RankingRewardRunQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardRunQuery", q)
+}
+
+// The TraverseRankingRewardRun type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRankingRewardRun func(context.Context, *ent.RankingRewardRunQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRankingRewardRun) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRankingRewardRun) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RankingRewardRunQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardRunQuery", q)
+}
+
 // The RedeemCodeFunc type is an adapter to allow the use of ordinary function as a Querier.
 type RedeemCodeFunc func(context.Context, *ent.RedeemCodeQuery) (ent.Value, error)
 
@@ -1214,6 +1326,14 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.PromoCodeUsageQuery, predicate.PromoCodeUsage, promocodeusage.OrderOption]{typ: ent.TypePromoCodeUsage, tq: q}, nil
 	case *ent.ProxyQuery:
 		return &query[*ent.ProxyQuery, predicate.Proxy, proxy.OrderOption]{typ: ent.TypeProxy, tq: q}, nil
+	case *ent.RankingRewardAwardQuery:
+		return &query[*ent.RankingRewardAwardQuery, predicate.RankingRewardAward, rankingrewardaward.OrderOption]{typ: ent.TypeRankingRewardAward, tq: q}, nil
+	case *ent.RankingRewardCampaignQuery:
+		return &query[*ent.RankingRewardCampaignQuery, predicate.RankingRewardCampaign, rankingrewardcampaign.OrderOption]{typ: ent.TypeRankingRewardCampaign, tq: q}, nil
+	case *ent.RankingRewardExcludedUserQuery:
+		return &query[*ent.RankingRewardExcludedUserQuery, predicate.RankingRewardExcludedUser, rankingrewardexcludeduser.OrderOption]{typ: ent.TypeRankingRewardExcludedUser, tq: q}, nil
+	case *ent.RankingRewardRunQuery:
+		return &query[*ent.RankingRewardRunQuery, predicate.RankingRewardRun, rankingrewardrun.OrderOption]{typ: ent.TypeRankingRewardRun, tq: q}, nil
 	case *ent.RedeemCodeQuery:
 		return &query[*ent.RedeemCodeQuery, predicate.RedeemCode, redeemcode.OrderOption]{typ: ent.TypeRedeemCode, tq: q}, nil
 	case *ent.SecuritySecretQuery:

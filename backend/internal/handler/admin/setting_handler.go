@@ -229,6 +229,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		DefaultBalance:                         settings.DefaultBalance,
 		RiskControlEnabled:                     settings.RiskControlEnabled,
 		LotteryEnabled:                         settings.LotteryEnabled,
+		RankingRewardEnabled:                   settings.RankingRewardEnabled,
 		AffiliateRebateRate:                    settings.AffiliateRebateRate,
 		AffiliateRebateFreezeHours:             settings.AffiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:            settings.AffiliateRebateDurationDays,
@@ -638,6 +639,9 @@ type UpdateSettingsRequest struct {
 
 	// 抽奖中心功能开关
 	LotteryEnabled *bool `json:"lottery_enabled"`
+
+	// 排行榜奖励功能开关
+	RankingRewardEnabled *bool `json:"ranking_reward_enabled"`
 
 	// OpenAI fast/flex policy (optional, only updated when provided)
 	OpenAIFastPolicySettings *dto.OpenAIFastPolicySettings `json:"openai_fast_policy_settings,omitempty"`
@@ -1739,6 +1743,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.LotteryEnabled
 		}(),
+		RankingRewardEnabled: func() bool {
+			if req.RankingRewardEnabled != nil {
+				return *req.RankingRewardEnabled
+			}
+			return previousSettings.RankingRewardEnabled
+		}(),
 	}
 
 	authSourceDefaults := &service.AuthSourceDefaultSettings{
@@ -2050,8 +2060,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 
-		RiskControlEnabled: updatedSettings.RiskControlEnabled,
-		LotteryEnabled:     updatedSettings.LotteryEnabled,
+		RiskControlEnabled:   updatedSettings.RiskControlEnabled,
+		LotteryEnabled:       updatedSettings.LotteryEnabled,
+		RankingRewardEnabled: updatedSettings.RankingRewardEnabled,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)
@@ -2524,6 +2535,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.LotteryEnabled != after.LotteryEnabled {
 		changed = append(changed, "lottery_enabled")
+	}
+	if before.RankingRewardEnabled != after.RankingRewardEnabled {
+		changed = append(changed, "ranking_reward_enabled")
 	}
 	changed = appendAuthSourceDefaultChanges(changed, beforeAuthSourceDefaults, afterAuthSourceDefaults)
 	return changed

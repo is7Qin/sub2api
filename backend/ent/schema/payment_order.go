@@ -180,7 +180,6 @@ func (PaymentOrder) Edges() []ent.Edge {
 			Field("user_id").
 			Unique().
 			Required(),
-		edge.To("recharge_reset_records", RechargeResetRecord.Type),
 	}
 }
 

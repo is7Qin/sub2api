@@ -11,11 +11,11 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
+	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
@@ -61,16 +61,16 @@ func (_u *RechargeResetRecordUpdate) SetNillableRuleID(v *int64) *RechargeResetR
 	return _u
 }
 
-// SetOrderID sets the "order_id" field.
-func (_u *RechargeResetRecordUpdate) SetOrderID(v int64) *RechargeResetRecordUpdate {
-	_u.mutation.SetOrderID(v)
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (_u *RechargeResetRecordUpdate) SetRedeemCodeID(v int64) *RechargeResetRecordUpdate {
+	_u.mutation.SetRedeemCodeID(v)
 	return _u
 }
 
-// SetNillableOrderID sets the "order_id" field if the given value is not nil.
-func (_u *RechargeResetRecordUpdate) SetNillableOrderID(v *int64) *RechargeResetRecordUpdate {
+// SetNillableRedeemCodeID sets the "redeem_code_id" field if the given value is not nil.
+func (_u *RechargeResetRecordUpdate) SetNillableRedeemCodeID(v *int64) *RechargeResetRecordUpdate {
 	if v != nil {
-		_u.SetOrderID(*v)
+		_u.SetRedeemCodeID(*v)
 	}
 	return _u
 }
@@ -223,9 +223,9 @@ func (_u *RechargeResetRecordUpdate) SetRule(v *RechargeResetCampaignRule) *Rech
 	return _u.SetRuleID(v.ID)
 }
 
-// SetOrder sets the "order" edge to the PaymentOrder entity.
-func (_u *RechargeResetRecordUpdate) SetOrder(v *PaymentOrder) *RechargeResetRecordUpdate {
-	return _u.SetOrderID(v.ID)
+// SetRedeemCode sets the "redeem_code" edge to the RedeemCode entity.
+func (_u *RechargeResetRecordUpdate) SetRedeemCode(v *RedeemCode) *RechargeResetRecordUpdate {
+	return _u.SetRedeemCodeID(v.ID)
 }
 
 // SetUser sets the "user" edge to the User entity.
@@ -260,9 +260,9 @@ func (_u *RechargeResetRecordUpdate) ClearRule() *RechargeResetRecordUpdate {
 	return _u
 }
 
-// ClearOrder clears the "order" edge to the PaymentOrder entity.
-func (_u *RechargeResetRecordUpdate) ClearOrder() *RechargeResetRecordUpdate {
-	_u.mutation.ClearOrder()
+// ClearRedeemCode clears the "redeem_code" edge to the RedeemCode entity.
+func (_u *RechargeResetRecordUpdate) ClearRedeemCode() *RechargeResetRecordUpdate {
+	_u.mutation.ClearRedeemCode()
 	return _u
 }
 
@@ -319,8 +319,8 @@ func (_u *RechargeResetRecordUpdate) check() error {
 	if _u.mutation.RuleCleared() && len(_u.mutation.RuleIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.rule"`)
 	}
-	if _u.mutation.OrderCleared() && len(_u.mutation.OrderIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.order"`)
+	if _u.mutation.RedeemCodeCleared() && len(_u.mutation.RedeemCodeIDs()) > 0 {
+		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.redeem_code"`)
 	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.user"`)
@@ -431,28 +431,28 @@ func (_u *RechargeResetRecordUpdate) sqlSave(ctx context.Context) (_node int, er
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
-	if _u.mutation.OrderCleared() {
+	if _u.mutation.RedeemCodeCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   rechargeresetrecord.OrderTable,
-			Columns: []string{rechargeresetrecord.OrderColumn},
+			Table:   rechargeresetrecord.RedeemCodeTable,
+			Columns: []string{rechargeresetrecord.RedeemCodeColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(redeemcode.FieldID, field.TypeInt64),
 			},
 		}
 		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
 	}
-	if nodes := _u.mutation.OrderIDs(); len(nodes) > 0 {
+	if nodes := _u.mutation.RedeemCodeIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   rechargeresetrecord.OrderTable,
-			Columns: []string{rechargeresetrecord.OrderColumn},
+			Table:   rechargeresetrecord.RedeemCodeTable,
+			Columns: []string{rechargeresetrecord.RedeemCodeColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(redeemcode.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -595,16 +595,16 @@ func (_u *RechargeResetRecordUpdateOne) SetNillableRuleID(v *int64) *RechargeRes
 	return _u
 }
 
-// SetOrderID sets the "order_id" field.
-func (_u *RechargeResetRecordUpdateOne) SetOrderID(v int64) *RechargeResetRecordUpdateOne {
-	_u.mutation.SetOrderID(v)
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (_u *RechargeResetRecordUpdateOne) SetRedeemCodeID(v int64) *RechargeResetRecordUpdateOne {
+	_u.mutation.SetRedeemCodeID(v)
 	return _u
 }
 
-// SetNillableOrderID sets the "order_id" field if the given value is not nil.
-func (_u *RechargeResetRecordUpdateOne) SetNillableOrderID(v *int64) *RechargeResetRecordUpdateOne {
+// SetNillableRedeemCodeID sets the "redeem_code_id" field if the given value is not nil.
+func (_u *RechargeResetRecordUpdateOne) SetNillableRedeemCodeID(v *int64) *RechargeResetRecordUpdateOne {
 	if v != nil {
-		_u.SetOrderID(*v)
+		_u.SetRedeemCodeID(*v)
 	}
 	return _u
 }
@@ -757,9 +757,9 @@ func (_u *RechargeResetRecordUpdateOne) SetRule(v *RechargeResetCampaignRule) *R
 	return _u.SetRuleID(v.ID)
 }
 
-// SetOrder sets the "order" edge to the PaymentOrder entity.
-func (_u *RechargeResetRecordUpdateOne) SetOrder(v *PaymentOrder) *RechargeResetRecordUpdateOne {
-	return _u.SetOrderID(v.ID)
+// SetRedeemCode sets the "redeem_code" edge to the RedeemCode entity.
+func (_u *RechargeResetRecordUpdateOne) SetRedeemCode(v *RedeemCode) *RechargeResetRecordUpdateOne {
+	return _u.SetRedeemCodeID(v.ID)
 }
 
 // SetUser sets the "user" edge to the User entity.
@@ -794,9 +794,9 @@ func (_u *RechargeResetRecordUpdateOne) ClearRule() *RechargeResetRecordUpdateOn
 	return _u
 }
 
-// ClearOrder clears the "order" edge to the PaymentOrder entity.
-func (_u *RechargeResetRecordUpdateOne) ClearOrder() *RechargeResetRecordUpdateOne {
-	_u.mutation.ClearOrder()
+// ClearRedeemCode clears the "redeem_code" edge to the RedeemCode entity.
+func (_u *RechargeResetRecordUpdateOne) ClearRedeemCode() *RechargeResetRecordUpdateOne {
+	_u.mutation.ClearRedeemCode()
 	return _u
 }
 
@@ -866,8 +866,8 @@ func (_u *RechargeResetRecordUpdateOne) check() error {
 	if _u.mutation.RuleCleared() && len(_u.mutation.RuleIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.rule"`)
 	}
-	if _u.mutation.OrderCleared() && len(_u.mutation.OrderIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.order"`)
+	if _u.mutation.RedeemCodeCleared() && len(_u.mutation.RedeemCodeIDs()) > 0 {
+		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.redeem_code"`)
 	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "RechargeResetRecord.user"`)
@@ -995,28 +995,28 @@ func (_u *RechargeResetRecordUpdateOne) sqlSave(ctx context.Context) (_node *Rec
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
-	if _u.mutation.OrderCleared() {
+	if _u.mutation.RedeemCodeCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   rechargeresetrecord.OrderTable,
-			Columns: []string{rechargeresetrecord.OrderColumn},
+			Table:   rechargeresetrecord.RedeemCodeTable,
+			Columns: []string{rechargeresetrecord.RedeemCodeColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(redeemcode.FieldID, field.TypeInt64),
 			},
 		}
 		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
 	}
-	if nodes := _u.mutation.OrderIDs(); len(nodes) > 0 {
+	if nodes := _u.mutation.RedeemCodeIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   rechargeresetrecord.OrderTable,
-			Columns: []string{rechargeresetrecord.OrderColumn},
+			Table:   rechargeresetrecord.RedeemCodeTable,
+			Columns: []string{rechargeresetrecord.RedeemCodeColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(redeemcode.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

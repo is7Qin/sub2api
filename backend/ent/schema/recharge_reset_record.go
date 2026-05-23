@@ -26,7 +26,7 @@ func (RechargeResetRecord) Fields() []ent.Field {
 	return []ent.Field{
 		field.Int64("campaign_id"),
 		field.Int64("rule_id"),
-		field.Int64("order_id"),
+		field.Int64("redeem_code_id"),
 		field.Int64("user_id"),
 		field.Int64("subscription_id"),
 		field.Int64("group_id"),
@@ -44,7 +44,7 @@ func (RechargeResetRecord) Edges() []ent.Edge {
 	return []ent.Edge{
 		edge.From("campaign", RechargeResetCampaign.Type).Ref("records").Field("campaign_id").Unique().Required(),
 		edge.From("rule", RechargeResetCampaignRule.Type).Ref("records").Field("rule_id").Unique().Required(),
-		edge.From("order", PaymentOrder.Type).Ref("recharge_reset_records").Field("order_id").Unique().Required(),
+		edge.From("redeem_code", RedeemCode.Type).Ref("recharge_reset_records").Field("redeem_code_id").Unique().Required(),
 		edge.From("user", User.Type).Ref("recharge_reset_records").Field("user_id").Unique().Required(),
 		edge.From("subscription", UserSubscription.Type).Ref("recharge_reset_records").Field("subscription_id").Unique().Required(),
 		edge.From("group", Group.Type).Ref("recharge_reset_records").Field("group_id").Unique().Required(),
@@ -53,8 +53,8 @@ func (RechargeResetRecord) Edges() []ent.Edge {
 
 func (RechargeResetRecord) Indexes() []ent.Index {
 	return []ent.Index{
-		index.Fields("order_id", "rule_id").Unique(),
-		index.Fields("order_id", "subscription_id").Unique(),
+		index.Fields("redeem_code_id", "rule_id").Unique(),
+		index.Fields("redeem_code_id", "subscription_id").Unique(),
 		index.Fields("user_id", "created_at"),
 	}
 }

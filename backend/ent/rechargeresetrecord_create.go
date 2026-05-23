@@ -12,10 +12,10 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
+	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
@@ -40,9 +40,9 @@ func (_c *RechargeResetRecordCreate) SetRuleID(v int64) *RechargeResetRecordCrea
 	return _c
 }
 
-// SetOrderID sets the "order_id" field.
-func (_c *RechargeResetRecordCreate) SetOrderID(v int64) *RechargeResetRecordCreate {
-	_c.mutation.SetOrderID(v)
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (_c *RechargeResetRecordCreate) SetRedeemCodeID(v int64) *RechargeResetRecordCreate {
+	_c.mutation.SetRedeemCodeID(v)
 	return _c
 }
 
@@ -148,9 +148,9 @@ func (_c *RechargeResetRecordCreate) SetRule(v *RechargeResetCampaignRule) *Rech
 	return _c.SetRuleID(v.ID)
 }
 
-// SetOrder sets the "order" edge to the PaymentOrder entity.
-func (_c *RechargeResetRecordCreate) SetOrder(v *PaymentOrder) *RechargeResetRecordCreate {
-	return _c.SetOrderID(v.ID)
+// SetRedeemCode sets the "redeem_code" edge to the RedeemCode entity.
+func (_c *RechargeResetRecordCreate) SetRedeemCode(v *RedeemCode) *RechargeResetRecordCreate {
+	return _c.SetRedeemCodeID(v.ID)
 }
 
 // SetUser sets the "user" edge to the User entity.
@@ -229,8 +229,8 @@ func (_c *RechargeResetRecordCreate) check() error {
 	if _, ok := _c.mutation.RuleID(); !ok {
 		return &ValidationError{Name: "rule_id", err: errors.New(`ent: missing required field "RechargeResetRecord.rule_id"`)}
 	}
-	if _, ok := _c.mutation.OrderID(); !ok {
-		return &ValidationError{Name: "order_id", err: errors.New(`ent: missing required field "RechargeResetRecord.order_id"`)}
+	if _, ok := _c.mutation.RedeemCodeID(); !ok {
+		return &ValidationError{Name: "redeem_code_id", err: errors.New(`ent: missing required field "RechargeResetRecord.redeem_code_id"`)}
 	}
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "RechargeResetRecord.user_id"`)}
@@ -265,8 +265,8 @@ func (_c *RechargeResetRecordCreate) check() error {
 	if len(_c.mutation.RuleIDs()) == 0 {
 		return &ValidationError{Name: "rule", err: errors.New(`ent: missing required edge "RechargeResetRecord.rule"`)}
 	}
-	if len(_c.mutation.OrderIDs()) == 0 {
-		return &ValidationError{Name: "order", err: errors.New(`ent: missing required edge "RechargeResetRecord.order"`)}
+	if len(_c.mutation.RedeemCodeIDs()) == 0 {
+		return &ValidationError{Name: "redeem_code", err: errors.New(`ent: missing required edge "RechargeResetRecord.redeem_code"`)}
 	}
 	if len(_c.mutation.UserIDs()) == 0 {
 		return &ValidationError{Name: "user", err: errors.New(`ent: missing required edge "RechargeResetRecord.user"`)}
@@ -366,21 +366,21 @@ func (_c *RechargeResetRecordCreate) createSpec() (*RechargeResetRecord, *sqlgra
 		_node.RuleID = nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
-	if nodes := _c.mutation.OrderIDs(); len(nodes) > 0 {
+	if nodes := _c.mutation.RedeemCodeIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   rechargeresetrecord.OrderTable,
-			Columns: []string{rechargeresetrecord.OrderColumn},
+			Table:   rechargeresetrecord.RedeemCodeTable,
+			Columns: []string{rechargeresetrecord.RedeemCodeColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(redeemcode.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.OrderID = nodes[0]
+		_node.RedeemCodeID = nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.UserIDs(); len(nodes) > 0 {
@@ -510,15 +510,15 @@ func (u *RechargeResetRecordUpsert) UpdateRuleID() *RechargeResetRecordUpsert {
 	return u
 }
 
-// SetOrderID sets the "order_id" field.
-func (u *RechargeResetRecordUpsert) SetOrderID(v int64) *RechargeResetRecordUpsert {
-	u.Set(rechargeresetrecord.FieldOrderID, v)
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (u *RechargeResetRecordUpsert) SetRedeemCodeID(v int64) *RechargeResetRecordUpsert {
+	u.Set(rechargeresetrecord.FieldRedeemCodeID, v)
 	return u
 }
 
-// UpdateOrderID sets the "order_id" field to the value that was provided on create.
-func (u *RechargeResetRecordUpsert) UpdateOrderID() *RechargeResetRecordUpsert {
-	u.SetExcluded(rechargeresetrecord.FieldOrderID)
+// UpdateRedeemCodeID sets the "redeem_code_id" field to the value that was provided on create.
+func (u *RechargeResetRecordUpsert) UpdateRedeemCodeID() *RechargeResetRecordUpsert {
+	u.SetExcluded(rechargeresetrecord.FieldRedeemCodeID)
 	return u
 }
 
@@ -721,17 +721,17 @@ func (u *RechargeResetRecordUpsertOne) UpdateRuleID() *RechargeResetRecordUpsert
 	})
 }
 
-// SetOrderID sets the "order_id" field.
-func (u *RechargeResetRecordUpsertOne) SetOrderID(v int64) *RechargeResetRecordUpsertOne {
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (u *RechargeResetRecordUpsertOne) SetRedeemCodeID(v int64) *RechargeResetRecordUpsertOne {
 	return u.Update(func(s *RechargeResetRecordUpsert) {
-		s.SetOrderID(v)
+		s.SetRedeemCodeID(v)
 	})
 }
 
-// UpdateOrderID sets the "order_id" field to the value that was provided on create.
-func (u *RechargeResetRecordUpsertOne) UpdateOrderID() *RechargeResetRecordUpsertOne {
+// UpdateRedeemCodeID sets the "redeem_code_id" field to the value that was provided on create.
+func (u *RechargeResetRecordUpsertOne) UpdateRedeemCodeID() *RechargeResetRecordUpsertOne {
 	return u.Update(func(s *RechargeResetRecordUpsert) {
-		s.UpdateOrderID()
+		s.UpdateRedeemCodeID()
 	})
 }
 
@@ -1121,17 +1121,17 @@ func (u *RechargeResetRecordUpsertBulk) UpdateRuleID() *RechargeResetRecordUpser
 	})
 }
 
-// SetOrderID sets the "order_id" field.
-func (u *RechargeResetRecordUpsertBulk) SetOrderID(v int64) *RechargeResetRecordUpsertBulk {
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (u *RechargeResetRecordUpsertBulk) SetRedeemCodeID(v int64) *RechargeResetRecordUpsertBulk {
 	return u.Update(func(s *RechargeResetRecordUpsert) {
-		s.SetOrderID(v)
+		s.SetRedeemCodeID(v)
 	})
 }
 
-// UpdateOrderID sets the "order_id" field to the value that was provided on create.
-func (u *RechargeResetRecordUpsertBulk) UpdateOrderID() *RechargeResetRecordUpsertBulk {
+// UpdateRedeemCodeID sets the "redeem_code_id" field to the value that was provided on create.
+func (u *RechargeResetRecordUpsertBulk) UpdateRedeemCodeID() *RechargeResetRecordUpsertBulk {
 	return u.Update(func(s *RechargeResetRecordUpsert) {
-		s.UpdateOrderID()
+		s.UpdateRedeemCodeID()
 	})
 }
 

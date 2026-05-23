@@ -13,11 +13,11 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
+	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
@@ -31,7 +31,7 @@ type RechargeResetRecordQuery struct {
 	predicates       []predicate.RechargeResetRecord
 	withCampaign     *RechargeResetCampaignQuery
 	withRule         *RechargeResetCampaignRuleQuery
-	withOrder        *PaymentOrderQuery
+	withRedeemCode   *RedeemCodeQuery
 	withUser         *UserQuery
 	withSubscription *UserSubscriptionQuery
 	withGroup        *GroupQuery
@@ -116,9 +116,9 @@ func (_q *RechargeResetRecordQuery) QueryRule() *RechargeResetCampaignRuleQuery 
 	return query
 }
 
-// QueryOrder chains the current query on the "order" edge.
-func (_q *RechargeResetRecordQuery) QueryOrder() *PaymentOrderQuery {
-	query := (&PaymentOrderClient{config: _q.config}).Query()
+// QueryRedeemCode chains the current query on the "redeem_code" edge.
+func (_q *RechargeResetRecordQuery) QueryRedeemCode() *RedeemCodeQuery {
+	query := (&RedeemCodeClient{config: _q.config}).Query()
 	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
 		if err := _q.prepareQuery(ctx); err != nil {
 			return nil, err
@@ -129,8 +129,8 @@ func (_q *RechargeResetRecordQuery) QueryOrder() *PaymentOrderQuery {
 		}
 		step := sqlgraph.NewStep(
 			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, selector),
-			sqlgraph.To(paymentorder.Table, paymentorder.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.OrderTable, rechargeresetrecord.OrderColumn),
+			sqlgraph.To(redeemcode.Table, redeemcode.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.RedeemCodeTable, rechargeresetrecord.RedeemCodeColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -398,7 +398,7 @@ func (_q *RechargeResetRecordQuery) Clone() *RechargeResetRecordQuery {
 		predicates:       append([]predicate.RechargeResetRecord{}, _q.predicates...),
 		withCampaign:     _q.withCampaign.Clone(),
 		withRule:         _q.withRule.Clone(),
-		withOrder:        _q.withOrder.Clone(),
+		withRedeemCode:   _q.withRedeemCode.Clone(),
 		withUser:         _q.withUser.Clone(),
 		withSubscription: _q.withSubscription.Clone(),
 		withGroup:        _q.withGroup.Clone(),
@@ -430,14 +430,14 @@ func (_q *RechargeResetRecordQuery) WithRule(opts ...func(*RechargeResetCampaign
 	return _q
 }
 
-// WithOrder tells the query-builder to eager-load the nodes that are connected to
-// the "order" edge. The optional arguments are used to configure the query builder of the edge.
-func (_q *RechargeResetRecordQuery) WithOrder(opts ...func(*PaymentOrderQuery)) *RechargeResetRecordQuery {
-	query := (&PaymentOrderClient{config: _q.config}).Query()
+// WithRedeemCode tells the query-builder to eager-load the nodes that are connected to
+// the "redeem_code" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *RechargeResetRecordQuery) WithRedeemCode(opts ...func(*RedeemCodeQuery)) *RechargeResetRecordQuery {
+	query := (&RedeemCodeClient{config: _q.config}).Query()
 	for _, opt := range opts {
 		opt(query)
 	}
-	_q.withOrder = query
+	_q.withRedeemCode = query
 	return _q
 }
 
@@ -555,7 +555,7 @@ func (_q *RechargeResetRecordQuery) sqlAll(ctx context.Context, hooks ...queryHo
 		loadedTypes = [6]bool{
 			_q.withCampaign != nil,
 			_q.withRule != nil,
-			_q.withOrder != nil,
+			_q.withRedeemCode != nil,
 			_q.withUser != nil,
 			_q.withSubscription != nil,
 			_q.withGroup != nil,
@@ -594,9 +594,9 @@ func (_q *RechargeResetRecordQuery) sqlAll(ctx context.Context, hooks ...queryHo
 			return nil, err
 		}
 	}
-	if query := _q.withOrder; query != nil {
-		if err := _q.loadOrder(ctx, query, nodes, nil,
-			func(n *RechargeResetRecord, e *PaymentOrder) { n.Edges.Order = e }); err != nil {
+	if query := _q.withRedeemCode; query != nil {
+		if err := _q.loadRedeemCode(ctx, query, nodes, nil,
+			func(n *RechargeResetRecord, e *RedeemCode) { n.Edges.RedeemCode = e }); err != nil {
 			return nil, err
 		}
 	}
@@ -679,11 +679,11 @@ func (_q *RechargeResetRecordQuery) loadRule(ctx context.Context, query *Recharg
 	}
 	return nil
 }
-func (_q *RechargeResetRecordQuery) loadOrder(ctx context.Context, query *PaymentOrderQuery, nodes []*RechargeResetRecord, init func(*RechargeResetRecord), assign func(*RechargeResetRecord, *PaymentOrder)) error {
+func (_q *RechargeResetRecordQuery) loadRedeemCode(ctx context.Context, query *RedeemCodeQuery, nodes []*RechargeResetRecord, init func(*RechargeResetRecord), assign func(*RechargeResetRecord, *RedeemCode)) error {
 	ids := make([]int64, 0, len(nodes))
 	nodeids := make(map[int64][]*RechargeResetRecord)
 	for i := range nodes {
-		fk := nodes[i].OrderID
+		fk := nodes[i].RedeemCodeID
 		if _, ok := nodeids[fk]; !ok {
 			ids = append(ids, fk)
 		}
@@ -692,7 +692,7 @@ func (_q *RechargeResetRecordQuery) loadOrder(ctx context.Context, query *Paymen
 	if len(ids) == 0 {
 		return nil
 	}
-	query.Where(paymentorder.IDIn(ids...))
+	query.Where(redeemcode.IDIn(ids...))
 	neighbors, err := query.All(ctx)
 	if err != nil {
 		return err
@@ -700,7 +700,7 @@ func (_q *RechargeResetRecordQuery) loadOrder(ctx context.Context, query *Paymen
 	for _, n := range neighbors {
 		nodes, ok := nodeids[n.ID]
 		if !ok {
-			return fmt.Errorf(`unexpected foreign-key "order_id" returned %v`, n.ID)
+			return fmt.Errorf(`unexpected foreign-key "redeem_code_id" returned %v`, n.ID)
 		}
 		for i := range nodes {
 			assign(nodes[i], n)
@@ -830,8 +830,8 @@ func (_q *RechargeResetRecordQuery) querySpec() *sqlgraph.QuerySpec {
 		if _q.withRule != nil {
 			_spec.Node.AddColumnOnce(rechargeresetrecord.FieldRuleID)
 		}
-		if _q.withOrder != nil {
-			_spec.Node.AddColumnOnce(rechargeresetrecord.FieldOrderID)
+		if _q.withRedeemCode != nil {
+			_spec.Node.AddColumnOnce(rechargeresetrecord.FieldRedeemCodeID)
 		}
 		if _q.withUser != nil {
 			_spec.Node.AddColumnOnce(rechargeresetrecord.FieldUserID)

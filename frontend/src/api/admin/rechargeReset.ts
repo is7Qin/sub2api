@@ -35,7 +35,7 @@ export interface RechargeResetRecord {
   id: number
   campaign_id: number
   rule_id: number
-  order_id: number
+  redeem_code_id: number
   user_id: number
   subscription_id: number
   group_id: number

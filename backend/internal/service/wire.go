@@ -523,7 +523,7 @@ var ProviderSet = wire.NewSet(
 	NewModelPricingResolver,
 	NewContentModerationService,
 	NewAffiliateService,
-	NewRechargeResetCampaignService,
+	ProvideRechargeResetCampaignService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
 	ProvidePaymentOrderExpiryService,
@@ -532,6 +532,12 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorRequestTemplateService,
 )
+
+func ProvideRechargeResetCampaignService(repo RechargeResetRepository, subscriptionSvc *SubscriptionService, redeemService *RedeemService) *RechargeResetCampaignService {
+	svc := NewRechargeResetCampaignService(repo, subscriptionSvc)
+	redeemService.SetRechargeResetService(svc)
+	return svc
+}
 
 // ProvidePaymentConfigService wraps NewPaymentConfigService to accept the named
 // payment.EncryptionKey type instead of raw []byte, avoiding Wire ambiguity.
@@ -547,9 +553,8 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
 }
 
 // ProvidePaymentService creates PaymentService and attaches optional fulfillment integrations.
-func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, rechargeResetService *RechargeResetCampaignService, notificationEmailService *NotificationEmailService) *PaymentService {
+func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService) *PaymentService {
 	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService)
-	svc.SetRechargeResetCampaignService(rechargeResetService)
 	svc.SetNotificationEmailService(notificationEmailService)
 	return svc
 }

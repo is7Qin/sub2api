@@ -18,8 +18,8 @@ const (
 	FieldCampaignID = "campaign_id"
 	// FieldRuleID holds the string denoting the rule_id field in the database.
 	FieldRuleID = "rule_id"
-	// FieldOrderID holds the string denoting the order_id field in the database.
-	FieldOrderID = "order_id"
+	// FieldRedeemCodeID holds the string denoting the redeem_code_id field in the database.
+	FieldRedeemCodeID = "redeem_code_id"
 	// FieldUserID holds the string denoting the user_id field in the database.
 	FieldUserID = "user_id"
 	// FieldSubscriptionID holds the string denoting the subscription_id field in the database.
@@ -44,8 +44,8 @@ const (
 	EdgeCampaign = "campaign"
 	// EdgeRule holds the string denoting the rule edge name in mutations.
 	EdgeRule = "rule"
-	// EdgeOrder holds the string denoting the order edge name in mutations.
-	EdgeOrder = "order"
+	// EdgeRedeemCode holds the string denoting the redeem_code edge name in mutations.
+	EdgeRedeemCode = "redeem_code"
 	// EdgeUser holds the string denoting the user edge name in mutations.
 	EdgeUser = "user"
 	// EdgeSubscription holds the string denoting the subscription edge name in mutations.
@@ -68,13 +68,13 @@ const (
 	RuleInverseTable = "recharge_reset_campaign_rules"
 	// RuleColumn is the table column denoting the rule relation/edge.
 	RuleColumn = "rule_id"
-	// OrderTable is the table that holds the order relation/edge.
-	OrderTable = "recharge_reset_records"
-	// OrderInverseTable is the table name for the PaymentOrder entity.
-	// It exists in this package in order to avoid circular dependency with the "paymentorder" package.
-	OrderInverseTable = "payment_orders"
-	// OrderColumn is the table column denoting the order relation/edge.
-	OrderColumn = "order_id"
+	// RedeemCodeTable is the table that holds the redeem_code relation/edge.
+	RedeemCodeTable = "recharge_reset_records"
+	// RedeemCodeInverseTable is the table name for the RedeemCode entity.
+	// It exists in this package in order to avoid circular dependency with the "redeemcode" package.
+	RedeemCodeInverseTable = "redeem_codes"
+	// RedeemCodeColumn is the table column denoting the redeem_code relation/edge.
+	RedeemCodeColumn = "redeem_code_id"
 	// UserTable is the table that holds the user relation/edge.
 	UserTable = "recharge_reset_records"
 	// UserInverseTable is the table name for the User entity.
@@ -103,7 +103,7 @@ var Columns = []string{
 	FieldID,
 	FieldCampaignID,
 	FieldRuleID,
-	FieldOrderID,
+	FieldRedeemCodeID,
 	FieldUserID,
 	FieldSubscriptionID,
 	FieldGroupID,
@@ -155,9 +155,9 @@ func ByRuleID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldRuleID, opts...).ToFunc()
 }
 
-// ByOrderID orders the results by the order_id field.
-func ByOrderID(opts ...sql.OrderTermOption) OrderOption {
-	return sql.OrderByField(FieldOrderID, opts...).ToFunc()
+// ByRedeemCodeID orders the results by the redeem_code_id field.
+func ByRedeemCodeID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRedeemCodeID, opts...).ToFunc()
 }
 
 // ByUserID orders the results by the user_id field.
@@ -219,10 +219,10 @@ func ByRuleField(field string, opts ...sql.OrderTermOption) OrderOption {
 	}
 }
 
-// ByOrderField orders the results by order field.
-func ByOrderField(field string, opts ...sql.OrderTermOption) OrderOption {
+// ByRedeemCodeField orders the results by redeem_code field.
+func ByRedeemCodeField(field string, opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
-		sqlgraph.OrderByNeighborTerms(s, newOrderStep(), sql.OrderByField(field, opts...))
+		sqlgraph.OrderByNeighborTerms(s, newRedeemCodeStep(), sql.OrderByField(field, opts...))
 	}
 }
 
@@ -260,11 +260,11 @@ func newRuleStep() *sqlgraph.Step {
 		sqlgraph.Edge(sqlgraph.M2O, true, RuleTable, RuleColumn),
 	)
 }
-func newOrderStep() *sqlgraph.Step {
+func newRedeemCodeStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
-		sqlgraph.To(OrderInverseTable, FieldID),
-		sqlgraph.Edge(sqlgraph.M2O, true, OrderTable, OrderColumn),
+		sqlgraph.To(RedeemCodeInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.M2O, true, RedeemCodeTable, RedeemCodeColumn),
 	)
 }
 func newUserStep() *sqlgraph.Step {

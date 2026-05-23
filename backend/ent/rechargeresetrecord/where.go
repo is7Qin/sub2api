@@ -65,9 +65,9 @@ func RuleID(v int64) predicate.RechargeResetRecord {
 	return predicate.RechargeResetRecord(sql.FieldEQ(FieldRuleID, v))
 }
 
-// OrderID applies equality check predicate on the "order_id" field. It's identical to OrderIDEQ.
-func OrderID(v int64) predicate.RechargeResetRecord {
-	return predicate.RechargeResetRecord(sql.FieldEQ(FieldOrderID, v))
+// RedeemCodeID applies equality check predicate on the "redeem_code_id" field. It's identical to RedeemCodeIDEQ.
+func RedeemCodeID(v int64) predicate.RechargeResetRecord {
+	return predicate.RechargeResetRecord(sql.FieldEQ(FieldRedeemCodeID, v))
 }
 
 // UserID applies equality check predicate on the "user_id" field. It's identical to UserIDEQ.
@@ -155,24 +155,24 @@ func RuleIDNotIn(vs ...int64) predicate.RechargeResetRecord {
 	return predicate.RechargeResetRecord(sql.FieldNotIn(FieldRuleID, vs...))
 }
 
-// OrderIDEQ applies the EQ predicate on the "order_id" field.
-func OrderIDEQ(v int64) predicate.RechargeResetRecord {
-	return predicate.RechargeResetRecord(sql.FieldEQ(FieldOrderID, v))
+// RedeemCodeIDEQ applies the EQ predicate on the "redeem_code_id" field.
+func RedeemCodeIDEQ(v int64) predicate.RechargeResetRecord {
+	return predicate.RechargeResetRecord(sql.FieldEQ(FieldRedeemCodeID, v))
 }
 
-// OrderIDNEQ applies the NEQ predicate on the "order_id" field.
-func OrderIDNEQ(v int64) predicate.RechargeResetRecord {
-	return predicate.RechargeResetRecord(sql.FieldNEQ(FieldOrderID, v))
+// RedeemCodeIDNEQ applies the NEQ predicate on the "redeem_code_id" field.
+func RedeemCodeIDNEQ(v int64) predicate.RechargeResetRecord {
+	return predicate.RechargeResetRecord(sql.FieldNEQ(FieldRedeemCodeID, v))
 }
 
-// OrderIDIn applies the In predicate on the "order_id" field.
-func OrderIDIn(vs ...int64) predicate.RechargeResetRecord {
-	return predicate.RechargeResetRecord(sql.FieldIn(FieldOrderID, vs...))
+// RedeemCodeIDIn applies the In predicate on the "redeem_code_id" field.
+func RedeemCodeIDIn(vs ...int64) predicate.RechargeResetRecord {
+	return predicate.RechargeResetRecord(sql.FieldIn(FieldRedeemCodeID, vs...))
 }
 
-// OrderIDNotIn applies the NotIn predicate on the "order_id" field.
-func OrderIDNotIn(vs ...int64) predicate.RechargeResetRecord {
-	return predicate.RechargeResetRecord(sql.FieldNotIn(FieldOrderID, vs...))
+// RedeemCodeIDNotIn applies the NotIn predicate on the "redeem_code_id" field.
+func RedeemCodeIDNotIn(vs ...int64) predicate.RechargeResetRecord {
+	return predicate.RechargeResetRecord(sql.FieldNotIn(FieldRedeemCodeID, vs...))
 }
 
 // UserIDEQ applies the EQ predicate on the "user_id" field.
@@ -441,21 +441,21 @@ func HasRuleWith(preds ...predicate.RechargeResetCampaignRule) predicate.Recharg
 	})
 }
 
-// HasOrder applies the HasEdge predicate on the "order" edge.
-func HasOrder() predicate.RechargeResetRecord {
+// HasRedeemCode applies the HasEdge predicate on the "redeem_code" edge.
+func HasRedeemCode() predicate.RechargeResetRecord {
 	return predicate.RechargeResetRecord(func(s *sql.Selector) {
 		step := sqlgraph.NewStep(
 			sqlgraph.From(Table, FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, true, OrderTable, OrderColumn),
+			sqlgraph.Edge(sqlgraph.M2O, true, RedeemCodeTable, RedeemCodeColumn),
 		)
 		sqlgraph.HasNeighbors(s, step)
 	})
 }
 
-// HasOrderWith applies the HasEdge predicate on the "order" edge with a given conditions (other predicates).
-func HasOrderWith(preds ...predicate.PaymentOrder) predicate.RechargeResetRecord {
+// HasRedeemCodeWith applies the HasEdge predicate on the "redeem_code" edge with a given conditions (other predicates).
+func HasRedeemCodeWith(preds ...predicate.RedeemCode) predicate.RechargeResetRecord {
 	return predicate.RechargeResetRecord(func(s *sql.Selector) {
-		step := newOrderStep()
+		step := newRedeemCodeStep()
 		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
 			for _, p := range preds {
 				p(s)

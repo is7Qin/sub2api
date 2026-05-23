@@ -20605,63 +20605,60 @@ func (m *PaymentAuditLogMutation) ResetEdge(name string) error {
 // PaymentOrderMutation represents an operation that mutates the PaymentOrder nodes in the graph.
 type PaymentOrderMutation struct {
 	config
-	op                            Op
-	typ                           string
-	id                            *int64
-	user_email                    *string
-	user_name                     *string
-	user_notes                    *string
-	amount                        *float64
-	addamount                     *float64
-	pay_amount                    *float64
-	addpay_amount                 *float64
-	fee_rate                      *float64
-	addfee_rate                   *float64
-	recharge_code                 *string
-	out_trade_no                  *string
-	payment_type                  *string
-	payment_trade_no              *string
-	pay_url                       *string
-	qr_code                       *string
-	qr_code_img                   *string
-	order_type                    *string
-	plan_id                       *int64
-	addplan_id                    *int64
-	subscription_group_id         *int64
-	addsubscription_group_id      *int64
-	subscription_days             *int
-	addsubscription_days          *int
-	provider_instance_id          *string
-	provider_key                  *string
-	provider_snapshot             *map[string]interface{}
-	status                        *string
-	refund_amount                 *float64
-	addrefund_amount              *float64
-	refund_reason                 *string
-	refund_at                     *time.Time
-	force_refund                  *bool
-	refund_requested_at           *time.Time
-	refund_request_reason         *string
-	refund_requested_by           *string
-	expires_at                    *time.Time
-	paid_at                       *time.Time
-	completed_at                  *time.Time
-	failed_at                     *time.Time
-	failed_reason                 *string
-	client_ip                     *string
-	src_host                      *string
-	src_url                       *string
-	created_at                    *time.Time
-	updated_at                    *time.Time
-	clearedFields                 map[string]struct{}
-	user                          *int64
-	cleareduser                   bool
-	recharge_reset_records        map[int64]struct{}
-	removedrecharge_reset_records map[int64]struct{}
-	clearedrecharge_reset_records bool
-	done                          bool
-	oldValue                      func(context.Context) (*PaymentOrder, error)
-	predicates                    []predicate.PaymentOrder
+	op                       Op
+	typ                      string
+	id                       *int64
+	user_email               *string
+	user_name                *string
+	user_notes               *string
+	amount                   *float64
+	addamount                *float64
+	pay_amount               *float64
+	addpay_amount            *float64
+	fee_rate                 *float64
+	addfee_rate              *float64
+	recharge_code            *string
+	out_trade_no             *string
+	payment_type             *string
+	payment_trade_no         *string
+	pay_url                  *string
+	qr_code                  *string
+	qr_code_img              *string
+	order_type               *string
+	plan_id                  *int64
+	addplan_id               *int64
+	subscription_group_id    *int64
+	addsubscription_group_id *int64
+	subscription_days        *int
+	addsubscription_days     *int
+	provider_instance_id     *string
+	provider_key             *string
+	provider_snapshot        *map[string]interface{}
+	status                   *string
+	refund_amount            *float64
+	addrefund_amount         *float64
+	refund_reason            *string
+	refund_at                *time.Time
+	force_refund             *bool
+	refund_requested_at      *time.Time
+	refund_request_reason    *string
+	refund_requested_by      *string
+	expires_at               *time.Time
+	paid_at                  *time.Time
+	completed_at             *time.Time
+	failed_at                *time.Time
+	failed_reason            *string
+	client_ip                *string
+	src_host                 *string
+	src_url                  *string
+	created_at               *time.Time
+	updated_at               *time.Time
+	clearedFields            map[string]struct{}
+	user                     *int64
+	cleareduser              bool
+	done                     bool
+	oldValue                 func(context.Context) (*PaymentOrder, error)
+	predicates               []predicate.PaymentOrder
 }
 
 var _ ent.Mutation = (*PaymentOrderMutation)(nil)
@@ -22596,60 +22593,6 @@ func (m *PaymentOrderMutation) ResetUser() {
 	m.cleareduser = false
 }
 
-// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by ids.
-func (m *PaymentOrderMutation) AddRechargeResetRecordIDs(ids ...int64) {
-	if m.recharge_reset_records == nil {
-		m.recharge_reset_records = make(map[int64]struct{})
-	}
-	for i := range ids {
-		m.recharge_reset_records[ids[i]] = struct{}{}
-	}
-}
-
-// ClearRechargeResetRecords clears the "recharge_reset_records" edge to the RechargeResetRecord entity.
-func (m *PaymentOrderMutation) ClearRechargeResetRecords() {
-	m.clearedrecharge_reset_records = true
-}
-
-// RechargeResetRecordsCleared reports if the "recharge_reset_records" edge to the RechargeResetRecord entity was cleared.
-func (m *PaymentOrderMutation) RechargeResetRecordsCleared() bool {
-	return m.clearedrecharge_reset_records
-}
-
-// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
-func (m *PaymentOrderMutation) RemoveRechargeResetRecordIDs(ids ...int64) {
-	if m.removedrecharge_reset_records == nil {
-		m.removedrecharge_reset_records = make(map[int64]struct{})
-	}
-	for i := range ids {
-		delete(m.recharge_reset_records, ids[i])
-		m.removedrecharge_reset_records[ids[i]] = struct{}{}
-	}
-}
-
-// RemovedRechargeResetRecords returns the removed IDs of the "recharge_reset_records" edge to the RechargeResetRecord entity.
-func (m *PaymentOrderMutation) RemovedRechargeResetRecordsIDs() (ids []int64) {
-	for id := range m.removedrecharge_reset_records {
-		ids = append(ids, id)
-	}
-	return
-}
-
-// RechargeResetRecordsIDs returns the "recharge_reset_records" edge IDs in the mutation.
-func (m *PaymentOrderMutation) RechargeResetRecordsIDs() (ids []int64) {
-	for id := range m.recharge_reset_records {
-		ids = append(ids, id)
-	}
-	return
-}
-
-// ResetRechargeResetRecords resets all changes to the "recharge_reset_records" edge.
-func (m *PaymentOrderMutation) ResetRechargeResetRecords() {
-	m.recharge_reset_records = nil
-	m.clearedrecharge_reset_records = false
-	m.removedrecharge_reset_records = nil
-}
-
 // Where appends a list predicates to the PaymentOrderMutation builder.
 func (m *PaymentOrderMutation) Where(ps ...predicate.PaymentOrder) {
 	m.predicates = append(m.predicates, ps...)
@@ -23639,12 +23582,9 @@ func (m *PaymentOrderMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *PaymentOrderMutation) AddedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 1)
 	if m.user != nil {
 		edges = append(edges, paymentorder.EdgeUser)
-	}
-	if m.recharge_reset_records != nil {
-		edges = append(edges, paymentorder.EdgeRechargeResetRecords)
 	}
 	return edges
 }
@@ -23657,47 +23597,27 @@ func (m *PaymentOrderMutation) AddedIDs(name string) []ent.Value {
 		if id := m.user; id != nil {
 			return []ent.Value{*id}
 		}
-	case paymentorder.EdgeRechargeResetRecords:
-		ids := make([]ent.Value, 0, len(m.recharge_reset_records))
-		for id := range m.recharge_reset_records {
-			ids = append(ids, id)
-		}
-		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *PaymentOrderMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 2)
-	if m.removedrecharge_reset_records != nil {
-		edges = append(edges, paymentorder.EdgeRechargeResetRecords)
-	}
+	edges := make([]string, 0, 1)
 	return edges
 }
 
 // RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
 // the given name in this mutation.
 func (m *PaymentOrderMutation) RemovedIDs(name string) []ent.Value {
-	switch name {
-	case paymentorder.EdgeRechargeResetRecords:
-		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_records))
-		for id := range m.removedrecharge_reset_records {
-			ids = append(ids, id)
-		}
-		return ids
-	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *PaymentOrderMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 1)
 	if m.cleareduser {
 		edges = append(edges, paymentorder.EdgeUser)
-	}
-	if m.clearedrecharge_reset_records {
-		edges = append(edges, paymentorder.EdgeRechargeResetRecords)
 	}
 	return edges
 }
@@ -23708,8 +23628,6 @@ func (m *PaymentOrderMutation) EdgeCleared(name string) bool {
 	switch name {
 	case paymentorder.EdgeUser:
 		return m.cleareduser
-	case paymentorder.EdgeRechargeResetRecords:
-		return m.clearedrecharge_reset_records
 	}
 	return false
 }
@@ -23731,9 +23649,6 @@ func (m *PaymentOrderMutation) ResetEdge(name string) error {
 	switch name {
 	case paymentorder.EdgeUser:
 		m.ResetUser()
-		return nil
-	case paymentorder.EdgeRechargeResetRecords:
-		m.ResetRechargeResetRecords()
 		return nil
 	}
 	return fmt.Errorf("unknown PaymentOrder edge %s", name)
@@ -30949,8 +30864,8 @@ type RechargeResetRecordMutation struct {
 	clearedcampaign     bool
 	rule                *int64
 	clearedrule         bool
-	_order              *int64
-	cleared_order       bool
+	redeem_code         *int64
+	clearedredeem_code  bool
 	user                *int64
 	cleareduser         bool
 	subscription        *int64
@@ -31132,40 +31047,40 @@ func (m *RechargeResetRecordMutation) ResetRuleID() {
 	m.rule = nil
 }
 
-// SetOrderID sets the "order_id" field.
-func (m *RechargeResetRecordMutation) SetOrderID(i int64) {
-	m._order = &i
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (m *RechargeResetRecordMutation) SetRedeemCodeID(i int64) {
+	m.redeem_code = &i
 }
 
-// OrderID returns the value of the "order_id" field in the mutation.
-func (m *RechargeResetRecordMutation) OrderID() (r int64, exists bool) {
-	v := m._order
+// RedeemCodeID returns the value of the "redeem_code_id" field in the mutation.
+func (m *RechargeResetRecordMutation) RedeemCodeID() (r int64, exists bool) {
+	v := m.redeem_code
 	if v == nil {
 		return
 	}
 	return *v, true
 }
 
-// OldOrderID returns the old "order_id" field's value of the RechargeResetRecord entity.
+// OldRedeemCodeID returns the old "redeem_code_id" field's value of the RechargeResetRecord entity.
 // If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
 // An error is returned if the mutation operation is not UpdateOne, or the database query fails.
-func (m *RechargeResetRecordMutation) OldOrderID(ctx context.Context) (v int64, err error) {
+func (m *RechargeResetRecordMutation) OldRedeemCodeID(ctx context.Context) (v int64, err error) {
 	if !m.op.Is(OpUpdateOne) {
-		return v, errors.New("OldOrderID is only allowed on UpdateOne operations")
+		return v, errors.New("OldRedeemCodeID is only allowed on UpdateOne operations")
 	}
 	if m.id == nil || m.oldValue == nil {
-		return v, errors.New("OldOrderID requires an ID field in the mutation")
+		return v, errors.New("OldRedeemCodeID requires an ID field in the mutation")
 	}
 	oldValue, err := m.oldValue(ctx)
 	if err != nil {
-		return v, fmt.Errorf("querying old value for OldOrderID: %w", err)
+		return v, fmt.Errorf("querying old value for OldRedeemCodeID: %w", err)
 	}
-	return oldValue.OrderID, nil
+	return oldValue.RedeemCodeID, nil
 }
 
-// ResetOrderID resets all changes to the "order_id" field.
-func (m *RechargeResetRecordMutation) ResetOrderID() {
-	m._order = nil
+// ResetRedeemCodeID resets all changes to the "redeem_code_id" field.
+func (m *RechargeResetRecordMutation) ResetRedeemCodeID() {
+	m.redeem_code = nil
 }
 
 // SetUserID sets the "user_id" field.
@@ -31635,31 +31550,31 @@ func (m *RechargeResetRecordMutation) ResetRule() {
 	m.clearedrule = false
 }
 
-// ClearOrder clears the "order" edge to the PaymentOrder entity.
-func (m *RechargeResetRecordMutation) ClearOrder() {
-	m.cleared_order = true
-	m.clearedFields[rechargeresetrecord.FieldOrderID] = struct{}{}
+// ClearRedeemCode clears the "redeem_code" edge to the RedeemCode entity.
+func (m *RechargeResetRecordMutation) ClearRedeemCode() {
+	m.clearedredeem_code = true
+	m.clearedFields[rechargeresetrecord.FieldRedeemCodeID] = struct{}{}
 }
 
-// OrderCleared reports if the "order" edge to the PaymentOrder entity was cleared.
-func (m *RechargeResetRecordMutation) OrderCleared() bool {
-	return m.cleared_order
+// RedeemCodeCleared reports if the "redeem_code" edge to the RedeemCode entity was cleared.
+func (m *RechargeResetRecordMutation) RedeemCodeCleared() bool {
+	return m.clearedredeem_code
 }
 
-// OrderIDs returns the "order" edge IDs in the mutation.
+// RedeemCodeIDs returns the "redeem_code" edge IDs in the mutation.
 // Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
-// OrderID instead. It exists only for internal usage by the builders.
-func (m *RechargeResetRecordMutation) OrderIDs() (ids []int64) {
-	if id := m._order; id != nil {
+// RedeemCodeID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) RedeemCodeIDs() (ids []int64) {
+	if id := m.redeem_code; id != nil {
 		ids = append(ids, *id)
 	}
 	return
 }
 
-// ResetOrder resets all changes to the "order" edge.
-func (m *RechargeResetRecordMutation) ResetOrder() {
-	m._order = nil
-	m.cleared_order = false
+// ResetRedeemCode resets all changes to the "redeem_code" edge.
+func (m *RechargeResetRecordMutation) ResetRedeemCode() {
+	m.redeem_code = nil
+	m.clearedredeem_code = false
 }
 
 // ClearUser clears the "user" edge to the User entity.
@@ -31784,8 +31699,8 @@ func (m *RechargeResetRecordMutation) Fields() []string {
 	if m.rule != nil {
 		fields = append(fields, rechargeresetrecord.FieldRuleID)
 	}
-	if m._order != nil {
-		fields = append(fields, rechargeresetrecord.FieldOrderID)
+	if m.redeem_code != nil {
+		fields = append(fields, rechargeresetrecord.FieldRedeemCodeID)
 	}
 	if m.user != nil {
 		fields = append(fields, rechargeresetrecord.FieldUserID)
@@ -31829,8 +31744,8 @@ func (m *RechargeResetRecordMutation) Field(name string) (ent.Value, bool) {
 		return m.CampaignID()
 	case rechargeresetrecord.FieldRuleID:
 		return m.RuleID()
-	case rechargeresetrecord.FieldOrderID:
-		return m.OrderID()
+	case rechargeresetrecord.FieldRedeemCodeID:
+		return m.RedeemCodeID()
 	case rechargeresetrecord.FieldUserID:
 		return m.UserID()
 	case rechargeresetrecord.FieldSubscriptionID:
@@ -31864,8 +31779,8 @@ func (m *RechargeResetRecordMutation) OldField(ctx context.Context, name string)
 		return m.OldCampaignID(ctx)
 	case rechargeresetrecord.FieldRuleID:
 		return m.OldRuleID(ctx)
-	case rechargeresetrecord.FieldOrderID:
-		return m.OldOrderID(ctx)
+	case rechargeresetrecord.FieldRedeemCodeID:
+		return m.OldRedeemCodeID(ctx)
 	case rechargeresetrecord.FieldUserID:
 		return m.OldUserID(ctx)
 	case rechargeresetrecord.FieldSubscriptionID:
@@ -31909,12 +31824,12 @@ func (m *RechargeResetRecordMutation) SetField(name string, value ent.Value) err
 		}
 		m.SetRuleID(v)
 		return nil
-	case rechargeresetrecord.FieldOrderID:
+	case rechargeresetrecord.FieldRedeemCodeID:
 		v, ok := value.(int64)
 		if !ok {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
-		m.SetOrderID(v)
+		m.SetRedeemCodeID(v)
 		return nil
 	case rechargeresetrecord.FieldUserID:
 		v, ok := value.(int64)
@@ -32077,8 +31992,8 @@ func (m *RechargeResetRecordMutation) ResetField(name string) error {
 	case rechargeresetrecord.FieldRuleID:
 		m.ResetRuleID()
 		return nil
-	case rechargeresetrecord.FieldOrderID:
-		m.ResetOrderID()
+	case rechargeresetrecord.FieldRedeemCodeID:
+		m.ResetRedeemCodeID()
 		return nil
 	case rechargeresetrecord.FieldUserID:
 		m.ResetUserID()
@@ -32123,8 +32038,8 @@ func (m *RechargeResetRecordMutation) AddedEdges() []string {
 	if m.rule != nil {
 		edges = append(edges, rechargeresetrecord.EdgeRule)
 	}
-	if m._order != nil {
-		edges = append(edges, rechargeresetrecord.EdgeOrder)
+	if m.redeem_code != nil {
+		edges = append(edges, rechargeresetrecord.EdgeRedeemCode)
 	}
 	if m.user != nil {
 		edges = append(edges, rechargeresetrecord.EdgeUser)
@@ -32150,8 +32065,8 @@ func (m *RechargeResetRecordMutation) AddedIDs(name string) []ent.Value {
 		if id := m.rule; id != nil {
 			return []ent.Value{*id}
 		}
-	case rechargeresetrecord.EdgeOrder:
-		if id := m._order; id != nil {
+	case rechargeresetrecord.EdgeRedeemCode:
+		if id := m.redeem_code; id != nil {
 			return []ent.Value{*id}
 		}
 	case rechargeresetrecord.EdgeUser:
@@ -32191,8 +32106,8 @@ func (m *RechargeResetRecordMutation) ClearedEdges() []string {
 	if m.clearedrule {
 		edges = append(edges, rechargeresetrecord.EdgeRule)
 	}
-	if m.cleared_order {
-		edges = append(edges, rechargeresetrecord.EdgeOrder)
+	if m.clearedredeem_code {
+		edges = append(edges, rechargeresetrecord.EdgeRedeemCode)
 	}
 	if m.cleareduser {
 		edges = append(edges, rechargeresetrecord.EdgeUser)
@@ -32214,8 +32129,8 @@ func (m *RechargeResetRecordMutation) EdgeCleared(name string) bool {
 		return m.clearedcampaign
 	case rechargeresetrecord.EdgeRule:
 		return m.clearedrule
-	case rechargeresetrecord.EdgeOrder:
-		return m.cleared_order
+	case rechargeresetrecord.EdgeRedeemCode:
+		return m.clearedredeem_code
 	case rechargeresetrecord.EdgeUser:
 		return m.cleareduser
 	case rechargeresetrecord.EdgeSubscription:
@@ -32236,8 +32151,8 @@ func (m *RechargeResetRecordMutation) ClearEdge(name string) error {
 	case rechargeresetrecord.EdgeRule:
 		m.ClearRule()
 		return nil
-	case rechargeresetrecord.EdgeOrder:
-		m.ClearOrder()
+	case rechargeresetrecord.EdgeRedeemCode:
+		m.ClearRedeemCode()
 		return nil
 	case rechargeresetrecord.EdgeUser:
 		m.ClearUser()
@@ -32262,8 +32177,8 @@ func (m *RechargeResetRecordMutation) ResetEdge(name string) error {
 	case rechargeresetrecord.EdgeRule:
 		m.ResetRule()
 		return nil
-	case rechargeresetrecord.EdgeOrder:
-		m.ResetOrder()
+	case rechargeresetrecord.EdgeRedeemCode:
+		m.ResetRedeemCode()
 		return nil
 	case rechargeresetrecord.EdgeUser:
 		m.ResetUser()
@@ -32281,28 +32196,31 @@ func (m *RechargeResetRecordMutation) ResetEdge(name string) error {
 // RedeemCodeMutation represents an operation that mutates the RedeemCode nodes in the graph.
 type RedeemCodeMutation struct {
 	config
-	op               Op
-	typ              string
-	id               *int64
-	code             *string
-	_type            *string
-	value            *float64
-	addvalue         *float64
-	status           *string
-	used_at          *time.Time
-	notes            *string
-	created_at       *time.Time
-	expires_at       *time.Time
-	validity_days    *int
-	addvalidity_days *int
-	clearedFields    map[string]struct{}
-	user             *int64
-	cleareduser      bool
-	group            *int64
-	clearedgroup     bool
-	done             bool
-	oldValue         func(context.Context) (*RedeemCode, error)
-	predicates       []predicate.RedeemCode
+	op                            Op
+	typ                           string
+	id                            *int64
+	code                          *string
+	_type                         *string
+	value                         *float64
+	addvalue                      *float64
+	status                        *string
+	used_at                       *time.Time
+	notes                         *string
+	created_at                    *time.Time
+	expires_at                    *time.Time
+	validity_days                 *int
+	addvalidity_days              *int
+	clearedFields                 map[string]struct{}
+	user                          *int64
+	cleareduser                   bool
+	group                         *int64
+	clearedgroup                  bool
+	recharge_reset_records        map[int64]struct{}
+	removedrecharge_reset_records map[int64]struct{}
+	clearedrecharge_reset_records bool
+	done                          bool
+	oldValue                      func(context.Context) (*RedeemCode, error)
+	predicates                    []predicate.RedeemCode
 }
 
 var _ ent.Mutation = (*RedeemCodeMutation)(nil)
@@ -32971,6 +32889,60 @@ func (m *RedeemCodeMutation) ResetGroup() {
 	m.clearedgroup = false
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by ids.
+func (m *RedeemCodeMutation) AddRechargeResetRecordIDs(ids ...int64) {
+	if m.recharge_reset_records == nil {
+		m.recharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.recharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRechargeResetRecords clears the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *RedeemCodeMutation) ClearRechargeResetRecords() {
+	m.clearedrecharge_reset_records = true
+}
+
+// RechargeResetRecordsCleared reports if the "recharge_reset_records" edge to the RechargeResetRecord entity was cleared.
+func (m *RedeemCodeMutation) RechargeResetRecordsCleared() bool {
+	return m.clearedrecharge_reset_records
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (m *RedeemCodeMutation) RemoveRechargeResetRecordIDs(ids ...int64) {
+	if m.removedrecharge_reset_records == nil {
+		m.removedrecharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.recharge_reset_records, ids[i])
+		m.removedrecharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRechargeResetRecords returns the removed IDs of the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *RedeemCodeMutation) RemovedRechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.removedrecharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RechargeResetRecordsIDs returns the "recharge_reset_records" edge IDs in the mutation.
+func (m *RedeemCodeMutation) RechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.recharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRechargeResetRecords resets all changes to the "recharge_reset_records" edge.
+func (m *RedeemCodeMutation) ResetRechargeResetRecords() {
+	m.recharge_reset_records = nil
+	m.clearedrecharge_reset_records = false
+	m.removedrecharge_reset_records = nil
+}
+
 // Where appends a list predicates to the RedeemCodeMutation builder.
 func (m *RedeemCodeMutation) Where(ps ...predicate.RedeemCode) {
 	m.predicates = append(m.predicates, ps...)
@@ -33334,12 +33306,15 @@ func (m *RedeemCodeMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *RedeemCodeMutation) AddedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.user != nil {
 		edges = append(edges, redeemcode.EdgeUser)
 	}
 	if m.group != nil {
 		edges = append(edges, redeemcode.EdgeGroup)
+	}
+	if m.recharge_reset_records != nil {
+		edges = append(edges, redeemcode.EdgeRechargeResetRecords)
 	}
 	return edges
 }
@@ -33356,30 +33331,50 @@ func (m *RedeemCodeMutation) AddedIDs(name string) []ent.Value {
 		if id := m.group; id != nil {
 			return []ent.Value{*id}
 		}
+	case redeemcode.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.recharge_reset_records))
+		for id := range m.recharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *RedeemCodeMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
+	if m.removedrecharge_reset_records != nil {
+		edges = append(edges, redeemcode.EdgeRechargeResetRecords)
+	}
 	return edges
 }
 
 // RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
 // the given name in this mutation.
 func (m *RedeemCodeMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case redeemcode.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_records))
+		for id := range m.removedrecharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
+	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *RedeemCodeMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.cleareduser {
 		edges = append(edges, redeemcode.EdgeUser)
 	}
 	if m.clearedgroup {
 		edges = append(edges, redeemcode.EdgeGroup)
+	}
+	if m.clearedrecharge_reset_records {
+		edges = append(edges, redeemcode.EdgeRechargeResetRecords)
 	}
 	return edges
 }
@@ -33392,6 +33387,8 @@ func (m *RedeemCodeMutation) EdgeCleared(name string) bool {
 		return m.cleareduser
 	case redeemcode.EdgeGroup:
 		return m.clearedgroup
+	case redeemcode.EdgeRechargeResetRecords:
+		return m.clearedrecharge_reset_records
 	}
 	return false
 }
@@ -33419,6 +33416,9 @@ func (m *RedeemCodeMutation) ResetEdge(name string) error {
 		return nil
 	case redeemcode.EdgeGroup:
 		m.ResetGroup()
+		return nil
+	case redeemcode.EdgeRechargeResetRecords:
+		m.ResetRechargeResetRecords()
 		return nil
 	}
 	return fmt.Errorf("unknown RedeemCode edge %s", name)

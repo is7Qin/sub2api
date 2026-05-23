@@ -3268,22 +3268,6 @@ func (c *PaymentOrderClient) QueryUser(_m *PaymentOrder) *UserQuery {
 	return query
 }
 
-// QueryRechargeResetRecords queries the recharge_reset_records edge of a PaymentOrder.
-func (c *PaymentOrderClient) QueryRechargeResetRecords(_m *PaymentOrder) *RechargeResetRecordQuery {
-	query := (&RechargeResetRecordClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(paymentorder.Table, paymentorder.FieldID, id),
-			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
-			sqlgraph.Edge(sqlgraph.O2M, false, paymentorder.RechargeResetRecordsTable, paymentorder.RechargeResetRecordsColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
 // Hooks returns the client hooks.
 func (c *PaymentOrderClient) Hooks() []Hook {
 	return c.hooks.PaymentOrder
@@ -4558,15 +4542,15 @@ func (c *RechargeResetRecordClient) QueryRule(_m *RechargeResetRecord) *Recharge
 	return query
 }
 
-// QueryOrder queries the order edge of a RechargeResetRecord.
-func (c *RechargeResetRecordClient) QueryOrder(_m *RechargeResetRecord) *PaymentOrderQuery {
-	query := (&PaymentOrderClient{config: c.config}).Query()
+// QueryRedeemCode queries the redeem_code edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QueryRedeemCode(_m *RechargeResetRecord) *RedeemCodeQuery {
+	query := (&RedeemCodeClient{config: c.config}).Query()
 	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
 		id := _m.ID
 		step := sqlgraph.NewStep(
 			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
-			sqlgraph.To(paymentorder.Table, paymentorder.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.OrderTable, rechargeresetrecord.OrderColumn),
+			sqlgraph.To(redeemcode.Table, redeemcode.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.RedeemCodeTable, rechargeresetrecord.RedeemCodeColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -4780,6 +4764,22 @@ func (c *RedeemCodeClient) QueryGroup(_m *RedeemCode) *GroupQuery {
 			sqlgraph.From(redeemcode.Table, redeemcode.FieldID, id),
 			sqlgraph.To(group.Table, group.FieldID),
 			sqlgraph.Edge(sqlgraph.M2O, true, redeemcode.GroupTable, redeemcode.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRechargeResetRecords queries the recharge_reset_records edge of a RedeemCode.
+func (c *RedeemCodeClient) QueryRechargeResetRecords(_m *RedeemCode) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(redeemcode.Table, redeemcode.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, redeemcode.RechargeResetRecordsTable, redeemcode.RechargeResetRecordsColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil

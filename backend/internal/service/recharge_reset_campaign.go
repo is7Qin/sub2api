@@ -61,7 +61,7 @@ type RechargeResetRecord struct {
 	ID              int64          `json:"id"`
 	CampaignID      int64          `json:"campaign_id"`
 	RuleID          int64          `json:"rule_id"`
-	OrderID         int64          `json:"order_id"`
+	RedeemCodeID    int64          `json:"redeem_code_id"`
 	UserID          int64          `json:"user_id"`
 	SubscriptionID  int64          `json:"subscription_id"`
 	GroupID         int64          `json:"group_id"`
@@ -114,10 +114,10 @@ type UpdateRechargeResetRuleInput struct {
 }
 
 type ApplyRechargeResetInput struct {
-	OrderID        int64
+	RedeemCodeID   int64
 	UserID         int64
 	RechargeAmount float64
-	OccurredAt     time.Time
+	RedeemedAt     time.Time
 }
 
 type RechargeResetRepository interface {
@@ -188,7 +188,7 @@ func (s *RechargeResetCampaignService) ListRules(ctx context.Context, campaignID
 }
 
 func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, input *ApplyRechargeResetInput) ([]RechargeResetRecord, error) {
-	if s == nil || s.repo == nil || s.subscriptionSvc == nil || input == nil || input.OrderID <= 0 || input.UserID <= 0 || input.RechargeAmount <= 0 {
+	if s == nil || s.repo == nil || s.subscriptionSvc == nil || input == nil || input.RedeemCodeID <= 0 || input.UserID <= 0 || input.RechargeAmount <= 0 {
 		return nil, nil
 	}
 	if dbent.TxFromContext(ctx) == nil && s.subscriptionSvc.entClient != nil {
@@ -207,12 +207,12 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 		s.invalidateRechargeResetRecordCaches(ctx, records)
 		return records, nil
 	}
-	at := input.OccurredAt
-	if at.IsZero() {
-		at = time.Now().UTC()
+	redeemedAt := input.RedeemedAt
+	if redeemedAt.IsZero() {
+		redeemedAt = time.Now().UTC()
 	}
-	at = at.UTC()
-	campaigns, err := s.repo.ListActiveCampaigns(ctx, at)
+	redeemedAt = redeemedAt.UTC()
+	campaigns, err := s.repo.ListActiveCampaigns(ctx, redeemedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +244,7 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 			record, err := s.repo.CreateRecord(ctx, &RechargeResetRecord{
 				CampaignID:      campaign.ID,
 				RuleID:          rule.ID,
-				OrderID:         input.OrderID,
+				RedeemCodeID:    input.RedeemCodeID,
 				UserID:          input.UserID,
 				SubscriptionID:  sub.ID,
 				GroupID:         sub.GroupID,
@@ -254,7 +254,7 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 				ResetWeekly:     resetWeekly,
 				ResetMonthly:    resetMonthly,
 				Metadata: map[string]any{
-					"occurred_at": at.Format(time.RFC3339Nano),
+					"redeemed_at": redeemedAt.Format(time.RFC3339Nano),
 				},
 			})
 			if err != nil {
@@ -263,7 +263,7 @@ func (s *RechargeResetCampaignService) ApplyForRecharge(ctx context.Context, inp
 				}
 				return records, err
 			}
-			if err := s.subscriptionSvc.AdminResetQuotaBySubscriptionAt(ctx, &sub, at, resetDaily, resetWeekly, resetMonthly); err != nil {
+			if err := s.subscriptionSvc.AdminResetQuotaBySubscriptionAt(ctx, &sub, redeemedAt, resetDaily, resetWeekly, resetMonthly); err != nil {
 				return records, err
 			}
 			if record != nil {

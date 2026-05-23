@@ -200,7 +200,7 @@ func (r *rechargeResetCampaignRepository) CreateRecord(ctx context.Context, reco
 	create := client.RechargeResetRecord.Create().
 		SetCampaignID(record.CampaignID).
 		SetRuleID(record.RuleID).
-		SetOrderID(record.OrderID).
+		SetRedeemCodeID(record.RedeemCodeID).
 		SetUserID(record.UserID).
 		SetSubscriptionID(record.SubscriptionID).
 		SetGroupID(record.GroupID).
@@ -290,7 +290,7 @@ func rechargeResetRecordEntityToService(m *dbent.RechargeResetRecord) *service.R
 		ID:              m.ID,
 		CampaignID:      m.CampaignID,
 		RuleID:          m.RuleID,
-		OrderID:         m.OrderID,
+		RedeemCodeID:    m.RedeemCodeID,
 		UserID:          m.UserID,
 		SubscriptionID:  m.SubscriptionID,
 		GroupID:         m.GroupID,

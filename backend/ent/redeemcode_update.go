@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 )
@@ -238,6 +239,21 @@ func (_u *RedeemCodeUpdate) SetGroup(v *Group) *RedeemCodeUpdate {
 	return _u.SetGroupID(v.ID)
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_u *RedeemCodeUpdate) AddRechargeResetRecordIDs(ids ...int64) *RedeemCodeUpdate {
+	_u.mutation.AddRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *RedeemCodeUpdate) AddRechargeResetRecords(v ...*RechargeResetRecord) *RedeemCodeUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRecordIDs(ids...)
+}
+
 // Mutation returns the RedeemCodeMutation object of the builder.
 func (_u *RedeemCodeUpdate) Mutation() *RedeemCodeMutation {
 	return _u.mutation
@@ -253,6 +269,27 @@ func (_u *RedeemCodeUpdate) ClearUser() *RedeemCodeUpdate {
 func (_u *RedeemCodeUpdate) ClearGroup() *RedeemCodeUpdate {
 	_u.mutation.ClearGroup()
 	return _u
+}
+
+// ClearRechargeResetRecords clears all "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *RedeemCodeUpdate) ClearRechargeResetRecords() *RedeemCodeUpdate {
+	_u.mutation.ClearRechargeResetRecords()
+	return _u
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to RechargeResetRecord entities by IDs.
+func (_u *RedeemCodeUpdate) RemoveRechargeResetRecordIDs(ids ...int64) *RedeemCodeUpdate {
+	_u.mutation.RemoveRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRecords removes "recharge_reset_records" edges to RechargeResetRecord entities.
+func (_u *RedeemCodeUpdate) RemoveRechargeResetRecords(v ...*RechargeResetRecord) *RedeemCodeUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRecordIDs(ids...)
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -404,6 +441,51 @@ func (_u *RedeemCodeUpdate) sqlSave(ctx context.Context) (_node int, err error) 
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRecordsIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -639,6 +721,21 @@ func (_u *RedeemCodeUpdateOne) SetGroup(v *Group) *RedeemCodeUpdateOne {
 	return _u.SetGroupID(v.ID)
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_u *RedeemCodeUpdateOne) AddRechargeResetRecordIDs(ids ...int64) *RedeemCodeUpdateOne {
+	_u.mutation.AddRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *RedeemCodeUpdateOne) AddRechargeResetRecords(v ...*RechargeResetRecord) *RedeemCodeUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddRechargeResetRecordIDs(ids...)
+}
+
 // Mutation returns the RedeemCodeMutation object of the builder.
 func (_u *RedeemCodeUpdateOne) Mutation() *RedeemCodeMutation {
 	return _u.mutation
@@ -654,6 +751,27 @@ func (_u *RedeemCodeUpdateOne) ClearUser() *RedeemCodeUpdateOne {
 func (_u *RedeemCodeUpdateOne) ClearGroup() *RedeemCodeUpdateOne {
 	_u.mutation.ClearGroup()
 	return _u
+}
+
+// ClearRechargeResetRecords clears all "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_u *RedeemCodeUpdateOne) ClearRechargeResetRecords() *RedeemCodeUpdateOne {
+	_u.mutation.ClearRechargeResetRecords()
+	return _u
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to RechargeResetRecord entities by IDs.
+func (_u *RedeemCodeUpdateOne) RemoveRechargeResetRecordIDs(ids ...int64) *RedeemCodeUpdateOne {
+	_u.mutation.RemoveRechargeResetRecordIDs(ids...)
+	return _u
+}
+
+// RemoveRechargeResetRecords removes "recharge_reset_records" edges to RechargeResetRecord entities.
+func (_u *RedeemCodeUpdateOne) RemoveRechargeResetRecords(v ...*RechargeResetRecord) *RedeemCodeUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveRechargeResetRecordIDs(ids...)
 }
 
 // Where appends a list predicates to the RedeemCodeUpdate builder.
@@ -835,6 +953,51 @@ func (_u *RedeemCodeUpdateOne) sqlSave(ctx context.Context) (_node *RedeemCode, 
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedRechargeResetRecordsIDs(); len(nodes) > 0 && !_u.mutation.RechargeResetRecordsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

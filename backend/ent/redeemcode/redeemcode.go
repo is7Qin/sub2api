@@ -40,6 +40,8 @@ const (
 	EdgeUser = "user"
 	// EdgeGroup holds the string denoting the group edge name in mutations.
 	EdgeGroup = "group"
+	// EdgeRechargeResetRecords holds the string denoting the recharge_reset_records edge name in mutations.
+	EdgeRechargeResetRecords = "recharge_reset_records"
 	// Table holds the table name of the redeemcode in the database.
 	Table = "redeem_codes"
 	// UserTable is the table that holds the user relation/edge.
@@ -56,6 +58,13 @@ const (
 	GroupInverseTable = "groups"
 	// GroupColumn is the table column denoting the group relation/edge.
 	GroupColumn = "group_id"
+	// RechargeResetRecordsTable is the table that holds the recharge_reset_records relation/edge.
+	RechargeResetRecordsTable = "recharge_reset_records"
+	// RechargeResetRecordsInverseTable is the table name for the RechargeResetRecord entity.
+	// It exists in this package in order to avoid circular dependency with the "rechargeresetrecord" package.
+	RechargeResetRecordsInverseTable = "recharge_reset_records"
+	// RechargeResetRecordsColumn is the table column denoting the recharge_reset_records relation/edge.
+	RechargeResetRecordsColumn = "redeem_code_id"
 )
 
 // Columns holds all SQL columns for redeemcode fields.
@@ -179,6 +188,20 @@ func ByGroupField(field string, opts ...sql.OrderTermOption) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newGroupStep(), sql.OrderByField(field, opts...))
 	}
 }
+
+// ByRechargeResetRecordsCount orders the results by recharge_reset_records count.
+func ByRechargeResetRecordsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRechargeResetRecordsStep(), opts...)
+	}
+}
+
+// ByRechargeResetRecords orders the results by recharge_reset_records terms.
+func ByRechargeResetRecords(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRechargeResetRecordsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newUserStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -191,5 +214,12 @@ func newGroupStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(GroupInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2O, true, GroupTable, GroupColumn),
+	)
+}
+func newRechargeResetRecordsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RechargeResetRecordsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRecordsTable, RechargeResetRecordsColumn),
 	)
 }

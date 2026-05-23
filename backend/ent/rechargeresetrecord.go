@@ -11,10 +11,10 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
 	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
+	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
@@ -28,8 +28,8 @@ type RechargeResetRecord struct {
 	CampaignID int64 `json:"campaign_id,omitempty"`
 	// RuleID holds the value of the "rule_id" field.
 	RuleID int64 `json:"rule_id,omitempty"`
-	// OrderID holds the value of the "order_id" field.
-	OrderID int64 `json:"order_id,omitempty"`
+	// RedeemCodeID holds the value of the "redeem_code_id" field.
+	RedeemCodeID int64 `json:"redeem_code_id,omitempty"`
 	// UserID holds the value of the "user_id" field.
 	UserID int64 `json:"user_id,omitempty"`
 	// SubscriptionID holds the value of the "subscription_id" field.
@@ -62,8 +62,8 @@ type RechargeResetRecordEdges struct {
 	Campaign *RechargeResetCampaign `json:"campaign,omitempty"`
 	// Rule holds the value of the rule edge.
 	Rule *RechargeResetCampaignRule `json:"rule,omitempty"`
-	// Order holds the value of the order edge.
-	Order *PaymentOrder `json:"order,omitempty"`
+	// RedeemCode holds the value of the redeem_code edge.
+	RedeemCode *RedeemCode `json:"redeem_code,omitempty"`
 	// User holds the value of the user edge.
 	User *User `json:"user,omitempty"`
 	// Subscription holds the value of the subscription edge.
@@ -97,15 +97,15 @@ func (e RechargeResetRecordEdges) RuleOrErr() (*RechargeResetCampaignRule, error
 	return nil, &NotLoadedError{edge: "rule"}
 }
 
-// OrderOrErr returns the Order value or an error if the edge
+// RedeemCodeOrErr returns the RedeemCode value or an error if the edge
 // was not loaded in eager-loading, or loaded but was not found.
-func (e RechargeResetRecordEdges) OrderOrErr() (*PaymentOrder, error) {
-	if e.Order != nil {
-		return e.Order, nil
+func (e RechargeResetRecordEdges) RedeemCodeOrErr() (*RedeemCode, error) {
+	if e.RedeemCode != nil {
+		return e.RedeemCode, nil
 	} else if e.loadedTypes[2] {
-		return nil, &NotFoundError{label: paymentorder.Label}
+		return nil, &NotFoundError{label: redeemcode.Label}
 	}
-	return nil, &NotLoadedError{edge: "order"}
+	return nil, &NotLoadedError{edge: "redeem_code"}
 }
 
 // UserOrErr returns the User value or an error if the edge
@@ -152,7 +152,7 @@ func (*RechargeResetRecord) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case rechargeresetrecord.FieldRechargeAmount, rechargeresetrecord.FieldThresholdAmount:
 			values[i] = new(sql.NullFloat64)
-		case rechargeresetrecord.FieldID, rechargeresetrecord.FieldCampaignID, rechargeresetrecord.FieldRuleID, rechargeresetrecord.FieldOrderID, rechargeresetrecord.FieldUserID, rechargeresetrecord.FieldSubscriptionID, rechargeresetrecord.FieldGroupID:
+		case rechargeresetrecord.FieldID, rechargeresetrecord.FieldCampaignID, rechargeresetrecord.FieldRuleID, rechargeresetrecord.FieldRedeemCodeID, rechargeresetrecord.FieldUserID, rechargeresetrecord.FieldSubscriptionID, rechargeresetrecord.FieldGroupID:
 			values[i] = new(sql.NullInt64)
 		case rechargeresetrecord.FieldCreatedAt:
 			values[i] = new(sql.NullTime)
@@ -189,11 +189,11 @@ func (_m *RechargeResetRecord) assignValues(columns []string, values []any) erro
 			} else if value.Valid {
 				_m.RuleID = value.Int64
 			}
-		case rechargeresetrecord.FieldOrderID:
+		case rechargeresetrecord.FieldRedeemCodeID:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
-				return fmt.Errorf("unexpected type %T for field order_id", values[i])
+				return fmt.Errorf("unexpected type %T for field redeem_code_id", values[i])
 			} else if value.Valid {
-				_m.OrderID = value.Int64
+				_m.RedeemCodeID = value.Int64
 			}
 		case rechargeresetrecord.FieldUserID:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -280,9 +280,9 @@ func (_m *RechargeResetRecord) QueryRule() *RechargeResetCampaignRuleQuery {
 	return NewRechargeResetRecordClient(_m.config).QueryRule(_m)
 }
 
-// QueryOrder queries the "order" edge of the RechargeResetRecord entity.
-func (_m *RechargeResetRecord) QueryOrder() *PaymentOrderQuery {
-	return NewRechargeResetRecordClient(_m.config).QueryOrder(_m)
+// QueryRedeemCode queries the "redeem_code" edge of the RechargeResetRecord entity.
+func (_m *RechargeResetRecord) QueryRedeemCode() *RedeemCodeQuery {
+	return NewRechargeResetRecordClient(_m.config).QueryRedeemCode(_m)
 }
 
 // QueryUser queries the "user" edge of the RechargeResetRecord entity.
@@ -329,8 +329,8 @@ func (_m *RechargeResetRecord) String() string {
 	builder.WriteString("rule_id=")
 	builder.WriteString(fmt.Sprintf("%v", _m.RuleID))
 	builder.WriteString(", ")
-	builder.WriteString("order_id=")
-	builder.WriteString(fmt.Sprintf("%v", _m.OrderID))
+	builder.WriteString("redeem_code_id=")
+	builder.WriteString(fmt.Sprintf("%v", _m.RedeemCodeID))
 	builder.WriteString(", ")
 	builder.WriteString("user_id=")
 	builder.WriteString(fmt.Sprintf("%v", _m.UserID))

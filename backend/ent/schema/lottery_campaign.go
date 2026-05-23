@@ -61,6 +61,8 @@ func (LotteryCampaign) Edges() []ent.Edge {
 		edge.To("prizes", LotteryPrize.Type),
 		edge.To("chances", LotteryChance.Type),
 		edge.To("draws", LotteryDraw.Type),
+		edge.To("ranking_reward_campaigns", RankingRewardCampaign.Type),
+		edge.To("ranking_reward_awards", RankingRewardAward.Type),
 	}
 }
 

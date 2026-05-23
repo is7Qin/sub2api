@@ -23,6 +23,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -35,27 +37,29 @@ import (
 // UserQuery is the builder for querying User entities.
 type UserQuery struct {
 	config
-	ctx                       *QueryContext
-	order                     []user.OrderOption
-	inters                    []Interceptor
-	predicates                []predicate.User
-	withAPIKeys               *APIKeyQuery
-	withRedeemCodes           *RedeemCodeQuery
-	withQuotaGrants           *UserQuotaGrantQuery
-	withLotteryChances        *LotteryChanceQuery
-	withLotteryDraws          *LotteryDrawQuery
-	withSubscriptions         *UserSubscriptionQuery
-	withAssignedSubscriptions *UserSubscriptionQuery
-	withAnnouncementReads     *AnnouncementReadQuery
-	withAllowedGroups         *GroupQuery
-	withUsageLogs             *UsageLogQuery
-	withAttributeValues       *UserAttributeValueQuery
-	withPromoCodeUsages       *PromoCodeUsageQuery
-	withPaymentOrders         *PaymentOrderQuery
-	withAuthIdentities        *AuthIdentityQuery
-	withPendingAuthSessions   *PendingAuthSessionQuery
-	withUserAllowedGroups     *UserAllowedGroupQuery
-	modifiers                 []func(*sql.Selector)
+	ctx                         *QueryContext
+	order                       []user.OrderOption
+	inters                      []Interceptor
+	predicates                  []predicate.User
+	withAPIKeys                 *APIKeyQuery
+	withRedeemCodes             *RedeemCodeQuery
+	withQuotaGrants             *UserQuotaGrantQuery
+	withLotteryChances          *LotteryChanceQuery
+	withLotteryDraws            *LotteryDrawQuery
+	withRankingRewardExclusions *RankingRewardExcludedUserQuery
+	withRankingRewardAwards     *RankingRewardAwardQuery
+	withSubscriptions           *UserSubscriptionQuery
+	withAssignedSubscriptions   *UserSubscriptionQuery
+	withAnnouncementReads       *AnnouncementReadQuery
+	withAllowedGroups           *GroupQuery
+	withUsageLogs               *UsageLogQuery
+	withAttributeValues         *UserAttributeValueQuery
+	withPromoCodeUsages         *PromoCodeUsageQuery
+	withPaymentOrders           *PaymentOrderQuery
+	withAuthIdentities          *AuthIdentityQuery
+	withPendingAuthSessions     *PendingAuthSessionQuery
+	withUserAllowedGroups       *UserAllowedGroupQuery
+	modifiers                   []func(*sql.Selector)
 	// intermediate query (i.e. traversal path).
 	sql  *sql.Selector
 	path func(context.Context) (*sql.Selector, error)
@@ -195,6 +199,50 @@ func (_q *UserQuery) QueryLotteryDraws() *LotteryDrawQuery {
 			sqlgraph.From(user.Table, user.FieldID, selector),
 			sqlgraph.To(lotterydraw.Table, lotterydraw.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, user.LotteryDrawsTable, user.LotteryDrawsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryRankingRewardExclusions chains the current query on the "ranking_reward_exclusions" edge.
+func (_q *UserQuery) QueryRankingRewardExclusions() *RankingRewardExcludedUserQuery {
+	query := (&RankingRewardExcludedUserClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(rankingrewardexcludeduser.Table, rankingrewardexcludeduser.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.RankingRewardExclusionsTable, user.RankingRewardExclusionsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryRankingRewardAwards chains the current query on the "ranking_reward_awards" edge.
+func (_q *UserQuery) QueryRankingRewardAwards() *RankingRewardAwardQuery {
+	query := (&RankingRewardAwardClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(rankingrewardaward.Table, rankingrewardaward.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.RankingRewardAwardsTable, user.RankingRewardAwardsColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -631,27 +679,29 @@ func (_q *UserQuery) Clone() *UserQuery {
 		return nil
 	}
 	return &UserQuery{
-		config:                    _q.config,
-		ctx:                       _q.ctx.Clone(),
-		order:                     append([]user.OrderOption{}, _q.order...),
-		inters:                    append([]Interceptor{}, _q.inters...),
-		predicates:                append([]predicate.User{}, _q.predicates...),
-		withAPIKeys:               _q.withAPIKeys.Clone(),
-		withRedeemCodes:           _q.withRedeemCodes.Clone(),
-		withQuotaGrants:           _q.withQuotaGrants.Clone(),
-		withLotteryChances:        _q.withLotteryChances.Clone(),
-		withLotteryDraws:          _q.withLotteryDraws.Clone(),
-		withSubscriptions:         _q.withSubscriptions.Clone(),
-		withAssignedSubscriptions: _q.withAssignedSubscriptions.Clone(),
-		withAnnouncementReads:     _q.withAnnouncementReads.Clone(),
-		withAllowedGroups:         _q.withAllowedGroups.Clone(),
-		withUsageLogs:             _q.withUsageLogs.Clone(),
-		withAttributeValues:       _q.withAttributeValues.Clone(),
-		withPromoCodeUsages:       _q.withPromoCodeUsages.Clone(),
-		withPaymentOrders:         _q.withPaymentOrders.Clone(),
-		withAuthIdentities:        _q.withAuthIdentities.Clone(),
-		withPendingAuthSessions:   _q.withPendingAuthSessions.Clone(),
-		withUserAllowedGroups:     _q.withUserAllowedGroups.Clone(),
+		config:                      _q.config,
+		ctx:                         _q.ctx.Clone(),
+		order:                       append([]user.OrderOption{}, _q.order...),
+		inters:                      append([]Interceptor{}, _q.inters...),
+		predicates:                  append([]predicate.User{}, _q.predicates...),
+		withAPIKeys:                 _q.withAPIKeys.Clone(),
+		withRedeemCodes:             _q.withRedeemCodes.Clone(),
+		withQuotaGrants:             _q.withQuotaGrants.Clone(),
+		withLotteryChances:          _q.withLotteryChances.Clone(),
+		withLotteryDraws:            _q.withLotteryDraws.Clone(),
+		withRankingRewardExclusions: _q.withRankingRewardExclusions.Clone(),
+		withRankingRewardAwards:     _q.withRankingRewardAwards.Clone(),
+		withSubscriptions:           _q.withSubscriptions.Clone(),
+		withAssignedSubscriptions:   _q.withAssignedSubscriptions.Clone(),
+		withAnnouncementReads:       _q.withAnnouncementReads.Clone(),
+		withAllowedGroups:           _q.withAllowedGroups.Clone(),
+		withUsageLogs:               _q.withUsageLogs.Clone(),
+		withAttributeValues:         _q.withAttributeValues.Clone(),
+		withPromoCodeUsages:         _q.withPromoCodeUsages.Clone(),
+		withPaymentOrders:           _q.withPaymentOrders.Clone(),
+		withAuthIdentities:          _q.withAuthIdentities.Clone(),
+		withPendingAuthSessions:     _q.withPendingAuthSessions.Clone(),
+		withUserAllowedGroups:       _q.withUserAllowedGroups.Clone(),
 		// clone intermediate query.
 		sql:  _q.sql.Clone(),
 		path: _q.path,
@@ -710,6 +760,28 @@ func (_q *UserQuery) WithLotteryDraws(opts ...func(*LotteryDrawQuery)) *UserQuer
 		opt(query)
 	}
 	_q.withLotteryDraws = query
+	return _q
+}
+
+// WithRankingRewardExclusions tells the query-builder to eager-load the nodes that are connected to
+// the "ranking_reward_exclusions" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithRankingRewardExclusions(opts ...func(*RankingRewardExcludedUserQuery)) *UserQuery {
+	query := (&RankingRewardExcludedUserClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withRankingRewardExclusions = query
+	return _q
+}
+
+// WithRankingRewardAwards tells the query-builder to eager-load the nodes that are connected to
+// the "ranking_reward_awards" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithRankingRewardAwards(opts ...func(*RankingRewardAwardQuery)) *UserQuery {
+	query := (&RankingRewardAwardClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withRankingRewardAwards = query
 	return _q
 }
 
@@ -912,12 +984,14 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 	var (
 		nodes       = []*User{}
 		_spec       = _q.querySpec()
-		loadedTypes = [16]bool{
+		loadedTypes = [18]bool{
 			_q.withAPIKeys != nil,
 			_q.withRedeemCodes != nil,
 			_q.withQuotaGrants != nil,
 			_q.withLotteryChances != nil,
 			_q.withLotteryDraws != nil,
+			_q.withRankingRewardExclusions != nil,
+			_q.withRankingRewardAwards != nil,
 			_q.withSubscriptions != nil,
 			_q.withAssignedSubscriptions != nil,
 			_q.withAnnouncementReads != nil,
@@ -984,6 +1058,24 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 		if err := _q.loadLotteryDraws(ctx, query, nodes,
 			func(n *User) { n.Edges.LotteryDraws = []*LotteryDraw{} },
 			func(n *User, e *LotteryDraw) { n.Edges.LotteryDraws = append(n.Edges.LotteryDraws, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withRankingRewardExclusions; query != nil {
+		if err := _q.loadRankingRewardExclusions(ctx, query, nodes,
+			func(n *User) { n.Edges.RankingRewardExclusions = []*RankingRewardExcludedUser{} },
+			func(n *User, e *RankingRewardExcludedUser) {
+				n.Edges.RankingRewardExclusions = append(n.Edges.RankingRewardExclusions, e)
+			}); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withRankingRewardAwards; query != nil {
+		if err := _q.loadRankingRewardAwards(ctx, query, nodes,
+			func(n *User) { n.Edges.RankingRewardAwards = []*RankingRewardAward{} },
+			func(n *User, e *RankingRewardAward) {
+				n.Edges.RankingRewardAwards = append(n.Edges.RankingRewardAwards, e)
+			}); err != nil {
 			return nil, err
 		}
 	}
@@ -1209,6 +1301,66 @@ func (_q *UserQuery) loadLotteryDraws(ctx context.Context, query *LotteryDrawQue
 	}
 	query.Where(predicate.LotteryDraw(func(s *sql.Selector) {
 		s.Where(sql.InValues(s.C(user.LotteryDrawsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadRankingRewardExclusions(ctx context.Context, query *RankingRewardExcludedUserQuery, nodes []*User, init func(*User), assign func(*User, *RankingRewardExcludedUser)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(rankingrewardexcludeduser.FieldUserID)
+	}
+	query.Where(predicate.RankingRewardExcludedUser(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.RankingRewardExclusionsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadRankingRewardAwards(ctx context.Context, query *RankingRewardAwardQuery, nodes []*User, init func(*User), assign func(*User, *RankingRewardAward)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(rankingrewardaward.FieldUserID)
+	}
+	query.Where(predicate.RankingRewardAward(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.RankingRewardAwardsColumn), fks...))
 	}))
 	neighbors, err := query.All(ctx)
 	if err != nil {

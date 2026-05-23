@@ -122,6 +122,8 @@ func (User) Edges() []ent.Edge {
 		edge.To("quota_grants", UserQuotaGrant.Type),
 		edge.To("lottery_chances", LotteryChance.Type),
 		edge.To("lottery_draws", LotteryDraw.Type),
+		edge.To("ranking_reward_exclusions", RankingRewardExcludedUser.Type),
+		edge.To("ranking_reward_awards", RankingRewardAward.Type),
 		edge.To("subscriptions", UserSubscription.Type),
 		edge.To("assigned_subscriptions", UserSubscription.Type),
 		edge.To("announcement_reads", AnnouncementRead.Type),

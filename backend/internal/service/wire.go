@@ -363,6 +363,12 @@ func ProvideScheduledTestRunnerService(
 	return svc
 }
 
+func ProvideRankingRewardService(repo RankingRewardRepository, lotteryService *LotteryService, cfg *config.Config) *RankingRewardService {
+	svc := NewRankingRewardService(repo, lotteryService, cfg)
+	svc.Start()
+	return svc
+}
+
 // ProvideOpsScheduledReportService creates and starts OpsScheduledReportService.
 func ProvideOpsScheduledReportService(
 	opsService *OpsService,
@@ -450,6 +456,7 @@ var ProviderSet = wire.NewSet(
 	NewRedeemService,
 	NewTimedQuotaService,
 	NewLotteryService,
+	ProvideRankingRewardService,
 	NewPromoService,
 	NewUsageService,
 	NewDashboardService,

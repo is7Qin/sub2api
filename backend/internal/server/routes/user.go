@@ -123,6 +123,12 @@ func RegisterUserRoutes(
 			lottery.POST("/draw", h.Lottery.Draw)
 		}
 
+		// 排行榜奖励
+		rankingRewards := authenticated.Group("/ranking-rewards")
+		{
+			rankingRewards.GET("/leaderboards", h.RankingReward.ListLeaderboards)
+		}
+
 		// 渠道监控（用户只读）
 		monitors := authenticated.Group("/channel-monitors")
 		{

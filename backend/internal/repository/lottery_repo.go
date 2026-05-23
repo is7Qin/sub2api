@@ -14,8 +14,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/lotterychance"
 	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
 	"github.com/Wei-Shaw/sub2api/ent/lotteryprize"
+	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+
+	entsql "entgo.io/ent/dialect/sql"
 )
 
 type lotteryRepository struct {
@@ -28,7 +32,8 @@ func NewLotteryRepository(client *dbent.Client, sqlDB *sql.DB) service.LotteryRe
 }
 
 func (r *lotteryRepository) CreateCampaign(ctx context.Context, input *service.CreateLotteryCampaignInput) (*service.LotteryCampaign, error) {
-	create := r.client.LotteryCampaign.Create().
+	client := clientFromContext(ctx, r.client)
+	create := client.LotteryCampaign.Create().
 		SetName(input.Name).
 		SetDescription(input.Description).
 		SetStatus(input.Status).
@@ -46,7 +51,8 @@ func (r *lotteryRepository) CreateCampaign(ctx context.Context, input *service.C
 }
 
 func (r *lotteryRepository) UpdateCampaign(ctx context.Context, id int64, input *service.UpdateLotteryCampaignInput) (*service.LotteryCampaign, error) {
-	up := r.client.LotteryCampaign.UpdateOneID(id)
+	client := clientFromContext(ctx, r.client)
+	up := client.LotteryCampaign.UpdateOneID(id)
 	if input.Name != nil {
 		up.SetName(strings.TrimSpace(*input.Name))
 	}
@@ -83,7 +89,8 @@ func (r *lotteryRepository) UpdateCampaign(ctx context.Context, id int64, input 
 }
 
 func (r *lotteryRepository) GetCampaign(ctx context.Context, id int64) (*service.LotteryCampaign, error) {
-	m, err := r.client.LotteryCampaign.Query().
+	client := clientFromContext(ctx, r.client)
+	m, err := client.LotteryCampaign.Query().
 		Where(lotterycampaign.IDEQ(id)).
 		WithPrizes(func(q *dbent.LotteryPrizeQuery) {
 			q.Order(dbent.Asc(lotteryprize.FieldSortOrder), dbent.Asc(lotteryprize.FieldID))
@@ -99,7 +106,8 @@ func (r *lotteryRepository) GetCampaign(ctx context.Context, id int64) (*service
 }
 
 func (r *lotteryRepository) ListCampaigns(ctx context.Context, params pagination.PaginationParams, status string, activeOnly bool) ([]service.LotteryCampaign, *pagination.PaginationResult, error) {
-	q := r.client.LotteryCampaign.Query()
+	client := clientFromContext(ctx, r.client)
+	q := client.LotteryCampaign.Query()
 	if status != "" {
 		q = q.Where(lotterycampaign.StatusEQ(status))
 	}
@@ -131,7 +139,8 @@ func (r *lotteryRepository) ListCampaigns(ctx context.Context, params pagination
 }
 
 func (r *lotteryRepository) CreatePrize(ctx context.Context, input *service.CreateLotteryPrizeInput) (*service.LotteryPrize, error) {
-	create := r.client.LotteryPrize.Create().
+	client := clientFromContext(ctx, r.client)
+	create := client.LotteryPrize.Create().
 		SetCampaignID(input.CampaignID).
 		SetName(input.Name).
 		SetDescription(input.Description).
@@ -158,7 +167,8 @@ func (r *lotteryRepository) CreatePrize(ctx context.Context, input *service.Crea
 }
 
 func (r *lotteryRepository) UpdatePrize(ctx context.Context, id int64, input *service.UpdateLotteryPrizeInput) (*service.LotteryPrize, error) {
-	up := r.client.LotteryPrize.UpdateOneID(id)
+	client := clientFromContext(ctx, r.client)
+	up := client.LotteryPrize.UpdateOneID(id)
 	if input.Name != nil {
 		up.SetName(strings.TrimSpace(*input.Name))
 	}
@@ -209,8 +219,21 @@ func (r *lotteryRepository) UpdatePrize(ctx context.Context, id int64, input *se
 	return lotteryPrizeEntityToService(m), nil
 }
 
+func (r *lotteryRepository) GetPrize(ctx context.Context, id int64) (*service.LotteryPrize, error) {
+	client := clientFromContext(ctx, r.client)
+	m, err := client.LotteryPrize.Query().Where(lotteryprize.IDEQ(id)).Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrLotteryPrizeNotFound
+		}
+		return nil, err
+	}
+	return lotteryPrizeEntityToService(m), nil
+}
+
 func (r *lotteryRepository) ListPrizes(ctx context.Context, campaignID int64) ([]service.LotteryPrize, error) {
-	items, err := r.client.LotteryPrize.Query().
+	client := clientFromContext(ctx, r.client)
+	items, err := client.LotteryPrize.Query().
 		Where(lotteryprize.CampaignIDEQ(campaignID)).
 		Order(dbent.Asc(lotteryprize.FieldSortOrder), dbent.Asc(lotteryprize.FieldID)).
 		All(ctx)
@@ -224,13 +247,14 @@ func (r *lotteryRepository) GrantChances(ctx context.Context, input *service.Gra
 	if input.Count <= 0 {
 		return nil, nil
 	}
+	client := clientFromContext(ctx, r.client)
 	builders := make([]*dbent.LotteryChanceCreate, 0, input.Count)
 	for i := 0; i < input.Count; i++ {
 		sourceID := input.SourceID
 		if input.Count > 1 && sourceID != "" {
 			sourceID = sourceID + ":" + strconv.Itoa(i+1)
 		}
-		b := r.client.LotteryChance.Create().
+		b := client.LotteryChance.Create().
 			SetCampaignID(input.CampaignID).
 			SetUserID(input.UserID).
 			SetSource(strings.TrimSpace(input.Source)).
@@ -242,7 +266,7 @@ func (r *lotteryRepository) GrantChances(ctx context.Context, input *service.Gra
 		}
 		builders = append(builders, b)
 	}
-	created, err := r.client.LotteryChance.CreateBulk(builders...).Save(ctx)
+	created, err := client.LotteryChance.CreateBulk(builders...).Save(ctx)
 	if err != nil {
 		if isUniqueConstraintViolation(err) {
 			return nil, service.ErrLotteryChanceGrantConflict
@@ -252,8 +276,37 @@ func (r *lotteryRepository) GrantChances(ctx context.Context, input *service.Gra
 	return lotteryChanceEntitiesToService(created), nil
 }
 
+func (r *lotteryRepository) ListChancesBySource(ctx context.Context, input *service.GrantLotteryChanceInput) ([]service.LotteryChance, error) {
+	if input.Count <= 0 {
+		return nil, nil
+	}
+	client := clientFromContext(ctx, r.client)
+	sourceIDs := make([]string, 0, input.Count)
+	for i := 0; i < input.Count; i++ {
+		sourceID := input.SourceID
+		if input.Count > 1 && sourceID != "" {
+			sourceID = sourceID + ":" + strconv.Itoa(i+1)
+		}
+		sourceIDs = append(sourceIDs, strings.TrimSpace(sourceID))
+	}
+	items, err := client.LotteryChance.Query().
+		Where(
+			lotterychance.CampaignIDEQ(input.CampaignID),
+			lotterychance.UserIDEQ(input.UserID),
+			lotterychance.SourceEQ(strings.TrimSpace(input.Source)),
+			lotterychance.SourceIDIn(sourceIDs...),
+		).
+		Order(dbent.Asc(lotterychance.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return lotteryChanceEntitiesToService(items), nil
+}
+
 func (r *lotteryRepository) ListUserChances(ctx context.Context, userID int64, campaignID int64, params pagination.PaginationParams) ([]service.LotteryChance, *pagination.PaginationResult, error) {
-	q := r.client.LotteryChance.Query().Where(lotterychance.UserIDEQ(userID))
+	client := clientFromContext(ctx, r.client)
+	q := client.LotteryChance.Query().Where(lotterychance.UserIDEQ(userID))
 	if campaignID > 0 {
 		q = q.Where(lotterychance.CampaignIDEQ(campaignID))
 	}
@@ -269,7 +322,8 @@ func (r *lotteryRepository) ListUserChances(ctx context.Context, userID int64, c
 }
 
 func (r *lotteryRepository) ListUserDraws(ctx context.Context, userID int64, campaignID int64, params pagination.PaginationParams) ([]service.LotteryDraw, *pagination.PaginationResult, error) {
-	q := r.client.LotteryDraw.Query().Where(lotterydraw.UserIDEQ(userID)).WithPrize()
+	client := clientFromContext(ctx, r.client)
+	q := client.LotteryDraw.Query().Where(lotterydraw.UserIDEQ(userID)).WithPrize()
 	if campaignID > 0 {
 		q = q.Where(lotterydraw.CampaignIDEQ(campaignID))
 	}
@@ -282,6 +336,75 @@ func (r *lotteryRepository) ListUserDraws(ctx context.Context, userID int64, cam
 		return nil, nil, err
 	}
 	return lotteryDrawEntitiesToService(items), paginationResultFromTotal(int64(total), params), nil
+}
+
+func (r *lotteryRepository) GetPendingUserDraw(ctx context.Context, campaignID int64, userID int64) (*service.LotteryDraw, *service.LotteryPrize, *service.RedeemCode, error) {
+	client := clientFromContext(ctx, r.client)
+	leaseCutoff := time.Now().UTC().Add(-service.LotteryDrawProcessingLease)
+	draw, err := client.LotteryDraw.Query().
+		Where(
+			lotterydraw.CampaignIDEQ(campaignID),
+			lotterydraw.UserIDEQ(userID),
+			lotterydraw.Or(
+				lotterydraw.StatusEQ(service.LotteryDrawStatusPending),
+				lotterydraw.And(
+					lotterydraw.StatusEQ(service.LotteryDrawStatusProcessing),
+					lotterydraw.UpdatedAtLT(leaseCutoff),
+				),
+			),
+		).
+		WithPrize().
+		Order(dbent.Asc(lotterydraw.FieldID)).
+		First(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, nil, nil, nil
+		}
+		return nil, nil, nil, err
+	}
+	serviceDraw := lotteryDrawEntityToService(draw)
+	var prize *service.LotteryPrize
+	if draw.Edges.Prize != nil {
+		prize = lotteryPrizeEntityToService(draw.Edges.Prize)
+	}
+	redeem, err := client.RedeemCode.Query().
+		Where(redeemCodeLotteryDrawIDPredicate(draw.ID)).
+		Order(dbent.Asc(redeemcode.FieldID)).
+		First(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return serviceDraw, prize, nil, nil
+		}
+		return nil, nil, nil, err
+	}
+	return serviceDraw, prize, redeemCodeEntityToService(redeem), nil
+}
+
+func (r *lotteryRepository) ClaimDrawRecovery(ctx context.Context, drawID int64, lease time.Duration) error {
+	now := time.Now().UTC()
+	leaseCutoff := now.Add(-lease)
+	client := clientFromContext(ctx, r.client)
+	affected, err := client.LotteryDraw.Update().
+		Where(
+			lotterydraw.IDEQ(drawID),
+			lotterydraw.Or(
+				lotterydraw.StatusEQ(service.LotteryDrawStatusPending),
+				lotterydraw.And(
+					lotterydraw.StatusEQ(service.LotteryDrawStatusProcessing),
+					lotterydraw.UpdatedAtLT(leaseCutoff),
+				),
+			),
+		).
+		SetStatus(service.LotteryDrawStatusProcessing).
+		SetUpdatedAt(now).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrLotteryChanceUnavailable
+	}
+	return nil
 }
 
 func (r *lotteryRepository) PrepareDraw(ctx context.Context, input *service.LotteryDrawInput, selector func([]service.LotteryPrize) (*service.LotteryPrize, error)) (_ *service.LotteryDraw, _ *service.LotteryPrize, err error) {
@@ -352,7 +475,15 @@ func (r *lotteryRepository) PrepareDraw(ctx context.Context, input *service.Lott
 
 func (r *lotteryRepository) CompleteDraw(ctx context.Context, drawID int64, redeemCodeID int64, redeemCode string) (*service.LotteryDraw, error) {
 	now := time.Now().UTC()
-	m, err := r.client.LotteryDraw.UpdateOneID(drawID).
+	client := clientFromContext(ctx, r.client)
+	affected, err := client.LotteryDraw.Update().
+		Where(
+			lotterydraw.IDEQ(drawID),
+			lotterydraw.Or(
+				lotterydraw.StatusEQ(service.LotteryDrawStatusPending),
+				lotterydraw.StatusEQ(service.LotteryDrawStatusProcessing),
+			),
+		).
 		SetStatus(service.LotteryDrawStatusAwarded).
 		SetRedeemCodeID(redeemCodeID).
 		SetRedeemCode(redeemCode).
@@ -361,17 +492,76 @@ func (r *lotteryRepository) CompleteDraw(ctx context.Context, drawID int64, rede
 	if err != nil {
 		return nil, err
 	}
+	if affected == 0 {
+		return nil, service.ErrLotteryChanceUnavailable
+	}
+	m, err := client.LotteryDraw.Get(ctx, drawID)
+	if err != nil {
+		return nil, err
+	}
 	return lotteryDrawEntityToService(m), nil
 }
 
 func (r *lotteryRepository) FailDraw(ctx context.Context, drawID int64, errMessage string) error {
+	if r.db == nil {
+		return errors.New("lottery repository db is nil")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
 	now := time.Now().UTC()
-	_, err := r.client.LotteryDraw.UpdateOneID(drawID).
-		SetStatus(service.LotteryDrawStatusFailed).
-		SetErrorMessage(errMessage).
-		SetUpdatedAt(now).
-		Save(ctx)
-	return err
+	var chanceID int64
+	var prizeID sql.NullInt64
+	var status string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT chance_id, prize_id, status
+		FROM lottery_draws
+		WHERE id = $1
+		FOR UPDATE
+	`, drawID).Scan(&chanceID, &prizeID, &status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return service.ErrLotteryChanceUnavailable
+		}
+		return err
+	}
+	if status != service.LotteryDrawStatusPending && status != service.LotteryDrawStatusProcessing {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE lottery_draws
+		SET status = $1, error_message = $2, updated_at = $3
+		WHERE id = $4
+	`, service.LotteryDrawStatusFailed, errMessage, now, drawID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE lottery_chances
+		SET status = $1, used_at = NULL, updated_at = $2
+		WHERE id = $3 AND status = $4
+	`, service.LotteryChanceStatusAvailable, now, chanceID, service.LotteryChanceStatusUsed); err != nil {
+		return err
+	}
+	if prizeID.Valid {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE lottery_prizes
+			SET stock_used = GREATEST(stock_used - 1, 0), updated_at = $1
+			WHERE id = $2 AND stock_used > 0
+		`, now, prizeID.Int64); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	tx = nil
+	return nil
 }
 
 func lockLotteryCampaign(ctx context.Context, tx *sql.Tx, campaignID int64) (*service.LotteryCampaign, error) {
@@ -469,6 +659,14 @@ func consumeLotteryPrizeStock(ctx context.Context, tx *sql.Tx, prizeID int64) er
 		return service.ErrLotteryPrizeUnavailable
 	}
 	return nil
+}
+
+func redeemCodeLotteryDrawIDPredicate(drawID int64) predicate.RedeemCode {
+	return predicate.RedeemCode(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			b.Ident(s.C(redeemcode.FieldMetadata)).WriteString(" ->> 'lottery_draw_id' = ").Arg(strconv.FormatInt(drawID, 10))
+		}))
+	})
 }
 
 func lotteryCampaignEntityToService(m *dbent.LotteryCampaign) *service.LotteryCampaign {

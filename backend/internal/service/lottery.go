@@ -26,9 +26,12 @@ const (
 	LotteryChanceStatusUsed      = "used"
 	LotteryChanceStatusExpired   = "expired"
 
-	LotteryDrawStatusPending = "pending"
-	LotteryDrawStatusAwarded = "awarded"
-	LotteryDrawStatusFailed  = "failed"
+	LotteryDrawStatusPending    = "pending"
+	LotteryDrawStatusProcessing = "processing"
+	LotteryDrawStatusAwarded    = "awarded"
+	LotteryDrawStatusFailed     = "failed"
+
+	LotteryDrawProcessingLease = 30 * time.Minute
 
 	LotteryChanceSourceRanking = "ranking"
 	LotteryRedeemCodePrefix    = "LOTTERY"
@@ -189,10 +192,14 @@ type LotteryRepository interface {
 	ListCampaigns(ctx context.Context, params pagination.PaginationParams, status string, activeOnly bool) ([]LotteryCampaign, *pagination.PaginationResult, error)
 	CreatePrize(ctx context.Context, input *CreateLotteryPrizeInput) (*LotteryPrize, error)
 	UpdatePrize(ctx context.Context, id int64, input *UpdateLotteryPrizeInput) (*LotteryPrize, error)
+	GetPrize(ctx context.Context, id int64) (*LotteryPrize, error)
 	ListPrizes(ctx context.Context, campaignID int64) ([]LotteryPrize, error)
 	GrantChances(ctx context.Context, input *GrantLotteryChanceInput, expiresAt time.Time) ([]LotteryChance, error)
+	ListChancesBySource(ctx context.Context, input *GrantLotteryChanceInput) ([]LotteryChance, error)
 	ListUserChances(ctx context.Context, userID int64, campaignID int64, params pagination.PaginationParams) ([]LotteryChance, *pagination.PaginationResult, error)
 	ListUserDraws(ctx context.Context, userID int64, campaignID int64, params pagination.PaginationParams) ([]LotteryDraw, *pagination.PaginationResult, error)
+	GetPendingUserDraw(ctx context.Context, campaignID int64, userID int64) (*LotteryDraw, *LotteryPrize, *RedeemCode, error)
+	ClaimDrawRecovery(ctx context.Context, drawID int64, lease time.Duration) error
 	PrepareDraw(ctx context.Context, input *LotteryDrawInput, selector func([]LotteryPrize) (*LotteryPrize, error)) (*LotteryDraw, *LotteryPrize, error)
 	CompleteDraw(ctx context.Context, drawID int64, redeemCodeID int64, redeemCode string) (*LotteryDraw, error)
 	FailDraw(ctx context.Context, drawID int64, errMessage string) error
@@ -243,6 +250,64 @@ func (s *LotteryService) UpdatePrize(ctx context.Context, id int64, input *Updat
 	if id <= 0 || input == nil {
 		return nil, ErrLotteryInvalidPayload
 	}
+	current, err := s.repo.GetPrize(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	merged := CreateLotteryPrizeInput{
+		CampaignID:         current.CampaignID,
+		Name:               current.Name,
+		Description:        current.Description,
+		Status:             current.Status,
+		Weight:             current.Weight,
+		StockTotal:         current.StockTotal,
+		RedeemType:         current.RedeemType,
+		RedeemValue:        current.RedeemValue,
+		RedeemGroupID:      current.RedeemGroupID,
+		RedeemValidityDays: current.RedeemValidityDays,
+		RedeemMetadata:     current.RedeemMetadata,
+		SortOrder:          current.SortOrder,
+		Metadata:           current.Metadata,
+	}
+	if input.Name != nil {
+		merged.Name = *input.Name
+	}
+	if input.Description != nil {
+		merged.Description = *input.Description
+	}
+	if input.Status != nil {
+		merged.Status = *input.Status
+	}
+	if input.Weight != nil {
+		merged.Weight = *input.Weight
+	}
+	if input.StockTotal != nil {
+		merged.StockTotal = *input.StockTotal
+	}
+	if input.RedeemType != nil {
+		merged.RedeemType = *input.RedeemType
+	}
+	if input.RedeemValue != nil {
+		merged.RedeemValue = *input.RedeemValue
+	}
+	if input.RedeemGroupID.Set {
+		merged.RedeemGroupID = input.RedeemGroupID.Value
+	}
+	if input.RedeemValidityDays != nil {
+		merged.RedeemValidityDays = *input.RedeemValidityDays
+	}
+	if input.RedeemMetadata != nil {
+		merged.RedeemMetadata = input.RedeemMetadata
+	}
+	if input.SortOrder != nil {
+		merged.SortOrder = *input.SortOrder
+	}
+	if input.Metadata != nil {
+		merged.Metadata = input.Metadata
+	}
+	if err := validateCreateLotteryPrize(&merged); err != nil {
+		return nil, err
+	}
 	return s.repo.UpdatePrize(ctx, id, input)
 }
 
@@ -280,6 +345,16 @@ func (s *LotteryService) GrantChances(ctx context.Context, input *GrantLotteryCh
 	return s.repo.GrantChances(ctx, input, expiresAt)
 }
 
+func (s *LotteryService) ListChancesBySource(ctx context.Context, input *GrantLotteryChanceInput) ([]LotteryChance, error) {
+	if input == nil || input.CampaignID <= 0 || input.UserID <= 0 || strings.TrimSpace(input.Source) == "" || strings.TrimSpace(input.SourceID) == "" {
+		return nil, ErrLotteryInvalidPayload
+	}
+	if input.Count <= 0 {
+		input.Count = 1
+	}
+	return s.repo.ListChancesBySource(ctx, input)
+}
+
 func (s *LotteryService) ListUserChances(ctx context.Context, userID int64, campaignID int64, params pagination.PaginationParams) ([]LotteryChance, *pagination.PaginationResult, error) {
 	if userID <= 0 {
 		return nil, nil, ErrLotteryInvalidPayload
@@ -304,6 +379,11 @@ func (s *LotteryService) Draw(ctx context.Context, input *LotteryDrawInput) (*Lo
 	if input == nil || input.CampaignID <= 0 || input.UserID <= 0 {
 		return nil, ErrLotteryInvalidPayload
 	}
+	if draw, prize, redeemCode, err := s.repo.GetPendingUserDraw(ctx, input.CampaignID, input.UserID); err != nil {
+		return nil, err
+	} else if draw != nil {
+		return s.recoverPendingDraw(ctx, input.UserID, draw, prize, redeemCode)
+	}
 	draw, prize, err := s.repo.PrepareDraw(ctx, input, selectLotteryPrize)
 	if err != nil {
 		return nil, err
@@ -320,15 +400,64 @@ func (s *LotteryService) Draw(ctx context.Context, input *LotteryDrawInput) (*Lo
 	return &LotteryDrawResult{Draw: completedDraw, Prize: prize, RedeemCode: redeemCode}, nil
 }
 
+func (s *LotteryService) recoverPendingDraw(ctx context.Context, userID int64, draw *LotteryDraw, prize *LotteryPrize, redeemCode *RedeemCode) (*LotteryDrawResult, error) {
+	if draw == nil {
+		return nil, ErrLotteryChanceUnavailable
+	}
+	if err := s.repo.ClaimDrawRecovery(ctx, draw.ID, LotteryDrawProcessingLease); err != nil {
+		return nil, err
+	}
+	if redeemCode == nil {
+		return s.completePendingDrawWithAward(ctx, userID, draw, prize)
+	}
+	if redeemCode.IsUsed() {
+		if redeemCode.UsedBy == nil || *redeemCode.UsedBy != userID {
+			_ = s.repo.FailDraw(ctx, draw.ID, "lottery redeem code used by another user")
+			return nil, ErrLotteryChanceUnavailable
+		}
+		completedDraw, err := s.repo.CompleteDraw(ctx, draw.ID, redeemCode.ID, redeemCode.Code)
+		if err != nil {
+			return nil, err
+		}
+		return &LotteryDrawResult{Draw: completedDraw, Prize: prize, RedeemCode: redeemCode}, nil
+	}
+	if !redeemCode.CanUse() {
+		_ = s.repo.FailDraw(ctx, draw.ID, "lottery redeem code is not usable")
+		return nil, ErrLotteryChanceUnavailable
+	}
+	redeemed, err := s.redeemService.Redeem(ctx, userID, redeemCode.Code)
+	if err != nil {
+		_ = s.repo.FailDraw(ctx, draw.ID, err.Error())
+		return nil, fmt.Errorf("redeem lottery prize: %w", err)
+	}
+	completedDraw, err := s.repo.CompleteDraw(ctx, draw.ID, redeemed.ID, redeemed.Code)
+	if err != nil {
+		return nil, err
+	}
+	return &LotteryDrawResult{Draw: completedDraw, Prize: prize, RedeemCode: redeemed}, nil
+}
+
+func (s *LotteryService) completePendingDrawWithAward(ctx context.Context, userID int64, draw *LotteryDraw, prize *LotteryPrize) (*LotteryDrawResult, error) {
+	redeemCode, err := s.awardPrize(ctx, userID, prize, draw.ID)
+	if err != nil {
+		_ = s.repo.FailDraw(ctx, draw.ID, err.Error())
+		return nil, err
+	}
+	completedDraw, err := s.repo.CompleteDraw(ctx, draw.ID, redeemCode.ID, redeemCode.Code)
+	if err != nil {
+		return nil, err
+	}
+	return &LotteryDrawResult{Draw: completedDraw, Prize: prize, RedeemCode: redeemCode}, nil
+}
+
 func (s *LotteryService) awardPrize(ctx context.Context, userID int64, prize *LotteryPrize, drawID int64) (*RedeemCode, error) {
 	if prize == nil {
 		return nil, ErrLotteryPrizeUnavailable
 	}
-	code, err := s.redeemService.GenerateRandomCode()
+	code, err := GenerateRedeemCode()
 	if err != nil {
 		return nil, fmt.Errorf("generate lottery redeem code: %w", err)
 	}
-	code = LotteryRedeemCodePrefix + "-" + code
 	notes := fmt.Sprintf("lottery draw %d", drawID)
 	metadata := map[string]any{
 		"lottery_draw_id":     drawID,

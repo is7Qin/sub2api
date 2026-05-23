@@ -223,6 +223,11 @@ func (_c *UserQuotaGrantCreate) check() error {
 	if _, ok := _c.mutation.AmountUsd(); !ok {
 		return &ValidationError{Name: "amount_usd", err: errors.New(`ent: missing required field "UserQuotaGrant.amount_usd"`)}
 	}
+	if v, ok := _c.mutation.AmountUsd(); ok {
+		if err := userquotagrant.AmountUsdValidator(v); err != nil {
+			return &ValidationError{Name: "amount_usd", err: fmt.Errorf(`ent: validator failed for field "UserQuotaGrant.amount_usd": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.UsedAmountUsd(); !ok {
 		return &ValidationError{Name: "used_amount_usd", err: errors.New(`ent: missing required field "UserQuotaGrant.used_amount_usd"`)}
 	}

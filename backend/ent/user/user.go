@@ -71,6 +71,10 @@ const (
 	EdgeLotteryChances = "lottery_chances"
 	// EdgeLotteryDraws holds the string denoting the lottery_draws edge name in mutations.
 	EdgeLotteryDraws = "lottery_draws"
+	// EdgeRankingRewardExclusions holds the string denoting the ranking_reward_exclusions edge name in mutations.
+	EdgeRankingRewardExclusions = "ranking_reward_exclusions"
+	// EdgeRankingRewardAwards holds the string denoting the ranking_reward_awards edge name in mutations.
+	EdgeRankingRewardAwards = "ranking_reward_awards"
 	// EdgeSubscriptions holds the string denoting the subscriptions edge name in mutations.
 	EdgeSubscriptions = "subscriptions"
 	// EdgeAssignedSubscriptions holds the string denoting the assigned_subscriptions edge name in mutations.
@@ -130,6 +134,20 @@ const (
 	LotteryDrawsInverseTable = "lottery_draws"
 	// LotteryDrawsColumn is the table column denoting the lottery_draws relation/edge.
 	LotteryDrawsColumn = "user_id"
+	// RankingRewardExclusionsTable is the table that holds the ranking_reward_exclusions relation/edge.
+	RankingRewardExclusionsTable = "ranking_reward_excluded_users"
+	// RankingRewardExclusionsInverseTable is the table name for the RankingRewardExcludedUser entity.
+	// It exists in this package in order to avoid circular dependency with the "rankingrewardexcludeduser" package.
+	RankingRewardExclusionsInverseTable = "ranking_reward_excluded_users"
+	// RankingRewardExclusionsColumn is the table column denoting the ranking_reward_exclusions relation/edge.
+	RankingRewardExclusionsColumn = "user_id"
+	// RankingRewardAwardsTable is the table that holds the ranking_reward_awards relation/edge.
+	RankingRewardAwardsTable = "ranking_reward_awards"
+	// RankingRewardAwardsInverseTable is the table name for the RankingRewardAward entity.
+	// It exists in this package in order to avoid circular dependency with the "rankingrewardaward" package.
+	RankingRewardAwardsInverseTable = "ranking_reward_awards"
+	// RankingRewardAwardsColumn is the table column denoting the ranking_reward_awards relation/edge.
+	RankingRewardAwardsColumn = "user_id"
 	// SubscriptionsTable is the table that holds the subscriptions relation/edge.
 	SubscriptionsTable = "user_subscriptions"
 	// SubscriptionsInverseTable is the table name for the UserSubscription entity.
@@ -498,6 +516,34 @@ func ByLotteryDraws(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByRankingRewardExclusionsCount orders the results by ranking_reward_exclusions count.
+func ByRankingRewardExclusionsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRankingRewardExclusionsStep(), opts...)
+	}
+}
+
+// ByRankingRewardExclusions orders the results by ranking_reward_exclusions terms.
+func ByRankingRewardExclusions(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRankingRewardExclusionsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByRankingRewardAwardsCount orders the results by ranking_reward_awards count.
+func ByRankingRewardAwardsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRankingRewardAwardsStep(), opts...)
+	}
+}
+
+// ByRankingRewardAwards orders the results by ranking_reward_awards terms.
+func ByRankingRewardAwards(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRankingRewardAwardsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // BySubscriptionsCount orders the results by subscriptions count.
 func BySubscriptionsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -684,6 +730,20 @@ func newLotteryDrawsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(LotteryDrawsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, LotteryDrawsTable, LotteryDrawsColumn),
+	)
+}
+func newRankingRewardExclusionsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RankingRewardExclusionsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardExclusionsTable, RankingRewardExclusionsColumn),
+	)
+}
+func newRankingRewardAwardsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RankingRewardAwardsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RankingRewardAwardsTable, RankingRewardAwardsColumn),
 	)
 }
 func newSubscriptionsStep() *sqlgraph.Step {

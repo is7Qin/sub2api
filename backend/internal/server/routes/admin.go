@@ -100,6 +100,9 @@ func RegisterAdminRoutes(
 
 		// 抽奖活动管理
 		registerLotteryRoutes(admin, h)
+
+		// 消费排行抽奖奖励
+		registerRankingRewardRoutes(admin, h)
 	}
 }
 
@@ -637,6 +640,23 @@ func registerLotteryRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		lottery.POST("/campaigns/:id/prizes", h.Admin.Lottery.CreatePrize)
 		lottery.POST("/campaigns/:id/chances", h.Admin.Lottery.GrantChances)
 		lottery.PUT("/prizes/:prize_id", h.Admin.Lottery.UpdatePrize)
+	}
+}
+
+func registerRankingRewardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	rewards := admin.Group("/ranking-rewards")
+	{
+		rewards.GET("/campaigns", h.Admin.RankingReward.ListCampaigns)
+		rewards.POST("/campaigns", h.Admin.RankingReward.CreateCampaign)
+		rewards.GET("/campaigns/:id", h.Admin.RankingReward.GetCampaign)
+		rewards.PUT("/campaigns/:id", h.Admin.RankingReward.UpdateCampaign)
+		rewards.POST("/campaigns/:id/run", h.Admin.RankingReward.RunCampaign)
+		rewards.GET("/campaigns/:id/exclusions", h.Admin.RankingReward.ListExclusions)
+		rewards.POST("/campaigns/:id/exclusions", h.Admin.RankingReward.CreateExclusion)
+		rewards.GET("/campaigns/:id/runs", h.Admin.RankingReward.ListRuns)
+		rewards.GET("/runs/:run_id/awards", h.Admin.RankingReward.ListAwards)
+		rewards.PUT("/exclusions/:exclusion_id", h.Admin.RankingReward.UpdateExclusion)
+		rewards.DELETE("/exclusions/:exclusion_id", h.Admin.RankingReward.DeleteExclusion)
 	}
 }
 

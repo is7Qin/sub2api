@@ -131,6 +131,7 @@ type RankingRewardPublicAward struct {
 	PublicDisplayLimit int
 	Rank               int
 	UserID             int64
+	Awarded            bool
 	ChanceCount        int
 }
 
@@ -305,8 +306,8 @@ func (s *RankingRewardService) UpdateCampaign(ctx context.Context, id int64, inp
 	if err := current.ValidateRewardVolume(topN, chanceCount); err != nil {
 		return nil, err
 	}
-	if publicDisplayLimit > topN {
-		return nil, ErrRankingRewardInvalidPayload
+	if err := validateRankingRewardPublicDisplayLimit(publicDisplayLimit); err != nil {
+		return nil, err
 	}
 	return s.repo.UpdateCampaign(ctx, id, input)
 }
@@ -395,7 +396,7 @@ func (s *RankingRewardService) ListPublicLeaderboards(ctx context.Context, curre
 			Rank:          award.Rank,
 			DisplayName:   s.anonymizeRankingRewardUserID(award.UserID),
 			IsCurrentUser: award.UserID == currentUserID,
-			Awarded:       true,
+			Awarded:       award.Awarded,
 			ChanceCount:   award.ChanceCount,
 		})
 	}
@@ -696,9 +697,6 @@ func validateCreateRankingRewardCampaign(input *CreateRankingRewardCampaignInput
 	}
 	if err := validateRankingRewardPublicDisplayLimit(input.PublicDisplayLimit); err != nil {
 		return err
-	}
-	if input.PublicDisplayLimit > input.TopN {
-		return ErrRankingRewardInvalidPayload
 	}
 	if input.Status == "" {
 		input.Status = RankingRewardCampaignStatusDraft

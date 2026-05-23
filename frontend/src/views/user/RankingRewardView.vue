@@ -94,11 +94,14 @@
                       </span>
                     </td>
                     <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      {{ t('rankingReward.chanceCount', { count: entry.chance_count }) }}
+                      {{ entry.awarded ? t('rankingReward.chanceCount', { count: entry.chance_count }) : t('rankingReward.noReward') }}
                     </td>
                     <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      <span class="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
-                        {{ t('rankingReward.awarded') }}
+                      <span
+                        class="rounded-full px-2 py-0.5 text-xs font-medium"
+                        :class="entry.awarded ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'"
+                      >
+                        {{ entry.awarded ? t('rankingReward.awarded') : t('rankingReward.notAwarded') }}
                       </span>
                     </td>
                   </tr>

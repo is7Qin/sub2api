@@ -246,21 +246,55 @@ func (r *rankingRewardRepository) ListPublicAwards(ctx context.Context, limit in
 		WITH recent_runs AS (
 			SELECT
 				r.id,
+				r.campaign_id,
 				r.reward_date,
+				r.window_start,
+				r.window_end,
 				r.awarded_count,
 				c.name AS campaign_name,
-				c.public_display_limit
+				c.public_display_limit,
+				c.min_actual_cost
 			FROM ranking_reward_runs r
 			JOIN ranking_reward_campaigns c ON c.id = r.campaign_id
 			WHERE r.status = $1
 			  AND c.status = $2
 			ORDER BY r.reward_date DESC, r.id DESC
 			LIMIT $3
+		),
+		public_entries AS (
+			SELECT *
+			FROM (
+				SELECT
+					rr.id AS run_id,
+					rr.campaign_id,
+					rr.campaign_name,
+					rr.reward_date,
+					rr.awarded_count,
+					rr.public_display_limit,
+					s.user_id,
+					ROW_NUMBER() OVER (PARTITION BY rr.id ORDER BY s.actual_cost DESC, s.tokens DESC, s.user_id ASC) AS rank
+				FROM recent_runs rr
+				JOIN LATERAL (
+					SELECT
+						u.user_id,
+						COALESCE(SUM(u.actual_cost), 0) AS actual_cost,
+						COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) AS tokens
+					FROM usage_logs u
+					WHERE u.created_at >= rr.window_start AND u.created_at < rr.window_end
+					GROUP BY u.user_id
+					HAVING COALESCE(SUM(u.actual_cost), 0) >= rr.min_actual_cost
+				) s ON TRUE
+				WHERE NOT EXISTS (
+					SELECT 1 FROM ranking_reward_excluded_users e
+					WHERE e.campaign_id = rr.campaign_id AND e.user_id = s.user_id
+				)
+			) ranked
+			WHERE rank <= public_display_limit
 		)
-		SELECT rr.id, rr.campaign_name, rr.reward_date, rr.awarded_count, rr.public_display_limit, a.rank, a.user_id, a.chance_count
-		FROM recent_runs rr
-		JOIN ranking_reward_awards a ON a.run_id = rr.id AND a.rank <= rr.public_display_limit
-		ORDER BY rr.reward_date DESC, rr.id DESC, a.rank ASC, a.id ASC
+		SELECT pe.run_id, pe.campaign_name, pe.reward_date, pe.awarded_count, pe.public_display_limit, pe.rank, pe.user_id, a.id IS NOT NULL, COALESCE(a.chance_count, 0)
+		FROM public_entries pe
+		LEFT JOIN ranking_reward_awards a ON a.run_id = pe.run_id AND a.user_id = pe.user_id
+		ORDER BY pe.reward_date DESC, pe.run_id DESC, pe.rank ASC
 	`
 	rows, err := r.db.QueryContext(ctx, query, service.RankingRewardRunStatusCompleted, service.RankingRewardCampaignStatusActive, limit)
 	if err != nil {
@@ -275,7 +309,7 @@ func (r *rankingRewardRepository) ListPublicAwards(ctx context.Context, limit in
 	results = make([]service.RankingRewardPublicAward, 0)
 	for rows.Next() {
 		var item service.RankingRewardPublicAward
-		if err = rows.Scan(&item.RunID, &item.CampaignName, &item.RewardDate, &item.AwardedCount, &item.PublicDisplayLimit, &item.Rank, &item.UserID, &item.ChanceCount); err != nil {
+		if err = rows.Scan(&item.RunID, &item.CampaignName, &item.RewardDate, &item.AwardedCount, &item.PublicDisplayLimit, &item.Rank, &item.UserID, &item.Awarded, &item.ChanceCount); err != nil {
 			return nil, err
 		}
 		results = append(results, item)

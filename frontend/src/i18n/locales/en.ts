@@ -1107,7 +1107,7 @@ export default {
 
   rankingReward: {
     title: 'Ranking Rewards',
-    description: 'View daily ranking reward results with anonymous users and awarded lottery chances only',
+    description: 'View daily rankings where top users receive lottery chances and display size is configured separately',
     loadFailed: 'Failed to load ranking rewards',
     emptyTitle: 'No ranking rewards yet',
     emptyDescription: 'There are no completed ranking reward records yet.',
@@ -1117,7 +1117,9 @@ export default {
     anonymousUser: 'User {code}',
     currentUser: 'Me',
     chanceCount: '{count} lottery chances',
+    noReward: 'No reward',
     awarded: 'Awarded',
+    notAwarded: 'Not awarded',
     columns: {
       rank: 'Rank',
       user: 'User',

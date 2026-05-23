@@ -1439,6 +1439,82 @@ export default {
     rechargeReset: {
       title: '充值重置',
       description: '用户余额充值达到规则阈值后重置订阅周期额度',
+      newCampaign: '新建活动',
+      noLimit: '不限',
+      stats: {
+        campaigns: '活动数',
+        active: '启用中',
+        rules: '规则数',
+        selectedRules: '当前活动规则'
+      },
+      fields: {
+        name: '名称',
+        description: '说明',
+        status: '状态',
+        startsAt: '开始时间',
+        endsAt: '结束时间',
+        resetWindows: '重置周期',
+        campaign: '活动',
+        group: '分组',
+        thresholdAmount: '充值阈值'
+      },
+      columns: {
+        rules: '规则数',
+        threshold: '充值阈值',
+        updated: '更新时间'
+      },
+      actions: {
+        edit: '编辑',
+        rules: '规则'
+      },
+      dialogs: {
+        createCampaign: '新建活动',
+        editCampaign: '编辑活动'
+      },
+      placeholders: {
+        selectGroup: '选择分组'
+      },
+      filters: {
+        allStatus: '全部状态'
+      },
+      empty: {
+        campaignsTitle: '暂无充值重置活动',
+        campaignsDescription: '新建活动后，在规则弹窗里用分组选择器配置触发条件。',
+        noRules: '暂无规则'
+      },
+      hints: {
+        resetWindows: '至少选择一个要重置的订阅周期。'
+      },
+      resetWindows: {
+        dailyQuota: '日额度',
+        weeklyQuota: '周额度',
+        monthlyQuota: '月额度',
+        daily: '日',
+        weekly: '周',
+        monthly: '月'
+      },
+      status: {
+        draft: '草稿',
+        active: '启用',
+        disabled: '停用',
+        ended: '已结束'
+      },
+      messages: {
+        campaignSaved: '充值重置活动已保存',
+        ruleSaved: '规则已保存'
+      },
+      errors: {
+        invalidStartTime: '开始时间不合法',
+        invalidEndTime: '结束时间不合法',
+        endAfterStart: '结束时间必须晚于开始时间',
+        loadCampaigns: '加载充值重置活动失败',
+        selectResetWindow: '至少选择一个重置周期',
+        saveCampaign: '保存充值重置活动失败',
+        loadRules: '加载规则失败',
+        selectGroup: '请选择分组',
+        thresholdPositive: '充值阈值必须大于 0',
+        saveRule: '保存规则失败'
+      }
     },
 
     backup: {

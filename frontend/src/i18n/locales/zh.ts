@@ -1829,6 +1829,123 @@ export default {
     lottery: {
       title: '抽奖中心',
       description: '管理抽奖活动、奖品和用户抽奖机会',
+      newCampaign: '新建活动',
+      noDescription: '无描述',
+      noLimit: '不限',
+      noGroup: '未选择分组',
+      userSelected: '已选择用户',
+      fields: {
+        start: '开始',
+        end: '结束',
+        name: '名称',
+        description: '描述',
+        status: '状态',
+        chanceTtlDays: '机会有效期（天）',
+        chanceTtl: '机会有效期',
+        startsAt: '开始时间',
+        endsAt: '结束时间',
+        campaign: '活动',
+        prizeName: '奖品名称',
+        rewardType: '奖励类型',
+        subscriptionGroup: '订阅分组',
+        weight: '权重',
+        totalStock: '总库存',
+        rewardValue: '奖励值',
+        minValue: '最小额度',
+        maxValue: '最大额度',
+        validityDays: '有效天数',
+        sortOrder: '排序',
+        selectUser: '选择用户',
+        count: '数量',
+        expiresAt: '过期时间'
+      },
+      columns: {
+        campaign: '活动',
+        status: '状态',
+        window: '活动时间',
+        chanceTtl: '机会有效期',
+        prize: '奖品',
+        weight: '权重',
+        stock: '库存',
+        reward: '奖励'
+      },
+      actions: {
+        prizes: '奖品',
+        grant: '发放机会',
+        edit: '编辑',
+        saveCampaign: '保存活动',
+        createCampaign: '创建活动',
+        addPrize: '添加奖品',
+        savePrize: '保存奖品',
+        grantChances: '发放机会'
+      },
+      dialogs: {
+        editCampaign: '编辑活动',
+        prizes: '奖品配置',
+        editPrize: '编辑奖品',
+        grantChances: '发放抽奖机会'
+      },
+      placeholders: {
+        selectGroup: '选择分组',
+        searchUser: '搜索邮箱、用户名或备注'
+      },
+      filters: {
+        allStatus: '全部状态'
+      },
+      empty: {
+        campaignsTitle: '暂无抽奖活动',
+        campaignsDescription: '新建活动后再配置奖品和发放机会。',
+        noPrizes: '此活动还没有奖品。',
+        noMatchingUsers: '没有匹配用户'
+      },
+      hints: {
+        userSearch: '输入至少 2 个字符搜索用户，不需要手动查找用户 ID。',
+        grantSource: '来源会自动记录为管理员手动发放，并自动生成来源编号。'
+      },
+      units: {
+        days: '天',
+        daysShort: '天'
+      },
+      status: {
+        draft: '草稿',
+        active: '进行中',
+        disabled: '已禁用',
+        ended: '已结束'
+      },
+      prizeStatus: {
+        active: '启用',
+        disabled: '禁用'
+      },
+      rewardTypes: {
+        balance: '余额',
+        concurrency: '并发',
+        subscription: '订阅',
+        invitation: '邀请码',
+        timedQuota: '限时额度',
+        randomTimedQuota: '随机限时额度'
+      },
+      rewardUnits: {
+        concurrency: '并发'
+      },
+      messages: {
+        campaignSaved: '活动已保存',
+        campaignCreated: '活动已创建',
+        prizeSaved: '奖品已保存',
+        prizeAdded: '奖品已添加',
+        grantSuccess: '已发放 {count} 次抽奖机会'
+      },
+      errors: {
+        loadCampaigns: '加载抽奖活动失败',
+        saveCampaign: '保存活动失败',
+        loadPrizes: '加载奖品失败',
+        weightStockNonNegative: '权重和库存必须是非负数',
+        validityDaysPositive: '有效天数必须大于 0',
+        selectSubscriptionGroup: '请选择订阅分组',
+        rewardValuePositive: '奖励值必须大于 0',
+        randomTimedQuotaRange: '随机限时额度范围不合法',
+        savePrize: '保存奖品失败',
+        grantChances: '发放抽奖机会失败'
+      }
     },
 
     affiliates: {

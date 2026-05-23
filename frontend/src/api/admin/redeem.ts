@@ -12,6 +12,13 @@ import type {
   PaginatedResponse
 } from '@/types'
 
+function idempotencyConfig(): { headers: { 'Idempotency-Key': string } } {
+  const key = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return { headers: { 'Idempotency-Key': key } }
+}
+
 /**
  * List all redeem codes with pagination
  * @param page - Page number (default: 1)
@@ -60,7 +67,7 @@ export async function getById(id: number): Promise<RedeemCode> {
  * @returns Array of generated redeem codes
  */
 export async function generate(payload: GenerateRedeemCodesRequest): Promise<RedeemCode[]> {
-  const { data } = await apiClient.post<RedeemCode[]>('/admin/redeem-codes/generate', payload)
+  const { data } = await apiClient.post<RedeemCode[]>('/admin/redeem-codes/generate', payload, idempotencyConfig())
   return data
 }
 

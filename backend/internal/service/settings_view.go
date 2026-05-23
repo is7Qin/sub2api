@@ -147,6 +147,7 @@ type SystemSettings struct {
 	RiskControlEnabled           bool
 	LotteryEnabled               bool
 	RankingRewardEnabled         bool
+	RechargeResetEnabled         bool
 	AffiliateEnabled             bool
 	AffiliateRebateRate          float64
 	AffiliateRebateFreezeHours   int
@@ -297,6 +298,7 @@ type PublicSettings struct {
 
 	// 排行榜奖励功能开关
 	RankingRewardEnabled bool `json:"ranking_reward_enabled"`
+	RechargeResetEnabled bool `json:"recharge_reset_enabled"`
 }
 
 type LoginAgreementDocument struct {

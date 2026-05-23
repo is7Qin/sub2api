@@ -124,6 +124,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Ranking Reward',
   }),
+  rechargeReset: defineFlag({
+    key: 'recharge_reset_enabled',
+    mode: 'opt-in',
+    label: 'Recharge Reset',
+  }),
   affiliate: defineFlag({
     key: 'affiliate_enabled',
     mode: 'opt-in',

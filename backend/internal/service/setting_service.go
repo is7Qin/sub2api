@@ -704,6 +704,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyRiskControlEnabled,
 		SettingKeyLotteryEnabled,
 		SettingKeyRankingRewardEnabled,
+		SettingKeyRechargeResetEnabled,
 	}
 
 	settings, err := s.settingRepo.GetMultiple(ctx, keys)
@@ -818,6 +819,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		RiskControlEnabled:   settings[SettingKeyRiskControlEnabled] == "true",
 		LotteryEnabled:       settings[SettingKeyLotteryEnabled] == "true",
 		RankingRewardEnabled: settings[SettingKeyRankingRewardEnabled] == "true",
+		RechargeResetEnabled: settings[SettingKeyRechargeResetEnabled] == "true",
 	}, nil
 }
 
@@ -1074,6 +1076,7 @@ type PublicSettingsInjectionPayload struct {
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
 	LotteryEnabled                       bool `json:"lottery_enabled"`
 	RankingRewardEnabled                 bool `json:"ranking_reward_enabled"`
+	RechargeResetEnabled                 bool `json:"recharge_reset_enabled"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1138,6 +1141,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		RiskControlEnabled:                   settings.RiskControlEnabled,
 		LotteryEnabled:                       settings.LotteryEnabled,
 		RankingRewardEnabled:                 settings.RankingRewardEnabled,
+		RechargeResetEnabled:                 settings.RechargeResetEnabled,
 	}, nil
 }
 
@@ -1785,6 +1789,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// 排行榜奖励功能开关
 	updates[SettingKeyRankingRewardEnabled] = strconv.FormatBool(settings.RankingRewardEnabled)
+	updates[SettingKeyRechargeResetEnabled] = strconv.FormatBool(settings.RechargeResetEnabled)
 
 	// Claude Code version check
 	updates[SettingKeyMinClaudeCodeVersion] = settings.MinClaudeCodeVersion
@@ -2217,6 +2222,15 @@ func (s *SettingService) IsAffiliateEnabled(ctx context.Context) bool {
 	return value == "true"
 }
 
+// IsRechargeResetEnabled 检查是否启用充值重置功能（总开关）
+func (s *SettingService) IsRechargeResetEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyRechargeResetEnabled)
+	if err != nil {
+		return false
+	}
+	return value == "true"
+}
+
 // GetAffiliateRebateRatePercent 读取并 clamp 全局返利比例。
 // 解析失败、缺失或越界都回退到 AffiliateRebateRateDefault — 该比例从不抛错，
 // 调用方只关心一个可用的数值。
@@ -2637,6 +2651,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// 排行榜奖励功能（默认关闭，显式启用）
 		SettingKeyRankingRewardEnabled: "false",
+		SettingKeyRechargeResetEnabled: "false",
 
 		// Claude Code version check (default: empty = disabled)
 		SettingKeyMinClaudeCodeVersion: "",
@@ -3150,6 +3165,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 排行榜奖励功能（默认关闭，严格 true 才启用）
 	result.RankingRewardEnabled = settings[SettingKeyRankingRewardEnabled] == "true"
+	result.RechargeResetEnabled = settings[SettingKeyRechargeResetEnabled] == "true"
 
 	// Claude Code version check
 	result.MinClaudeCodeVersion = settings[SettingKeyMinClaudeCodeVersion]

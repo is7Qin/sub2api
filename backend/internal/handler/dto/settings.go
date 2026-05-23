@@ -246,6 +246,7 @@ type SystemSettings struct {
 
 	// 排行榜奖励功能开关
 	RankingRewardEnabled bool `json:"ranking_reward_enabled"`
+	RechargeResetEnabled bool `json:"recharge_reset_enabled"`
 
 	// Affiliate (邀请返利) feature switch
 	AffiliateEnabled bool `json:"affiliate_enabled"`

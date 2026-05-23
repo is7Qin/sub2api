@@ -100,6 +100,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		RiskControlEnabled:   settings.RiskControlEnabled,
 		LotteryEnabled:       settings.LotteryEnabled,
 		RankingRewardEnabled: settings.RankingRewardEnabled,
+		RechargeResetEnabled: settings.RechargeResetEnabled,
 	})
 }
 

@@ -212,6 +212,7 @@ export interface PublicSettings {
   risk_control_enabled: boolean
   lottery_enabled: boolean
   ranking_reward_enabled: boolean
+  recharge_reset_enabled: boolean
   table_default_page_size: number
   table_page_size_options: number[]
   custom_menu_items: CustomMenuItem[]

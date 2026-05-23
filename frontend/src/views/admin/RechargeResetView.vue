@@ -15,7 +15,7 @@
       <div class="grid gap-4 sm:grid-cols-4">
         <div class="card p-5">
           <p class="text-sm text-gray-500 dark:text-gray-400">{{ tx('活动数', 'Campaigns') }}</p>
-          <p class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ campaigns.length }}</p>
+          <p class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ campaignTotal }}</p>
         </div>
         <div class="card p-5">
           <p class="text-sm text-gray-500 dark:text-gray-400">{{ tx('启用中', 'Active') }}</p>
@@ -35,7 +35,7 @@
         <template #filters>
           <div class="flex flex-wrap items-center gap-3">
             <div class="w-full sm:w-48">
-              <Select v-model="statusFilter" :options="statusFilterOptions" @change="loadCampaigns" />
+              <Select v-model="statusFilter" :options="statusFilterOptions" @change="handleStatusFilterChange" />
             </div>
             <button class="btn btn-secondary" :disabled="loadingCampaigns" type="button" @click="loadCampaigns">
               <Icon name="refresh" size="sm" :class="loadingCampaigns ? 'animate-spin' : ''" />
@@ -101,6 +101,17 @@
               </div>
             </template>
           </DataTable>
+        </template>
+
+        <template #pagination>
+          <Pagination
+            v-if="campaignTotal > 0"
+            :total="campaignTotal"
+            :page="campaignPage"
+            :page-size="campaignPageSize"
+            @update:page="handleCampaignPageChange"
+            @update:pageSize="handleCampaignPageSizeChange"
+          />
         </template>
       </TablePageLayout>
     </div>
@@ -245,6 +256,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import Pagination from '@/components/common/Pagination.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api/admin'
@@ -270,6 +282,9 @@ const loadingRules = ref(false)
 const savingCampaign = ref(false)
 const savingRule = ref(false)
 const statusFilter = ref<string | null>('')
+const campaignPage = ref(1)
+const campaignPageSize = ref(20)
+const campaignTotal = ref(0)
 const campaigns = ref<RechargeResetCampaign[]>([])
 const groups = ref<AdminGroup[]>([])
 const activeCampaign = ref<RechargeResetCampaign | null>(null)
@@ -481,6 +496,10 @@ function buildCampaignPayload(): CreateRechargeResetCampaignRequest | null {
     appStore.showError(tx('结束时间不合法', 'Invalid end time'))
     return null
   }
+  if (endsAt && new Date(endsAt).getTime() <= new Date(startsAt).getTime()) {
+    appStore.showError(tx('结束时间必须晚于开始时间', 'End time must be later than start time'))
+    return null
+  }
   const payload: CreateRechargeResetCampaignRequest = {
     name: campaignForm.name,
     description: campaignForm.description,
@@ -505,13 +524,34 @@ async function loadGroups(): Promise<void> {
 async function loadCampaigns(): Promise<void> {
   loadingCampaigns.value = true
   try {
-    const result = await rechargeResetAPI.listCampaigns({ page: 1, page_size: 100, status: statusFilter.value || undefined })
+    const result = await rechargeResetAPI.listCampaigns({
+      page: campaignPage.value,
+      page_size: campaignPageSize.value,
+      status: statusFilter.value || undefined,
+    })
     campaigns.value = result.items || []
+    campaignTotal.value = result.total || 0
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('加载充值重置活动失败', 'Failed to load recharge reset campaigns')))
   } finally {
     loadingCampaigns.value = false
   }
+}
+
+function handleStatusFilterChange(): void {
+  campaignPage.value = 1
+  loadCampaigns()
+}
+
+function handleCampaignPageChange(page: number): void {
+  campaignPage.value = page
+  loadCampaigns()
+}
+
+function handleCampaignPageSizeChange(pageSize: number): void {
+  campaignPageSize.value = pageSize
+  campaignPage.value = 1
+  loadCampaigns()
 }
 
 async function saveCampaign(): Promise<void> {
@@ -569,7 +609,7 @@ async function saveRule(): Promise<void> {
   if (!activeCampaign.value) return
   const groupID = Number(ruleForm.group_id)
   const thresholdAmount = Number(ruleForm.threshold_amount)
-  if (!Number.isFinite(groupID) || groupID <= 0) {
+  if (!Number.isFinite(groupID) || !Number.isInteger(groupID) || groupID <= 0) {
     appStore.showError(tx('请选择分组', 'Please select a group'))
     return
   }

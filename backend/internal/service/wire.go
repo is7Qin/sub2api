@@ -542,8 +542,8 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateService,
 )
 
-func ProvideRechargeResetCampaignService(repo RechargeResetRepository, subscriptionSvc *SubscriptionService, redeemService *RedeemService) *RechargeResetCampaignService {
-	svc := NewRechargeResetCampaignService(repo, subscriptionSvc)
+func ProvideRechargeResetCampaignService(repo RechargeResetRepository, subscriptionSvc *SubscriptionService, settingSvc *SettingService, redeemService *RedeemService) *RechargeResetCampaignService {
+	svc := NewRechargeResetCampaignService(repo, subscriptionSvc, settingSvc)
 	redeemService.SetRechargeResetService(svc)
 	return svc
 }

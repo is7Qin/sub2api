@@ -664,10 +664,6 @@ function buildCampaignPayload(): CreateRankingRewardCampaignRequest | null {
     appStore.showError(tx('前 N 名、榜单显示数量和每人机会数都不能超过 1000', 'Top N, public display count, and chances per user cannot exceed 1,000'))
     return null
   }
-  if (publicDisplayLimit > topN) {
-    appStore.showError(tx('用户榜单显示数量不能超过前 N 名', 'Public display count cannot exceed Top N'))
-    return null
-  }
   if (topN * chanceCount > MAX_TOTAL_CHANCES) {
     appStore.showError(tx('总机会数不能超过 10000', 'Total chances cannot exceed 10,000'))
     return null

@@ -425,7 +425,7 @@ func (s *LotteryService) recoverPendingDraw(ctx context.Context, userID int64, d
 		_ = s.repo.FailDraw(ctx, draw.ID, "lottery redeem code is not usable")
 		return nil, ErrLotteryChanceUnavailable
 	}
-	redeemed, err := s.redeemService.Redeem(ctx, userID, redeemCode.Code)
+	redeemed, err := s.redeemService.redeemLoadedCode(ctx, userID, redeemCode)
 	if err != nil {
 		_ = s.repo.FailDraw(ctx, draw.ID, err.Error())
 		return nil, fmt.Errorf("redeem lottery prize: %w", err)

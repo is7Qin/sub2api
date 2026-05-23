@@ -1114,7 +1114,7 @@ export default {
 
   rankingReward: {
     title: '排行榜奖励',
-    description: '查看每日排行榜奖励结果，榜单仅展示匿名用户与获得的抽奖机会',
+    description: '查看每日排行榜，前 N 名获得抽奖机会，榜单显示数量可单独配置',
     loadFailed: '加载排行榜奖励失败',
     emptyTitle: '暂无排行榜奖励',
     emptyDescription: '当前还没有已完成的排行榜奖励记录。',
@@ -1124,7 +1124,9 @@ export default {
     anonymousUser: '用户 {code}',
     currentUser: '我',
     chanceCount: '{count} 次抽奖机会',
+    noReward: '未获得奖励',
     awarded: '已发放',
+    notAwarded: '未获奖',
     columns: {
       rank: '排名',
       user: '用户',

@@ -58,6 +58,12 @@ type Tx struct {
 	PromoCodeUsage *PromoCodeUsageClient
 	// Proxy is the client for interacting with the Proxy builders.
 	Proxy *ProxyClient
+	// RechargeResetCampaign is the client for interacting with the RechargeResetCampaign builders.
+	RechargeResetCampaign *RechargeResetCampaignClient
+	// RechargeResetCampaignRule is the client for interacting with the RechargeResetCampaignRule builders.
+	RechargeResetCampaignRule *RechargeResetCampaignRuleClient
+	// RechargeResetRecord is the client for interacting with the RechargeResetRecord builders.
+	RechargeResetRecord *RechargeResetRecordClient
 	// RedeemCode is the client for interacting with the RedeemCode builders.
 	RedeemCode *RedeemCodeClient
 	// SecuritySecret is the client for interacting with the SecuritySecret builders.
@@ -235,6 +241,9 @@ func (tx *Tx) init() {
 	tx.PromoCode = NewPromoCodeClient(tx.config)
 	tx.PromoCodeUsage = NewPromoCodeUsageClient(tx.config)
 	tx.Proxy = NewProxyClient(tx.config)
+	tx.RechargeResetCampaign = NewRechargeResetCampaignClient(tx.config)
+	tx.RechargeResetCampaignRule = NewRechargeResetCampaignRuleClient(tx.config)
+	tx.RechargeResetRecord = NewRechargeResetRecordClient(tx.config)
 	tx.RedeemCode = NewRedeemCodeClient(tx.config)
 	tx.SecuritySecret = NewSecuritySecretClient(tx.config)
 	tx.Setting = NewSettingClient(tx.config)

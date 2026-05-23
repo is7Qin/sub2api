@@ -362,6 +362,7 @@ export default {
     channels: '渠道管理',
     availableChannels: '可用渠道',
     subscriptions: '订阅管理',
+    rechargeReset: '充值重置',
     accounts: '账号管理',
     proxies: 'IP管理',
     redeemCodes: '兑换码',
@@ -1433,6 +1434,11 @@ export default {
       systemSettings: '系统设置',
       configureSystem: '配置系统设置',
       failedToLoad: '加载仪表盘数据失败'
+    },
+
+    rechargeReset: {
+      title: '充值重置',
+      description: '用户余额充值达到规则阈值后重置订阅周期额度',
     },
 
     backup: {

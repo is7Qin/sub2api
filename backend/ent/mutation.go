@@ -35,6 +35,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -81,6 +84,9 @@ const (
 	TypePromoCode                     = "PromoCode"
 	TypePromoCodeUsage                = "PromoCodeUsage"
 	TypeProxy                         = "Proxy"
+	TypeRechargeResetCampaign         = "RechargeResetCampaign"
+	TypeRechargeResetCampaignRule     = "RechargeResetCampaignRule"
+	TypeRechargeResetRecord           = "RechargeResetRecord"
 	TypeRedeemCode                    = "RedeemCode"
 	TypeSecuritySecret                = "SecuritySecret"
 	TypeSetting                       = "Setting"
@@ -14911,6 +14917,12 @@ type GroupMutation struct {
 	subscriptions                           map[int64]struct{}
 	removedsubscriptions                    map[int64]struct{}
 	clearedsubscriptions                    bool
+	recharge_reset_rules                    map[int64]struct{}
+	removedrecharge_reset_rules             map[int64]struct{}
+	clearedrecharge_reset_rules             bool
+	recharge_reset_records                  map[int64]struct{}
+	removedrecharge_reset_records           map[int64]struct{}
+	clearedrecharge_reset_records           bool
 	usage_logs                              map[int64]struct{}
 	removedusage_logs                       map[int64]struct{}
 	clearedusage_logs                       bool
@@ -16835,6 +16847,114 @@ func (m *GroupMutation) ResetSubscriptions() {
 	m.removedsubscriptions = nil
 }
 
+// AddRechargeResetRuleIDs adds the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity by ids.
+func (m *GroupMutation) AddRechargeResetRuleIDs(ids ...int64) {
+	if m.recharge_reset_rules == nil {
+		m.recharge_reset_rules = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.recharge_reset_rules[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRechargeResetRules clears the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity.
+func (m *GroupMutation) ClearRechargeResetRules() {
+	m.clearedrecharge_reset_rules = true
+}
+
+// RechargeResetRulesCleared reports if the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity was cleared.
+func (m *GroupMutation) RechargeResetRulesCleared() bool {
+	return m.clearedrecharge_reset_rules
+}
+
+// RemoveRechargeResetRuleIDs removes the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity by IDs.
+func (m *GroupMutation) RemoveRechargeResetRuleIDs(ids ...int64) {
+	if m.removedrecharge_reset_rules == nil {
+		m.removedrecharge_reset_rules = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.recharge_reset_rules, ids[i])
+		m.removedrecharge_reset_rules[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRechargeResetRules returns the removed IDs of the "recharge_reset_rules" edge to the RechargeResetCampaignRule entity.
+func (m *GroupMutation) RemovedRechargeResetRulesIDs() (ids []int64) {
+	for id := range m.removedrecharge_reset_rules {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RechargeResetRulesIDs returns the "recharge_reset_rules" edge IDs in the mutation.
+func (m *GroupMutation) RechargeResetRulesIDs() (ids []int64) {
+	for id := range m.recharge_reset_rules {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRechargeResetRules resets all changes to the "recharge_reset_rules" edge.
+func (m *GroupMutation) ResetRechargeResetRules() {
+	m.recharge_reset_rules = nil
+	m.clearedrecharge_reset_rules = false
+	m.removedrecharge_reset_rules = nil
+}
+
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by ids.
+func (m *GroupMutation) AddRechargeResetRecordIDs(ids ...int64) {
+	if m.recharge_reset_records == nil {
+		m.recharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.recharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRechargeResetRecords clears the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *GroupMutation) ClearRechargeResetRecords() {
+	m.clearedrecharge_reset_records = true
+}
+
+// RechargeResetRecordsCleared reports if the "recharge_reset_records" edge to the RechargeResetRecord entity was cleared.
+func (m *GroupMutation) RechargeResetRecordsCleared() bool {
+	return m.clearedrecharge_reset_records
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (m *GroupMutation) RemoveRechargeResetRecordIDs(ids ...int64) {
+	if m.removedrecharge_reset_records == nil {
+		m.removedrecharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.recharge_reset_records, ids[i])
+		m.removedrecharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRechargeResetRecords returns the removed IDs of the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *GroupMutation) RemovedRechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.removedrecharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RechargeResetRecordsIDs returns the "recharge_reset_records" edge IDs in the mutation.
+func (m *GroupMutation) RechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.recharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRechargeResetRecords resets all changes to the "recharge_reset_records" edge.
+func (m *GroupMutation) ResetRechargeResetRecords() {
+	m.recharge_reset_records = nil
+	m.clearedrecharge_reset_records = false
+	m.removedrecharge_reset_records = nil
+}
+
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by ids.
 func (m *GroupMutation) AddUsageLogIDs(ids ...int64) {
 	if m.usage_logs == nil {
@@ -17919,7 +18039,7 @@ func (m *GroupMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *GroupMutation) AddedEdges() []string {
-	edges := make([]string, 0, 6)
+	edges := make([]string, 0, 8)
 	if m.api_keys != nil {
 		edges = append(edges, group.EdgeAPIKeys)
 	}
@@ -17928,6 +18048,12 @@ func (m *GroupMutation) AddedEdges() []string {
 	}
 	if m.subscriptions != nil {
 		edges = append(edges, group.EdgeSubscriptions)
+	}
+	if m.recharge_reset_rules != nil {
+		edges = append(edges, group.EdgeRechargeResetRules)
+	}
+	if m.recharge_reset_records != nil {
+		edges = append(edges, group.EdgeRechargeResetRecords)
 	}
 	if m.usage_logs != nil {
 		edges = append(edges, group.EdgeUsageLogs)
@@ -17963,6 +18089,18 @@ func (m *GroupMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case group.EdgeRechargeResetRules:
+		ids := make([]ent.Value, 0, len(m.recharge_reset_rules))
+		for id := range m.recharge_reset_rules {
+			ids = append(ids, id)
+		}
+		return ids
+	case group.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.recharge_reset_records))
+		for id := range m.recharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	case group.EdgeUsageLogs:
 		ids := make([]ent.Value, 0, len(m.usage_logs))
 		for id := range m.usage_logs {
@@ -17987,7 +18125,7 @@ func (m *GroupMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *GroupMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 6)
+	edges := make([]string, 0, 8)
 	if m.removedapi_keys != nil {
 		edges = append(edges, group.EdgeAPIKeys)
 	}
@@ -17996,6 +18134,12 @@ func (m *GroupMutation) RemovedEdges() []string {
 	}
 	if m.removedsubscriptions != nil {
 		edges = append(edges, group.EdgeSubscriptions)
+	}
+	if m.removedrecharge_reset_rules != nil {
+		edges = append(edges, group.EdgeRechargeResetRules)
+	}
+	if m.removedrecharge_reset_records != nil {
+		edges = append(edges, group.EdgeRechargeResetRecords)
 	}
 	if m.removedusage_logs != nil {
 		edges = append(edges, group.EdgeUsageLogs)
@@ -18031,6 +18175,18 @@ func (m *GroupMutation) RemovedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case group.EdgeRechargeResetRules:
+		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_rules))
+		for id := range m.removedrecharge_reset_rules {
+			ids = append(ids, id)
+		}
+		return ids
+	case group.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_records))
+		for id := range m.removedrecharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	case group.EdgeUsageLogs:
 		ids := make([]ent.Value, 0, len(m.removedusage_logs))
 		for id := range m.removedusage_logs {
@@ -18055,7 +18211,7 @@ func (m *GroupMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *GroupMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 6)
+	edges := make([]string, 0, 8)
 	if m.clearedapi_keys {
 		edges = append(edges, group.EdgeAPIKeys)
 	}
@@ -18064,6 +18220,12 @@ func (m *GroupMutation) ClearedEdges() []string {
 	}
 	if m.clearedsubscriptions {
 		edges = append(edges, group.EdgeSubscriptions)
+	}
+	if m.clearedrecharge_reset_rules {
+		edges = append(edges, group.EdgeRechargeResetRules)
+	}
+	if m.clearedrecharge_reset_records {
+		edges = append(edges, group.EdgeRechargeResetRecords)
 	}
 	if m.clearedusage_logs {
 		edges = append(edges, group.EdgeUsageLogs)
@@ -18087,6 +18249,10 @@ func (m *GroupMutation) EdgeCleared(name string) bool {
 		return m.clearedredeem_codes
 	case group.EdgeSubscriptions:
 		return m.clearedsubscriptions
+	case group.EdgeRechargeResetRules:
+		return m.clearedrecharge_reset_rules
+	case group.EdgeRechargeResetRecords:
+		return m.clearedrecharge_reset_records
 	case group.EdgeUsageLogs:
 		return m.clearedusage_logs
 	case group.EdgeAccounts:
@@ -18117,6 +18283,12 @@ func (m *GroupMutation) ResetEdge(name string) error {
 		return nil
 	case group.EdgeSubscriptions:
 		m.ResetSubscriptions()
+		return nil
+	case group.EdgeRechargeResetRules:
+		m.ResetRechargeResetRules()
+		return nil
+	case group.EdgeRechargeResetRecords:
+		m.ResetRechargeResetRecords()
 		return nil
 	case group.EdgeUsageLogs:
 		m.ResetUsageLogs()
@@ -28696,31 +28868,3359 @@ func (m *ProxyMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown Proxy edge %s", name)
 }
 
+// RechargeResetCampaignMutation represents an operation that mutates the RechargeResetCampaign nodes in the graph.
+type RechargeResetCampaignMutation struct {
+	config
+	op             Op
+	typ            string
+	id             *int64
+	name           *string
+	description    *string
+	status         *string
+	starts_at      *time.Time
+	ends_at        *time.Time
+	reset_daily    *bool
+	reset_weekly   *bool
+	reset_monthly  *bool
+	metadata       *map[string]interface{}
+	created_at     *time.Time
+	updated_at     *time.Time
+	clearedFields  map[string]struct{}
+	rules          map[int64]struct{}
+	removedrules   map[int64]struct{}
+	clearedrules   bool
+	records        map[int64]struct{}
+	removedrecords map[int64]struct{}
+	clearedrecords bool
+	done           bool
+	oldValue       func(context.Context) (*RechargeResetCampaign, error)
+	predicates     []predicate.RechargeResetCampaign
+}
+
+var _ ent.Mutation = (*RechargeResetCampaignMutation)(nil)
+
+// rechargeresetcampaignOption allows management of the mutation configuration using functional options.
+type rechargeresetcampaignOption func(*RechargeResetCampaignMutation)
+
+// newRechargeResetCampaignMutation creates new mutation for the RechargeResetCampaign entity.
+func newRechargeResetCampaignMutation(c config, op Op, opts ...rechargeresetcampaignOption) *RechargeResetCampaignMutation {
+	m := &RechargeResetCampaignMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRechargeResetCampaign,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRechargeResetCampaignID sets the ID field of the mutation.
+func withRechargeResetCampaignID(id int64) rechargeresetcampaignOption {
+	return func(m *RechargeResetCampaignMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RechargeResetCampaign
+		)
+		m.oldValue = func(ctx context.Context) (*RechargeResetCampaign, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RechargeResetCampaign.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRechargeResetCampaign sets the old RechargeResetCampaign of the mutation.
+func withRechargeResetCampaign(node *RechargeResetCampaign) rechargeresetcampaignOption {
+	return func(m *RechargeResetCampaignMutation) {
+		m.oldValue = func(context.Context) (*RechargeResetCampaign, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RechargeResetCampaignMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RechargeResetCampaignMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RechargeResetCampaignMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RechargeResetCampaignMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RechargeResetCampaign.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetName sets the "name" field.
+func (m *RechargeResetCampaignMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *RechargeResetCampaignMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *RechargeResetCampaignMutation) ResetName() {
+	m.name = nil
+}
+
+// SetDescription sets the "description" field.
+func (m *RechargeResetCampaignMutation) SetDescription(s string) {
+	m.description = &s
+}
+
+// Description returns the value of the "description" field in the mutation.
+func (m *RechargeResetCampaignMutation) Description() (r string, exists bool) {
+	v := m.description
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDescription returns the old "description" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldDescription(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDescription is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDescription requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDescription: %w", err)
+	}
+	return oldValue.Description, nil
+}
+
+// ResetDescription resets all changes to the "description" field.
+func (m *RechargeResetCampaignMutation) ResetDescription() {
+	m.description = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *RechargeResetCampaignMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *RechargeResetCampaignMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *RechargeResetCampaignMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetStartsAt sets the "starts_at" field.
+func (m *RechargeResetCampaignMutation) SetStartsAt(t time.Time) {
+	m.starts_at = &t
+}
+
+// StartsAt returns the value of the "starts_at" field in the mutation.
+func (m *RechargeResetCampaignMutation) StartsAt() (r time.Time, exists bool) {
+	v := m.starts_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStartsAt returns the old "starts_at" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldStartsAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStartsAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStartsAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStartsAt: %w", err)
+	}
+	return oldValue.StartsAt, nil
+}
+
+// ResetStartsAt resets all changes to the "starts_at" field.
+func (m *RechargeResetCampaignMutation) ResetStartsAt() {
+	m.starts_at = nil
+}
+
+// SetEndsAt sets the "ends_at" field.
+func (m *RechargeResetCampaignMutation) SetEndsAt(t time.Time) {
+	m.ends_at = &t
+}
+
+// EndsAt returns the value of the "ends_at" field in the mutation.
+func (m *RechargeResetCampaignMutation) EndsAt() (r time.Time, exists bool) {
+	v := m.ends_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEndsAt returns the old "ends_at" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldEndsAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEndsAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEndsAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEndsAt: %w", err)
+	}
+	return oldValue.EndsAt, nil
+}
+
+// ClearEndsAt clears the value of the "ends_at" field.
+func (m *RechargeResetCampaignMutation) ClearEndsAt() {
+	m.ends_at = nil
+	m.clearedFields[rechargeresetcampaign.FieldEndsAt] = struct{}{}
+}
+
+// EndsAtCleared returns if the "ends_at" field was cleared in this mutation.
+func (m *RechargeResetCampaignMutation) EndsAtCleared() bool {
+	_, ok := m.clearedFields[rechargeresetcampaign.FieldEndsAt]
+	return ok
+}
+
+// ResetEndsAt resets all changes to the "ends_at" field.
+func (m *RechargeResetCampaignMutation) ResetEndsAt() {
+	m.ends_at = nil
+	delete(m.clearedFields, rechargeresetcampaign.FieldEndsAt)
+}
+
+// SetResetDaily sets the "reset_daily" field.
+func (m *RechargeResetCampaignMutation) SetResetDaily(b bool) {
+	m.reset_daily = &b
+}
+
+// ResetDaily returns the value of the "reset_daily" field in the mutation.
+func (m *RechargeResetCampaignMutation) ResetDaily() (r bool, exists bool) {
+	v := m.reset_daily
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetDaily returns the old "reset_daily" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldResetDaily(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetDaily is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetDaily requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetDaily: %w", err)
+	}
+	return oldValue.ResetDaily, nil
+}
+
+// ResetResetDaily resets all changes to the "reset_daily" field.
+func (m *RechargeResetCampaignMutation) ResetResetDaily() {
+	m.reset_daily = nil
+}
+
+// SetResetWeekly sets the "reset_weekly" field.
+func (m *RechargeResetCampaignMutation) SetResetWeekly(b bool) {
+	m.reset_weekly = &b
+}
+
+// ResetWeekly returns the value of the "reset_weekly" field in the mutation.
+func (m *RechargeResetCampaignMutation) ResetWeekly() (r bool, exists bool) {
+	v := m.reset_weekly
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetWeekly returns the old "reset_weekly" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldResetWeekly(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetWeekly is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetWeekly requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetWeekly: %w", err)
+	}
+	return oldValue.ResetWeekly, nil
+}
+
+// ResetResetWeekly resets all changes to the "reset_weekly" field.
+func (m *RechargeResetCampaignMutation) ResetResetWeekly() {
+	m.reset_weekly = nil
+}
+
+// SetResetMonthly sets the "reset_monthly" field.
+func (m *RechargeResetCampaignMutation) SetResetMonthly(b bool) {
+	m.reset_monthly = &b
+}
+
+// ResetMonthly returns the value of the "reset_monthly" field in the mutation.
+func (m *RechargeResetCampaignMutation) ResetMonthly() (r bool, exists bool) {
+	v := m.reset_monthly
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetMonthly returns the old "reset_monthly" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldResetMonthly(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetMonthly is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetMonthly requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetMonthly: %w", err)
+	}
+	return oldValue.ResetMonthly, nil
+}
+
+// ResetResetMonthly resets all changes to the "reset_monthly" field.
+func (m *RechargeResetCampaignMutation) ResetResetMonthly() {
+	m.reset_monthly = nil
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *RechargeResetCampaignMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RechargeResetCampaignMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RechargeResetCampaignMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[rechargeresetcampaign.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RechargeResetCampaignMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[rechargeresetcampaign.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RechargeResetCampaignMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, rechargeresetcampaign.FieldMetadata)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RechargeResetCampaignMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RechargeResetCampaignMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RechargeResetCampaignMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *RechargeResetCampaignMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *RechargeResetCampaignMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the RechargeResetCampaign entity.
+// If the RechargeResetCampaign object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *RechargeResetCampaignMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// AddRuleIDs adds the "rules" edge to the RechargeResetCampaignRule entity by ids.
+func (m *RechargeResetCampaignMutation) AddRuleIDs(ids ...int64) {
+	if m.rules == nil {
+		m.rules = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.rules[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRules clears the "rules" edge to the RechargeResetCampaignRule entity.
+func (m *RechargeResetCampaignMutation) ClearRules() {
+	m.clearedrules = true
+}
+
+// RulesCleared reports if the "rules" edge to the RechargeResetCampaignRule entity was cleared.
+func (m *RechargeResetCampaignMutation) RulesCleared() bool {
+	return m.clearedrules
+}
+
+// RemoveRuleIDs removes the "rules" edge to the RechargeResetCampaignRule entity by IDs.
+func (m *RechargeResetCampaignMutation) RemoveRuleIDs(ids ...int64) {
+	if m.removedrules == nil {
+		m.removedrules = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.rules, ids[i])
+		m.removedrules[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRules returns the removed IDs of the "rules" edge to the RechargeResetCampaignRule entity.
+func (m *RechargeResetCampaignMutation) RemovedRulesIDs() (ids []int64) {
+	for id := range m.removedrules {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RulesIDs returns the "rules" edge IDs in the mutation.
+func (m *RechargeResetCampaignMutation) RulesIDs() (ids []int64) {
+	for id := range m.rules {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRules resets all changes to the "rules" edge.
+func (m *RechargeResetCampaignMutation) ResetRules() {
+	m.rules = nil
+	m.clearedrules = false
+	m.removedrules = nil
+}
+
+// AddRecordIDs adds the "records" edge to the RechargeResetRecord entity by ids.
+func (m *RechargeResetCampaignMutation) AddRecordIDs(ids ...int64) {
+	if m.records == nil {
+		m.records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRecords clears the "records" edge to the RechargeResetRecord entity.
+func (m *RechargeResetCampaignMutation) ClearRecords() {
+	m.clearedrecords = true
+}
+
+// RecordsCleared reports if the "records" edge to the RechargeResetRecord entity was cleared.
+func (m *RechargeResetCampaignMutation) RecordsCleared() bool {
+	return m.clearedrecords
+}
+
+// RemoveRecordIDs removes the "records" edge to the RechargeResetRecord entity by IDs.
+func (m *RechargeResetCampaignMutation) RemoveRecordIDs(ids ...int64) {
+	if m.removedrecords == nil {
+		m.removedrecords = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.records, ids[i])
+		m.removedrecords[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRecords returns the removed IDs of the "records" edge to the RechargeResetRecord entity.
+func (m *RechargeResetCampaignMutation) RemovedRecordsIDs() (ids []int64) {
+	for id := range m.removedrecords {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RecordsIDs returns the "records" edge IDs in the mutation.
+func (m *RechargeResetCampaignMutation) RecordsIDs() (ids []int64) {
+	for id := range m.records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRecords resets all changes to the "records" edge.
+func (m *RechargeResetCampaignMutation) ResetRecords() {
+	m.records = nil
+	m.clearedrecords = false
+	m.removedrecords = nil
+}
+
+// Where appends a list predicates to the RechargeResetCampaignMutation builder.
+func (m *RechargeResetCampaignMutation) Where(ps ...predicate.RechargeResetCampaign) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RechargeResetCampaignMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RechargeResetCampaignMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RechargeResetCampaign, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RechargeResetCampaignMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RechargeResetCampaignMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RechargeResetCampaign).
+func (m *RechargeResetCampaignMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RechargeResetCampaignMutation) Fields() []string {
+	fields := make([]string, 0, 11)
+	if m.name != nil {
+		fields = append(fields, rechargeresetcampaign.FieldName)
+	}
+	if m.description != nil {
+		fields = append(fields, rechargeresetcampaign.FieldDescription)
+	}
+	if m.status != nil {
+		fields = append(fields, rechargeresetcampaign.FieldStatus)
+	}
+	if m.starts_at != nil {
+		fields = append(fields, rechargeresetcampaign.FieldStartsAt)
+	}
+	if m.ends_at != nil {
+		fields = append(fields, rechargeresetcampaign.FieldEndsAt)
+	}
+	if m.reset_daily != nil {
+		fields = append(fields, rechargeresetcampaign.FieldResetDaily)
+	}
+	if m.reset_weekly != nil {
+		fields = append(fields, rechargeresetcampaign.FieldResetWeekly)
+	}
+	if m.reset_monthly != nil {
+		fields = append(fields, rechargeresetcampaign.FieldResetMonthly)
+	}
+	if m.metadata != nil {
+		fields = append(fields, rechargeresetcampaign.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rechargeresetcampaign.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, rechargeresetcampaign.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RechargeResetCampaignMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rechargeresetcampaign.FieldName:
+		return m.Name()
+	case rechargeresetcampaign.FieldDescription:
+		return m.Description()
+	case rechargeresetcampaign.FieldStatus:
+		return m.Status()
+	case rechargeresetcampaign.FieldStartsAt:
+		return m.StartsAt()
+	case rechargeresetcampaign.FieldEndsAt:
+		return m.EndsAt()
+	case rechargeresetcampaign.FieldResetDaily:
+		return m.ResetDaily()
+	case rechargeresetcampaign.FieldResetWeekly:
+		return m.ResetWeekly()
+	case rechargeresetcampaign.FieldResetMonthly:
+		return m.ResetMonthly()
+	case rechargeresetcampaign.FieldMetadata:
+		return m.Metadata()
+	case rechargeresetcampaign.FieldCreatedAt:
+		return m.CreatedAt()
+	case rechargeresetcampaign.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RechargeResetCampaignMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rechargeresetcampaign.FieldName:
+		return m.OldName(ctx)
+	case rechargeresetcampaign.FieldDescription:
+		return m.OldDescription(ctx)
+	case rechargeresetcampaign.FieldStatus:
+		return m.OldStatus(ctx)
+	case rechargeresetcampaign.FieldStartsAt:
+		return m.OldStartsAt(ctx)
+	case rechargeresetcampaign.FieldEndsAt:
+		return m.OldEndsAt(ctx)
+	case rechargeresetcampaign.FieldResetDaily:
+		return m.OldResetDaily(ctx)
+	case rechargeresetcampaign.FieldResetWeekly:
+		return m.OldResetWeekly(ctx)
+	case rechargeresetcampaign.FieldResetMonthly:
+		return m.OldResetMonthly(ctx)
+	case rechargeresetcampaign.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case rechargeresetcampaign.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case rechargeresetcampaign.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RechargeResetCampaign field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RechargeResetCampaignMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rechargeresetcampaign.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case rechargeresetcampaign.FieldDescription:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDescription(v)
+		return nil
+	case rechargeresetcampaign.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case rechargeresetcampaign.FieldStartsAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStartsAt(v)
+		return nil
+	case rechargeresetcampaign.FieldEndsAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEndsAt(v)
+		return nil
+	case rechargeresetcampaign.FieldResetDaily:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetDaily(v)
+		return nil
+	case rechargeresetcampaign.FieldResetWeekly:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetWeekly(v)
+		return nil
+	case rechargeresetcampaign.FieldResetMonthly:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetMonthly(v)
+		return nil
+	case rechargeresetcampaign.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case rechargeresetcampaign.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case rechargeresetcampaign.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaign field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RechargeResetCampaignMutation) AddedFields() []string {
+	return nil
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RechargeResetCampaignMutation) AddedField(name string) (ent.Value, bool) {
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RechargeResetCampaignMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown RechargeResetCampaign numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RechargeResetCampaignMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(rechargeresetcampaign.FieldEndsAt) {
+		fields = append(fields, rechargeresetcampaign.FieldEndsAt)
+	}
+	if m.FieldCleared(rechargeresetcampaign.FieldMetadata) {
+		fields = append(fields, rechargeresetcampaign.FieldMetadata)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RechargeResetCampaignMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RechargeResetCampaignMutation) ClearField(name string) error {
+	switch name {
+	case rechargeresetcampaign.FieldEndsAt:
+		m.ClearEndsAt()
+		return nil
+	case rechargeresetcampaign.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaign nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RechargeResetCampaignMutation) ResetField(name string) error {
+	switch name {
+	case rechargeresetcampaign.FieldName:
+		m.ResetName()
+		return nil
+	case rechargeresetcampaign.FieldDescription:
+		m.ResetDescription()
+		return nil
+	case rechargeresetcampaign.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case rechargeresetcampaign.FieldStartsAt:
+		m.ResetStartsAt()
+		return nil
+	case rechargeresetcampaign.FieldEndsAt:
+		m.ResetEndsAt()
+		return nil
+	case rechargeresetcampaign.FieldResetDaily:
+		m.ResetResetDaily()
+		return nil
+	case rechargeresetcampaign.FieldResetWeekly:
+		m.ResetResetWeekly()
+		return nil
+	case rechargeresetcampaign.FieldResetMonthly:
+		m.ResetResetMonthly()
+		return nil
+	case rechargeresetcampaign.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case rechargeresetcampaign.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case rechargeresetcampaign.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaign field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RechargeResetCampaignMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.rules != nil {
+		edges = append(edges, rechargeresetcampaign.EdgeRules)
+	}
+	if m.records != nil {
+		edges = append(edges, rechargeresetcampaign.EdgeRecords)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RechargeResetCampaignMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rechargeresetcampaign.EdgeRules:
+		ids := make([]ent.Value, 0, len(m.rules))
+		for id := range m.rules {
+			ids = append(ids, id)
+		}
+		return ids
+	case rechargeresetcampaign.EdgeRecords:
+		ids := make([]ent.Value, 0, len(m.records))
+		for id := range m.records {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RechargeResetCampaignMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.removedrules != nil {
+		edges = append(edges, rechargeresetcampaign.EdgeRules)
+	}
+	if m.removedrecords != nil {
+		edges = append(edges, rechargeresetcampaign.EdgeRecords)
+	}
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RechargeResetCampaignMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case rechargeresetcampaign.EdgeRules:
+		ids := make([]ent.Value, 0, len(m.removedrules))
+		for id := range m.removedrules {
+			ids = append(ids, id)
+		}
+		return ids
+	case rechargeresetcampaign.EdgeRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecords))
+		for id := range m.removedrecords {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RechargeResetCampaignMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.clearedrules {
+		edges = append(edges, rechargeresetcampaign.EdgeRules)
+	}
+	if m.clearedrecords {
+		edges = append(edges, rechargeresetcampaign.EdgeRecords)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RechargeResetCampaignMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rechargeresetcampaign.EdgeRules:
+		return m.clearedrules
+	case rechargeresetcampaign.EdgeRecords:
+		return m.clearedrecords
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RechargeResetCampaignMutation) ClearEdge(name string) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown RechargeResetCampaign unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RechargeResetCampaignMutation) ResetEdge(name string) error {
+	switch name {
+	case rechargeresetcampaign.EdgeRules:
+		m.ResetRules()
+		return nil
+	case rechargeresetcampaign.EdgeRecords:
+		m.ResetRecords()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaign edge %s", name)
+}
+
+// RechargeResetCampaignRuleMutation represents an operation that mutates the RechargeResetCampaignRule nodes in the graph.
+type RechargeResetCampaignRuleMutation struct {
+	config
+	op                  Op
+	typ                 string
+	id                  *int64
+	threshold_amount    *float64
+	addthreshold_amount *float64
+	status              *string
+	metadata            *map[string]interface{}
+	created_at          *time.Time
+	updated_at          *time.Time
+	clearedFields       map[string]struct{}
+	campaign            *int64
+	clearedcampaign     bool
+	group               *int64
+	clearedgroup        bool
+	records             map[int64]struct{}
+	removedrecords      map[int64]struct{}
+	clearedrecords      bool
+	done                bool
+	oldValue            func(context.Context) (*RechargeResetCampaignRule, error)
+	predicates          []predicate.RechargeResetCampaignRule
+}
+
+var _ ent.Mutation = (*RechargeResetCampaignRuleMutation)(nil)
+
+// rechargeresetcampaignruleOption allows management of the mutation configuration using functional options.
+type rechargeresetcampaignruleOption func(*RechargeResetCampaignRuleMutation)
+
+// newRechargeResetCampaignRuleMutation creates new mutation for the RechargeResetCampaignRule entity.
+func newRechargeResetCampaignRuleMutation(c config, op Op, opts ...rechargeresetcampaignruleOption) *RechargeResetCampaignRuleMutation {
+	m := &RechargeResetCampaignRuleMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRechargeResetCampaignRule,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRechargeResetCampaignRuleID sets the ID field of the mutation.
+func withRechargeResetCampaignRuleID(id int64) rechargeresetcampaignruleOption {
+	return func(m *RechargeResetCampaignRuleMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RechargeResetCampaignRule
+		)
+		m.oldValue = func(ctx context.Context) (*RechargeResetCampaignRule, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RechargeResetCampaignRule.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRechargeResetCampaignRule sets the old RechargeResetCampaignRule of the mutation.
+func withRechargeResetCampaignRule(node *RechargeResetCampaignRule) rechargeresetcampaignruleOption {
+	return func(m *RechargeResetCampaignRuleMutation) {
+		m.oldValue = func(context.Context) (*RechargeResetCampaignRule, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RechargeResetCampaignRuleMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RechargeResetCampaignRuleMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RechargeResetCampaignRuleMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RechargeResetCampaignRuleMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RechargeResetCampaignRule.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCampaignID sets the "campaign_id" field.
+func (m *RechargeResetCampaignRuleMutation) SetCampaignID(i int64) {
+	m.campaign = &i
+}
+
+// CampaignID returns the value of the "campaign_id" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) CampaignID() (r int64, exists bool) {
+	v := m.campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCampaignID returns the old "campaign_id" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCampaignID: %w", err)
+	}
+	return oldValue.CampaignID, nil
+}
+
+// ResetCampaignID resets all changes to the "campaign_id" field.
+func (m *RechargeResetCampaignRuleMutation) ResetCampaignID() {
+	m.campaign = nil
+}
+
+// SetGroupID sets the "group_id" field.
+func (m *RechargeResetCampaignRuleMutation) SetGroupID(i int64) {
+	m.group = &i
+}
+
+// GroupID returns the value of the "group_id" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) GroupID() (r int64, exists bool) {
+	v := m.group
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGroupID returns the old "group_id" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldGroupID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGroupID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGroupID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGroupID: %w", err)
+	}
+	return oldValue.GroupID, nil
+}
+
+// ResetGroupID resets all changes to the "group_id" field.
+func (m *RechargeResetCampaignRuleMutation) ResetGroupID() {
+	m.group = nil
+}
+
+// SetThresholdAmount sets the "threshold_amount" field.
+func (m *RechargeResetCampaignRuleMutation) SetThresholdAmount(f float64) {
+	m.threshold_amount = &f
+	m.addthreshold_amount = nil
+}
+
+// ThresholdAmount returns the value of the "threshold_amount" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) ThresholdAmount() (r float64, exists bool) {
+	v := m.threshold_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldThresholdAmount returns the old "threshold_amount" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldThresholdAmount(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldThresholdAmount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldThresholdAmount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldThresholdAmount: %w", err)
+	}
+	return oldValue.ThresholdAmount, nil
+}
+
+// AddThresholdAmount adds f to the "threshold_amount" field.
+func (m *RechargeResetCampaignRuleMutation) AddThresholdAmount(f float64) {
+	if m.addthreshold_amount != nil {
+		*m.addthreshold_amount += f
+	} else {
+		m.addthreshold_amount = &f
+	}
+}
+
+// AddedThresholdAmount returns the value that was added to the "threshold_amount" field in this mutation.
+func (m *RechargeResetCampaignRuleMutation) AddedThresholdAmount() (r float64, exists bool) {
+	v := m.addthreshold_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetThresholdAmount resets all changes to the "threshold_amount" field.
+func (m *RechargeResetCampaignRuleMutation) ResetThresholdAmount() {
+	m.threshold_amount = nil
+	m.addthreshold_amount = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *RechargeResetCampaignRuleMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *RechargeResetCampaignRuleMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *RechargeResetCampaignRuleMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RechargeResetCampaignRuleMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[rechargeresetcampaignrule.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RechargeResetCampaignRuleMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[rechargeresetcampaignrule.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RechargeResetCampaignRuleMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, rechargeresetcampaignrule.FieldMetadata)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RechargeResetCampaignRuleMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RechargeResetCampaignRuleMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *RechargeResetCampaignRuleMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *RechargeResetCampaignRuleMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the RechargeResetCampaignRule entity.
+// If the RechargeResetCampaignRule object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetCampaignRuleMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *RechargeResetCampaignRuleMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// ClearCampaign clears the "campaign" edge to the RechargeResetCampaign entity.
+func (m *RechargeResetCampaignRuleMutation) ClearCampaign() {
+	m.clearedcampaign = true
+	m.clearedFields[rechargeresetcampaignrule.FieldCampaignID] = struct{}{}
+}
+
+// CampaignCleared reports if the "campaign" edge to the RechargeResetCampaign entity was cleared.
+func (m *RechargeResetCampaignRuleMutation) CampaignCleared() bool {
+	return m.clearedcampaign
+}
+
+// CampaignIDs returns the "campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// CampaignID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetCampaignRuleMutation) CampaignIDs() (ids []int64) {
+	if id := m.campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetCampaign resets all changes to the "campaign" edge.
+func (m *RechargeResetCampaignRuleMutation) ResetCampaign() {
+	m.campaign = nil
+	m.clearedcampaign = false
+}
+
+// ClearGroup clears the "group" edge to the Group entity.
+func (m *RechargeResetCampaignRuleMutation) ClearGroup() {
+	m.clearedgroup = true
+	m.clearedFields[rechargeresetcampaignrule.FieldGroupID] = struct{}{}
+}
+
+// GroupCleared reports if the "group" edge to the Group entity was cleared.
+func (m *RechargeResetCampaignRuleMutation) GroupCleared() bool {
+	return m.clearedgroup
+}
+
+// GroupIDs returns the "group" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// GroupID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetCampaignRuleMutation) GroupIDs() (ids []int64) {
+	if id := m.group; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetGroup resets all changes to the "group" edge.
+func (m *RechargeResetCampaignRuleMutation) ResetGroup() {
+	m.group = nil
+	m.clearedgroup = false
+}
+
+// AddRecordIDs adds the "records" edge to the RechargeResetRecord entity by ids.
+func (m *RechargeResetCampaignRuleMutation) AddRecordIDs(ids ...int64) {
+	if m.records == nil {
+		m.records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRecords clears the "records" edge to the RechargeResetRecord entity.
+func (m *RechargeResetCampaignRuleMutation) ClearRecords() {
+	m.clearedrecords = true
+}
+
+// RecordsCleared reports if the "records" edge to the RechargeResetRecord entity was cleared.
+func (m *RechargeResetCampaignRuleMutation) RecordsCleared() bool {
+	return m.clearedrecords
+}
+
+// RemoveRecordIDs removes the "records" edge to the RechargeResetRecord entity by IDs.
+func (m *RechargeResetCampaignRuleMutation) RemoveRecordIDs(ids ...int64) {
+	if m.removedrecords == nil {
+		m.removedrecords = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.records, ids[i])
+		m.removedrecords[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRecords returns the removed IDs of the "records" edge to the RechargeResetRecord entity.
+func (m *RechargeResetCampaignRuleMutation) RemovedRecordsIDs() (ids []int64) {
+	for id := range m.removedrecords {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RecordsIDs returns the "records" edge IDs in the mutation.
+func (m *RechargeResetCampaignRuleMutation) RecordsIDs() (ids []int64) {
+	for id := range m.records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRecords resets all changes to the "records" edge.
+func (m *RechargeResetCampaignRuleMutation) ResetRecords() {
+	m.records = nil
+	m.clearedrecords = false
+	m.removedrecords = nil
+}
+
+// Where appends a list predicates to the RechargeResetCampaignRuleMutation builder.
+func (m *RechargeResetCampaignRuleMutation) Where(ps ...predicate.RechargeResetCampaignRule) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RechargeResetCampaignRuleMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RechargeResetCampaignRuleMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RechargeResetCampaignRule, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RechargeResetCampaignRuleMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RechargeResetCampaignRuleMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RechargeResetCampaignRule).
+func (m *RechargeResetCampaignRuleMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RechargeResetCampaignRuleMutation) Fields() []string {
+	fields := make([]string, 0, 7)
+	if m.campaign != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldCampaignID)
+	}
+	if m.group != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldGroupID)
+	}
+	if m.threshold_amount != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldThresholdAmount)
+	}
+	if m.status != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldStatus)
+	}
+	if m.metadata != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RechargeResetCampaignRuleMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rechargeresetcampaignrule.FieldCampaignID:
+		return m.CampaignID()
+	case rechargeresetcampaignrule.FieldGroupID:
+		return m.GroupID()
+	case rechargeresetcampaignrule.FieldThresholdAmount:
+		return m.ThresholdAmount()
+	case rechargeresetcampaignrule.FieldStatus:
+		return m.Status()
+	case rechargeresetcampaignrule.FieldMetadata:
+		return m.Metadata()
+	case rechargeresetcampaignrule.FieldCreatedAt:
+		return m.CreatedAt()
+	case rechargeresetcampaignrule.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RechargeResetCampaignRuleMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rechargeresetcampaignrule.FieldCampaignID:
+		return m.OldCampaignID(ctx)
+	case rechargeresetcampaignrule.FieldGroupID:
+		return m.OldGroupID(ctx)
+	case rechargeresetcampaignrule.FieldThresholdAmount:
+		return m.OldThresholdAmount(ctx)
+	case rechargeresetcampaignrule.FieldStatus:
+		return m.OldStatus(ctx)
+	case rechargeresetcampaignrule.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case rechargeresetcampaignrule.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case rechargeresetcampaignrule.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RechargeResetCampaignRule field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RechargeResetCampaignRuleMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rechargeresetcampaignrule.FieldCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCampaignID(v)
+		return nil
+	case rechargeresetcampaignrule.FieldGroupID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGroupID(v)
+		return nil
+	case rechargeresetcampaignrule.FieldThresholdAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetThresholdAmount(v)
+		return nil
+	case rechargeresetcampaignrule.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case rechargeresetcampaignrule.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case rechargeresetcampaignrule.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case rechargeresetcampaignrule.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaignRule field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RechargeResetCampaignRuleMutation) AddedFields() []string {
+	var fields []string
+	if m.addthreshold_amount != nil {
+		fields = append(fields, rechargeresetcampaignrule.FieldThresholdAmount)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RechargeResetCampaignRuleMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case rechargeresetcampaignrule.FieldThresholdAmount:
+		return m.AddedThresholdAmount()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RechargeResetCampaignRuleMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case rechargeresetcampaignrule.FieldThresholdAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddThresholdAmount(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaignRule numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RechargeResetCampaignRuleMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(rechargeresetcampaignrule.FieldMetadata) {
+		fields = append(fields, rechargeresetcampaignrule.FieldMetadata)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RechargeResetCampaignRuleMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RechargeResetCampaignRuleMutation) ClearField(name string) error {
+	switch name {
+	case rechargeresetcampaignrule.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaignRule nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RechargeResetCampaignRuleMutation) ResetField(name string) error {
+	switch name {
+	case rechargeresetcampaignrule.FieldCampaignID:
+		m.ResetCampaignID()
+		return nil
+	case rechargeresetcampaignrule.FieldGroupID:
+		m.ResetGroupID()
+		return nil
+	case rechargeresetcampaignrule.FieldThresholdAmount:
+		m.ResetThresholdAmount()
+		return nil
+	case rechargeresetcampaignrule.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case rechargeresetcampaignrule.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case rechargeresetcampaignrule.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case rechargeresetcampaignrule.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaignRule field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RechargeResetCampaignRuleMutation) AddedEdges() []string {
+	edges := make([]string, 0, 3)
+	if m.campaign != nil {
+		edges = append(edges, rechargeresetcampaignrule.EdgeCampaign)
+	}
+	if m.group != nil {
+		edges = append(edges, rechargeresetcampaignrule.EdgeGroup)
+	}
+	if m.records != nil {
+		edges = append(edges, rechargeresetcampaignrule.EdgeRecords)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RechargeResetCampaignRuleMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rechargeresetcampaignrule.EdgeCampaign:
+		if id := m.campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetcampaignrule.EdgeGroup:
+		if id := m.group; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetcampaignrule.EdgeRecords:
+		ids := make([]ent.Value, 0, len(m.records))
+		for id := range m.records {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RechargeResetCampaignRuleMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 3)
+	if m.removedrecords != nil {
+		edges = append(edges, rechargeresetcampaignrule.EdgeRecords)
+	}
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RechargeResetCampaignRuleMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case rechargeresetcampaignrule.EdgeRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecords))
+		for id := range m.removedrecords {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RechargeResetCampaignRuleMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 3)
+	if m.clearedcampaign {
+		edges = append(edges, rechargeresetcampaignrule.EdgeCampaign)
+	}
+	if m.clearedgroup {
+		edges = append(edges, rechargeresetcampaignrule.EdgeGroup)
+	}
+	if m.clearedrecords {
+		edges = append(edges, rechargeresetcampaignrule.EdgeRecords)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RechargeResetCampaignRuleMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rechargeresetcampaignrule.EdgeCampaign:
+		return m.clearedcampaign
+	case rechargeresetcampaignrule.EdgeGroup:
+		return m.clearedgroup
+	case rechargeresetcampaignrule.EdgeRecords:
+		return m.clearedrecords
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RechargeResetCampaignRuleMutation) ClearEdge(name string) error {
+	switch name {
+	case rechargeresetcampaignrule.EdgeCampaign:
+		m.ClearCampaign()
+		return nil
+	case rechargeresetcampaignrule.EdgeGroup:
+		m.ClearGroup()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaignRule unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RechargeResetCampaignRuleMutation) ResetEdge(name string) error {
+	switch name {
+	case rechargeresetcampaignrule.EdgeCampaign:
+		m.ResetCampaign()
+		return nil
+	case rechargeresetcampaignrule.EdgeGroup:
+		m.ResetGroup()
+		return nil
+	case rechargeresetcampaignrule.EdgeRecords:
+		m.ResetRecords()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetCampaignRule edge %s", name)
+}
+
+// RechargeResetRecordMutation represents an operation that mutates the RechargeResetRecord nodes in the graph.
+type RechargeResetRecordMutation struct {
+	config
+	op                  Op
+	typ                 string
+	id                  *int64
+	recharge_amount     *float64
+	addrecharge_amount  *float64
+	threshold_amount    *float64
+	addthreshold_amount *float64
+	reset_daily         *bool
+	reset_weekly        *bool
+	reset_monthly       *bool
+	metadata            *map[string]interface{}
+	created_at          *time.Time
+	clearedFields       map[string]struct{}
+	campaign            *int64
+	clearedcampaign     bool
+	rule                *int64
+	clearedrule         bool
+	redeem_code         *int64
+	clearedredeem_code  bool
+	user                *int64
+	cleareduser         bool
+	subscription        *int64
+	clearedsubscription bool
+	group               *int64
+	clearedgroup        bool
+	done                bool
+	oldValue            func(context.Context) (*RechargeResetRecord, error)
+	predicates          []predicate.RechargeResetRecord
+}
+
+var _ ent.Mutation = (*RechargeResetRecordMutation)(nil)
+
+// rechargeresetrecordOption allows management of the mutation configuration using functional options.
+type rechargeresetrecordOption func(*RechargeResetRecordMutation)
+
+// newRechargeResetRecordMutation creates new mutation for the RechargeResetRecord entity.
+func newRechargeResetRecordMutation(c config, op Op, opts ...rechargeresetrecordOption) *RechargeResetRecordMutation {
+	m := &RechargeResetRecordMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeRechargeResetRecord,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withRechargeResetRecordID sets the ID field of the mutation.
+func withRechargeResetRecordID(id int64) rechargeresetrecordOption {
+	return func(m *RechargeResetRecordMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *RechargeResetRecord
+		)
+		m.oldValue = func(ctx context.Context) (*RechargeResetRecord, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().RechargeResetRecord.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withRechargeResetRecord sets the old RechargeResetRecord of the mutation.
+func withRechargeResetRecord(node *RechargeResetRecord) rechargeresetrecordOption {
+	return func(m *RechargeResetRecordMutation) {
+		m.oldValue = func(context.Context) (*RechargeResetRecord, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m RechargeResetRecordMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m RechargeResetRecordMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *RechargeResetRecordMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *RechargeResetRecordMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().RechargeResetRecord.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCampaignID sets the "campaign_id" field.
+func (m *RechargeResetRecordMutation) SetCampaignID(i int64) {
+	m.campaign = &i
+}
+
+// CampaignID returns the value of the "campaign_id" field in the mutation.
+func (m *RechargeResetRecordMutation) CampaignID() (r int64, exists bool) {
+	v := m.campaign
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCampaignID returns the old "campaign_id" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldCampaignID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCampaignID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCampaignID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCampaignID: %w", err)
+	}
+	return oldValue.CampaignID, nil
+}
+
+// ResetCampaignID resets all changes to the "campaign_id" field.
+func (m *RechargeResetRecordMutation) ResetCampaignID() {
+	m.campaign = nil
+}
+
+// SetRuleID sets the "rule_id" field.
+func (m *RechargeResetRecordMutation) SetRuleID(i int64) {
+	m.rule = &i
+}
+
+// RuleID returns the value of the "rule_id" field in the mutation.
+func (m *RechargeResetRecordMutation) RuleID() (r int64, exists bool) {
+	v := m.rule
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRuleID returns the old "rule_id" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldRuleID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRuleID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRuleID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRuleID: %w", err)
+	}
+	return oldValue.RuleID, nil
+}
+
+// ResetRuleID resets all changes to the "rule_id" field.
+func (m *RechargeResetRecordMutation) ResetRuleID() {
+	m.rule = nil
+}
+
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (m *RechargeResetRecordMutation) SetRedeemCodeID(i int64) {
+	m.redeem_code = &i
+}
+
+// RedeemCodeID returns the value of the "redeem_code_id" field in the mutation.
+func (m *RechargeResetRecordMutation) RedeemCodeID() (r int64, exists bool) {
+	v := m.redeem_code
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRedeemCodeID returns the old "redeem_code_id" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldRedeemCodeID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRedeemCodeID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRedeemCodeID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRedeemCodeID: %w", err)
+	}
+	return oldValue.RedeemCodeID, nil
+}
+
+// ResetRedeemCodeID resets all changes to the "redeem_code_id" field.
+func (m *RechargeResetRecordMutation) ResetRedeemCodeID() {
+	m.redeem_code = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *RechargeResetRecordMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *RechargeResetRecordMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *RechargeResetRecordMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetSubscriptionID sets the "subscription_id" field.
+func (m *RechargeResetRecordMutation) SetSubscriptionID(i int64) {
+	m.subscription = &i
+}
+
+// SubscriptionID returns the value of the "subscription_id" field in the mutation.
+func (m *RechargeResetRecordMutation) SubscriptionID() (r int64, exists bool) {
+	v := m.subscription
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSubscriptionID returns the old "subscription_id" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldSubscriptionID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSubscriptionID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSubscriptionID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSubscriptionID: %w", err)
+	}
+	return oldValue.SubscriptionID, nil
+}
+
+// ResetSubscriptionID resets all changes to the "subscription_id" field.
+func (m *RechargeResetRecordMutation) ResetSubscriptionID() {
+	m.subscription = nil
+}
+
+// SetGroupID sets the "group_id" field.
+func (m *RechargeResetRecordMutation) SetGroupID(i int64) {
+	m.group = &i
+}
+
+// GroupID returns the value of the "group_id" field in the mutation.
+func (m *RechargeResetRecordMutation) GroupID() (r int64, exists bool) {
+	v := m.group
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGroupID returns the old "group_id" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldGroupID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGroupID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGroupID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGroupID: %w", err)
+	}
+	return oldValue.GroupID, nil
+}
+
+// ResetGroupID resets all changes to the "group_id" field.
+func (m *RechargeResetRecordMutation) ResetGroupID() {
+	m.group = nil
+}
+
+// SetRechargeAmount sets the "recharge_amount" field.
+func (m *RechargeResetRecordMutation) SetRechargeAmount(f float64) {
+	m.recharge_amount = &f
+	m.addrecharge_amount = nil
+}
+
+// RechargeAmount returns the value of the "recharge_amount" field in the mutation.
+func (m *RechargeResetRecordMutation) RechargeAmount() (r float64, exists bool) {
+	v := m.recharge_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRechargeAmount returns the old "recharge_amount" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldRechargeAmount(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRechargeAmount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRechargeAmount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRechargeAmount: %w", err)
+	}
+	return oldValue.RechargeAmount, nil
+}
+
+// AddRechargeAmount adds f to the "recharge_amount" field.
+func (m *RechargeResetRecordMutation) AddRechargeAmount(f float64) {
+	if m.addrecharge_amount != nil {
+		*m.addrecharge_amount += f
+	} else {
+		m.addrecharge_amount = &f
+	}
+}
+
+// AddedRechargeAmount returns the value that was added to the "recharge_amount" field in this mutation.
+func (m *RechargeResetRecordMutation) AddedRechargeAmount() (r float64, exists bool) {
+	v := m.addrecharge_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetRechargeAmount resets all changes to the "recharge_amount" field.
+func (m *RechargeResetRecordMutation) ResetRechargeAmount() {
+	m.recharge_amount = nil
+	m.addrecharge_amount = nil
+}
+
+// SetThresholdAmount sets the "threshold_amount" field.
+func (m *RechargeResetRecordMutation) SetThresholdAmount(f float64) {
+	m.threshold_amount = &f
+	m.addthreshold_amount = nil
+}
+
+// ThresholdAmount returns the value of the "threshold_amount" field in the mutation.
+func (m *RechargeResetRecordMutation) ThresholdAmount() (r float64, exists bool) {
+	v := m.threshold_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldThresholdAmount returns the old "threshold_amount" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldThresholdAmount(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldThresholdAmount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldThresholdAmount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldThresholdAmount: %w", err)
+	}
+	return oldValue.ThresholdAmount, nil
+}
+
+// AddThresholdAmount adds f to the "threshold_amount" field.
+func (m *RechargeResetRecordMutation) AddThresholdAmount(f float64) {
+	if m.addthreshold_amount != nil {
+		*m.addthreshold_amount += f
+	} else {
+		m.addthreshold_amount = &f
+	}
+}
+
+// AddedThresholdAmount returns the value that was added to the "threshold_amount" field in this mutation.
+func (m *RechargeResetRecordMutation) AddedThresholdAmount() (r float64, exists bool) {
+	v := m.addthreshold_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetThresholdAmount resets all changes to the "threshold_amount" field.
+func (m *RechargeResetRecordMutation) ResetThresholdAmount() {
+	m.threshold_amount = nil
+	m.addthreshold_amount = nil
+}
+
+// SetResetDaily sets the "reset_daily" field.
+func (m *RechargeResetRecordMutation) SetResetDaily(b bool) {
+	m.reset_daily = &b
+}
+
+// ResetDaily returns the value of the "reset_daily" field in the mutation.
+func (m *RechargeResetRecordMutation) ResetDaily() (r bool, exists bool) {
+	v := m.reset_daily
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetDaily returns the old "reset_daily" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldResetDaily(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetDaily is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetDaily requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetDaily: %w", err)
+	}
+	return oldValue.ResetDaily, nil
+}
+
+// ResetResetDaily resets all changes to the "reset_daily" field.
+func (m *RechargeResetRecordMutation) ResetResetDaily() {
+	m.reset_daily = nil
+}
+
+// SetResetWeekly sets the "reset_weekly" field.
+func (m *RechargeResetRecordMutation) SetResetWeekly(b bool) {
+	m.reset_weekly = &b
+}
+
+// ResetWeekly returns the value of the "reset_weekly" field in the mutation.
+func (m *RechargeResetRecordMutation) ResetWeekly() (r bool, exists bool) {
+	v := m.reset_weekly
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetWeekly returns the old "reset_weekly" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldResetWeekly(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetWeekly is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetWeekly requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetWeekly: %w", err)
+	}
+	return oldValue.ResetWeekly, nil
+}
+
+// ResetResetWeekly resets all changes to the "reset_weekly" field.
+func (m *RechargeResetRecordMutation) ResetResetWeekly() {
+	m.reset_weekly = nil
+}
+
+// SetResetMonthly sets the "reset_monthly" field.
+func (m *RechargeResetRecordMutation) SetResetMonthly(b bool) {
+	m.reset_monthly = &b
+}
+
+// ResetMonthly returns the value of the "reset_monthly" field in the mutation.
+func (m *RechargeResetRecordMutation) ResetMonthly() (r bool, exists bool) {
+	v := m.reset_monthly
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetMonthly returns the old "reset_monthly" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldResetMonthly(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetMonthly is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetMonthly requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetMonthly: %w", err)
+	}
+	return oldValue.ResetMonthly, nil
+}
+
+// ResetResetMonthly resets all changes to the "reset_monthly" field.
+func (m *RechargeResetRecordMutation) ResetResetMonthly() {
+	m.reset_monthly = nil
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *RechargeResetRecordMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *RechargeResetRecordMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ClearMetadata clears the value of the "metadata" field.
+func (m *RechargeResetRecordMutation) ClearMetadata() {
+	m.metadata = nil
+	m.clearedFields[rechargeresetrecord.FieldMetadata] = struct{}{}
+}
+
+// MetadataCleared returns if the "metadata" field was cleared in this mutation.
+func (m *RechargeResetRecordMutation) MetadataCleared() bool {
+	_, ok := m.clearedFields[rechargeresetrecord.FieldMetadata]
+	return ok
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *RechargeResetRecordMutation) ResetMetadata() {
+	m.metadata = nil
+	delete(m.clearedFields, rechargeresetrecord.FieldMetadata)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *RechargeResetRecordMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *RechargeResetRecordMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the RechargeResetRecord entity.
+// If the RechargeResetRecord object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *RechargeResetRecordMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *RechargeResetRecordMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// ClearCampaign clears the "campaign" edge to the RechargeResetCampaign entity.
+func (m *RechargeResetRecordMutation) ClearCampaign() {
+	m.clearedcampaign = true
+	m.clearedFields[rechargeresetrecord.FieldCampaignID] = struct{}{}
+}
+
+// CampaignCleared reports if the "campaign" edge to the RechargeResetCampaign entity was cleared.
+func (m *RechargeResetRecordMutation) CampaignCleared() bool {
+	return m.clearedcampaign
+}
+
+// CampaignIDs returns the "campaign" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// CampaignID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) CampaignIDs() (ids []int64) {
+	if id := m.campaign; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetCampaign resets all changes to the "campaign" edge.
+func (m *RechargeResetRecordMutation) ResetCampaign() {
+	m.campaign = nil
+	m.clearedcampaign = false
+}
+
+// ClearRule clears the "rule" edge to the RechargeResetCampaignRule entity.
+func (m *RechargeResetRecordMutation) ClearRule() {
+	m.clearedrule = true
+	m.clearedFields[rechargeresetrecord.FieldRuleID] = struct{}{}
+}
+
+// RuleCleared reports if the "rule" edge to the RechargeResetCampaignRule entity was cleared.
+func (m *RechargeResetRecordMutation) RuleCleared() bool {
+	return m.clearedrule
+}
+
+// RuleIDs returns the "rule" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// RuleID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) RuleIDs() (ids []int64) {
+	if id := m.rule; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetRule resets all changes to the "rule" edge.
+func (m *RechargeResetRecordMutation) ResetRule() {
+	m.rule = nil
+	m.clearedrule = false
+}
+
+// ClearRedeemCode clears the "redeem_code" edge to the RedeemCode entity.
+func (m *RechargeResetRecordMutation) ClearRedeemCode() {
+	m.clearedredeem_code = true
+	m.clearedFields[rechargeresetrecord.FieldRedeemCodeID] = struct{}{}
+}
+
+// RedeemCodeCleared reports if the "redeem_code" edge to the RedeemCode entity was cleared.
+func (m *RechargeResetRecordMutation) RedeemCodeCleared() bool {
+	return m.clearedredeem_code
+}
+
+// RedeemCodeIDs returns the "redeem_code" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// RedeemCodeID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) RedeemCodeIDs() (ids []int64) {
+	if id := m.redeem_code; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetRedeemCode resets all changes to the "redeem_code" edge.
+func (m *RechargeResetRecordMutation) ResetRedeemCode() {
+	m.redeem_code = nil
+	m.clearedredeem_code = false
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *RechargeResetRecordMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[rechargeresetrecord.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *RechargeResetRecordMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *RechargeResetRecordMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// ClearSubscription clears the "subscription" edge to the UserSubscription entity.
+func (m *RechargeResetRecordMutation) ClearSubscription() {
+	m.clearedsubscription = true
+	m.clearedFields[rechargeresetrecord.FieldSubscriptionID] = struct{}{}
+}
+
+// SubscriptionCleared reports if the "subscription" edge to the UserSubscription entity was cleared.
+func (m *RechargeResetRecordMutation) SubscriptionCleared() bool {
+	return m.clearedsubscription
+}
+
+// SubscriptionIDs returns the "subscription" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// SubscriptionID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) SubscriptionIDs() (ids []int64) {
+	if id := m.subscription; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetSubscription resets all changes to the "subscription" edge.
+func (m *RechargeResetRecordMutation) ResetSubscription() {
+	m.subscription = nil
+	m.clearedsubscription = false
+}
+
+// ClearGroup clears the "group" edge to the Group entity.
+func (m *RechargeResetRecordMutation) ClearGroup() {
+	m.clearedgroup = true
+	m.clearedFields[rechargeresetrecord.FieldGroupID] = struct{}{}
+}
+
+// GroupCleared reports if the "group" edge to the Group entity was cleared.
+func (m *RechargeResetRecordMutation) GroupCleared() bool {
+	return m.clearedgroup
+}
+
+// GroupIDs returns the "group" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// GroupID instead. It exists only for internal usage by the builders.
+func (m *RechargeResetRecordMutation) GroupIDs() (ids []int64) {
+	if id := m.group; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetGroup resets all changes to the "group" edge.
+func (m *RechargeResetRecordMutation) ResetGroup() {
+	m.group = nil
+	m.clearedgroup = false
+}
+
+// Where appends a list predicates to the RechargeResetRecordMutation builder.
+func (m *RechargeResetRecordMutation) Where(ps ...predicate.RechargeResetRecord) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the RechargeResetRecordMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *RechargeResetRecordMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.RechargeResetRecord, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *RechargeResetRecordMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *RechargeResetRecordMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (RechargeResetRecord).
+func (m *RechargeResetRecordMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *RechargeResetRecordMutation) Fields() []string {
+	fields := make([]string, 0, 13)
+	if m.campaign != nil {
+		fields = append(fields, rechargeresetrecord.FieldCampaignID)
+	}
+	if m.rule != nil {
+		fields = append(fields, rechargeresetrecord.FieldRuleID)
+	}
+	if m.redeem_code != nil {
+		fields = append(fields, rechargeresetrecord.FieldRedeemCodeID)
+	}
+	if m.user != nil {
+		fields = append(fields, rechargeresetrecord.FieldUserID)
+	}
+	if m.subscription != nil {
+		fields = append(fields, rechargeresetrecord.FieldSubscriptionID)
+	}
+	if m.group != nil {
+		fields = append(fields, rechargeresetrecord.FieldGroupID)
+	}
+	if m.recharge_amount != nil {
+		fields = append(fields, rechargeresetrecord.FieldRechargeAmount)
+	}
+	if m.threshold_amount != nil {
+		fields = append(fields, rechargeresetrecord.FieldThresholdAmount)
+	}
+	if m.reset_daily != nil {
+		fields = append(fields, rechargeresetrecord.FieldResetDaily)
+	}
+	if m.reset_weekly != nil {
+		fields = append(fields, rechargeresetrecord.FieldResetWeekly)
+	}
+	if m.reset_monthly != nil {
+		fields = append(fields, rechargeresetrecord.FieldResetMonthly)
+	}
+	if m.metadata != nil {
+		fields = append(fields, rechargeresetrecord.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, rechargeresetrecord.FieldCreatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *RechargeResetRecordMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case rechargeresetrecord.FieldCampaignID:
+		return m.CampaignID()
+	case rechargeresetrecord.FieldRuleID:
+		return m.RuleID()
+	case rechargeresetrecord.FieldRedeemCodeID:
+		return m.RedeemCodeID()
+	case rechargeresetrecord.FieldUserID:
+		return m.UserID()
+	case rechargeresetrecord.FieldSubscriptionID:
+		return m.SubscriptionID()
+	case rechargeresetrecord.FieldGroupID:
+		return m.GroupID()
+	case rechargeresetrecord.FieldRechargeAmount:
+		return m.RechargeAmount()
+	case rechargeresetrecord.FieldThresholdAmount:
+		return m.ThresholdAmount()
+	case rechargeresetrecord.FieldResetDaily:
+		return m.ResetDaily()
+	case rechargeresetrecord.FieldResetWeekly:
+		return m.ResetWeekly()
+	case rechargeresetrecord.FieldResetMonthly:
+		return m.ResetMonthly()
+	case rechargeresetrecord.FieldMetadata:
+		return m.Metadata()
+	case rechargeresetrecord.FieldCreatedAt:
+		return m.CreatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *RechargeResetRecordMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case rechargeresetrecord.FieldCampaignID:
+		return m.OldCampaignID(ctx)
+	case rechargeresetrecord.FieldRuleID:
+		return m.OldRuleID(ctx)
+	case rechargeresetrecord.FieldRedeemCodeID:
+		return m.OldRedeemCodeID(ctx)
+	case rechargeresetrecord.FieldUserID:
+		return m.OldUserID(ctx)
+	case rechargeresetrecord.FieldSubscriptionID:
+		return m.OldSubscriptionID(ctx)
+	case rechargeresetrecord.FieldGroupID:
+		return m.OldGroupID(ctx)
+	case rechargeresetrecord.FieldRechargeAmount:
+		return m.OldRechargeAmount(ctx)
+	case rechargeresetrecord.FieldThresholdAmount:
+		return m.OldThresholdAmount(ctx)
+	case rechargeresetrecord.FieldResetDaily:
+		return m.OldResetDaily(ctx)
+	case rechargeresetrecord.FieldResetWeekly:
+		return m.OldResetWeekly(ctx)
+	case rechargeresetrecord.FieldResetMonthly:
+		return m.OldResetMonthly(ctx)
+	case rechargeresetrecord.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case rechargeresetrecord.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown RechargeResetRecord field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RechargeResetRecordMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case rechargeresetrecord.FieldCampaignID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCampaignID(v)
+		return nil
+	case rechargeresetrecord.FieldRuleID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRuleID(v)
+		return nil
+	case rechargeresetrecord.FieldRedeemCodeID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRedeemCodeID(v)
+		return nil
+	case rechargeresetrecord.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case rechargeresetrecord.FieldSubscriptionID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSubscriptionID(v)
+		return nil
+	case rechargeresetrecord.FieldGroupID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGroupID(v)
+		return nil
+	case rechargeresetrecord.FieldRechargeAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRechargeAmount(v)
+		return nil
+	case rechargeresetrecord.FieldThresholdAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetThresholdAmount(v)
+		return nil
+	case rechargeresetrecord.FieldResetDaily:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetDaily(v)
+		return nil
+	case rechargeresetrecord.FieldResetWeekly:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetWeekly(v)
+		return nil
+	case rechargeresetrecord.FieldResetMonthly:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetMonthly(v)
+		return nil
+	case rechargeresetrecord.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case rechargeresetrecord.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetRecord field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *RechargeResetRecordMutation) AddedFields() []string {
+	var fields []string
+	if m.addrecharge_amount != nil {
+		fields = append(fields, rechargeresetrecord.FieldRechargeAmount)
+	}
+	if m.addthreshold_amount != nil {
+		fields = append(fields, rechargeresetrecord.FieldThresholdAmount)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *RechargeResetRecordMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case rechargeresetrecord.FieldRechargeAmount:
+		return m.AddedRechargeAmount()
+	case rechargeresetrecord.FieldThresholdAmount:
+		return m.AddedThresholdAmount()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *RechargeResetRecordMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case rechargeresetrecord.FieldRechargeAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRechargeAmount(v)
+		return nil
+	case rechargeresetrecord.FieldThresholdAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddThresholdAmount(v)
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetRecord numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *RechargeResetRecordMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(rechargeresetrecord.FieldMetadata) {
+		fields = append(fields, rechargeresetrecord.FieldMetadata)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *RechargeResetRecordMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *RechargeResetRecordMutation) ClearField(name string) error {
+	switch name {
+	case rechargeresetrecord.FieldMetadata:
+		m.ClearMetadata()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetRecord nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *RechargeResetRecordMutation) ResetField(name string) error {
+	switch name {
+	case rechargeresetrecord.FieldCampaignID:
+		m.ResetCampaignID()
+		return nil
+	case rechargeresetrecord.FieldRuleID:
+		m.ResetRuleID()
+		return nil
+	case rechargeresetrecord.FieldRedeemCodeID:
+		m.ResetRedeemCodeID()
+		return nil
+	case rechargeresetrecord.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case rechargeresetrecord.FieldSubscriptionID:
+		m.ResetSubscriptionID()
+		return nil
+	case rechargeresetrecord.FieldGroupID:
+		m.ResetGroupID()
+		return nil
+	case rechargeresetrecord.FieldRechargeAmount:
+		m.ResetRechargeAmount()
+		return nil
+	case rechargeresetrecord.FieldThresholdAmount:
+		m.ResetThresholdAmount()
+		return nil
+	case rechargeresetrecord.FieldResetDaily:
+		m.ResetResetDaily()
+		return nil
+	case rechargeresetrecord.FieldResetWeekly:
+		m.ResetResetWeekly()
+		return nil
+	case rechargeresetrecord.FieldResetMonthly:
+		m.ResetResetMonthly()
+		return nil
+	case rechargeresetrecord.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case rechargeresetrecord.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetRecord field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *RechargeResetRecordMutation) AddedEdges() []string {
+	edges := make([]string, 0, 6)
+	if m.campaign != nil {
+		edges = append(edges, rechargeresetrecord.EdgeCampaign)
+	}
+	if m.rule != nil {
+		edges = append(edges, rechargeresetrecord.EdgeRule)
+	}
+	if m.redeem_code != nil {
+		edges = append(edges, rechargeresetrecord.EdgeRedeemCode)
+	}
+	if m.user != nil {
+		edges = append(edges, rechargeresetrecord.EdgeUser)
+	}
+	if m.subscription != nil {
+		edges = append(edges, rechargeresetrecord.EdgeSubscription)
+	}
+	if m.group != nil {
+		edges = append(edges, rechargeresetrecord.EdgeGroup)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *RechargeResetRecordMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case rechargeresetrecord.EdgeCampaign:
+		if id := m.campaign; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetrecord.EdgeRule:
+		if id := m.rule; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetrecord.EdgeRedeemCode:
+		if id := m.redeem_code; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetrecord.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetrecord.EdgeSubscription:
+		if id := m.subscription; id != nil {
+			return []ent.Value{*id}
+		}
+	case rechargeresetrecord.EdgeGroup:
+		if id := m.group; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *RechargeResetRecordMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 6)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *RechargeResetRecordMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *RechargeResetRecordMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 6)
+	if m.clearedcampaign {
+		edges = append(edges, rechargeresetrecord.EdgeCampaign)
+	}
+	if m.clearedrule {
+		edges = append(edges, rechargeresetrecord.EdgeRule)
+	}
+	if m.clearedredeem_code {
+		edges = append(edges, rechargeresetrecord.EdgeRedeemCode)
+	}
+	if m.cleareduser {
+		edges = append(edges, rechargeresetrecord.EdgeUser)
+	}
+	if m.clearedsubscription {
+		edges = append(edges, rechargeresetrecord.EdgeSubscription)
+	}
+	if m.clearedgroup {
+		edges = append(edges, rechargeresetrecord.EdgeGroup)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *RechargeResetRecordMutation) EdgeCleared(name string) bool {
+	switch name {
+	case rechargeresetrecord.EdgeCampaign:
+		return m.clearedcampaign
+	case rechargeresetrecord.EdgeRule:
+		return m.clearedrule
+	case rechargeresetrecord.EdgeRedeemCode:
+		return m.clearedredeem_code
+	case rechargeresetrecord.EdgeUser:
+		return m.cleareduser
+	case rechargeresetrecord.EdgeSubscription:
+		return m.clearedsubscription
+	case rechargeresetrecord.EdgeGroup:
+		return m.clearedgroup
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *RechargeResetRecordMutation) ClearEdge(name string) error {
+	switch name {
+	case rechargeresetrecord.EdgeCampaign:
+		m.ClearCampaign()
+		return nil
+	case rechargeresetrecord.EdgeRule:
+		m.ClearRule()
+		return nil
+	case rechargeresetrecord.EdgeRedeemCode:
+		m.ClearRedeemCode()
+		return nil
+	case rechargeresetrecord.EdgeUser:
+		m.ClearUser()
+		return nil
+	case rechargeresetrecord.EdgeSubscription:
+		m.ClearSubscription()
+		return nil
+	case rechargeresetrecord.EdgeGroup:
+		m.ClearGroup()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetRecord unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *RechargeResetRecordMutation) ResetEdge(name string) error {
+	switch name {
+	case rechargeresetrecord.EdgeCampaign:
+		m.ResetCampaign()
+		return nil
+	case rechargeresetrecord.EdgeRule:
+		m.ResetRule()
+		return nil
+	case rechargeresetrecord.EdgeRedeemCode:
+		m.ResetRedeemCode()
+		return nil
+	case rechargeresetrecord.EdgeUser:
+		m.ResetUser()
+		return nil
+	case rechargeresetrecord.EdgeSubscription:
+		m.ResetSubscription()
+		return nil
+	case rechargeresetrecord.EdgeGroup:
+		m.ResetGroup()
+		return nil
+	}
+	return fmt.Errorf("unknown RechargeResetRecord edge %s", name)
+}
+
 // RedeemCodeMutation represents an operation that mutates the RedeemCode nodes in the graph.
 type RedeemCodeMutation struct {
 	config
-	op               Op
-	typ              string
-	id               *int64
-	code             *string
-	_type            *string
-	value            *float64
-	addvalue         *float64
-	status           *string
-	used_at          *time.Time
-	notes            *string
-	created_at       *time.Time
-	expires_at       *time.Time
-	validity_days    *int
-	addvalidity_days *int
-	clearedFields    map[string]struct{}
-	user             *int64
-	cleareduser      bool
-	group            *int64
-	clearedgroup     bool
-	done             bool
-	oldValue         func(context.Context) (*RedeemCode, error)
-	predicates       []predicate.RedeemCode
+	op                            Op
+	typ                           string
+	id                            *int64
+	code                          *string
+	_type                         *string
+	value                         *float64
+	addvalue                      *float64
+	status                        *string
+	used_at                       *time.Time
+	notes                         *string
+	created_at                    *time.Time
+	expires_at                    *time.Time
+	validity_days                 *int
+	addvalidity_days              *int
+	clearedFields                 map[string]struct{}
+	user                          *int64
+	cleareduser                   bool
+	group                         *int64
+	clearedgroup                  bool
+	recharge_reset_records        map[int64]struct{}
+	removedrecharge_reset_records map[int64]struct{}
+	clearedrecharge_reset_records bool
+	done                          bool
+	oldValue                      func(context.Context) (*RedeemCode, error)
+	predicates                    []predicate.RedeemCode
 }
 
 var _ ent.Mutation = (*RedeemCodeMutation)(nil)
@@ -29389,6 +32889,60 @@ func (m *RedeemCodeMutation) ResetGroup() {
 	m.clearedgroup = false
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by ids.
+func (m *RedeemCodeMutation) AddRechargeResetRecordIDs(ids ...int64) {
+	if m.recharge_reset_records == nil {
+		m.recharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.recharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRechargeResetRecords clears the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *RedeemCodeMutation) ClearRechargeResetRecords() {
+	m.clearedrecharge_reset_records = true
+}
+
+// RechargeResetRecordsCleared reports if the "recharge_reset_records" edge to the RechargeResetRecord entity was cleared.
+func (m *RedeemCodeMutation) RechargeResetRecordsCleared() bool {
+	return m.clearedrecharge_reset_records
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (m *RedeemCodeMutation) RemoveRechargeResetRecordIDs(ids ...int64) {
+	if m.removedrecharge_reset_records == nil {
+		m.removedrecharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.recharge_reset_records, ids[i])
+		m.removedrecharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRechargeResetRecords returns the removed IDs of the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *RedeemCodeMutation) RemovedRechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.removedrecharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RechargeResetRecordsIDs returns the "recharge_reset_records" edge IDs in the mutation.
+func (m *RedeemCodeMutation) RechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.recharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRechargeResetRecords resets all changes to the "recharge_reset_records" edge.
+func (m *RedeemCodeMutation) ResetRechargeResetRecords() {
+	m.recharge_reset_records = nil
+	m.clearedrecharge_reset_records = false
+	m.removedrecharge_reset_records = nil
+}
+
 // Where appends a list predicates to the RedeemCodeMutation builder.
 func (m *RedeemCodeMutation) Where(ps ...predicate.RedeemCode) {
 	m.predicates = append(m.predicates, ps...)
@@ -29752,12 +33306,15 @@ func (m *RedeemCodeMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *RedeemCodeMutation) AddedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.user != nil {
 		edges = append(edges, redeemcode.EdgeUser)
 	}
 	if m.group != nil {
 		edges = append(edges, redeemcode.EdgeGroup)
+	}
+	if m.recharge_reset_records != nil {
+		edges = append(edges, redeemcode.EdgeRechargeResetRecords)
 	}
 	return edges
 }
@@ -29774,30 +33331,50 @@ func (m *RedeemCodeMutation) AddedIDs(name string) []ent.Value {
 		if id := m.group; id != nil {
 			return []ent.Value{*id}
 		}
+	case redeemcode.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.recharge_reset_records))
+		for id := range m.recharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *RedeemCodeMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
+	if m.removedrecharge_reset_records != nil {
+		edges = append(edges, redeemcode.EdgeRechargeResetRecords)
+	}
 	return edges
 }
 
 // RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
 // the given name in this mutation.
 func (m *RedeemCodeMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case redeemcode.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_records))
+		for id := range m.removedrecharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
+	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *RedeemCodeMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.cleareduser {
 		edges = append(edges, redeemcode.EdgeUser)
 	}
 	if m.clearedgroup {
 		edges = append(edges, redeemcode.EdgeGroup)
+	}
+	if m.clearedrecharge_reset_records {
+		edges = append(edges, redeemcode.EdgeRechargeResetRecords)
 	}
 	return edges
 }
@@ -29810,6 +33387,8 @@ func (m *RedeemCodeMutation) EdgeCleared(name string) bool {
 		return m.cleareduser
 	case redeemcode.EdgeGroup:
 		return m.clearedgroup
+	case redeemcode.EdgeRechargeResetRecords:
+		return m.clearedrecharge_reset_records
 	}
 	return false
 }
@@ -29837,6 +33416,9 @@ func (m *RedeemCodeMutation) ResetEdge(name string) error {
 		return nil
 	case redeemcode.EdgeGroup:
 		m.ResetGroup()
+		return nil
+	case redeemcode.EdgeRechargeResetRecords:
+		m.ResetRechargeResetRecords()
 		return nil
 	}
 	return fmt.Errorf("unknown RedeemCode edge %s", name)
@@ -38154,6 +41736,9 @@ type UserMutation struct {
 	payment_orders                map[int64]struct{}
 	removedpayment_orders         map[int64]struct{}
 	clearedpayment_orders         bool
+	recharge_reset_records        map[int64]struct{}
+	removedrecharge_reset_records map[int64]struct{}
+	clearedrecharge_reset_records bool
 	auth_identities               map[int64]struct{}
 	removedauth_identities        map[int64]struct{}
 	clearedauth_identities        bool
@@ -39810,6 +43395,60 @@ func (m *UserMutation) ResetPaymentOrders() {
 	m.removedpayment_orders = nil
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by ids.
+func (m *UserMutation) AddRechargeResetRecordIDs(ids ...int64) {
+	if m.recharge_reset_records == nil {
+		m.recharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.recharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRechargeResetRecords clears the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *UserMutation) ClearRechargeResetRecords() {
+	m.clearedrecharge_reset_records = true
+}
+
+// RechargeResetRecordsCleared reports if the "recharge_reset_records" edge to the RechargeResetRecord entity was cleared.
+func (m *UserMutation) RechargeResetRecordsCleared() bool {
+	return m.clearedrecharge_reset_records
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (m *UserMutation) RemoveRechargeResetRecordIDs(ids ...int64) {
+	if m.removedrecharge_reset_records == nil {
+		m.removedrecharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.recharge_reset_records, ids[i])
+		m.removedrecharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRechargeResetRecords returns the removed IDs of the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *UserMutation) RemovedRechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.removedrecharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RechargeResetRecordsIDs returns the "recharge_reset_records" edge IDs in the mutation.
+func (m *UserMutation) RechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.recharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRechargeResetRecords resets all changes to the "recharge_reset_records" edge.
+func (m *UserMutation) ResetRechargeResetRecords() {
+	m.recharge_reset_records = nil
+	m.clearedrecharge_reset_records = false
+	m.removedrecharge_reset_records = nil
+}
+
 // AddAuthIdentityIDs adds the "auth_identities" edge to the AuthIdentity entity by ids.
 func (m *UserMutation) AddAuthIdentityIDs(ids ...int64) {
 	if m.auth_identities == nil {
@@ -40527,7 +44166,7 @@ func (m *UserMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *UserMutation) AddedEdges() []string {
-	edges := make([]string, 0, 12)
+	edges := make([]string, 0, 13)
 	if m.api_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -40557,6 +44196,9 @@ func (m *UserMutation) AddedEdges() []string {
 	}
 	if m.payment_orders != nil {
 		edges = append(edges, user.EdgePaymentOrders)
+	}
+	if m.recharge_reset_records != nil {
+		edges = append(edges, user.EdgeRechargeResetRecords)
 	}
 	if m.auth_identities != nil {
 		edges = append(edges, user.EdgeAuthIdentities)
@@ -40631,6 +44273,12 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case user.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.recharge_reset_records))
+		for id := range m.recharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	case user.EdgeAuthIdentities:
 		ids := make([]ent.Value, 0, len(m.auth_identities))
 		for id := range m.auth_identities {
@@ -40649,7 +44297,7 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *UserMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 12)
+	edges := make([]string, 0, 13)
 	if m.removedapi_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -40679,6 +44327,9 @@ func (m *UserMutation) RemovedEdges() []string {
 	}
 	if m.removedpayment_orders != nil {
 		edges = append(edges, user.EdgePaymentOrders)
+	}
+	if m.removedrecharge_reset_records != nil {
+		edges = append(edges, user.EdgeRechargeResetRecords)
 	}
 	if m.removedauth_identities != nil {
 		edges = append(edges, user.EdgeAuthIdentities)
@@ -40753,6 +44404,12 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case user.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_records))
+		for id := range m.removedrecharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	case user.EdgeAuthIdentities:
 		ids := make([]ent.Value, 0, len(m.removedauth_identities))
 		for id := range m.removedauth_identities {
@@ -40771,7 +44428,7 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *UserMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 12)
+	edges := make([]string, 0, 13)
 	if m.clearedapi_keys {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -40801,6 +44458,9 @@ func (m *UserMutation) ClearedEdges() []string {
 	}
 	if m.clearedpayment_orders {
 		edges = append(edges, user.EdgePaymentOrders)
+	}
+	if m.clearedrecharge_reset_records {
+		edges = append(edges, user.EdgeRechargeResetRecords)
 	}
 	if m.clearedauth_identities {
 		edges = append(edges, user.EdgeAuthIdentities)
@@ -40835,6 +44495,8 @@ func (m *UserMutation) EdgeCleared(name string) bool {
 		return m.clearedpromo_code_usages
 	case user.EdgePaymentOrders:
 		return m.clearedpayment_orders
+	case user.EdgeRechargeResetRecords:
+		return m.clearedrecharge_reset_records
 	case user.EdgeAuthIdentities:
 		return m.clearedauth_identities
 	case user.EdgePendingAuthSessions:
@@ -40884,6 +44546,9 @@ func (m *UserMutation) ResetEdge(name string) error {
 		return nil
 	case user.EdgePaymentOrders:
 		m.ResetPaymentOrders()
+		return nil
+	case user.EdgeRechargeResetRecords:
+		m.ResetRechargeResetRecords()
 		return nil
 	case user.EdgeAuthIdentities:
 		m.ResetAuthIdentities()
@@ -43114,39 +46779,42 @@ func (m *UserAttributeValueMutation) ResetEdge(name string) error {
 // UserSubscriptionMutation represents an operation that mutates the UserSubscription nodes in the graph.
 type UserSubscriptionMutation struct {
 	config
-	op                      Op
-	typ                     string
-	id                      *int64
-	created_at              *time.Time
-	updated_at              *time.Time
-	deleted_at              *time.Time
-	starts_at               *time.Time
-	expires_at              *time.Time
-	status                  *string
-	daily_window_start      *time.Time
-	weekly_window_start     *time.Time
-	monthly_window_start    *time.Time
-	daily_usage_usd         *float64
-	adddaily_usage_usd      *float64
-	weekly_usage_usd        *float64
-	addweekly_usage_usd     *float64
-	monthly_usage_usd       *float64
-	addmonthly_usage_usd    *float64
-	assigned_at             *time.Time
-	notes                   *string
-	clearedFields           map[string]struct{}
-	user                    *int64
-	cleareduser             bool
-	group                   *int64
-	clearedgroup            bool
-	assigned_by_user        *int64
-	clearedassigned_by_user bool
-	usage_logs              map[int64]struct{}
-	removedusage_logs       map[int64]struct{}
-	clearedusage_logs       bool
-	done                    bool
-	oldValue                func(context.Context) (*UserSubscription, error)
-	predicates              []predicate.UserSubscription
+	op                            Op
+	typ                           string
+	id                            *int64
+	created_at                    *time.Time
+	updated_at                    *time.Time
+	deleted_at                    *time.Time
+	starts_at                     *time.Time
+	expires_at                    *time.Time
+	status                        *string
+	daily_window_start            *time.Time
+	weekly_window_start           *time.Time
+	monthly_window_start          *time.Time
+	daily_usage_usd               *float64
+	adddaily_usage_usd            *float64
+	weekly_usage_usd              *float64
+	addweekly_usage_usd           *float64
+	monthly_usage_usd             *float64
+	addmonthly_usage_usd          *float64
+	assigned_at                   *time.Time
+	notes                         *string
+	clearedFields                 map[string]struct{}
+	user                          *int64
+	cleareduser                   bool
+	group                         *int64
+	clearedgroup                  bool
+	assigned_by_user              *int64
+	clearedassigned_by_user       bool
+	recharge_reset_records        map[int64]struct{}
+	removedrecharge_reset_records map[int64]struct{}
+	clearedrecharge_reset_records bool
+	usage_logs                    map[int64]struct{}
+	removedusage_logs             map[int64]struct{}
+	clearedusage_logs             bool
+	done                          bool
+	oldValue                      func(context.Context) (*UserSubscription, error)
+	predicates                    []predicate.UserSubscription
 }
 
 var _ ent.Mutation = (*UserSubscriptionMutation)(nil)
@@ -44091,6 +47759,60 @@ func (m *UserSubscriptionMutation) ResetAssignedByUser() {
 	m.clearedassigned_by_user = false
 }
 
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by ids.
+func (m *UserSubscriptionMutation) AddRechargeResetRecordIDs(ids ...int64) {
+	if m.recharge_reset_records == nil {
+		m.recharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.recharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// ClearRechargeResetRecords clears the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *UserSubscriptionMutation) ClearRechargeResetRecords() {
+	m.clearedrecharge_reset_records = true
+}
+
+// RechargeResetRecordsCleared reports if the "recharge_reset_records" edge to the RechargeResetRecord entity was cleared.
+func (m *UserSubscriptionMutation) RechargeResetRecordsCleared() bool {
+	return m.clearedrecharge_reset_records
+}
+
+// RemoveRechargeResetRecordIDs removes the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (m *UserSubscriptionMutation) RemoveRechargeResetRecordIDs(ids ...int64) {
+	if m.removedrecharge_reset_records == nil {
+		m.removedrecharge_reset_records = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.recharge_reset_records, ids[i])
+		m.removedrecharge_reset_records[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedRechargeResetRecords returns the removed IDs of the "recharge_reset_records" edge to the RechargeResetRecord entity.
+func (m *UserSubscriptionMutation) RemovedRechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.removedrecharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// RechargeResetRecordsIDs returns the "recharge_reset_records" edge IDs in the mutation.
+func (m *UserSubscriptionMutation) RechargeResetRecordsIDs() (ids []int64) {
+	for id := range m.recharge_reset_records {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetRechargeResetRecords resets all changes to the "recharge_reset_records" edge.
+func (m *UserSubscriptionMutation) ResetRechargeResetRecords() {
+	m.recharge_reset_records = nil
+	m.clearedrecharge_reset_records = false
+	m.removedrecharge_reset_records = nil
+}
+
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by ids.
 func (m *UserSubscriptionMutation) AddUsageLogIDs(ids ...int64) {
 	if m.usage_logs == nil {
@@ -44628,7 +48350,7 @@ func (m *UserSubscriptionMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *UserSubscriptionMutation) AddedEdges() []string {
-	edges := make([]string, 0, 4)
+	edges := make([]string, 0, 5)
 	if m.user != nil {
 		edges = append(edges, usersubscription.EdgeUser)
 	}
@@ -44637,6 +48359,9 @@ func (m *UserSubscriptionMutation) AddedEdges() []string {
 	}
 	if m.assigned_by_user != nil {
 		edges = append(edges, usersubscription.EdgeAssignedByUser)
+	}
+	if m.recharge_reset_records != nil {
+		edges = append(edges, usersubscription.EdgeRechargeResetRecords)
 	}
 	if m.usage_logs != nil {
 		edges = append(edges, usersubscription.EdgeUsageLogs)
@@ -44660,6 +48385,12 @@ func (m *UserSubscriptionMutation) AddedIDs(name string) []ent.Value {
 		if id := m.assigned_by_user; id != nil {
 			return []ent.Value{*id}
 		}
+	case usersubscription.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.recharge_reset_records))
+		for id := range m.recharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	case usersubscription.EdgeUsageLogs:
 		ids := make([]ent.Value, 0, len(m.usage_logs))
 		for id := range m.usage_logs {
@@ -44672,7 +48403,10 @@ func (m *UserSubscriptionMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *UserSubscriptionMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 4)
+	edges := make([]string, 0, 5)
+	if m.removedrecharge_reset_records != nil {
+		edges = append(edges, usersubscription.EdgeRechargeResetRecords)
+	}
 	if m.removedusage_logs != nil {
 		edges = append(edges, usersubscription.EdgeUsageLogs)
 	}
@@ -44683,6 +48417,12 @@ func (m *UserSubscriptionMutation) RemovedEdges() []string {
 // the given name in this mutation.
 func (m *UserSubscriptionMutation) RemovedIDs(name string) []ent.Value {
 	switch name {
+	case usersubscription.EdgeRechargeResetRecords:
+		ids := make([]ent.Value, 0, len(m.removedrecharge_reset_records))
+		for id := range m.removedrecharge_reset_records {
+			ids = append(ids, id)
+		}
+		return ids
 	case usersubscription.EdgeUsageLogs:
 		ids := make([]ent.Value, 0, len(m.removedusage_logs))
 		for id := range m.removedusage_logs {
@@ -44695,7 +48435,7 @@ func (m *UserSubscriptionMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *UserSubscriptionMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 4)
+	edges := make([]string, 0, 5)
 	if m.cleareduser {
 		edges = append(edges, usersubscription.EdgeUser)
 	}
@@ -44704,6 +48444,9 @@ func (m *UserSubscriptionMutation) ClearedEdges() []string {
 	}
 	if m.clearedassigned_by_user {
 		edges = append(edges, usersubscription.EdgeAssignedByUser)
+	}
+	if m.clearedrecharge_reset_records {
+		edges = append(edges, usersubscription.EdgeRechargeResetRecords)
 	}
 	if m.clearedusage_logs {
 		edges = append(edges, usersubscription.EdgeUsageLogs)
@@ -44721,6 +48464,8 @@ func (m *UserSubscriptionMutation) EdgeCleared(name string) bool {
 		return m.clearedgroup
 	case usersubscription.EdgeAssignedByUser:
 		return m.clearedassigned_by_user
+	case usersubscription.EdgeRechargeResetRecords:
+		return m.clearedrecharge_reset_records
 	case usersubscription.EdgeUsageLogs:
 		return m.clearedusage_logs
 	}
@@ -44756,6 +48501,9 @@ func (m *UserSubscriptionMutation) ResetEdge(name string) error {
 		return nil
 	case usersubscription.EdgeAssignedByUser:
 		m.ResetAssignedByUser()
+		return nil
+	case usersubscription.EdgeRechargeResetRecords:
+		m.ResetRechargeResetRecords()
 		return nil
 	case usersubscription.EdgeUsageLogs:
 		m.ResetUsageLogs()

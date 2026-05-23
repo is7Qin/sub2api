@@ -477,6 +477,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/recharge-reset',
+    name: 'AdminRechargeReset',
+    component: () => import('@/views/admin/RechargeResetView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Recharge Reset',
+      titleKey: 'admin.rechargeReset.title',
+      descriptionKey: 'admin.rechargeReset.description'
+    }
+  },
+  {
     path: '/admin/accounts',
     name: 'AdminAccounts',
     component: () => import('@/views/admin/AccountsView.vue'),

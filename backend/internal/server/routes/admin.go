@@ -97,6 +97,9 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+
+		// 充值重置订阅额度活动
+		registerRechargeResetRoutes(admin, h)
 	}
 }
 
@@ -640,5 +643,18 @@ func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
 			users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
 		}
+	}
+}
+
+func registerRechargeResetRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	rechargeReset := admin.Group("/recharge-reset")
+	{
+		rechargeReset.GET("/campaigns", h.Admin.RechargeReset.ListCampaigns)
+		rechargeReset.POST("/campaigns", h.Admin.RechargeReset.CreateCampaign)
+		rechargeReset.GET("/campaigns/:id", h.Admin.RechargeReset.GetCampaign)
+		rechargeReset.PUT("/campaigns/:id", h.Admin.RechargeReset.UpdateCampaign)
+		rechargeReset.GET("/campaigns/:id/rules", h.Admin.RechargeReset.ListRules)
+		rechargeReset.POST("/campaigns/:id/rules", h.Admin.RechargeReset.CreateRule)
+		rechargeReset.PUT("/rules/:rule_id", h.Admin.RechargeReset.UpdateRule)
 	}
 }

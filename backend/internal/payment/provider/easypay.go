@@ -214,10 +214,13 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		return nil, fmt.Errorf("easypay query: %w", err)
 	}
 	var resp struct {
-		Code   int    `json:"code"`
-		Msg    string `json:"msg"`
-		Status int    `json:"status"`
-		Money  string `json:"money"`
+		Code    int    `json:"code"`
+		Msg     string `json:"msg"`
+		Status  int    `json:"status"`
+		Money   string `json:"money"`
+		EndTime string `json:"endtime"`
+		Date    string `json:"date"`
+		AddTime string `json:"addtime"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("easypay parse query: %w", err)
@@ -227,11 +230,25 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		status = payment.ProviderStatusPaid
 	}
 	amount, _ := strconv.ParseFloat(resp.Money, 64)
+	metadata := e.MerchantIdentityMetadata()
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	paidAt := ""
+	if status == payment.ProviderStatusPaid {
+		if parsed, ok := parseProviderTime(firstNonEmpty(resp.EndTime, resp.Date)); ok {
+			paidAt = parsed.Format(time.RFC3339Nano)
+			metadata["paid_at_source"] = "query_order"
+		} else {
+			metadata["paid_at_unavailable"] = "true"
+		}
+	}
 	return &payment.QueryOrderResponse{
 		TradeNo:  tradeNo,
 		Status:   status,
 		Amount:   amount,
-		Metadata: e.MerchantIdentityMetadata(),
+		PaidAt:   paidAt,
+		Metadata: metadata,
 	}, nil
 }
 
@@ -265,9 +282,13 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[st
 		}
 		metadata["pid"] = pid
 	}
+	occurredAt, _ := parseProviderTime(params["endtime"])
+	if occurredAt.IsZero() {
+		occurredAt, _ = parseProviderTime(params["date"])
+	}
 	return &payment.PaymentNotification{
 		TradeNo: params["trade_no"], OrderID: params["out_trade_no"],
-		Amount: amount, Status: status, RawData: rawBody, Metadata: metadata,
+		Amount: amount, Status: status, OccurredAt: occurredAt, RawData: rawBody, Metadata: metadata,
 	}, nil
 }
 

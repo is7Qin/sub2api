@@ -85,6 +85,7 @@ func (RedeemCode) Edges() []ent.Edge {
 			Ref("redeem_codes").
 			Field("group_id").
 			Unique(),
+		edge.To("recharge_reset_records", RechargeResetRecord.Type),
 	}
 }
 

@@ -2,7 +2,10 @@
 // registry, load balancing, and shared utilities for the payment subsystem.
 package payment
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // PaymentType represents a supported payment method.
 type PaymentType = string
@@ -165,12 +168,13 @@ type QueryOrderResponse struct {
 
 // PaymentNotification is the parsed result of a webhook/notify callback.
 type PaymentNotification struct {
-	TradeNo  string
-	OrderID  string
-	Amount   float64
-	Status   string // "success" or "failed"
-	RawData  string // Raw notification body for audit
-	Metadata map[string]string
+	TradeNo    string
+	OrderID    string
+	Amount     float64
+	Status     string // "success" or "failed"
+	OccurredAt time.Time
+	RawData    string // Raw notification body for audit
+	Metadata   map[string]string
 }
 
 // RefundRequest contains the parameters for requesting a refund.

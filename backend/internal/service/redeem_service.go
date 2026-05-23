@@ -141,6 +141,7 @@ type RedeemService struct {
 	entClient            *dbent.Client
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 	affiliateService     *AffiliateService
+	rechargeResetService *RechargeResetCampaignService
 }
 
 // NewRedeemService 创建兑换码服务实例
@@ -164,6 +165,10 @@ func NewRedeemService(
 		authCacheInvalidator: authCacheInvalidator,
 		affiliateService:     affiliateService,
 	}
+}
+
+func (s *RedeemService) SetRechargeResetService(rechargeResetService *RechargeResetCampaignService) {
+	s.rechargeResetService = rechargeResetService
 }
 
 // GenerateRandomCode 生成随机兑换码
@@ -437,6 +442,8 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 		return nil, fmt.Errorf("mark code as used: %w", err)
 	}
 
+	redeemedAt := time.Now().UTC()
+
 	// 执行兑换逻辑（兑换码已被锁定，此时可安全操作）
 	switch redeemCode.Type {
 	case RedeemTypeBalance:
@@ -447,6 +454,11 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 		}
 		if err := s.userRepo.UpdateBalance(txCtx, userID, amount); err != nil {
 			return nil, fmt.Errorf("update user balance: %w", err)
+		}
+		if amount > 0 && s.rechargeResetService != nil {
+			if _, err := s.rechargeResetService.ApplyForRecharge(txCtx, &ApplyRechargeResetInput{RedeemCodeID: redeemCode.ID, UserID: userID, RechargeAmount: amount, RedeemedAt: redeemedAt}); err != nil {
+				return nil, fmt.Errorf("apply recharge reset campaigns: %w", err)
+			}
 		}
 
 	case RedeemTypeConcurrency:

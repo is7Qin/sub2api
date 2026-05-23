@@ -145,6 +145,7 @@ type SystemSettings struct {
 	DefaultConcurrency           int
 	DefaultBalance               float64
 	RiskControlEnabled           bool
+	LotteryEnabled               bool
 	AffiliateEnabled             bool
 	AffiliateRebateRate          float64
 	AffiliateRebateFreezeHours   int
@@ -289,6 +290,9 @@ type PublicSettings struct {
 
 	// 风控中心功能开关
 	RiskControlEnabled bool `json:"risk_control_enabled"`
+
+	// 抽奖中心功能开关
+	LotteryEnabled bool `json:"lottery_enabled"`
 }
 
 type LoginAgreementDocument struct {

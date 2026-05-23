@@ -114,6 +114,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Risk Control',
   }),
+  lottery: defineFlag({
+    key: 'lottery_enabled',
+    mode: 'opt-in',
+    label: 'Lottery',
+  }),
   affiliate: defineFlag({
     key: 'affiliate_enabled',
     mode: 'opt-in',

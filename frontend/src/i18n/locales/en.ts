@@ -388,6 +388,7 @@ export default {
     channelMonitor: 'Channel Monitor',
     channelStatus: 'Channel Status',
     riskControl: 'Risk Control',
+    lottery: 'Lottery',
   },
 
   // Auth
@@ -1038,6 +1039,69 @@ export default {
       unitPerMillion: '/ 1M tokens',
       unitPerRequest: '/ request'
     }
+  },
+
+  lottery: {
+    title: 'Lottery',
+    description: 'Use lottery chances to draw rewards from active campaigns',
+    days: 'days',
+    loadFailed: 'Failed to load lottery data',
+    stats: {
+      activeCampaigns: 'Active Campaigns',
+      availableChances: 'Available Chances',
+      awardedDraws: 'Won Prizes',
+    },
+    status: {
+      active: 'Active',
+    },
+    campaigns: {
+      title: 'Active Campaigns',
+      empty: 'No active lottery campaigns are available.',
+      noDescription: 'No description',
+      endsAt: 'Ends at',
+      noEnd: 'No end time',
+      chanceExpires: 'Chance expires in',
+      availableChances: 'Available chances',
+      prizes: 'Prizes',
+    },
+    draw: {
+      button: 'Draw Now',
+      noChance: 'No Chance Available',
+      resultTitle: 'Draw Result',
+      wonPrize: 'You won: {prize}',
+      success: 'You won {prize}',
+      failed: 'Draw failed',
+    },
+    chances: {
+      title: 'My Chances',
+      empty: 'No lottery chances yet.',
+    },
+    draws: {
+      title: 'Draw History',
+      empty: 'No draw history yet.',
+    },
+    columns: {
+      campaign: 'Campaign',
+      status: 'Status',
+      source: 'Source',
+      expiresAt: 'Expires At',
+      prize: 'Prize',
+      redeemCode: 'Redeem Code',
+      drawnAt: 'Drawn At',
+    },
+    chanceStatus: {
+      available: 'Available',
+      used: 'Used',
+      expired: 'Expired',
+    },
+    drawStatus: {
+      pending: 'Pending',
+      awarded: 'Awarded',
+      failed: 'Failed',
+    },
+    rewardTypes: {
+      invitation: 'Invitation Code',
+    },
   },
 
   affiliate: {
@@ -1702,6 +1766,11 @@ export default {
         refreshJobs: 'Refresh Jobs',
         loadMore: 'Load More'
       }
+    },
+
+    lottery: {
+      title: 'Lottery',
+      description: 'Manage lottery campaigns, prizes and user chances',
     },
 
     affiliates: {
@@ -5242,6 +5311,13 @@ export default {
           configureLink: 'Configure content moderation in Risk Control',
           enabled: 'Enable Risk Control',
           enabledHint: 'When off, the admin sidebar entry is hidden and gateway moderation is skipped.',
+        },
+        lottery: {
+          title: 'Lottery',
+          description: 'Enable lottery campaigns, user draw entry points and user lottery APIs. Disabled by default.',
+          configureLink: 'Configure lottery campaigns',
+          enabled: 'Enable Lottery',
+          enabledHint: 'When off, lottery sidebar entries are hidden and user lottery APIs return forbidden.',
         },
         affiliate: {
           title: 'Affiliate (Invite Rebate)',

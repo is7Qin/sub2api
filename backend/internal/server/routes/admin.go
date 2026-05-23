@@ -97,6 +97,9 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+
+		// 抽奖活动管理
+		registerLotteryRoutes(admin, h)
 	}
 }
 
@@ -620,6 +623,20 @@ func registerChannelMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		templates.DELETE("/:id", h.Admin.ChannelMonitorTemplate.Delete)
 		templates.GET("/:id/monitors", h.Admin.ChannelMonitorTemplate.AssociatedMonitors)
 		templates.POST("/:id/apply", h.Admin.ChannelMonitorTemplate.Apply)
+	}
+}
+
+func registerLotteryRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	lottery := admin.Group("/lottery")
+	{
+		lottery.GET("/campaigns", h.Admin.Lottery.ListCampaigns)
+		lottery.POST("/campaigns", h.Admin.Lottery.CreateCampaign)
+		lottery.GET("/campaigns/:id", h.Admin.Lottery.GetCampaign)
+		lottery.PUT("/campaigns/:id", h.Admin.Lottery.UpdateCampaign)
+		lottery.GET("/campaigns/:id/prizes", h.Admin.Lottery.ListPrizes)
+		lottery.POST("/campaigns/:id/prizes", h.Admin.Lottery.CreatePrize)
+		lottery.POST("/campaigns/:id/chances", h.Admin.Lottery.GrantChances)
+		lottery.PUT("/prizes/:prize_id", h.Admin.Lottery.UpdatePrize)
 	}
 }
 

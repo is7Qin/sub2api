@@ -716,6 +716,29 @@ func HasGroupWith(preds ...predicate.Group) predicate.RedeemCode {
 	})
 }
 
+// HasLotteryDraws applies the HasEdge predicate on the "lottery_draws" edge.
+func HasLotteryDraws() predicate.RedeemCode {
+	return predicate.RedeemCode(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, LotteryDrawsTable, LotteryDrawsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasLotteryDrawsWith applies the HasEdge predicate on the "lottery_draws" edge with a given conditions (other predicates).
+func HasLotteryDrawsWith(preds ...predicate.LotteryDraw) predicate.RedeemCode {
+	return predicate.RedeemCode(func(s *sql.Selector) {
+		step := newLotteryDrawsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // And groups predicates with the AND operator between them.
 func And(predicates ...predicate.RedeemCode) predicate.RedeemCode {
 	return predicate.RedeemCode(sql.AndPredicates(predicates...))

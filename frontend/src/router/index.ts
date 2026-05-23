@@ -241,6 +241,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/lottery',
+    name: 'Lottery',
+    component: () => import('@/views/user/LotteryView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Lottery',
+      titleKey: 'lottery.title',
+      descriptionKey: 'lottery.description',
+      requiresLottery: true
+    }
+  },
+  {
     path: '/available-channels',
     name: 'UserAvailableChannels',
     component: () => import('@/views/user/AvailableChannelsView.vue'),
@@ -562,6 +575,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/lottery',
+    name: 'AdminLottery',
+    component: () => import('@/views/admin/LotteryView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Lottery',
+      titleKey: 'admin.lottery.title',
+      descriptionKey: 'admin.lottery.description',
+      requiresLottery: true
+    }
+  },
+  {
     path: '/admin/usage',
     name: 'AdminUsage',
     component: () => import('@/views/admin/UsageView.vue'),
@@ -825,14 +851,25 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
+  if (to.meta.requiresLottery) {
+    const publicSettings = appStore.cachedPublicSettings || await appStore.fetchPublicSettings()
+    const lotteryEnabled = publicSettings?.lottery_enabled === true
+    if (!lotteryEnabled) {
+      next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+      return
+    }
+  }
+
   // 简易模式下限制访问某些页面
   if (authStore.isSimpleMode) {
     const restrictedPaths = [
       '/admin/groups',
       '/admin/subscriptions',
       '/admin/redeem',
+      '/admin/lottery',
       '/subscriptions',
-      '/redeem'
+      '/redeem',
+      '/lottery'
     ]
 
     if (restrictedPaths.some((path) => to.path.startsWith(path))) {

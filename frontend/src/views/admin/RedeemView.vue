@@ -130,12 +130,24 @@
 
           <template #cell-value="{ value, row }">
             <span class="text-sm font-medium text-gray-900 dark:text-white">
-              <template v-if="row.type === 'balance'">${{ value.toFixed(2) }}</template>
+              <template v-if="row.type === 'balance'">${{ formatRedeemAmount(value) }}</template>
               <template v-else-if="row.type === 'subscription'">
                 {{ row.validity_days || 30 }} {{ t('admin.redeem.days') }}
                 <span v-if="row.group" class="ml-1 text-xs text-gray-500 dark:text-gray-400"
                   >({{ row.group.name }})</span
                 >
+              </template>
+              <template v-else-if="row.type === 'timed_quota'">
+                ${{ formatRedeemAmount(value) }} · {{ redeemValidityDays(row) }}
+                {{ t('admin.redeem.days') }}
+              </template>
+              <template v-else-if="row.type === 'random_timed_quota'">
+                <template v-if="redeemRandomTimedQuotaRange(row)">
+                  ${{ formatRedeemAmount(redeemRandomTimedQuotaRange(row)!.min) }} - ${{
+                    formatRedeemAmount(redeemRandomTimedQuotaRange(row)!.max)
+                  }} · {{ redeemValidityDays(row) }} {{ t('admin.redeem.days') }}
+                </template>
+                <template v-else>{{ t('admin.redeem.invalidMetadata') }}</template>
               </template>
               <template v-else>{{ value }}</template>
             </span>
@@ -287,11 +299,10 @@
               <label class="input-label">{{ t('admin.redeem.codeType') }}</label>
               <Select v-model="generateForm.type" :options="typeOptions" />
             </div>
-            <!-- 余额/并发类型：显示数值输入 -->
-            <div v-if="generateForm.type !== 'subscription' && generateForm.type !== 'invitation'">
+            <div v-if="generateForm.type === 'balance' || generateForm.type === 'concurrency' || generateForm.type === 'timed_quota'">
               <label class="input-label">
                 {{
-                  generateForm.type === 'balance'
+                  generateForm.type === 'balance' || generateForm.type === 'timed_quota'
                     ? t('admin.redeem.amount')
                     : t('admin.redeem.columns.value')
                 }}
@@ -299,8 +310,43 @@
               <input
                 v-model.number="generateForm.value"
                 type="number"
-                :step="generateForm.type === 'balance' ? '0.01' : '1'"
-                :min="generateForm.type === 'balance' ? '0.01' : '1'"
+                :step="generateForm.type === 'balance' || generateForm.type === 'timed_quota' ? '0.01' : '1'"
+                :min="generateForm.type === 'balance' || generateForm.type === 'timed_quota' ? '0.01' : '1'"
+                required
+                class="input"
+              />
+            </div>
+            <div v-if="generateForm.type === 'random_timed_quota'" class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="input-label">{{ t('admin.redeem.minAmount') }}</label>
+                <input
+                  v-model.number="generateForm.min_value"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  class="input"
+                />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.redeem.maxAmount') }}</label>
+                <input
+                  v-model.number="generateForm.max_value"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  class="input"
+                />
+              </div>
+            </div>
+            <div v-if="generateForm.type === 'timed_quota' || generateForm.type === 'random_timed_quota'">
+              <label class="input-label">{{ t('admin.redeem.validityDays') }}</label>
+              <input
+                v-model.number="generateForm.validity_days"
+                type="number"
+                min="1"
+                max="3650"
                 required
                 class="input"
               />
@@ -735,7 +781,9 @@ const typeOptions = computed(() => [
   { value: 'balance', label: t('admin.redeem.balance') },
   { value: 'concurrency', label: t('admin.redeem.concurrency') },
   { value: 'subscription', label: t('admin.redeem.subscription') },
-  { value: 'invitation', label: t('admin.redeem.invitation') }
+  { value: 'invitation', label: t('admin.redeem.invitation') },
+  { value: 'timed_quota', label: t('admin.redeem.timedQuota') },
+  { value: 'random_timed_quota', label: t('admin.redeem.randomTimedQuota') }
 ])
 
 const filterTypeOptions = computed(() => [
@@ -743,7 +791,9 @@ const filterTypeOptions = computed(() => [
   { value: 'balance', label: t('admin.redeem.balance') },
   { value: 'concurrency', label: t('admin.redeem.concurrency') },
   { value: 'subscription', label: t('admin.redeem.subscription') },
-  { value: 'invitation', label: t('admin.redeem.invitation') }
+  { value: 'invitation', label: t('admin.redeem.invitation') },
+  { value: 'timed_quota', label: t('admin.redeem.timedQuota') },
+  { value: 'random_timed_quota', label: t('admin.redeem.randomTimedQuota') }
 ])
 
 const filterStatusOptions = computed(() => [
@@ -830,6 +880,8 @@ const redeemCodeExpiryOptions = computed<{ value: RedeemCodeExpiryOption; label:
 const generateForm = reactive({
   type: 'balance' as RedeemCodeType,
   value: 10,
+  min_value: 1,
+  max_value: 10,
   count: 1,
   group_id: null as number | null,
   validity_days: 30,
@@ -837,11 +889,10 @@ const generateForm = reactive({
   custom_expiry_days: 7
 })
 
-// 监听类型变化，邀请码类型时自动设置 value 为 0
 watch(
   () => generateForm.type,
   (newType) => {
-    if (newType === 'invitation') {
+    if (newType === 'invitation' || newType === 'random_timed_quota') {
       generateForm.value = 0
     } else if (generateForm.value === 0) {
       generateForm.value = 10
@@ -938,6 +989,44 @@ const toggleSelectAllVisible = (event: Event) => {
   toggleVisible(target.checked)
 }
 
+const formatRedeemAmount = (value: number) => Number(value || 0).toFixed(2)
+
+const redeemMetadataNumber = (code: RedeemCode, key: string) => {
+  const value = code.metadata?.[key]
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+const redeemRandomTimedQuotaRange = (code: RedeemCode) => {
+  const min = redeemMetadataNumber(code, 'min_value')
+  const max = redeemMetadataNumber(code, 'max_value')
+  if (min == null || max == null || min <= 0 || max < min) {
+    return null
+  }
+  return { min, max }
+}
+
+const redeemValidityDays = (code: RedeemCode) => {
+  if (code.validity_days && code.validity_days > 0) {
+    return code.validity_days
+  }
+  const value = code.metadata?.validity_days
+  if (typeof value === 'number') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
+
 const getRedeemCodeExpiresInDays = () => {
   if (generateForm.expiry_option === 'never') {
     return undefined
@@ -1018,9 +1107,32 @@ const buildBatchUpdateFields = (): BatchUpdateRedeemCodeFields | null => {
 }
 
 const handleGenerateCodes = async () => {
-  // 订阅类型必须选择分组
   if (generateForm.type === 'subscription' && !generateForm.group_id) {
     appStore.showError(t('admin.redeem.groupRequired'))
+    return
+  }
+  if (
+    generateForm.type === 'timed_quota' &&
+    (!Number.isFinite(generateForm.value) || generateForm.value <= 0)
+  ) {
+    appStore.showError(t('admin.redeem.amountRequired'))
+    return
+  }
+  if (
+    (generateForm.type === 'timed_quota' || generateForm.type === 'random_timed_quota') &&
+    (!Number.isFinite(generateForm.validity_days) || generateForm.validity_days < 1)
+  ) {
+    appStore.showError(t('admin.redeem.validityDaysRequired'))
+    return
+  }
+  if (
+    generateForm.type === 'random_timed_quota' &&
+    (!Number.isFinite(generateForm.min_value) ||
+      !Number.isFinite(generateForm.max_value) ||
+      generateForm.min_value <= 0 ||
+      generateForm.max_value < generateForm.min_value)
+  ) {
+    appStore.showError(t('admin.redeem.randomRangeRequired'))
     return
   }
 
@@ -1030,6 +1142,11 @@ const handleGenerateCodes = async () => {
     return
   }
 
+  const metadata =
+    generateForm.type === 'random_timed_quota'
+      ? { min_value: generateForm.min_value, max_value: generateForm.max_value }
+      : undefined
+
   generating.value = true
   try {
     const result = await adminAPI.redeem.generate(
@@ -1037,8 +1154,11 @@ const handleGenerateCodes = async () => {
       generateForm.type,
       generateForm.value,
       generateForm.type === 'subscription' ? generateForm.group_id : undefined,
-      generateForm.type === 'subscription' ? generateForm.validity_days : undefined,
-      expiresInDays
+      generateForm.type === 'subscription' || generateForm.type === 'timed_quota' || generateForm.type === 'random_timed_quota'
+        ? generateForm.validity_days
+        : undefined,
+      expiresInDays,
+      metadata
     )
     showGenerateDialog.value = false
     generatedCodes.value = result
@@ -1046,6 +1166,8 @@ const handleGenerateCodes = async () => {
     // 重置表单
     generateForm.group_id = null
     generateForm.validity_days = 30
+    generateForm.min_value = 1
+    generateForm.max_value = 10
     generateForm.expiry_option = 'never'
     generateForm.custom_expiry_days = 7
     loadCodes()

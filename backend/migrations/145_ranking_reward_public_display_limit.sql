@@ -19,7 +19,7 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM ranking_reward_campaigns
-        WHERE public_display_limit <= 0 OR public_display_limit > 1000
+        WHERE public_display_limit <= 0 OR public_display_limit > 1000 OR public_display_limit > top_n
         LIMIT 1
     ) THEN
         RAISE EXCEPTION 'ranking_reward_campaigns contains invalid public_display_limit values; clean them before applying public display limit constraints';
@@ -40,3 +40,6 @@ ALTER TABLE ranking_reward_campaigns
 
 ALTER TABLE ranking_reward_campaigns
     DROP CONSTRAINT IF EXISTS ranking_reward_campaigns_public_display_limit_top_n;
+
+ALTER TABLE ranking_reward_campaigns
+    ADD CONSTRAINT ranking_reward_campaigns_public_display_limit_top_n CHECK (public_display_limit <= top_n);

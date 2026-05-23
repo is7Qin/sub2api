@@ -5141,12 +5141,16 @@
             </p>
             <p class="mt-1.5 text-xs">
               <router-link
+                v-if="form.lottery_enabled"
                 to="/admin/lottery"
                 class="inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
               >
                 {{ t('admin.settings.features.lottery.configureLink') }}
                 <span aria-hidden="true">→</span>
               </router-link>
+              <span v-else class="text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.features.lottery.configureDisabledHint') }}
+              </span>
             </p>
           </div>
           <div class="space-y-5 p-6">

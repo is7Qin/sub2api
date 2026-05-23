@@ -5316,6 +5316,7 @@ export default {
           title: 'Lottery',
           description: 'Enable lottery campaigns, user draw entry points and user lottery APIs. Disabled by default.',
           configureLink: 'Configure lottery campaigns',
+          configureDisabledHint: 'Enable Lottery before configuring campaigns.',
           enabled: 'Enable Lottery',
           enabledHint: 'When off, lottery sidebar entries are hidden and user lottery APIs return forbidden.',
         },

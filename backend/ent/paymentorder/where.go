@@ -2463,6 +2463,29 @@ func HasUserWith(preds ...predicate.User) predicate.PaymentOrder {
 	})
 }
 
+// HasRechargeResetRecords applies the HasEdge predicate on the "recharge_reset_records" edge.
+func HasRechargeResetRecords() predicate.PaymentOrder {
+	return predicate.PaymentOrder(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRecordsTable, RechargeResetRecordsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasRechargeResetRecordsWith applies the HasEdge predicate on the "recharge_reset_records" edge with a given conditions (other predicates).
+func HasRechargeResetRecordsWith(preds ...predicate.RechargeResetRecord) predicate.PaymentOrder {
+	return predicate.PaymentOrder(func(s *sql.Selector) {
+		step := newRechargeResetRecordsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // And groups predicates with the AND operator between them.
 func And(predicates ...predicate.PaymentOrder) predicate.PaymentOrder {
 	return predicate.PaymentOrder(sql.AndPredicates(predicates...))

@@ -38,14 +38,14 @@ func (s *PaymentService) HandlePaymentNotification(ctx context.Context, n *payme
 		// Fallback only for true legacy "sub2_N" DB-ID payloads when the
 		// current out_trade_no lookup genuinely did not find an order.
 		if oid, ok := parseLegacyPaymentOrderID(n.OrderID, err); ok {
-			return s.confirmPayment(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata)
+			return s.confirmPayment(ctx, oid, n.TradeNo, n.Amount, pk, n.OccurredAt, n.Metadata)
 		}
 		if dbent.IsNotFound(err) {
 			return fmt.Errorf("%w: out_trade_no=%s", ErrOrderNotFound, n.OrderID)
 		}
 		return fmt.Errorf("lookup order failed for out_trade_no %s: %w", n.OrderID, err)
 	}
-	return s.confirmPayment(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata)
+	return s.confirmPayment(ctx, order.ID, n.TradeNo, n.Amount, pk, n.OccurredAt, n.Metadata)
 }
 
 func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
@@ -67,7 +67,7 @@ func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
 	return oid, true
 }
 
-func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string) error {
+func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, occurredAt time.Time, metadata map[string]string) error {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		slog.Error("order not found", "orderID", oid)
@@ -105,7 +105,7 @@ func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo 
 		s.writeAuditLog(ctx, o.ID, "PAYMENT_AMOUNT_MISMATCH", pk, map[string]any{"expected": o.PayAmount, "paid": paid, "tradeNo": tradeNo})
 		return fmt.Errorf("amount mismatch: expected %s, got %s", strconv.FormatFloat(o.PayAmount, 'f', -1, 64), strconv.FormatFloat(paid, 'f', -1, 64))
 	}
-	return s.toPaid(ctx, o, tradeNo, paid, pk)
+	return s.toPaid(ctx, o, tradeNo, paid, pk, occurredAt)
 }
 
 func paymentAmountToleranceForCurrency(currency string) float64 {
@@ -139,11 +139,12 @@ func expectedNotificationProviderKey(registry *payment.Registry, orderPaymentTyp
 	return strings.TrimSpace(orderPaymentType)
 }
 
-func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, tradeNo string, paid float64, pk string) error {
+func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, tradeNo string, paid float64, pk string, occurredAt time.Time) error {
 	previousStatus := o.Status
 	now := time.Now()
+	paidAt := occurredAt.UTC()
 	grace := now.Add(-paymentGraceMinutes * time.Minute)
-	c, err := s.entClient.PaymentOrder.Update().Where(
+	update := s.entClient.PaymentOrder.Update().Where(
 		paymentorder.IDEQ(o.ID),
 		paymentorder.Or(
 			paymentorder.StatusEQ(OrderStatusPending),
@@ -153,7 +154,13 @@ func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, trad
 				paymentorder.UpdatedAtGTE(grace),
 			),
 		),
-	).SetStatus(OrderStatusPaid).SetPayAmount(paid).SetPaymentTradeNo(tradeNo).SetPaidAt(now).ClearFailedAt().ClearFailedReason().Save(ctx)
+	).SetStatus(OrderStatusPaid).SetPayAmount(paid).SetPaymentTradeNo(tradeNo).ClearFailedAt().ClearFailedReason()
+	if !paidAt.IsZero() {
+		update.SetPaidAt(paidAt)
+	} else {
+		update.ClearPaidAt()
+	}
+	c, err := update.Save(ctx)
 	if err != nil {
 		return fmt.Errorf("update to PAID: %w", err)
 	}
@@ -280,6 +287,9 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder) e
 		if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
 			return err
 		}
+		if err := s.applyRechargeResetCampaignsForOrder(ctx, o); err != nil {
+			return err
+		}
 		// Code already created and redeemed — just mark completed
 		return s.markCompleted(ctx, o, "RECHARGE_SUCCESS")
 	case redeemActionCreate:
@@ -294,6 +304,9 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder) e
 		return fmt.Errorf("redeem balance: %w", err)
 	}
 	if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
+		return err
+	}
+	if err := s.applyRechargeResetCampaignsForOrder(ctx, o); err != nil {
 		return err
 	}
 	return s.markCompleted(ctx, o, "RECHARGE_SUCCESS")
@@ -523,6 +536,124 @@ func (s *PaymentService) applyAffiliateRebateForOrder(ctx context.Context, o *db
 			"error": fmt.Sprintf("commit affiliate rebate tx: %v", err),
 		})
 		return fmt.Errorf("commit affiliate rebate tx: %w", err)
+	}
+	return nil
+}
+
+func (s *PaymentService) applyRechargeResetCampaignsForOrder(ctx context.Context, o *dbent.PaymentOrder) error {
+	if o == nil || o.OrderType != payment.OrderTypeBalance || o.Amount <= 0 || s.rechargeResetService == nil {
+		return nil
+	}
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": fmt.Sprintf("begin recharge reset tx: %v", err)})
+		return fmt.Errorf("begin recharge reset tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txCtx := dbent.NewTxContext(ctx, tx)
+	claimed, err := s.tryClaimRechargeResetAudit(txCtx, tx.Client(), o.ID, o.Amount)
+	if err != nil {
+		s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": err.Error()})
+		return fmt.Errorf("claim recharge reset audit: %w", err)
+	}
+	if !claimed {
+		return nil
+	}
+
+	if o.PaidAt == nil {
+		detail := map[string]any{"rechargeAmount": o.Amount, "reason": "paid_at_unavailable"}
+		if err := s.updateClaimedRechargeResetAudit(txCtx, tx.Client(), o.ID, RechargeResetAuditActionSkipped, detail); err != nil {
+			s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": err.Error()})
+			return fmt.Errorf("update recharge reset audit: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": fmt.Sprintf("commit recharge reset tx: %v", err)})
+			return fmt.Errorf("commit recharge reset tx: %w", err)
+		}
+		s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_SKIPPED", "system", detail)
+		return nil
+	}
+
+	occurredAt := o.PaidAt.UTC()
+	records, err := s.rechargeResetService.ApplyForRecharge(txCtx, &ApplyRechargeResetInput{OrderID: o.ID, UserID: o.UserID, RechargeAmount: o.Amount, OccurredAt: occurredAt})
+	if err != nil {
+		s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": err.Error()})
+		return fmt.Errorf("apply recharge reset campaigns: %w", err)
+	}
+
+	action := RechargeResetAuditActionSkipped
+	detail := map[string]any{"rechargeAmount": o.Amount, "recordCount": len(records)}
+	if len(records) > 0 {
+		action = RechargeResetAuditActionApplied
+		detail["records"] = records
+	}
+	if err := s.updateClaimedRechargeResetAudit(txCtx, tx.Client(), o.ID, action, detail); err != nil {
+		s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": err.Error()})
+		return fmt.Errorf("update recharge reset audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		s.writeAuditLog(ctx, o.ID, "RECHARGE_RESET_FAILED", "system", map[string]any{"error": fmt.Sprintf("commit recharge reset tx: %v", err)})
+		return fmt.Errorf("commit recharge reset tx: %w", err)
+	}
+	s.rechargeResetService.invalidateRechargeResetRecordCaches(ctx, records)
+	return nil
+}
+
+func (s *PaymentService) tryClaimRechargeResetAudit(ctx context.Context, client *dbent.Client, orderID int64, rechargeAmount float64) (bool, error) {
+	if client == nil {
+		return false, errors.New("nil payment client")
+	}
+	oid := strconv.FormatInt(orderID, 10)
+	detail, _ := json.Marshal(map[string]any{"rechargeAmount": rechargeAmount, "status": "reserved"})
+	rows, err := client.QueryContext(ctx, `
+	INSERT INTO payment_audit_logs (order_id, action, detail, operator, created_at)
+	SELECT $1::text, 'RECHARGE_RESET_APPLIED', $2::text, 'system', NOW()
+	WHERE NOT EXISTS (
+		SELECT 1
+		FROM payment_audit_logs
+		WHERE order_id = $1::text
+		  AND action IN ('RECHARGE_RESET_APPLIED', 'RECHARGE_RESET_SKIPPED')
+	)
+	ON CONFLICT (order_id, action) DO NOTHING
+	RETURNING id`, oid, string(detail))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	var claimID int64
+	if err := rows.Scan(&claimID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *PaymentService) updateClaimedRechargeResetAudit(ctx context.Context, client *dbent.Client, orderID int64, action string, detail map[string]any) error {
+	if client == nil {
+		return errors.New("nil payment client")
+	}
+	oid := strconv.FormatInt(orderID, 10)
+	detailJSON, _ := json.Marshal(detail)
+	updated, err := client.PaymentAuditLog.Update().
+		Where(
+			paymentauditlog.OrderIDEQ(oid),
+			paymentauditlog.ActionEQ(RechargeResetAuditActionApplied),
+		).
+		SetAction(action).
+		SetDetail(string(detailJSON)).
+		SetOperator("system").
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		return errors.New("recharge reset claim log not found")
 	}
 	return nil
 }

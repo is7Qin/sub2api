@@ -12,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
@@ -258,6 +259,21 @@ func (_c *UserSubscriptionCreate) SetNillableAssignedByUserID(id *int64) *UserSu
 // SetAssignedByUser sets the "assigned_by_user" edge to the User entity.
 func (_c *UserSubscriptionCreate) SetAssignedByUser(v *User) *UserSubscriptionCreate {
 	return _c.SetAssignedByUserID(v.ID)
+}
+
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_c *UserSubscriptionCreate) AddRechargeResetRecordIDs(ids ...int64) *UserSubscriptionCreate {
+	_c.mutation.AddRechargeResetRecordIDs(ids...)
+	return _c
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_c *UserSubscriptionCreate) AddRechargeResetRecords(v ...*RechargeResetRecord) *UserSubscriptionCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRechargeResetRecordIDs(ids...)
 }
 
 // AddUsageLogIDs adds the "usage_logs" edge to the UsageLog entity by IDs.
@@ -530,6 +546,22 @@ func (_c *UserSubscriptionCreate) createSpec() (*UserSubscription, *sqlgraph.Cre
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
 		_node.AssignedBy = &nodes[0]
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   usersubscription.RechargeResetRecordsTable,
+			Columns: []string{usersubscription.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.UsageLogsIDs(); len(nodes) > 0 {

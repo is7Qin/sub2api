@@ -107,9 +107,11 @@ type PaymentOrder struct {
 type PaymentOrderEdges struct {
 	// User holds the value of the user edge.
 	User *User `json:"user,omitempty"`
+	// RechargeResetRecords holds the value of the recharge_reset_records edge.
+	RechargeResetRecords []*RechargeResetRecord `json:"recharge_reset_records,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [1]bool
+	loadedTypes [2]bool
 }
 
 // UserOrErr returns the User value or an error if the edge
@@ -121,6 +123,15 @@ func (e PaymentOrderEdges) UserOrErr() (*User, error) {
 		return nil, &NotFoundError{label: user.Label}
 	}
 	return nil, &NotLoadedError{edge: "user"}
+}
+
+// RechargeResetRecordsOrErr returns the RechargeResetRecords value or an error if the edge
+// was not loaded in eager-loading.
+func (e PaymentOrderEdges) RechargeResetRecordsOrErr() ([]*RechargeResetRecord, error) {
+	if e.loadedTypes[1] {
+		return e.RechargeResetRecords, nil
+	}
+	return nil, &NotLoadedError{edge: "recharge_reset_records"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -432,6 +443,11 @@ func (_m *PaymentOrder) Value(name string) (ent.Value, error) {
 // QueryUser queries the "user" edge of the PaymentOrder entity.
 func (_m *PaymentOrder) QueryUser() *UserQuery {
 	return NewPaymentOrderClient(_m.config).QueryUser(_m)
+}
+
+// QueryRechargeResetRecords queries the "recharge_reset_records" edge of the PaymentOrder entity.
+func (_m *PaymentOrder) QueryRechargeResetRecords() *RechargeResetRecordQuery {
+	return NewPaymentOrderClient(_m.config).QueryRechargeResetRecords(_m)
 }
 
 // Update returns a builder for updating this PaymentOrder.

@@ -94,6 +94,8 @@ const (
 	FieldUpdatedAt = "updated_at"
 	// EdgeUser holds the string denoting the user edge name in mutations.
 	EdgeUser = "user"
+	// EdgeRechargeResetRecords holds the string denoting the recharge_reset_records edge name in mutations.
+	EdgeRechargeResetRecords = "recharge_reset_records"
 	// Table holds the table name of the paymentorder in the database.
 	Table = "payment_orders"
 	// UserTable is the table that holds the user relation/edge.
@@ -103,6 +105,13 @@ const (
 	UserInverseTable = "users"
 	// UserColumn is the table column denoting the user relation/edge.
 	UserColumn = "user_id"
+	// RechargeResetRecordsTable is the table that holds the recharge_reset_records relation/edge.
+	RechargeResetRecordsTable = "recharge_reset_records"
+	// RechargeResetRecordsInverseTable is the table name for the RechargeResetRecord entity.
+	// It exists in this package in order to avoid circular dependency with the "rechargeresetrecord" package.
+	RechargeResetRecordsInverseTable = "recharge_reset_records"
+	// RechargeResetRecordsColumn is the table column denoting the recharge_reset_records relation/edge.
+	RechargeResetRecordsColumn = "order_id"
 )
 
 // Columns holds all SQL columns for paymentorder fields.
@@ -410,10 +419,31 @@ func ByUserField(field string, opts ...sql.OrderTermOption) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newUserStep(), sql.OrderByField(field, opts...))
 	}
 }
+
+// ByRechargeResetRecordsCount orders the results by recharge_reset_records count.
+func ByRechargeResetRecordsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRechargeResetRecordsStep(), opts...)
+	}
+}
+
+// ByRechargeResetRecords orders the results by recharge_reset_records terms.
+func ByRechargeResetRecords(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRechargeResetRecordsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newUserStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(UserInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2O, true, UserTable, UserColumn),
+	)
+}
+func newRechargeResetRecordsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RechargeResetRecordsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRecordsTable, RechargeResetRecordsColumn),
 	)
 }

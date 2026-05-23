@@ -362,6 +362,7 @@ export default {
     channels: 'Channels',
     availableChannels: 'Available Channels',
     subscriptions: 'Subscriptions',
+    rechargeReset: 'Recharge Reset',
     accounts: 'Accounts',
     proxies: 'Proxies',
     redeemCodes: 'Redeem Codes',
@@ -1412,6 +1413,11 @@ export default {
       requestsShort: 'Req',
       tokensShort: 'Tok',
       failedToLoad: 'Failed to load dashboard statistics'
+    },
+
+    rechargeReset: {
+      title: 'Recharge Reset',
+      description: 'Reset subscription quotas after qualifying balance recharges',
     },
 
     backup: {

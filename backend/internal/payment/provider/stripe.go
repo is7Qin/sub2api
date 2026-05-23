@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	stripe "github.com/stripe/stripe-go/v85"
@@ -159,13 +160,17 @@ func (s *Stripe) QueryOrder(ctx context.Context, tradeNo string) (*payment.Query
 	}
 
 	currency := stripeIntentCurrency(pi.Currency, s.currency())
+	metadata := map[string]string{"currency": currency}
+	paidAt := ""
+	if status == payment.ProviderStatusPaid {
+		metadata["paid_at_unavailable"] = "true"
+	}
 	return &payment.QueryOrderResponse{
-		TradeNo: pi.ID,
-		Status:  status,
-		Amount:  payment.MinorUnitToAmount(pi.Amount, currency),
-		Metadata: map[string]string{
-			"currency": currency,
-		},
+		TradeNo:  pi.ID,
+		Status:   status,
+		Amount:   payment.MinorUnitToAmount(pi.Amount, currency),
+		PaidAt:   paidAt,
+		Metadata: metadata,
 	}, nil
 }
 
@@ -204,12 +209,14 @@ func parseStripePaymentIntent(event *stripe.Event, status string, rawBody string
 		return nil, fmt.Errorf("stripe parse payment_intent: %w", err)
 	}
 	currency := stripeIntentCurrency(pi.Currency, payment.DefaultPaymentCurrency)
+	occurredAt := time.Unix(event.Created, 0).UTC()
 	return &payment.PaymentNotification{
-		TradeNo: pi.ID,
-		OrderID: pi.Metadata["orderId"],
-		Amount:  payment.MinorUnitToAmount(pi.Amount, currency),
-		Status:  status,
-		RawData: rawBody,
+		TradeNo:    pi.ID,
+		OrderID:    pi.Metadata["orderId"],
+		Amount:     payment.MinorUnitToAmount(pi.Amount, currency),
+		Status:     status,
+		OccurredAt: occurredAt,
+		RawData:    rawBody,
 		Metadata: map[string]string{
 			"currency": currency,
 		},

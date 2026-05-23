@@ -90,6 +90,10 @@ const (
 	EdgeRedeemCodes = "redeem_codes"
 	// EdgeSubscriptions holds the string denoting the subscriptions edge name in mutations.
 	EdgeSubscriptions = "subscriptions"
+	// EdgeRechargeResetRules holds the string denoting the recharge_reset_rules edge name in mutations.
+	EdgeRechargeResetRules = "recharge_reset_rules"
+	// EdgeRechargeResetRecords holds the string denoting the recharge_reset_records edge name in mutations.
+	EdgeRechargeResetRecords = "recharge_reset_records"
 	// EdgeUsageLogs holds the string denoting the usage_logs edge name in mutations.
 	EdgeUsageLogs = "usage_logs"
 	// EdgeAccounts holds the string denoting the accounts edge name in mutations.
@@ -123,6 +127,20 @@ const (
 	SubscriptionsInverseTable = "user_subscriptions"
 	// SubscriptionsColumn is the table column denoting the subscriptions relation/edge.
 	SubscriptionsColumn = "group_id"
+	// RechargeResetRulesTable is the table that holds the recharge_reset_rules relation/edge.
+	RechargeResetRulesTable = "recharge_reset_campaign_rules"
+	// RechargeResetRulesInverseTable is the table name for the RechargeResetCampaignRule entity.
+	// It exists in this package in order to avoid circular dependency with the "rechargeresetcampaignrule" package.
+	RechargeResetRulesInverseTable = "recharge_reset_campaign_rules"
+	// RechargeResetRulesColumn is the table column denoting the recharge_reset_rules relation/edge.
+	RechargeResetRulesColumn = "group_id"
+	// RechargeResetRecordsTable is the table that holds the recharge_reset_records relation/edge.
+	RechargeResetRecordsTable = "recharge_reset_records"
+	// RechargeResetRecordsInverseTable is the table name for the RechargeResetRecord entity.
+	// It exists in this package in order to avoid circular dependency with the "rechargeresetrecord" package.
+	RechargeResetRecordsInverseTable = "recharge_reset_records"
+	// RechargeResetRecordsColumn is the table column denoting the recharge_reset_records relation/edge.
+	RechargeResetRecordsColumn = "group_id"
 	// UsageLogsTable is the table that holds the usage_logs relation/edge.
 	UsageLogsTable = "usage_logs"
 	// UsageLogsInverseTable is the table name for the UsageLog entity.
@@ -485,6 +503,34 @@ func BySubscriptions(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByRechargeResetRulesCount orders the results by recharge_reset_rules count.
+func ByRechargeResetRulesCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRechargeResetRulesStep(), opts...)
+	}
+}
+
+// ByRechargeResetRules orders the results by recharge_reset_rules terms.
+func ByRechargeResetRules(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRechargeResetRulesStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByRechargeResetRecordsCount orders the results by recharge_reset_records count.
+func ByRechargeResetRecordsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRechargeResetRecordsStep(), opts...)
+	}
+}
+
+// ByRechargeResetRecords orders the results by recharge_reset_records terms.
+func ByRechargeResetRecords(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRechargeResetRecordsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByUsageLogsCount orders the results by usage_logs count.
 func ByUsageLogsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -573,6 +619,20 @@ func newSubscriptionsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(SubscriptionsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, SubscriptionsTable, SubscriptionsColumn),
+	)
+}
+func newRechargeResetRulesStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RechargeResetRulesInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRulesTable, RechargeResetRulesColumn),
+	)
+}
+func newRechargeResetRecordsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RechargeResetRecordsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRecordsTable, RechargeResetRecordsColumn),
 	)
 }
 func newUsageLogsStep() *sqlgraph.Step {

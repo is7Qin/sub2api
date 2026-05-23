@@ -367,6 +367,7 @@ export default {
     redeemCodes: '兑换码',
     ops: '运维监控',
     promoCodes: '优惠码',
+    rankingRewards: '排行榜奖励',
     settings: '系统设置',
     myAccount: '我的账户',
     lightMode: '浅色模式',
@@ -1108,6 +1109,27 @@ export default {
     },
   },
 
+  rankingReward: {
+    title: '排行榜奖励',
+    description: '查看每日排行榜奖励结果，榜单仅展示匿名用户与获得的抽奖机会',
+    loadFailed: '加载排行榜奖励失败',
+    emptyTitle: '暂无排行榜奖励',
+    emptyDescription: '当前还没有已完成的排行榜奖励记录。',
+    rewardDate: '奖励日期',
+    displayLimit: '显示前 {count} 名',
+    awardedCount: '共 {count} 人获奖',
+    anonymousUser: '用户 {code}',
+    currentUser: '我',
+    chanceCount: '{count} 次抽奖机会',
+    awarded: '已发放',
+    columns: {
+      rank: '排名',
+      user: '用户',
+      reward: '奖励',
+      status: '状态'
+    }
+  },
+
   affiliate: {
     title: '邀请返利',
     description: '邀请新用户注册，并将返利额度转入账户余额',
@@ -1497,6 +1519,11 @@ export default {
       systemSettings: '系统设置',
       configureSystem: '配置系统设置',
       failedToLoad: '加载仪表盘数据失败'
+    },
+
+    rankingReward: {
+      title: '排行榜奖励',
+      description: '按每日用量排行榜向获奖用户发放抽奖机会',
     },
 
     backup: {
@@ -5481,6 +5508,13 @@ export default {
           configureLink: '配置抽奖活动',
           enabled: '启用抽奖中心',
           enabledHint: '关闭后抽奖侧边栏入口隐藏，用户抽奖接口返回无权限。',
+        },
+        rankingReward: {
+          title: '排行榜奖励',
+          description: '启用管理员排行榜奖励配置和用户端匿名奖励榜单。默认关闭。',
+          configureLink: '前往 排行榜奖励 配置奖励活动',
+          enabled: '启用排行榜奖励',
+          enabledHint: '关闭后用户和管理员侧边栏入口隐藏，用户接口返回禁用错误。',
         },
         affiliate: {
           title: '邀请返利',

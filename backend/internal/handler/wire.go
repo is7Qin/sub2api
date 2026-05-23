@@ -40,6 +40,7 @@ func ProvideAdminHandlers(
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	lotteryHandler *admin.LotteryHandler,
+	rankingRewardHandler *admin.RankingRewardHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -73,6 +74,7 @@ func ProvideAdminHandlers(
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		Lottery:                lotteryHandler,
+		RankingReward:          rankingRewardHandler,
 	}
 }
 
@@ -114,6 +116,7 @@ func ProvideHandlers(
 	paymentWebhookHandler *PaymentWebhookHandler,
 	availableChannelHandler *AvailableChannelHandler,
 	lotteryHandler *LotteryHandler,
+	rankingRewardHandler *RankingRewardHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 ) *Handlers {
@@ -135,6 +138,7 @@ func ProvideHandlers(
 		PaymentWebhook:   paymentWebhookHandler,
 		AvailableChannel: availableChannelHandler,
 		Lottery:          lotteryHandler,
+		RankingReward:    rankingRewardHandler,
 	}
 }
 
@@ -157,6 +161,7 @@ var ProviderSet = wire.NewSet(
 	NewPaymentWebhookHandler,
 	NewAvailableChannelHandler,
 	NewLotteryHandler,
+	NewRankingRewardHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,
@@ -190,6 +195,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
 	admin.NewLotteryHandler,
+	admin.NewRankingRewardHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

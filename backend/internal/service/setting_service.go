@@ -703,6 +703,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
 		SettingKeyLotteryEnabled,
+		SettingKeyRankingRewardEnabled,
 	}
 
 	settings, err := s.settingRepo.GetMultiple(ctx, keys)
@@ -814,8 +815,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
-		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
-		LotteryEnabled:     settings[SettingKeyLotteryEnabled] == "true",
+		RiskControlEnabled:   settings[SettingKeyRiskControlEnabled] == "true",
+		LotteryEnabled:       settings[SettingKeyLotteryEnabled] == "true",
+		RankingRewardEnabled: settings[SettingKeyRankingRewardEnabled] == "true",
 	}, nil
 }
 
@@ -1071,6 +1073,7 @@ type PublicSettingsInjectionPayload struct {
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
 	LotteryEnabled                       bool `json:"lottery_enabled"`
+	RankingRewardEnabled                 bool `json:"ranking_reward_enabled"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1134,6 +1137,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
 		LotteryEnabled:                       settings.LotteryEnabled,
+		RankingRewardEnabled:                 settings.RankingRewardEnabled,
 	}, nil
 }
 
@@ -1778,6 +1782,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// 抽奖中心功能开关
 	updates[SettingKeyLotteryEnabled] = strconv.FormatBool(settings.LotteryEnabled)
+
+	// 排行榜奖励功能开关
+	updates[SettingKeyRankingRewardEnabled] = strconv.FormatBool(settings.RankingRewardEnabled)
 
 	// Claude Code version check
 	updates[SettingKeyMinClaudeCodeVersion] = settings.MinClaudeCodeVersion
@@ -2628,6 +2635,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		// 抽奖中心功能（默认关闭，显式启用）
 		SettingKeyLotteryEnabled: "false",
 
+		// 排行榜奖励功能（默认关闭，显式启用）
+		SettingKeyRankingRewardEnabled: "false",
+
 		// Claude Code version check (default: empty = disabled)
 		SettingKeyMinClaudeCodeVersion: "",
 		SettingKeyMaxClaudeCodeVersion: "",
@@ -3137,6 +3147,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 抽奖中心功能（默认关闭，严格 true 才启用）
 	result.LotteryEnabled = settings[SettingKeyLotteryEnabled] == "true"
+
+	// 排行榜奖励功能（默认关闭，严格 true 才启用）
+	result.RankingRewardEnabled = settings[SettingKeyRankingRewardEnabled] == "true"
 
 	// Claude Code version check
 	result.MinClaudeCodeVersion = settings[SettingKeyMinClaudeCodeVersion]

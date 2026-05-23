@@ -367,6 +367,7 @@ export default {
     redeemCodes: 'Redeem Codes',
     ops: 'Ops',
     promoCodes: 'Promo Codes',
+    rankingRewards: 'Ranking Rewards',
     settings: 'Settings',
     myAccount: 'My Account',
     lightMode: 'Light Mode',
@@ -1104,6 +1105,27 @@ export default {
     },
   },
 
+  rankingReward: {
+    title: 'Ranking Rewards',
+    description: 'View daily ranking reward results with anonymous users and awarded lottery chances only',
+    loadFailed: 'Failed to load ranking rewards',
+    emptyTitle: 'No ranking rewards yet',
+    emptyDescription: 'There are no completed ranking reward records yet.',
+    rewardDate: 'Reward date',
+    displayLimit: 'Showing top {count}',
+    awardedCount: '{count} winners',
+    anonymousUser: 'User {code}',
+    currentUser: 'Me',
+    chanceCount: '{count} lottery chances',
+    awarded: 'Awarded',
+    columns: {
+      rank: 'Rank',
+      user: 'User',
+      reward: 'Reward',
+      status: 'Status'
+    }
+  },
+
   affiliate: {
     title: 'Affiliate Rebates',
     description: 'Invite new users and convert your rebate quota into account balance',
@@ -1476,6 +1498,11 @@ export default {
       requestsShort: 'Req',
       tokensShort: 'Tok',
       failedToLoad: 'Failed to load dashboard statistics'
+    },
+
+    rankingReward: {
+      title: 'Ranking Rewards',
+      description: 'Grant lottery chances to daily usage ranking winners',
     },
 
     backup: {
@@ -5318,6 +5345,13 @@ export default {
           configureLink: 'Configure lottery campaigns',
           enabled: 'Enable Lottery',
           enabledHint: 'When off, lottery sidebar entries are hidden and user lottery APIs return forbidden.',
+        },
+        rankingReward: {
+          title: 'Ranking Rewards',
+          description: 'Enable admin ranking reward configuration and the user-facing anonymous reward leaderboard. Disabled by default.',
+          configureLink: 'Configure ranking reward campaigns',
+          enabled: 'Enable Ranking Rewards',
+          enabledHint: 'When off, user/admin sidebar entries are hidden and user endpoints return a disabled error.',
         },
         affiliate: {
           title: 'Affiliate (Invite Rebate)',

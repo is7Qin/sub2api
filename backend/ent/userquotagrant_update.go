@@ -227,6 +227,11 @@ func (_u *UserQuotaGrantUpdate) defaults() {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *UserQuotaGrantUpdate) check() error {
+	if v, ok := _u.mutation.AmountUsd(); ok {
+		if err := userquotagrant.AmountUsdValidator(v); err != nil {
+			return &ValidationError{Name: "amount_usd", err: fmt.Errorf(`ent: validator failed for field "UserQuotaGrant.amount_usd": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Source(); ok {
 		if err := userquotagrant.SourceValidator(v); err != nil {
 			return &ValidationError{Name: "source", err: fmt.Errorf(`ent: validator failed for field "UserQuotaGrant.source": %w`, err)}
@@ -556,6 +561,11 @@ func (_u *UserQuotaGrantUpdateOne) defaults() {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *UserQuotaGrantUpdateOne) check() error {
+	if v, ok := _u.mutation.AmountUsd(); ok {
+		if err := userquotagrant.AmountUsdValidator(v); err != nil {
+			return &ValidationError{Name: "amount_usd", err: fmt.Errorf(`ent: validator failed for field "UserQuotaGrant.amount_usd": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Source(); ok {
 		if err := userquotagrant.SourceValidator(v); err != nil {
 			return &ValidationError{Name: "source", err: fmt.Errorf(`ent: validator failed for field "UserQuotaGrant.source": %w`, err)}

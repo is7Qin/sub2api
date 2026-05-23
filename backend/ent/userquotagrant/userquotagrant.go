@@ -76,6 +76,8 @@ func ValidColumn(column string) bool {
 }
 
 var (
+	// AmountUsdValidator is a validator for the "amount_usd" field. It is called by the builders before save.
+	AmountUsdValidator func(float64) error
 	// DefaultUsedAmountUsd holds the default value on creation for the "used_amount_usd" field.
 	DefaultUsedAmountUsd float64
 	// DefaultStartsAt holds the default value on creation for the "starts_at" field.

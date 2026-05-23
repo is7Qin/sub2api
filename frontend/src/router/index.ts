@@ -266,6 +266,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/ranking-rewards',
+    name: 'UserRankingRewards',
+    component: () => import('@/views/user/RankingRewardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Ranking Rewards',
+      titleKey: 'rankingReward.title',
+      descriptionKey: 'rankingReward.description',
+      requiresRankingReward: true
+    }
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),
@@ -547,6 +560,19 @@ const routes: RouteRecordRaw[] = [
       title: 'Promo Code Management',
       titleKey: 'admin.promo.title',
       descriptionKey: 'admin.promo.description'
+    }
+  },
+  {
+    path: '/admin/ranking-rewards',
+    name: 'AdminRankingRewards',
+    component: () => import('@/views/admin/RankingRewardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Ranking Rewards',
+      titleKey: 'admin.rankingReward.title',
+      descriptionKey: 'admin.rankingReward.description',
+      requiresRankingReward: true
     }
   },
   {
@@ -860,6 +886,15 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
+  if (to.meta.requiresRankingReward) {
+    const publicSettings = appStore.cachedPublicSettings || await appStore.fetchPublicSettings()
+    const rankingRewardEnabled = publicSettings?.ranking_reward_enabled === true
+    if (!rankingRewardEnabled) {
+      next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+      return
+    }
+  }
+
   // 简易模式下限制访问某些页面
   if (authStore.isSimpleMode) {
     const restrictedPaths = [
@@ -867,9 +902,11 @@ router.beforeEach(async (to, _from, next) => {
       '/admin/subscriptions',
       '/admin/redeem',
       '/admin/lottery',
+      '/admin/ranking-rewards',
       '/subscriptions',
       '/redeem',
-      '/lottery'
+      '/lottery',
+      '/ranking-rewards'
     ]
 
     if (restrictedPaths.some((path) => to.path.startsWith(path))) {

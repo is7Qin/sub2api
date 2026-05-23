@@ -512,6 +512,7 @@ export interface SystemSettings {
   payment_enabled: boolean;
   risk_control_enabled: boolean;
   lottery_enabled: boolean;
+  ranking_reward_enabled: boolean;
   payment_min_amount: number;
   payment_max_amount: number;
   payment_daily_limit: number;
@@ -734,6 +735,7 @@ export interface UpdateSettingsRequest {
   payment_enabled?: boolean;
   risk_control_enabled?: boolean;
   lottery_enabled?: boolean;
+  ranking_reward_enabled?: boolean;
   payment_min_amount?: number;
   payment_max_amount?: number;
   payment_daily_limit?: number;

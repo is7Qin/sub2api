@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS user_quota_grants (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT user_quota_grants_amount_non_negative CHECK (amount_usd >= 0),
+    CONSTRAINT user_quota_grants_amount_positive CHECK (amount_usd > 0),
     CONSTRAINT user_quota_grants_used_non_negative CHECK (used_amount_usd >= 0),
     CONSTRAINT user_quota_grants_used_not_exceed_amount CHECK (used_amount_usd <= amount_usd),
     CONSTRAINT user_quota_grants_time_range CHECK (expires_at > starts_at)

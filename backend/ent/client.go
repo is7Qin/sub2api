@@ -41,6 +41,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardaward"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
+	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -115,6 +119,14 @@ type Client struct {
 	PromoCodeUsage *PromoCodeUsageClient
 	// Proxy is the client for interacting with the Proxy builders.
 	Proxy *ProxyClient
+	// RankingRewardAward is the client for interacting with the RankingRewardAward builders.
+	RankingRewardAward *RankingRewardAwardClient
+	// RankingRewardCampaign is the client for interacting with the RankingRewardCampaign builders.
+	RankingRewardCampaign *RankingRewardCampaignClient
+	// RankingRewardExcludedUser is the client for interacting with the RankingRewardExcludedUser builders.
+	RankingRewardExcludedUser *RankingRewardExcludedUserClient
+	// RankingRewardRun is the client for interacting with the RankingRewardRun builders.
+	RankingRewardRun *RankingRewardRunClient
 	// RedeemCode is the client for interacting with the RedeemCode builders.
 	RedeemCode *RedeemCodeClient
 	// SecuritySecret is the client for interacting with the SecuritySecret builders.
@@ -178,6 +190,10 @@ func (c *Client) init() {
 	c.PromoCode = NewPromoCodeClient(c.config)
 	c.PromoCodeUsage = NewPromoCodeUsageClient(c.config)
 	c.Proxy = NewProxyClient(c.config)
+	c.RankingRewardAward = NewRankingRewardAwardClient(c.config)
+	c.RankingRewardCampaign = NewRankingRewardCampaignClient(c.config)
+	c.RankingRewardExcludedUser = NewRankingRewardExcludedUserClient(c.config)
+	c.RankingRewardRun = NewRankingRewardRunClient(c.config)
 	c.RedeemCode = NewRedeemCodeClient(c.config)
 	c.SecuritySecret = NewSecuritySecretClient(c.config)
 	c.Setting = NewSettingClient(c.config)
@@ -309,6 +325,10 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		PromoCode:                     NewPromoCodeClient(cfg),
 		PromoCodeUsage:                NewPromoCodeUsageClient(cfg),
 		Proxy:                         NewProxyClient(cfg),
+		RankingRewardAward:            NewRankingRewardAwardClient(cfg),
+		RankingRewardCampaign:         NewRankingRewardCampaignClient(cfg),
+		RankingRewardExcludedUser:     NewRankingRewardExcludedUserClient(cfg),
+		RankingRewardRun:              NewRankingRewardRunClient(cfg),
 		RedeemCode:                    NewRedeemCodeClient(cfg),
 		SecuritySecret:                NewSecuritySecretClient(cfg),
 		Setting:                       NewSettingClient(cfg),
@@ -367,6 +387,10 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		PromoCode:                     NewPromoCodeClient(cfg),
 		PromoCodeUsage:                NewPromoCodeUsageClient(cfg),
 		Proxy:                         NewProxyClient(cfg),
+		RankingRewardAward:            NewRankingRewardAwardClient(cfg),
+		RankingRewardCampaign:         NewRankingRewardCampaignClient(cfg),
+		RankingRewardExcludedUser:     NewRankingRewardExcludedUserClient(cfg),
+		RankingRewardRun:              NewRankingRewardRunClient(cfg),
 		RedeemCode:                    NewRedeemCodeClient(cfg),
 		SecuritySecret:                NewSecuritySecretClient(cfg),
 		Setting:                       NewSettingClient(cfg),
@@ -416,10 +440,12 @@ func (c *Client) Use(hooks ...Hook) {
 		c.IdempotencyRecord, c.IdentityAdoptionDecision, c.LotteryCampaign,
 		c.LotteryChance, c.LotteryDraw, c.LotteryPrize, c.PaymentAuditLog,
 		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
-		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
-		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
-		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserQuotaGrant, c.UserSubscription,
+		c.PromoCodeUsage, c.Proxy, c.RankingRewardAward, c.RankingRewardCampaign,
+		c.RankingRewardExcludedUser, c.RankingRewardRun, c.RedeemCode,
+		c.SecuritySecret, c.Setting, c.SubscriptionPlan, c.TLSFingerprintProfile,
+		c.UsageCleanupTask, c.UsageLog, c.User, c.UserAllowedGroup,
+		c.UserAttributeDefinition, c.UserAttributeValue, c.UserQuotaGrant,
+		c.UserSubscription,
 	} {
 		n.Use(hooks...)
 	}
@@ -436,10 +462,12 @@ func (c *Client) Intercept(interceptors ...Interceptor) {
 		c.IdempotencyRecord, c.IdentityAdoptionDecision, c.LotteryCampaign,
 		c.LotteryChance, c.LotteryDraw, c.LotteryPrize, c.PaymentAuditLog,
 		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
-		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
-		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
-		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserQuotaGrant, c.UserSubscription,
+		c.PromoCodeUsage, c.Proxy, c.RankingRewardAward, c.RankingRewardCampaign,
+		c.RankingRewardExcludedUser, c.RankingRewardRun, c.RedeemCode,
+		c.SecuritySecret, c.Setting, c.SubscriptionPlan, c.TLSFingerprintProfile,
+		c.UsageCleanupTask, c.UsageLog, c.User, c.UserAllowedGroup,
+		c.UserAttributeDefinition, c.UserAttributeValue, c.UserQuotaGrant,
+		c.UserSubscription,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -500,6 +528,14 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.PromoCodeUsage.mutate(ctx, m)
 	case *ProxyMutation:
 		return c.Proxy.mutate(ctx, m)
+	case *RankingRewardAwardMutation:
+		return c.RankingRewardAward.mutate(ctx, m)
+	case *RankingRewardCampaignMutation:
+		return c.RankingRewardCampaign.mutate(ctx, m)
+	case *RankingRewardExcludedUserMutation:
+		return c.RankingRewardExcludedUser.mutate(ctx, m)
+	case *RankingRewardRunMutation:
+		return c.RankingRewardRun.mutate(ctx, m)
 	case *RedeemCodeMutation:
 		return c.RedeemCode.mutate(ctx, m)
 	case *SecuritySecretMutation:
@@ -3151,6 +3187,38 @@ func (c *LotteryCampaignClient) QueryDraws(_m *LotteryCampaign) *LotteryDrawQuer
 	return query
 }
 
+// QueryRankingRewardCampaigns queries the ranking_reward_campaigns edge of a LotteryCampaign.
+func (c *LotteryCampaignClient) QueryRankingRewardCampaigns(_m *LotteryCampaign) *RankingRewardCampaignQuery {
+	query := (&RankingRewardCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(lotterycampaign.Table, lotterycampaign.FieldID, id),
+			sqlgraph.To(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, lotterycampaign.RankingRewardCampaignsTable, lotterycampaign.RankingRewardCampaignsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRankingRewardAwards queries the ranking_reward_awards edge of a LotteryCampaign.
+func (c *LotteryCampaignClient) QueryRankingRewardAwards(_m *LotteryCampaign) *RankingRewardAwardQuery {
+	query := (&RankingRewardAwardClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(lotterycampaign.Table, lotterycampaign.FieldID, id),
+			sqlgraph.To(rankingrewardaward.Table, rankingrewardaward.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, lotterycampaign.RankingRewardAwardsTable, lotterycampaign.RankingRewardAwardsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *LotteryCampaignClient) Hooks() []Hook {
 	return c.hooks.LotteryCampaign
@@ -4780,6 +4848,730 @@ func (c *ProxyClient) mutate(ctx context.Context, m *ProxyMutation) (Value, erro
 	}
 }
 
+// RankingRewardAwardClient is a client for the RankingRewardAward schema.
+type RankingRewardAwardClient struct {
+	config
+}
+
+// NewRankingRewardAwardClient returns a client for the RankingRewardAward from the given config.
+func NewRankingRewardAwardClient(c config) *RankingRewardAwardClient {
+	return &RankingRewardAwardClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rankingrewardaward.Hooks(f(g(h())))`.
+func (c *RankingRewardAwardClient) Use(hooks ...Hook) {
+	c.hooks.RankingRewardAward = append(c.hooks.RankingRewardAward, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rankingrewardaward.Intercept(f(g(h())))`.
+func (c *RankingRewardAwardClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RankingRewardAward = append(c.inters.RankingRewardAward, interceptors...)
+}
+
+// Create returns a builder for creating a RankingRewardAward entity.
+func (c *RankingRewardAwardClient) Create() *RankingRewardAwardCreate {
+	mutation := newRankingRewardAwardMutation(c.config, OpCreate)
+	return &RankingRewardAwardCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RankingRewardAward entities.
+func (c *RankingRewardAwardClient) CreateBulk(builders ...*RankingRewardAwardCreate) *RankingRewardAwardCreateBulk {
+	return &RankingRewardAwardCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RankingRewardAwardClient) MapCreateBulk(slice any, setFunc func(*RankingRewardAwardCreate, int)) *RankingRewardAwardCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RankingRewardAwardCreateBulk{err: fmt.Errorf("calling to RankingRewardAwardClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RankingRewardAwardCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RankingRewardAwardCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RankingRewardAward.
+func (c *RankingRewardAwardClient) Update() *RankingRewardAwardUpdate {
+	mutation := newRankingRewardAwardMutation(c.config, OpUpdate)
+	return &RankingRewardAwardUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RankingRewardAwardClient) UpdateOne(_m *RankingRewardAward) *RankingRewardAwardUpdateOne {
+	mutation := newRankingRewardAwardMutation(c.config, OpUpdateOne, withRankingRewardAward(_m))
+	return &RankingRewardAwardUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RankingRewardAwardClient) UpdateOneID(id int64) *RankingRewardAwardUpdateOne {
+	mutation := newRankingRewardAwardMutation(c.config, OpUpdateOne, withRankingRewardAwardID(id))
+	return &RankingRewardAwardUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RankingRewardAward.
+func (c *RankingRewardAwardClient) Delete() *RankingRewardAwardDelete {
+	mutation := newRankingRewardAwardMutation(c.config, OpDelete)
+	return &RankingRewardAwardDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RankingRewardAwardClient) DeleteOne(_m *RankingRewardAward) *RankingRewardAwardDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RankingRewardAwardClient) DeleteOneID(id int64) *RankingRewardAwardDeleteOne {
+	builder := c.Delete().Where(rankingrewardaward.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RankingRewardAwardDeleteOne{builder}
+}
+
+// Query returns a query builder for RankingRewardAward.
+func (c *RankingRewardAwardClient) Query() *RankingRewardAwardQuery {
+	return &RankingRewardAwardQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRankingRewardAward},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RankingRewardAward entity by its id.
+func (c *RankingRewardAwardClient) Get(ctx context.Context, id int64) (*RankingRewardAward, error) {
+	return c.Query().Where(rankingrewardaward.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RankingRewardAwardClient) GetX(ctx context.Context, id int64) *RankingRewardAward {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryRun queries the run edge of a RankingRewardAward.
+func (c *RankingRewardAwardClient) QueryRun(_m *RankingRewardAward) *RankingRewardRunQuery {
+	query := (&RankingRewardRunClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardaward.Table, rankingrewardaward.FieldID, id),
+			sqlgraph.To(rankingrewardrun.Table, rankingrewardrun.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardaward.RunTable, rankingrewardaward.RunColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryCampaign queries the campaign edge of a RankingRewardAward.
+func (c *RankingRewardAwardClient) QueryCampaign(_m *RankingRewardAward) *RankingRewardCampaignQuery {
+	query := (&RankingRewardCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardaward.Table, rankingrewardaward.FieldID, id),
+			sqlgraph.To(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardaward.CampaignTable, rankingrewardaward.CampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryLotteryCampaign queries the lottery_campaign edge of a RankingRewardAward.
+func (c *RankingRewardAwardClient) QueryLotteryCampaign(_m *RankingRewardAward) *LotteryCampaignQuery {
+	query := (&LotteryCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardaward.Table, rankingrewardaward.FieldID, id),
+			sqlgraph.To(lotterycampaign.Table, lotterycampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardaward.LotteryCampaignTable, rankingrewardaward.LotteryCampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryUser queries the user edge of a RankingRewardAward.
+func (c *RankingRewardAwardClient) QueryUser(_m *RankingRewardAward) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardaward.Table, rankingrewardaward.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardaward.UserTable, rankingrewardaward.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RankingRewardAwardClient) Hooks() []Hook {
+	return c.hooks.RankingRewardAward
+}
+
+// Interceptors returns the client interceptors.
+func (c *RankingRewardAwardClient) Interceptors() []Interceptor {
+	return c.inters.RankingRewardAward
+}
+
+func (c *RankingRewardAwardClient) mutate(ctx context.Context, m *RankingRewardAwardMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RankingRewardAwardCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RankingRewardAwardUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RankingRewardAwardUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RankingRewardAwardDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RankingRewardAward mutation op: %q", m.Op())
+	}
+}
+
+// RankingRewardCampaignClient is a client for the RankingRewardCampaign schema.
+type RankingRewardCampaignClient struct {
+	config
+}
+
+// NewRankingRewardCampaignClient returns a client for the RankingRewardCampaign from the given config.
+func NewRankingRewardCampaignClient(c config) *RankingRewardCampaignClient {
+	return &RankingRewardCampaignClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rankingrewardcampaign.Hooks(f(g(h())))`.
+func (c *RankingRewardCampaignClient) Use(hooks ...Hook) {
+	c.hooks.RankingRewardCampaign = append(c.hooks.RankingRewardCampaign, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rankingrewardcampaign.Intercept(f(g(h())))`.
+func (c *RankingRewardCampaignClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RankingRewardCampaign = append(c.inters.RankingRewardCampaign, interceptors...)
+}
+
+// Create returns a builder for creating a RankingRewardCampaign entity.
+func (c *RankingRewardCampaignClient) Create() *RankingRewardCampaignCreate {
+	mutation := newRankingRewardCampaignMutation(c.config, OpCreate)
+	return &RankingRewardCampaignCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RankingRewardCampaign entities.
+func (c *RankingRewardCampaignClient) CreateBulk(builders ...*RankingRewardCampaignCreate) *RankingRewardCampaignCreateBulk {
+	return &RankingRewardCampaignCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RankingRewardCampaignClient) MapCreateBulk(slice any, setFunc func(*RankingRewardCampaignCreate, int)) *RankingRewardCampaignCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RankingRewardCampaignCreateBulk{err: fmt.Errorf("calling to RankingRewardCampaignClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RankingRewardCampaignCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RankingRewardCampaignCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) Update() *RankingRewardCampaignUpdate {
+	mutation := newRankingRewardCampaignMutation(c.config, OpUpdate)
+	return &RankingRewardCampaignUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RankingRewardCampaignClient) UpdateOne(_m *RankingRewardCampaign) *RankingRewardCampaignUpdateOne {
+	mutation := newRankingRewardCampaignMutation(c.config, OpUpdateOne, withRankingRewardCampaign(_m))
+	return &RankingRewardCampaignUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RankingRewardCampaignClient) UpdateOneID(id int64) *RankingRewardCampaignUpdateOne {
+	mutation := newRankingRewardCampaignMutation(c.config, OpUpdateOne, withRankingRewardCampaignID(id))
+	return &RankingRewardCampaignUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) Delete() *RankingRewardCampaignDelete {
+	mutation := newRankingRewardCampaignMutation(c.config, OpDelete)
+	return &RankingRewardCampaignDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RankingRewardCampaignClient) DeleteOne(_m *RankingRewardCampaign) *RankingRewardCampaignDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RankingRewardCampaignClient) DeleteOneID(id int64) *RankingRewardCampaignDeleteOne {
+	builder := c.Delete().Where(rankingrewardcampaign.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RankingRewardCampaignDeleteOne{builder}
+}
+
+// Query returns a query builder for RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) Query() *RankingRewardCampaignQuery {
+	return &RankingRewardCampaignQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRankingRewardCampaign},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RankingRewardCampaign entity by its id.
+func (c *RankingRewardCampaignClient) Get(ctx context.Context, id int64) (*RankingRewardCampaign, error) {
+	return c.Query().Where(rankingrewardcampaign.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RankingRewardCampaignClient) GetX(ctx context.Context, id int64) *RankingRewardCampaign {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryLotteryCampaign queries the lottery_campaign edge of a RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) QueryLotteryCampaign(_m *RankingRewardCampaign) *LotteryCampaignQuery {
+	query := (&LotteryCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID, id),
+			sqlgraph.To(lotterycampaign.Table, lotterycampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardcampaign.LotteryCampaignTable, rankingrewardcampaign.LotteryCampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryExcludedUsers queries the excluded_users edge of a RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) QueryExcludedUsers(_m *RankingRewardCampaign) *RankingRewardExcludedUserQuery {
+	query := (&RankingRewardExcludedUserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID, id),
+			sqlgraph.To(rankingrewardexcludeduser.Table, rankingrewardexcludeduser.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rankingrewardcampaign.ExcludedUsersTable, rankingrewardcampaign.ExcludedUsersColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRuns queries the runs edge of a RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) QueryRuns(_m *RankingRewardCampaign) *RankingRewardRunQuery {
+	query := (&RankingRewardRunClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID, id),
+			sqlgraph.To(rankingrewardrun.Table, rankingrewardrun.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rankingrewardcampaign.RunsTable, rankingrewardcampaign.RunsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAwards queries the awards edge of a RankingRewardCampaign.
+func (c *RankingRewardCampaignClient) QueryAwards(_m *RankingRewardCampaign) *RankingRewardAwardQuery {
+	query := (&RankingRewardAwardClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID, id),
+			sqlgraph.To(rankingrewardaward.Table, rankingrewardaward.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rankingrewardcampaign.AwardsTable, rankingrewardcampaign.AwardsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RankingRewardCampaignClient) Hooks() []Hook {
+	return c.hooks.RankingRewardCampaign
+}
+
+// Interceptors returns the client interceptors.
+func (c *RankingRewardCampaignClient) Interceptors() []Interceptor {
+	return c.inters.RankingRewardCampaign
+}
+
+func (c *RankingRewardCampaignClient) mutate(ctx context.Context, m *RankingRewardCampaignMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RankingRewardCampaignCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RankingRewardCampaignUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RankingRewardCampaignUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RankingRewardCampaignDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RankingRewardCampaign mutation op: %q", m.Op())
+	}
+}
+
+// RankingRewardExcludedUserClient is a client for the RankingRewardExcludedUser schema.
+type RankingRewardExcludedUserClient struct {
+	config
+}
+
+// NewRankingRewardExcludedUserClient returns a client for the RankingRewardExcludedUser from the given config.
+func NewRankingRewardExcludedUserClient(c config) *RankingRewardExcludedUserClient {
+	return &RankingRewardExcludedUserClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rankingrewardexcludeduser.Hooks(f(g(h())))`.
+func (c *RankingRewardExcludedUserClient) Use(hooks ...Hook) {
+	c.hooks.RankingRewardExcludedUser = append(c.hooks.RankingRewardExcludedUser, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rankingrewardexcludeduser.Intercept(f(g(h())))`.
+func (c *RankingRewardExcludedUserClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RankingRewardExcludedUser = append(c.inters.RankingRewardExcludedUser, interceptors...)
+}
+
+// Create returns a builder for creating a RankingRewardExcludedUser entity.
+func (c *RankingRewardExcludedUserClient) Create() *RankingRewardExcludedUserCreate {
+	mutation := newRankingRewardExcludedUserMutation(c.config, OpCreate)
+	return &RankingRewardExcludedUserCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RankingRewardExcludedUser entities.
+func (c *RankingRewardExcludedUserClient) CreateBulk(builders ...*RankingRewardExcludedUserCreate) *RankingRewardExcludedUserCreateBulk {
+	return &RankingRewardExcludedUserCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RankingRewardExcludedUserClient) MapCreateBulk(slice any, setFunc func(*RankingRewardExcludedUserCreate, int)) *RankingRewardExcludedUserCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RankingRewardExcludedUserCreateBulk{err: fmt.Errorf("calling to RankingRewardExcludedUserClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RankingRewardExcludedUserCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RankingRewardExcludedUserCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RankingRewardExcludedUser.
+func (c *RankingRewardExcludedUserClient) Update() *RankingRewardExcludedUserUpdate {
+	mutation := newRankingRewardExcludedUserMutation(c.config, OpUpdate)
+	return &RankingRewardExcludedUserUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RankingRewardExcludedUserClient) UpdateOne(_m *RankingRewardExcludedUser) *RankingRewardExcludedUserUpdateOne {
+	mutation := newRankingRewardExcludedUserMutation(c.config, OpUpdateOne, withRankingRewardExcludedUser(_m))
+	return &RankingRewardExcludedUserUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RankingRewardExcludedUserClient) UpdateOneID(id int64) *RankingRewardExcludedUserUpdateOne {
+	mutation := newRankingRewardExcludedUserMutation(c.config, OpUpdateOne, withRankingRewardExcludedUserID(id))
+	return &RankingRewardExcludedUserUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RankingRewardExcludedUser.
+func (c *RankingRewardExcludedUserClient) Delete() *RankingRewardExcludedUserDelete {
+	mutation := newRankingRewardExcludedUserMutation(c.config, OpDelete)
+	return &RankingRewardExcludedUserDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RankingRewardExcludedUserClient) DeleteOne(_m *RankingRewardExcludedUser) *RankingRewardExcludedUserDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RankingRewardExcludedUserClient) DeleteOneID(id int64) *RankingRewardExcludedUserDeleteOne {
+	builder := c.Delete().Where(rankingrewardexcludeduser.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RankingRewardExcludedUserDeleteOne{builder}
+}
+
+// Query returns a query builder for RankingRewardExcludedUser.
+func (c *RankingRewardExcludedUserClient) Query() *RankingRewardExcludedUserQuery {
+	return &RankingRewardExcludedUserQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRankingRewardExcludedUser},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RankingRewardExcludedUser entity by its id.
+func (c *RankingRewardExcludedUserClient) Get(ctx context.Context, id int64) (*RankingRewardExcludedUser, error) {
+	return c.Query().Where(rankingrewardexcludeduser.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RankingRewardExcludedUserClient) GetX(ctx context.Context, id int64) *RankingRewardExcludedUser {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryCampaign queries the campaign edge of a RankingRewardExcludedUser.
+func (c *RankingRewardExcludedUserClient) QueryCampaign(_m *RankingRewardExcludedUser) *RankingRewardCampaignQuery {
+	query := (&RankingRewardCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardexcludeduser.Table, rankingrewardexcludeduser.FieldID, id),
+			sqlgraph.To(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardexcludeduser.CampaignTable, rankingrewardexcludeduser.CampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryUser queries the user edge of a RankingRewardExcludedUser.
+func (c *RankingRewardExcludedUserClient) QueryUser(_m *RankingRewardExcludedUser) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardexcludeduser.Table, rankingrewardexcludeduser.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardexcludeduser.UserTable, rankingrewardexcludeduser.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RankingRewardExcludedUserClient) Hooks() []Hook {
+	return c.hooks.RankingRewardExcludedUser
+}
+
+// Interceptors returns the client interceptors.
+func (c *RankingRewardExcludedUserClient) Interceptors() []Interceptor {
+	return c.inters.RankingRewardExcludedUser
+}
+
+func (c *RankingRewardExcludedUserClient) mutate(ctx context.Context, m *RankingRewardExcludedUserMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RankingRewardExcludedUserCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RankingRewardExcludedUserUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RankingRewardExcludedUserUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RankingRewardExcludedUserDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RankingRewardExcludedUser mutation op: %q", m.Op())
+	}
+}
+
+// RankingRewardRunClient is a client for the RankingRewardRun schema.
+type RankingRewardRunClient struct {
+	config
+}
+
+// NewRankingRewardRunClient returns a client for the RankingRewardRun from the given config.
+func NewRankingRewardRunClient(c config) *RankingRewardRunClient {
+	return &RankingRewardRunClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rankingrewardrun.Hooks(f(g(h())))`.
+func (c *RankingRewardRunClient) Use(hooks ...Hook) {
+	c.hooks.RankingRewardRun = append(c.hooks.RankingRewardRun, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rankingrewardrun.Intercept(f(g(h())))`.
+func (c *RankingRewardRunClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RankingRewardRun = append(c.inters.RankingRewardRun, interceptors...)
+}
+
+// Create returns a builder for creating a RankingRewardRun entity.
+func (c *RankingRewardRunClient) Create() *RankingRewardRunCreate {
+	mutation := newRankingRewardRunMutation(c.config, OpCreate)
+	return &RankingRewardRunCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RankingRewardRun entities.
+func (c *RankingRewardRunClient) CreateBulk(builders ...*RankingRewardRunCreate) *RankingRewardRunCreateBulk {
+	return &RankingRewardRunCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RankingRewardRunClient) MapCreateBulk(slice any, setFunc func(*RankingRewardRunCreate, int)) *RankingRewardRunCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RankingRewardRunCreateBulk{err: fmt.Errorf("calling to RankingRewardRunClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RankingRewardRunCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RankingRewardRunCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RankingRewardRun.
+func (c *RankingRewardRunClient) Update() *RankingRewardRunUpdate {
+	mutation := newRankingRewardRunMutation(c.config, OpUpdate)
+	return &RankingRewardRunUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RankingRewardRunClient) UpdateOne(_m *RankingRewardRun) *RankingRewardRunUpdateOne {
+	mutation := newRankingRewardRunMutation(c.config, OpUpdateOne, withRankingRewardRun(_m))
+	return &RankingRewardRunUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RankingRewardRunClient) UpdateOneID(id int64) *RankingRewardRunUpdateOne {
+	mutation := newRankingRewardRunMutation(c.config, OpUpdateOne, withRankingRewardRunID(id))
+	return &RankingRewardRunUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RankingRewardRun.
+func (c *RankingRewardRunClient) Delete() *RankingRewardRunDelete {
+	mutation := newRankingRewardRunMutation(c.config, OpDelete)
+	return &RankingRewardRunDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RankingRewardRunClient) DeleteOne(_m *RankingRewardRun) *RankingRewardRunDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RankingRewardRunClient) DeleteOneID(id int64) *RankingRewardRunDeleteOne {
+	builder := c.Delete().Where(rankingrewardrun.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RankingRewardRunDeleteOne{builder}
+}
+
+// Query returns a query builder for RankingRewardRun.
+func (c *RankingRewardRunClient) Query() *RankingRewardRunQuery {
+	return &RankingRewardRunQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRankingRewardRun},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RankingRewardRun entity by its id.
+func (c *RankingRewardRunClient) Get(ctx context.Context, id int64) (*RankingRewardRun, error) {
+	return c.Query().Where(rankingrewardrun.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RankingRewardRunClient) GetX(ctx context.Context, id int64) *RankingRewardRun {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryCampaign queries the campaign edge of a RankingRewardRun.
+func (c *RankingRewardRunClient) QueryCampaign(_m *RankingRewardRun) *RankingRewardCampaignQuery {
+	query := (&RankingRewardCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardrun.Table, rankingrewardrun.FieldID, id),
+			sqlgraph.To(rankingrewardcampaign.Table, rankingrewardcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rankingrewardrun.CampaignTable, rankingrewardrun.CampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAwards queries the awards edge of a RankingRewardRun.
+func (c *RankingRewardRunClient) QueryAwards(_m *RankingRewardRun) *RankingRewardAwardQuery {
+	query := (&RankingRewardAwardClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rankingrewardrun.Table, rankingrewardrun.FieldID, id),
+			sqlgraph.To(rankingrewardaward.Table, rankingrewardaward.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rankingrewardrun.AwardsTable, rankingrewardrun.AwardsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RankingRewardRunClient) Hooks() []Hook {
+	return c.hooks.RankingRewardRun
+}
+
+// Interceptors returns the client interceptors.
+func (c *RankingRewardRunClient) Interceptors() []Interceptor {
+	return c.inters.RankingRewardRun
+}
+
+func (c *RankingRewardRunClient) mutate(ctx context.Context, m *RankingRewardRunMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RankingRewardRunCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RankingRewardRunUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RankingRewardRunUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RankingRewardRunDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RankingRewardRun mutation op: %q", m.Op())
+	}
+}
+
 // RedeemCodeClient is a client for the RedeemCode schema.
 type RedeemCodeClient struct {
 	config
@@ -6027,6 +6819,38 @@ func (c *UserClient) QueryLotteryDraws(_m *User) *LotteryDrawQuery {
 	return query
 }
 
+// QueryRankingRewardExclusions queries the ranking_reward_exclusions edge of a User.
+func (c *UserClient) QueryRankingRewardExclusions(_m *User) *RankingRewardExcludedUserQuery {
+	query := (&RankingRewardExcludedUserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, id),
+			sqlgraph.To(rankingrewardexcludeduser.Table, rankingrewardexcludeduser.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.RankingRewardExclusionsTable, user.RankingRewardExclusionsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRankingRewardAwards queries the ranking_reward_awards edge of a User.
+func (c *UserClient) QueryRankingRewardAwards(_m *User) *RankingRewardAwardQuery {
+	query := (&RankingRewardAwardClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, id),
+			sqlgraph.To(rankingrewardaward.Table, rankingrewardaward.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.RankingRewardAwardsTable, user.RankingRewardAwardsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QuerySubscriptions queries the subscriptions edge of a User.
 func (c *UserClient) QuerySubscriptions(_m *User) *UserSubscriptionQuery {
 	query := (&UserSubscriptionClient{config: c.config}).Query()
@@ -7019,9 +7843,11 @@ type (
 		Group, IdempotencyRecord, IdentityAdoptionDecision, LotteryCampaign,
 		LotteryChance, LotteryDraw, LotteryPrize, PaymentAuditLog, PaymentOrder,
 		PaymentProviderInstance, PendingAuthSession, PromoCode, PromoCodeUsage, Proxy,
-		RedeemCode, SecuritySecret, Setting, SubscriptionPlan, TLSFingerprintProfile,
-		UsageCleanupTask, UsageLog, User, UserAllowedGroup, UserAttributeDefinition,
-		UserAttributeValue, UserQuotaGrant, UserSubscription []ent.Hook
+		RankingRewardAward, RankingRewardCampaign, RankingRewardExcludedUser,
+		RankingRewardRun, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
+		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
+		UserAttributeDefinition, UserAttributeValue, UserQuotaGrant,
+		UserSubscription []ent.Hook
 	}
 	inters struct {
 		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
@@ -7030,9 +7856,11 @@ type (
 		Group, IdempotencyRecord, IdentityAdoptionDecision, LotteryCampaign,
 		LotteryChance, LotteryDraw, LotteryPrize, PaymentAuditLog, PaymentOrder,
 		PaymentProviderInstance, PendingAuthSession, PromoCode, PromoCodeUsage, Proxy,
-		RedeemCode, SecuritySecret, Setting, SubscriptionPlan, TLSFingerprintProfile,
-		UsageCleanupTask, UsageLog, User, UserAllowedGroup, UserAttributeDefinition,
-		UserAttributeValue, UserQuotaGrant, UserSubscription []ent.Interceptor
+		RankingRewardAward, RankingRewardCampaign, RankingRewardExcludedUser,
+		RankingRewardRun, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
+		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
+		UserAttributeDefinition, UserAttributeValue, UserQuotaGrant,
+		UserSubscription []ent.Interceptor
 	}
 )
 

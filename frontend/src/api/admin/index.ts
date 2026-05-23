@@ -32,6 +32,7 @@ import adminPaymentAPI from './payment'
 import affiliatesAPI from './affiliates'
 import riskControlAPI from './riskControl'
 import lotteryAPI from './lottery'
+import rankingRewardAPI from './rankingReward'
 
 /**
  * Unified admin API object for convenient access
@@ -65,7 +66,8 @@ export const adminAPI = {
   payment: adminPaymentAPI,
   affiliates: affiliatesAPI,
   riskControl: riskControlAPI,
-  lottery: lotteryAPI
+  lottery: lotteryAPI,
+  rankingReward: rankingRewardAPI
 }
 
 export {
@@ -97,7 +99,8 @@ export {
   adminPaymentAPI,
   affiliatesAPI,
   riskControlAPI,
-  lotteryAPI
+  lotteryAPI,
+  rankingRewardAPI
 }
 
 export default adminAPI

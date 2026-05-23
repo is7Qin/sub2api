@@ -56,6 +56,12 @@ declare module 'vue-router' {
     requiresRiskControl?: boolean
 
     /**
+     * 是否要求排行榜奖励功能开关已启用
+     * @default false
+     */
+    requiresRankingReward?: boolean
+
+    /**
      * i18n key for the page title
      */
     titleKey?: string

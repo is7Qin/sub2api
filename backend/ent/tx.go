@@ -66,6 +66,14 @@ type Tx struct {
 	PromoCodeUsage *PromoCodeUsageClient
 	// Proxy is the client for interacting with the Proxy builders.
 	Proxy *ProxyClient
+	// RankingRewardAward is the client for interacting with the RankingRewardAward builders.
+	RankingRewardAward *RankingRewardAwardClient
+	// RankingRewardCampaign is the client for interacting with the RankingRewardCampaign builders.
+	RankingRewardCampaign *RankingRewardCampaignClient
+	// RankingRewardExcludedUser is the client for interacting with the RankingRewardExcludedUser builders.
+	RankingRewardExcludedUser *RankingRewardExcludedUserClient
+	// RankingRewardRun is the client for interacting with the RankingRewardRun builders.
+	RankingRewardRun *RankingRewardRunClient
 	// RedeemCode is the client for interacting with the RedeemCode builders.
 	RedeemCode *RedeemCodeClient
 	// SecuritySecret is the client for interacting with the SecuritySecret builders.
@@ -249,6 +257,10 @@ func (tx *Tx) init() {
 	tx.PromoCode = NewPromoCodeClient(tx.config)
 	tx.PromoCodeUsage = NewPromoCodeUsageClient(tx.config)
 	tx.Proxy = NewProxyClient(tx.config)
+	tx.RankingRewardAward = NewRankingRewardAwardClient(tx.config)
+	tx.RankingRewardCampaign = NewRankingRewardCampaignClient(tx.config)
+	tx.RankingRewardExcludedUser = NewRankingRewardExcludedUserClient(tx.config)
+	tx.RankingRewardRun = NewRankingRewardRunClient(tx.config)
 	tx.RedeemCode = NewRedeemCodeClient(tx.config)
 	tx.SecuritySecret = NewSecuritySecretClient(tx.config)
 	tx.Setting = NewSettingClient(tx.config)

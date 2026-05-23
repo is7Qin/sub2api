@@ -119,6 +119,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Lottery',
   }),
+  rankingReward: defineFlag({
+    key: 'ranking_reward_enabled',
+    mode: 'opt-in',
+    label: 'Ranking Reward',
+  }),
   affiliate: defineFlag({
     key: 'affiliate_enabled',
     mode: 'opt-in',

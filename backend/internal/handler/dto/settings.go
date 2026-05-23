@@ -244,6 +244,9 @@ type SystemSettings struct {
 	// 抽奖中心功能开关
 	LotteryEnabled bool `json:"lottery_enabled"`
 
+	// 排行榜奖励功能开关
+	RankingRewardEnabled bool `json:"ranking_reward_enabled"`
+
 	// Affiliate (邀请返利) feature switch
 	AffiliateEnabled bool `json:"affiliate_enabled"`
 
@@ -312,8 +315,9 @@ type PublicSettings struct {
 
 	AffiliateEnabled bool `json:"affiliate_enabled"`
 
-	RiskControlEnabled bool `json:"risk_control_enabled"`
-	LotteryEnabled     bool `json:"lottery_enabled"`
+	RiskControlEnabled   bool `json:"risk_control_enabled"`
+	LotteryEnabled       bool `json:"lottery_enabled"`
+	RankingRewardEnabled bool `json:"ranking_reward_enabled"`
 }
 
 type LoginAgreementDocument struct {

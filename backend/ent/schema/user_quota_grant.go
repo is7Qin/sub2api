@@ -26,6 +26,7 @@ func (UserQuotaGrant) Fields() []ent.Field {
 	return []ent.Field{
 		field.Int64("user_id"),
 		field.Float("amount_usd").
+			Positive().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
 		field.Float("used_amount_usd").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}).

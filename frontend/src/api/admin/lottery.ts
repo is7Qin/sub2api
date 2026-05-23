@@ -143,6 +143,13 @@ export interface GrantLotteryChancesRequest {
   metadata?: Record<string, unknown>
 }
 
+function idempotencyConfig(): { headers: { 'Idempotency-Key': string } } {
+  const key = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return { headers: { 'Idempotency-Key': key } }
+}
+
 export async function listCampaigns(params: ListLotteryCampaignsParams = {}): Promise<PaginatedResponse<LotteryCampaign>> {
   const { data } = await apiClient.get<PaginatedResponse<LotteryCampaign>>('/admin/lottery/campaigns', {
     params: {
@@ -160,7 +167,7 @@ export async function getCampaign(id: number): Promise<LotteryCampaign> {
 }
 
 export async function createCampaign(payload: CreateLotteryCampaignRequest): Promise<LotteryCampaign> {
-  const { data } = await apiClient.post<LotteryCampaign>('/admin/lottery/campaigns', payload)
+  const { data } = await apiClient.post<LotteryCampaign>('/admin/lottery/campaigns', payload, idempotencyConfig())
   return data
 }
 
@@ -175,7 +182,7 @@ export async function listPrizes(campaignId: number): Promise<LotteryPrize[]> {
 }
 
 export async function createPrize(campaignId: number, payload: CreateLotteryPrizeRequest): Promise<LotteryPrize> {
-  const { data } = await apiClient.post<LotteryPrize>(`/admin/lottery/campaigns/${campaignId}/prizes`, payload)
+  const { data } = await apiClient.post<LotteryPrize>(`/admin/lottery/campaigns/${campaignId}/prizes`, payload, idempotencyConfig())
   return data
 }
 
@@ -185,7 +192,7 @@ export async function updatePrize(prizeId: number, payload: UpdateLotteryPrizeRe
 }
 
 export async function grantChances(campaignId: number, payload: GrantLotteryChancesRequest): Promise<LotteryChance[]> {
-  const { data } = await apiClient.post<LotteryChance[]>(`/admin/lottery/campaigns/${campaignId}/chances`, payload)
+  const { data } = await apiClient.post<LotteryChance[]>(`/admin/lottery/campaigns/${campaignId}/chances`, payload, idempotencyConfig())
   return data
 }
 

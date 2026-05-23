@@ -5524,6 +5524,7 @@ export default {
           title: '抽奖中心',
           description: '启用抽奖活动、用户抽奖入口和用户抽奖接口。默认关闭。',
           configureLink: '配置抽奖活动',
+          configureDisabledHint: '启用抽奖中心后可配置活动。',
           enabled: '启用抽奖中心',
           enabledHint: '关闭后抽奖侧边栏入口隐藏，用户抽奖接口返回无权限。',
         },

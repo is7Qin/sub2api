@@ -8,6 +8,13 @@ export interface ListLotteryParams {
   campaign_id?: number
 }
 
+function idempotencyConfig(): { headers: { 'Idempotency-Key': string } } {
+  const key = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return { headers: { 'Idempotency-Key': key } }
+}
+
 export async function listCampaigns(params: ListLotteryParams = {}): Promise<PaginatedResponse<LotteryCampaign>> {
   const { data } = await apiClient.get<PaginatedResponse<LotteryCampaign>>('/lottery/campaigns', {
     params: {
@@ -46,7 +53,7 @@ export async function listDraws(params: ListLotteryParams = {}): Promise<Paginat
 }
 
 export async function draw(campaignId: number): Promise<LotteryDrawResult> {
-  const { data } = await apiClient.post<LotteryDrawResult>('/lottery/draw', { campaign_id: campaignId })
+  const { data } = await apiClient.post<LotteryDrawResult>('/lottery/draw', { campaign_id: campaignId }, idempotencyConfig())
   return data
 }
 

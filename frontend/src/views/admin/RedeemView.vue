@@ -1142,24 +1142,23 @@ const handleGenerateCodes = async () => {
     return
   }
 
-  const metadata =
-    generateForm.type === 'random_timed_quota'
-      ? { min_value: generateForm.min_value, max_value: generateForm.max_value }
-      : undefined
+  const payload = {
+    count: generateForm.count,
+    type: generateForm.type,
+    value: generateForm.value,
+    ...(generateForm.type === 'subscription' ? { group_id: generateForm.group_id } : {}),
+    ...(generateForm.type === 'subscription' || generateForm.type === 'timed_quota' || generateForm.type === 'random_timed_quota'
+      ? { validity_days: generateForm.validity_days }
+      : {}),
+    ...(expiresInDays && expiresInDays > 0 ? { expires_in_days: expiresInDays } : {}),
+    ...(generateForm.type === 'random_timed_quota'
+      ? { metadata: { min_value: generateForm.min_value, max_value: generateForm.max_value } }
+      : {}),
+  }
 
   generating.value = true
   try {
-    const result = await adminAPI.redeem.generate(
-      generateForm.count,
-      generateForm.type,
-      generateForm.value,
-      generateForm.type === 'subscription' ? generateForm.group_id : undefined,
-      generateForm.type === 'subscription' || generateForm.type === 'timed_quota' || generateForm.type === 'random_timed_quota'
-        ? generateForm.validity_days
-        : undefined,
-      expiresInDays,
-      metadata
-    )
+    const result = await adminAPI.redeem.generate(payload)
     showGenerateDialog.value = false
     generatedCodes.value = result
     showResultDialog.value = true

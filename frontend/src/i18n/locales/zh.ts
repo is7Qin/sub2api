@@ -5532,6 +5532,7 @@ export default {
           title: '排行榜奖励',
           description: '启用管理员排行榜奖励配置和用户端匿名奖励榜单。默认关闭。',
           configureLink: '前往 排行榜奖励 配置奖励活动',
+          configureDisabledHint: '启用排行榜奖励后可配置活动。',
           enabled: '启用排行榜奖励',
           enabledHint: '关闭后用户和管理员侧边栏入口隐藏，用户接口返回禁用错误。',
         },

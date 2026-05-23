@@ -5369,6 +5369,7 @@ export default {
           title: 'Ranking Rewards',
           description: 'Enable admin ranking reward configuration and the user-facing anonymous reward leaderboard. Disabled by default.',
           configureLink: 'Configure ranking reward campaigns',
+          configureDisabledHint: 'Enable Ranking Rewards before configuring campaigns.',
           enabled: 'Enable Ranking Rewards',
           enabledHint: 'When off, user/admin sidebar entries are hidden and user endpoints return a disabled error.',
         },

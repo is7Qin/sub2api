@@ -320,6 +320,88 @@ func (r *rankingRewardRepository) ListPublicAwards(ctx context.Context, limit in
 	return results, nil
 }
 
+func (r *rankingRewardRepository) ListPublicCurrentCandidates(ctx context.Context, now time.Time, limit int) (results []service.RankingRewardPublicCandidate, err error) {
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	query := `
+		WITH active_campaigns AS (
+			SELECT
+				c.id,
+				c.name,
+				c.top_n,
+				c.chance_count,
+				c.public_display_limit,
+				c.min_actual_cost,
+				GREATEST(c.starts_at, (date_trunc('day', $1 AT TIME ZONE c.timezone) AT TIME ZONE c.timezone)) AS window_start,
+				LEAST(COALESCE(c.ends_at, $1), $1) AS window_end,
+				(date_trunc('day', $1 AT TIME ZONE c.timezone)::date) AS reward_date
+			FROM ranking_reward_campaigns c
+			WHERE c.status = $2
+			  AND c.starts_at <= $1
+			  AND (c.ends_at IS NULL OR c.ends_at > $1)
+			ORDER BY c.id ASC
+			LIMIT $3
+		),
+		public_entries AS (
+			SELECT *
+			FROM (
+				SELECT
+					ac.id AS campaign_id,
+					ac.name AS campaign_name,
+					ac.reward_date,
+					ac.public_display_limit,
+					ac.top_n,
+					ac.chance_count,
+					s.user_id,
+					ROW_NUMBER() OVER (PARTITION BY ac.id ORDER BY s.actual_cost DESC, s.tokens DESC, s.user_id ASC) AS rank
+				FROM active_campaigns ac
+				JOIN LATERAL (
+					SELECT
+						u.user_id,
+						COALESCE(SUM(u.actual_cost), 0) AS actual_cost,
+						COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) AS tokens
+					FROM usage_logs u
+					WHERE u.created_at >= ac.window_start AND u.created_at < ac.window_end
+					GROUP BY u.user_id
+					HAVING COALESCE(SUM(u.actual_cost), 0) >= ac.min_actual_cost
+				) s ON TRUE
+				WHERE ac.window_end > ac.window_start
+				  AND NOT EXISTS (
+					SELECT 1 FROM ranking_reward_excluded_users e
+					WHERE e.campaign_id = ac.id AND e.user_id = s.user_id
+				  )
+			) ranked
+			WHERE rank <= public_display_limit
+		)
+		SELECT campaign_id, campaign_name, reward_date, public_display_limit, top_n, chance_count, rank, user_id
+		FROM public_entries
+		ORDER BY campaign_id ASC, rank ASC
+	`
+	rows, err := r.db.QueryContext(ctx, query, now, service.RankingRewardCampaignStatusActive, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+			results = nil
+		}
+	}()
+	results = make([]service.RankingRewardPublicCandidate, 0)
+	for rows.Next() {
+		var item service.RankingRewardPublicCandidate
+		if err = rows.Scan(&item.CampaignID, &item.CampaignName, &item.RewardDate, &item.PublicDisplayLimit, &item.TopN, &item.ChanceCount, &item.Rank, &item.UserID); err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func (r *rankingRewardRepository) CountRunLotteryChances(ctx context.Context, runID int64) (int, error) {
 	client := clientFromContext(ctx, r.client)
 	return client.LotteryChance.Query().

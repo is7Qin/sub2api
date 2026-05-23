@@ -1110,23 +1110,27 @@ export default {
 
   rankingReward: {
     title: 'Ranking Rewards',
-    description: 'View daily rankings where top users receive lottery chances and display size is configured separately',
+    description: 'View live rankings refreshed every 5 minutes, where top users are estimated to receive lottery chances. Completed reward history stays visible after awards run.',
     loadFailed: 'Failed to load ranking rewards',
     emptyTitle: 'No ranking rewards yet',
-    emptyDescription: 'There are no completed ranking reward records yet.',
+    emptyDescription: 'There are no live rankings or completed ranking reward records yet.',
     rewardDate: 'Reward date',
     displayLimit: 'Showing top {count}',
     awardedCount: '{count} winners',
+    liveBadge: 'Live ranking',
     anonymousUser: 'User {code}',
     currentUser: 'Me',
     chanceCount: '{count} lottery chances',
     noReward: 'No reward',
     awarded: 'Awarded',
     notAwarded: 'Not awarded',
+    inRewardRange: 'In reward range',
+    outOfRewardRange: 'Out of reward range',
     columns: {
       rank: 'Rank',
       user: 'User',
       reward: 'Reward',
+      estimatedReward: 'Estimated reward',
       status: 'Status'
     }
   },
@@ -1508,6 +1512,130 @@ export default {
     rankingReward: {
       title: 'Ranking Rewards',
       description: 'Grant lottery chances to daily usage ranking winners',
+      newCampaign: 'New Campaign',
+      noLimit: 'No limit',
+      previousLocalDay: 'the previous local day',
+      userSelected: 'User selected',
+      stats: {
+        campaigns: 'Campaigns',
+        active: 'Active',
+        lastAwards: 'Last Awards',
+        awardedCost: 'Awarded Cost'
+      },
+      reward: {
+        winners: 'Winners',
+        display: 'Display',
+        chancesPerUser: 'Chances/User'
+      },
+      fields: {
+        name: 'Name',
+        description: 'Description',
+        status: 'Status',
+        lotteryCampaign: 'Lottery Campaign',
+        topN: 'Top N',
+        publicDisplayTopN: 'Public Display Top N',
+        chancesPerUser: 'Chances/User',
+        minActualCost: 'Min Actual Cost',
+        startsAt: 'Starts At',
+        endsAt: 'Ends At',
+        start: 'Start',
+        end: 'End',
+        timezone: 'Timezone',
+        selectUser: 'Select user',
+        reason: 'Reason'
+      },
+      actions: {
+        edit: 'Edit',
+        exclusions: 'Exclusions',
+        runs: 'Runs',
+        run: 'Run',
+        awards: 'Awards'
+      },
+      columns: {
+        rewardRule: 'Reward Rule',
+        minCost: 'Min Cost',
+        lastRun: 'Last Run',
+        window: 'Window',
+        user: 'User',
+        created: 'Created',
+        rewardDate: 'Reward Date',
+        awards: 'Awards',
+        cost: 'Cost',
+        finished: 'Finished',
+        rank: 'Rank',
+        actualCost: 'Actual Cost',
+        requests: 'Requests',
+        chances: 'Chances'
+      },
+      dialogs: {
+        createCampaign: 'Create Campaign',
+        editCampaign: 'Edit Campaign',
+        excludedUsers: 'Excluded Users'
+      },
+      placeholders: {
+        selectLotteryCampaign: 'Select lottery campaign',
+        searchUser: 'Search email, username or notes'
+      },
+      hints: {
+        publicDisplayLimit: 'Only affects the user-facing leaderboard, not winners.'
+      },
+      empty: {
+        campaignsTitle: 'No ranking reward campaigns yet.',
+        campaignsDescription: 'Create one by selecting a lottery campaign; no manual ID lookup required.',
+        noMatchingUsers: 'No matching users',
+        noExcludedUsers: 'No excluded users.',
+        noRuns: 'No runs yet.',
+        noAwards: 'No awards found.'
+      },
+      manualRun: {
+        title: 'Manual run',
+        description: 'By default this awards the previous local day.'
+      },
+      awardDetails: {
+        title: 'Award Details',
+        runId: 'Run ID'
+      },
+      filters: {
+        allStatus: 'All Status'
+      },
+      status: {
+        draft: 'Draft',
+        active: 'Active',
+        disabled: 'Disabled',
+        ended: 'Ended'
+      },
+      lotteryStatus: {
+        active: 'Active',
+        disabled: 'Disabled'
+      },
+      runStatus: {
+        running: 'Running',
+        completed: 'Completed',
+        failed: 'Failed'
+      },
+      confirmRun: {
+        title: 'Confirm ranking reward run',
+        message: 'Run ranking rewards for "{name}" on {date}?'
+      },
+      messages: {
+        campaignSaved: 'Ranking reward campaign saved',
+        runCompleted: 'Ranking reward run completed'
+      },
+      errors: {
+        selectLotteryCampaign: 'Please select a lottery campaign',
+        positiveRewardNumbers: 'Top N, public display count, and chances per user must be greater than 0',
+        rewardNumbersMax: 'Top N, public display count, and chances per user cannot exceed 1,000',
+        totalChancesMax: 'Total chances cannot exceed 10,000',
+        loadRankingRewards: 'Failed to load ranking rewards',
+        loadLotteryCampaigns: 'Failed to load lottery campaigns',
+        saveCampaign: 'Failed to save ranking reward campaign',
+        loadExclusions: 'Failed to load exclusions',
+        addExclusion: 'Failed to add exclusion',
+        deleteExclusion: 'Failed to delete exclusion',
+        loadRuns: 'Failed to load runs',
+        loadAwards: 'Failed to load awards',
+        runCampaign: 'Failed to run ranking reward campaign'
+      }
     },
 
     rechargeReset: {

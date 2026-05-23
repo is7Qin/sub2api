@@ -54,8 +54,11 @@
                     {{ t('rankingReward.rewardDate') }}: {{ formatDate(board.reward_date) }} · {{ t('rankingReward.displayLimit', { count: board.public_display_limit }) }}
                   </p>
                 </div>
-                <span class="inline-flex rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
-                  {{ t('rankingReward.awardedCount', { count: board.awarded_count }) }}
+                <span
+                  class="inline-flex rounded-full px-3 py-1 text-xs font-medium"
+                  :class="board.status === 'live' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'"
+                >
+                  {{ board.status === 'live' ? t('rankingReward.liveBadge') : t('rankingReward.awardedCount', { count: board.awarded_count }) }}
                 </span>
               </div>
             </div>
@@ -71,7 +74,7 @@
                       {{ t('rankingReward.columns.user') }}
                     </th>
                     <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                      {{ t('rankingReward.columns.reward') }}
+                      {{ board.status === 'live' ? t('rankingReward.columns.estimatedReward') : t('rankingReward.columns.reward') }}
                     </th>
                     <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                       {{ t('rankingReward.columns.status') }}
@@ -101,7 +104,7 @@
                         class="rounded-full px-2 py-0.5 text-xs font-medium"
                         :class="entry.awarded ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'"
                       >
-                        {{ entry.awarded ? t('rankingReward.awarded') : t('rankingReward.notAwarded') }}
+                        {{ board.status === 'live' ? (entry.awarded ? t('rankingReward.inRewardRange') : t('rankingReward.outOfRewardRange')) : (entry.awarded ? t('rankingReward.awarded') : t('rankingReward.notAwarded')) }}
                       </span>
                     </td>
                   </tr>
@@ -116,7 +119,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -130,6 +133,7 @@ const appStore = useAppStore()
 
 const leaderboards = ref<PublicRankingRewardLeaderboard[]>([])
 const loading = ref(false)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 function formatDate(value: string): string {
   const date = new Date(value)
@@ -148,5 +152,12 @@ async function loadLeaderboards() {
   }
 }
 
-onMounted(loadLeaderboards)
+onMounted(() => {
+  loadLeaderboards()
+  refreshTimer = setInterval(loadLeaderboards, 5 * 60 * 1000)
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>

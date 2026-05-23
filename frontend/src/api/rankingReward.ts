@@ -12,6 +12,7 @@ export interface PublicRankingRewardLeaderboard {
   board_key: string
   campaign_name: string
   reward_date: string
+  status: 'live' | 'completed'
   awarded_count: number
   public_display_limit: number
   entries: PublicRankingRewardEntry[]

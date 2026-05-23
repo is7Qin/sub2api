@@ -29,6 +29,9 @@ const (
 	RankingRewardRunStatusCompleted = "completed"
 	RankingRewardRunStatusFailed    = "failed"
 
+	RankingRewardPublicBoardStatusLive      = "live"
+	RankingRewardPublicBoardStatusCompleted = "completed"
+
 	RankingRewardDefaultTimezone       = "Asia/Shanghai"
 	RankingRewardMaxTotalChances       = 10000
 	RankingRewardMaxChanceCount        = 1000
@@ -135,6 +138,17 @@ type RankingRewardPublicAward struct {
 	ChanceCount        int
 }
 
+type RankingRewardPublicCandidate struct {
+	CampaignID         int64
+	CampaignName       string
+	RewardDate         time.Time
+	PublicDisplayLimit int
+	TopN               int
+	ChanceCount        int
+	Rank               int
+	UserID             int64
+}
+
 type PublicRankingRewardEntry struct {
 	Rank          int    `json:"rank"`
 	DisplayName   string `json:"display_name"`
@@ -147,6 +161,7 @@ type PublicRankingRewardLeaderboard struct {
 	BoardKey           string                     `json:"board_key"`
 	CampaignName       string                     `json:"campaign_name"`
 	RewardDate         time.Time                  `json:"reward_date"`
+	Status             string                     `json:"status"`
 	AwardedCount       int                        `json:"awarded_count"`
 	PublicDisplayLimit int                        `json:"public_display_limit"`
 	Entries            []PublicRankingRewardEntry `json:"entries"`
@@ -211,6 +226,7 @@ type RankingRewardRepository interface {
 	ListRuns(ctx context.Context, campaignID int64, params pagination.PaginationParams) ([]RankingRewardRun, *pagination.PaginationResult, error)
 	ListAwards(ctx context.Context, runID int64, params pagination.PaginationParams) ([]RankingRewardAward, *pagination.PaginationResult, error)
 	ListPublicAwards(ctx context.Context, limit int) ([]RankingRewardPublicAward, error)
+	ListPublicCurrentCandidates(ctx context.Context, now time.Time, limit int) ([]RankingRewardPublicCandidate, error)
 	CountRunLotteryChances(ctx context.Context, runID int64) (int, error)
 	CreateRun(ctx context.Context, campaign *RankingRewardCampaign, rewardDate, windowStart, windowEnd time.Time) (*RankingRewardRun, error)
 	GetRunByCampaignDate(ctx context.Context, campaignID int64, rewardDate time.Time) (*RankingRewardRun, error)
@@ -372,11 +388,42 @@ func (s *RankingRewardService) ListPublicLeaderboards(ctx context.Context, curre
 	if limit <= 0 || limit > 20 {
 		limit = 10
 	}
+	now := time.Now().UTC()
+	leaderboards := make([]PublicRankingRewardLeaderboard, 0)
+
+	current, err := s.repo.ListPublicCurrentCandidates(ctx, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	indexByCampaignID := make(map[int64]int)
+	for _, candidate := range current {
+		idx, ok := indexByCampaignID[candidate.CampaignID]
+		if !ok {
+			idx = len(leaderboards)
+			indexByCampaignID[candidate.CampaignID] = idx
+			leaderboards = append(leaderboards, PublicRankingRewardLeaderboard{
+				BoardKey:           strings.ToLower(s.hmacRankingRewardValue("live", candidate.CampaignID)[:16]),
+				CampaignName:       candidate.CampaignName,
+				RewardDate:         candidate.RewardDate,
+				Status:             RankingRewardPublicBoardStatusLive,
+				AwardedCount:       candidate.TopN,
+				PublicDisplayLimit: candidate.PublicDisplayLimit,
+				Entries:            []PublicRankingRewardEntry{},
+			})
+		}
+		leaderboards[idx].Entries = append(leaderboards[idx].Entries, PublicRankingRewardEntry{
+			Rank:          candidate.Rank,
+			DisplayName:   s.anonymizeRankingRewardUserID(candidate.UserID),
+			IsCurrentUser: candidate.UserID == currentUserID,
+			Awarded:       candidate.Rank <= candidate.TopN,
+			ChanceCount:   candidate.ChanceCount,
+		})
+	}
+
 	awards, err := s.repo.ListPublicAwards(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	leaderboards := make([]PublicRankingRewardLeaderboard, 0)
 	indexByRunID := make(map[int64]int)
 	for _, award := range awards {
 		idx, ok := indexByRunID[award.RunID]
@@ -387,6 +434,7 @@ func (s *RankingRewardService) ListPublicLeaderboards(ctx context.Context, curre
 				BoardKey:           s.anonymizeRankingRewardBoardKey(award.RunID),
 				CampaignName:       award.CampaignName,
 				RewardDate:         award.RewardDate,
+				Status:             RankingRewardPublicBoardStatusCompleted,
 				AwardedCount:       award.AwardedCount,
 				PublicDisplayLimit: award.PublicDisplayLimit,
 				Entries:            []PublicRankingRewardEntry{},

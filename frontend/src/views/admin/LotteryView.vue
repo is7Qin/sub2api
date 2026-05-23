@@ -8,311 +8,387 @@
             {{ tx('管理抽奖活动、奖品和用户抽奖机会。', 'Manage lottery campaigns, prizes and user chances.') }}
           </p>
         </div>
-        <div class="flex gap-2">
-          <select v-model="statusFilter" class="input w-36" @change="loadCampaigns()">
-            <option value="">{{ tx('全部状态', 'All status') }}</option>
-            <option value="draft">{{ statusLabel('draft') }}</option>
-            <option value="active">{{ statusLabel('active') }}</option>
-            <option value="disabled">{{ statusLabel('disabled') }}</option>
-            <option value="ended">{{ statusLabel('ended') }}</option>
-          </select>
-          <button class="btn btn-secondary" :disabled="loading" @click="loadCampaigns()">
-            <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" />
-            <span>{{ tx('刷新', 'Refresh') }}</span>
-          </button>
-          <button class="btn btn-primary" @click="resetCampaignForm">
-            <Icon name="plus" size="sm" />
-            <span>{{ tx('新建活动', 'New Campaign') }}</span>
-          </button>
-        </div>
+        <button class="btn btn-primary" type="button" @click="openCreateCampaignDialog">
+          <Icon name="plus" size="sm" />
+          <span>{{ tx('新建活动', 'New Campaign') }}</span>
+        </button>
       </div>
 
-      <div class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <div class="space-y-6">
-          <div class="card overflow-hidden">
-            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('活动列表', 'Campaigns') }}</h2>
+      <TablePageLayout>
+        <template #filters>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="w-full sm:w-48">
+              <Select v-model="statusFilter" :options="statusFilterOptions" @change="handleStatusFilterChange" />
             </div>
-            <div v-if="loading" class="flex justify-center py-12">
-              <div class="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
-            </div>
-            <div v-else-if="campaigns.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-              {{ tx('暂无抽奖活动。', 'No lottery campaigns yet.') }}
-            </div>
-            <div v-else class="divide-y divide-gray-100 dark:divide-dark-700">
-              <div
-                v-for="campaign in campaigns"
-                :key="campaign.id"
-                class="cursor-pointer p-5 transition hover:bg-gray-50 dark:hover:bg-dark-800/60"
-                :class="selectedCampaignId === campaign.id ? 'bg-primary-50/60 dark:bg-primary-900/20' : ''"
-                @click="selectCampaign(campaign.id)"
-              >
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <h3 class="truncate text-base font-semibold text-gray-900 dark:text-white">{{ campaign.name }}</h3>
-                      <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="statusClass(campaign.status)">
-                        {{ statusLabel(campaign.status) }}
-                      </span>
-                    </div>
-                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ campaign.description || tx('无描述', 'No description') }}</p>
-                    <div class="mt-3 grid gap-2 text-xs text-gray-500 dark:text-gray-400 sm:grid-cols-3">
-                      <span>{{ tx('开始', 'Start') }}: {{ formatDateTime(campaign.starts_at) || '-' }}</span>
-                      <span>{{ tx('结束', 'End') }}: {{ formatDateTime(campaign.ends_at) || tx('不限', 'No limit') }}</span>
-                      <span>{{ tx('机会有效期', 'Chance TTL') }}: {{ campaign.chance_expires_in_days }} {{ tx('天', 'days') }}</span>
-                    </div>
-                  </div>
-                  <div class="flex shrink-0 gap-2">
-                    <button class="btn btn-secondary btn-sm" @click.stop="editCampaign(campaign)">
-                      <Icon name="edit" size="sm" />
-                      <span>{{ tx('编辑', 'Edit') }}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div v-if="campaigns.length > 0" class="flex items-center justify-between border-t border-gray-100 px-6 py-3 text-sm dark:border-dark-700">
-              <span class="text-gray-500 dark:text-gray-400">{{ tx('共', 'Total') }} {{ pagination.total }}</span>
-              <div class="flex items-center gap-2">
-                <button class="btn btn-secondary btn-sm" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
-                  {{ tx('上一页', 'Prev') }}
-                </button>
-                <span class="text-gray-600 dark:text-gray-300">{{ pagination.page }} / {{ Math.max(1, pagination.pages) }}</span>
-                <button class="btn btn-secondary btn-sm" :disabled="pagination.page >= pagination.pages" @click="changePage(pagination.page + 1)">
-                  {{ tx('下一页', 'Next') }}
-                </button>
-              </div>
-            </div>
+            <button class="btn btn-secondary" :disabled="loading" type="button" @click="loadCampaigns()">
+              <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" />
+              <span>{{ tx('刷新', 'Refresh') }}</span>
+            </button>
           </div>
+        </template>
 
-          <div v-if="selectedCampaign" class="card overflow-hidden">
-            <div class="flex flex-col gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('奖品配置', 'Prizes') }}</h2>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ selectedCampaign.name }}</p>
+        <template #table>
+          <DataTable
+            :columns="campaignColumns"
+            :data="campaigns"
+            :loading="loading"
+            row-key="id"
+            sticky-actions-column
+            :actions-count="3"
+          >
+            <template #cell-name="{ row }">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="font-medium text-gray-900 dark:text-white">{{ row.name }}</span>
+                  <span class="text-xs text-gray-400 dark:text-gray-500">#{{ row.id }}</span>
+                </div>
+                <p class="mt-1 max-w-xl truncate text-xs text-gray-500 dark:text-gray-400">
+                  {{ row.description || tx('无描述', 'No description') }}
+                </p>
               </div>
-              <button class="btn btn-secondary btn-sm" :disabled="prizesLoading" @click="loadPrizes(selectedCampaign.id)">
-                <Icon name="refresh" size="sm" :class="prizesLoading ? 'animate-spin' : ''" />
-                <span>{{ tx('刷新奖品', 'Refresh prizes') }}</span>
+            </template>
+
+            <template #cell-status="{ row }">
+              <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="statusClass(row.status)">
+                {{ statusLabel(row.status) }}
+              </span>
+            </template>
+
+            <template #cell-window="{ row }">
+              <div class="space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                <div>{{ tx('开始', 'Start') }}: {{ formatDateTime(row.starts_at) || '-' }}</div>
+                <div>{{ tx('结束', 'End') }}: {{ formatDateTime(row.ends_at) || tx('不限', 'No limit') }}</div>
+              </div>
+            </template>
+
+            <template #cell-chance_expires_in_days="{ row }">
+              <span>{{ row.chance_expires_in_days }} {{ tx('天', 'days') }}</span>
+            </template>
+
+            <template #cell-actions="{ row }">
+              <div class="flex justify-end gap-2">
+                <button class="btn btn-secondary btn-sm" type="button" @click="openPrizeManager(row)">
+                  {{ tx('奖品', 'Prizes') }}
+                </button>
+                <button class="btn btn-secondary btn-sm" type="button" :disabled="row.status !== 'active'" @click="openGrantDialog(row)">
+                  {{ tx('发放机会', 'Grant') }}
+                </button>
+                <button class="btn btn-secondary btn-sm" type="button" @click="openEditCampaignDialog(row)">
+                  <Icon name="edit" size="sm" />
+                  <span>{{ tx('编辑', 'Edit') }}</span>
+                </button>
+              </div>
+            </template>
+
+            <template #empty>
+              <div class="flex flex-col items-center py-8 text-center">
+                <p class="text-base font-medium text-gray-900 dark:text-white">{{ tx('暂无抽奖活动', 'No lottery campaigns') }}</p>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('新建活动后再配置奖品和发放机会。', 'Create a campaign before configuring prizes or granting chances.') }}</p>
+                <button class="btn btn-primary mt-4" type="button" @click="openCreateCampaignDialog">
+                  <Icon name="plus" size="sm" />
+                  <span>{{ tx('新建活动', 'New Campaign') }}</span>
+                </button>
+              </div>
+            </template>
+          </DataTable>
+        </template>
+
+        <template #pagination>
+          <Pagination
+            v-if="pagination.total > 0"
+            :page="pagination.page"
+            :total="pagination.total"
+            :page-size="pagination.page_size"
+            @update:page="handlePageChange"
+            @update:pageSize="handlePageSizeChange"
+          />
+        </template>
+      </TablePageLayout>
+    </div>
+
+    <BaseDialog
+      :show="showCampaignDialog"
+      :title="campaignForm.id ? tx('编辑活动', 'Edit Campaign') : tx('新建活动', 'New Campaign')"
+      width="wide"
+      @close="closeCampaignDialog"
+    >
+      <form id="lottery-campaign-form" class="space-y-4" @submit.prevent="saveCampaign">
+        <div>
+          <label class="input-label">{{ tx('名称', 'Name') }}</label>
+          <input v-model.trim="campaignForm.name" class="input" required />
+        </div>
+        <div>
+          <label class="input-label">{{ tx('描述', 'Description') }}</label>
+          <textarea v-model.trim="campaignForm.description" class="input min-h-[90px]"></textarea>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('状态', 'Status') }}</label>
+            <Select v-model="campaignForm.status" :options="campaignStatusOptions" />
+          </div>
+          <div>
+            <label class="input-label">{{ tx('机会有效期（天）', 'Chance TTL (days)') }}</label>
+            <input v-model.number="campaignForm.chance_expires_in_days" type="number" min="1" max="3650" class="input" />
+          </div>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('开始时间', 'Starts at') }}</label>
+            <input v-model="campaignForm.starts_at" type="datetime-local" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ tx('结束时间', 'Ends at') }}</label>
+            <input v-model="campaignForm.ends_at" type="datetime-local" class="input" />
+          </div>
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeCampaignDialog">{{ tx('取消', 'Cancel') }}</button>
+        <button class="btn btn-primary" :disabled="campaignSaving" form="lottery-campaign-form" type="submit">
+          <Icon v-if="campaignSaving" name="refresh" size="sm" class="animate-spin" />
+          <span>{{ campaignForm.id ? tx('保存活动', 'Save Campaign') : tx('创建活动', 'Create Campaign') }}</span>
+        </button>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showPrizeManagerDialog"
+      :title="activeCampaign ? `${activeCampaign.name} · ${tx('奖品配置', 'Prizes')}` : tx('奖品配置', 'Prizes')"
+      width="extra-wide"
+      @close="closePrizeManager"
+    >
+      <div v-if="activeCampaign" class="space-y-4">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="text-sm text-gray-500 dark:text-gray-400">
+            <span>{{ tx('活动', 'Campaign') }} #{{ activeCampaign.id }}</span>
+            <span class="mx-2">·</span>
+            <span>{{ tx('机会有效期', 'Chance TTL') }} {{ activeCampaign.chance_expires_in_days }} {{ tx('天', 'days') }}</span>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn btn-secondary btn-sm" :disabled="prizesLoading" type="button" @click="loadPrizes(activeCampaign.id)">
+              <Icon name="refresh" size="sm" :class="prizesLoading ? 'animate-spin' : ''" />
+              <span>{{ tx('刷新', 'Refresh') }}</span>
+            </button>
+            <button class="btn btn-primary btn-sm" type="button" @click="openCreatePrizeDialog">
+              <Icon name="plus" size="sm" />
+              <span>{{ tx('添加奖品', 'Add Prize') }}</span>
+            </button>
+          </div>
+        </div>
+
+        <DataTable :columns="prizeColumns" :data="prizes" :loading="prizesLoading" row-key="id" :actions-count="1">
+          <template #cell-name="{ row }">
+            <div>
+              <div class="font-medium text-gray-900 dark:text-white">{{ row.name }}</div>
+              <div class="text-xs text-gray-500 dark:text-gray-400">{{ row.description || '-' }}</div>
+            </div>
+          </template>
+
+          <template #cell-status="{ row }">
+            <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="prizeStatusClass(row.status)">
+              {{ prizeStatusLabel(row.status) }}
+            </span>
+          </template>
+
+          <template #cell-stock="{ row }">
+            <span>{{ row.stock_used }} / {{ row.stock_total }}</span>
+          </template>
+
+          <template #cell-reward="{ row }">
+            <span>{{ rewardLabel(row) }}</span>
+          </template>
+
+          <template #cell-actions="{ row }">
+            <div class="flex justify-end">
+              <button class="btn btn-secondary btn-sm" type="button" @click="openEditPrizeDialog(row)">
+                {{ tx('编辑', 'Edit') }}
               </button>
             </div>
-            <div v-if="prizesLoading" class="flex justify-center py-8">
-              <div class="h-6 w-6 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
-            </div>
-            <div v-else-if="prizes.length === 0" class="p-6 text-center text-sm text-gray-500 dark:text-gray-400">
+          </template>
+
+          <template #empty>
+            <div class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
               {{ tx('此活动还没有奖品。', 'No prizes for this campaign.') }}
             </div>
-            <div v-else class="overflow-x-auto">
-              <table class="w-full min-w-[760px] text-left text-sm">
-                <thead>
-                  <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                    <th class="px-6 py-3 font-medium">{{ tx('奖品', 'Prize') }}</th>
-                    <th class="px-4 py-3 font-medium">{{ tx('状态', 'Status') }}</th>
-                    <th class="px-4 py-3 font-medium">{{ tx('权重', 'Weight') }}</th>
-                    <th class="px-4 py-3 font-medium">{{ tx('库存', 'Stock') }}</th>
-                    <th class="px-4 py-3 font-medium">{{ tx('奖励', 'Reward') }}</th>
-                    <th class="px-6 py-3 text-right font-medium">{{ tx('操作', 'Actions') }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="prize in prizes" :key="prize.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                    <td class="px-6 py-4">
-                      <div class="font-medium text-gray-900 dark:text-white">{{ prize.name }}</div>
-                      <div class="text-xs text-gray-500 dark:text-gray-400">{{ prize.description || '-' }}</div>
-                    </td>
-                    <td class="px-4 py-4">
-                      <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="prizeStatusClass(prize.status)">
-                        {{ prizeStatusLabel(prize.status) }}
-                      </span>
-                    </td>
-                    <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ prize.weight }}</td>
-                    <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ prize.stock_used }} / {{ prize.stock_total }}</td>
-                    <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ rewardLabel(prize) }}</td>
-                    <td class="px-6 py-4 text-right">
-                      <button class="btn btn-secondary btn-sm" @click="editPrize(prize)">{{ tx('编辑', 'Edit') }}</button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+          </template>
+        </DataTable>
+      </div>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showPrizeDialog"
+      :title="prizeForm.id ? tx('编辑奖品', 'Edit Prize') : tx('添加奖品', 'Add Prize')"
+      width="wide"
+      :z-index="60"
+      @close="closePrizeDialog"
+    >
+      <form id="lottery-prize-form" class="space-y-4" @submit.prevent="savePrize">
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('奖品名称', 'Prize name') }}</label>
+            <input v-model.trim="prizeForm.name" class="input" required />
+          </div>
+          <div>
+            <label class="input-label">{{ tx('状态', 'Status') }}</label>
+            <Select v-model="prizeForm.status" :options="prizeStatusOptions" />
+          </div>
+        </div>
+        <div>
+          <label class="input-label">{{ tx('描述', 'Description') }}</label>
+          <textarea v-model.trim="prizeForm.description" class="input min-h-[80px]"></textarea>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('奖励类型', 'Reward type') }}</label>
+            <Select v-model="prizeForm.redeem_type" :options="rewardTypeOptions" />
+          </div>
+          <div v-if="prizeForm.redeem_type === 'subscription'">
+            <label class="input-label">{{ tx('订阅分组', 'Subscription group') }}</label>
+            <Select
+              v-model="prizeForm.redeem_group_id"
+              :options="subscriptionGroupOptions"
+              searchable
+              :placeholder="tx('选择分组', 'Select group')"
+            />
+          </div>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('权重', 'Weight') }}</label>
+            <input v-model.number="prizeForm.weight" type="number" min="0" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ tx('总库存', 'Total stock') }}</label>
+            <input v-model.number="prizeForm.stock_total" type="number" min="0" class="input" />
+          </div>
+        </div>
+        <div v-if="prizeForm.redeem_type !== 'invitation' && prizeForm.redeem_type !== 'random_timed_quota'">
+          <label class="input-label">{{ tx('奖励值', 'Reward value') }}</label>
+          <input v-model.number="prizeForm.redeem_value" type="number" min="0" step="0.01" class="input" />
+        </div>
+        <div v-if="prizeForm.redeem_type === 'random_timed_quota'" class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('最小额度', 'Min value') }}</label>
+            <input v-model.number="prizeForm.min_value" type="number" min="0" step="0.01" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ tx('最大额度', 'Max value') }}</label>
+            <input v-model.number="prizeForm.max_value" type="number" min="0" step="0.01" class="input" />
+          </div>
+        </div>
+        <div v-if="['subscription', 'timed_quota', 'random_timed_quota'].includes(prizeForm.redeem_type)">
+          <label class="input-label">{{ tx('有效天数', 'Validity days') }}</label>
+          <input v-model.number="prizeForm.redeem_validity_days" type="number" min="1" max="3650" class="input" />
+        </div>
+        <div>
+          <label class="input-label">{{ tx('排序', 'Sort order') }}</label>
+          <input v-model.number="prizeForm.sort_order" type="number" class="input" />
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closePrizeDialog">{{ tx('取消', 'Cancel') }}</button>
+        <button class="btn btn-primary" :disabled="prizeSaving" form="lottery-prize-form" type="submit">
+          <Icon v-if="prizeSaving" name="refresh" size="sm" class="animate-spin" />
+          <span>{{ prizeForm.id ? tx('保存奖品', 'Save Prize') : tx('添加奖品', 'Add Prize') }}</span>
+        </button>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showGrantDialog"
+      :title="activeCampaign ? `${tx('发放抽奖机会', 'Grant Chances')} · ${activeCampaign.name}` : tx('发放抽奖机会', 'Grant Chances')"
+      width="wide"
+      @close="closeGrantDialog"
+    >
+      <form id="lottery-grant-form" class="space-y-4" @submit.prevent="grantChances">
+        <div>
+          <label class="input-label">{{ tx('选择用户', 'Select user') }}</label>
+          <div class="relative">
+            <input
+              v-model.trim="userSearchQuery"
+              class="input"
+              :placeholder="tx('搜索邮箱、用户名或备注', 'Search email, username or notes')"
+              autocomplete="off"
+              required
+              @input="handleUserSearch"
+              @focus="showUserResults = userSearchResults.length > 0"
+            />
+            <div
+              v-if="showUserResults"
+              class="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-dark-700 dark:bg-dark-800"
+            >
+              <button
+                v-for="user in userSearchResults"
+                :key="user.id"
+                type="button"
+                class="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-dark-700"
+                @click="selectGrantUser(user)"
+              >
+                <span class="min-w-0">
+                  <span class="block truncate text-sm font-medium text-gray-900 dark:text-white">{{ user.email }}</span>
+                  <span class="block truncate text-xs text-gray-500 dark:text-gray-400">{{ user.username || user.notes || `#${user.id}` }}</span>
+                </span>
+                <span class="shrink-0 text-xs text-gray-400 dark:text-gray-500">#{{ user.id }}</span>
+              </button>
+              <div v-if="userSearchResults.length === 0 && !userSearchLoading" class="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">
+                {{ tx('没有匹配用户', 'No matching users') }}
+              </div>
             </div>
           </div>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ tx('输入至少 2 个字符搜索用户，不需要手动查找用户 ID。', 'Type at least 2 characters to search users; no manual user ID lookup required.') }}
+          </p>
         </div>
 
-        <div class="space-y-6">
-          <div class="card p-6">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ campaignForm.id ? tx('编辑活动', 'Edit Campaign') : tx('新建活动', 'New Campaign') }}
-            </h2>
-            <form class="mt-4 space-y-4" @submit.prevent="saveCampaign">
-              <div>
-                <label class="input-label">{{ tx('名称', 'Name') }}</label>
-                <input v-model.trim="campaignForm.name" class="input" required />
-              </div>
-              <div>
-                <label class="input-label">{{ tx('描述', 'Description') }}</label>
-                <textarea v-model.trim="campaignForm.description" class="input min-h-[80px]"></textarea>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="input-label">{{ tx('状态', 'Status') }}</label>
-                  <select v-model="campaignForm.status" class="input">
-                    <option value="draft">{{ statusLabel('draft') }}</option>
-                    <option value="active">{{ statusLabel('active') }}</option>
-                    <option value="disabled">{{ statusLabel('disabled') }}</option>
-                    <option value="ended">{{ statusLabel('ended') }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="input-label">{{ tx('机会有效期（天）', 'Chance TTL (days)') }}</label>
-                  <input v-model.number="campaignForm.chance_expires_in_days" type="number" min="1" max="3650" class="input" />
-                </div>
-              </div>
-              <div>
-                <label class="input-label">{{ tx('开始时间', 'Starts at') }}</label>
-                <input v-model="campaignForm.starts_at" type="datetime-local" class="input" />
-              </div>
-              <div>
-                <label class="input-label">{{ tx('结束时间', 'Ends at') }}</label>
-                <input v-model="campaignForm.ends_at" type="datetime-local" class="input" />
-              </div>
-              <div class="flex gap-2">
-                <button class="btn btn-primary flex-1" :disabled="campaignSaving" type="submit">
-                  <Icon v-if="campaignSaving" name="refresh" size="sm" class="animate-spin" />
-                  <span>{{ campaignForm.id ? tx('保存活动', 'Save Campaign') : tx('创建活动', 'Create Campaign') }}</span>
-                </button>
-                <button class="btn btn-secondary" type="button" @click="resetCampaignForm">{{ tx('重置', 'Reset') }}</button>
-              </div>
-            </form>
-          </div>
-
-          <div class="card p-6" :class="!selectedCampaign ? 'opacity-60' : ''">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ prizeForm.id ? tx('编辑奖品', 'Edit Prize') : tx('添加奖品', 'Add Prize') }}
-            </h2>
-            <p v-if="!selectedCampaign" class="mt-1 text-sm text-amber-600 dark:text-amber-400">
-              {{ tx('请先选择一个活动。', 'Select a campaign first.') }}
-            </p>
-            <form class="mt-4 space-y-4" @submit.prevent="savePrize">
-              <div>
-                <label class="input-label">{{ tx('奖品名称', 'Prize name') }}</label>
-                <input v-model.trim="prizeForm.name" class="input" required :disabled="!selectedCampaign" />
-              </div>
-              <div>
-                <label class="input-label">{{ tx('描述', 'Description') }}</label>
-                <textarea v-model.trim="prizeForm.description" class="input min-h-[70px]" :disabled="!selectedCampaign"></textarea>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="input-label">{{ tx('状态', 'Status') }}</label>
-                  <select v-model="prizeForm.status" class="input" :disabled="!selectedCampaign">
-                    <option value="active">{{ prizeStatusLabel('active') }}</option>
-                    <option value="disabled">{{ prizeStatusLabel('disabled') }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="input-label">{{ tx('奖励类型', 'Reward type') }}</label>
-                  <select v-model="prizeForm.redeem_type" class="input" :disabled="!selectedCampaign">
-                    <option value="balance">{{ tx('余额', 'Balance') }}</option>
-                    <option value="concurrency">{{ tx('并发', 'Concurrency') }}</option>
-                    <option value="subscription">{{ tx('订阅', 'Subscription') }}</option>
-                    <option value="invitation">{{ tx('邀请码', 'Invitation') }}</option>
-                    <option value="timed_quota">{{ tx('限时额度', 'Timed Quota') }}</option>
-                    <option value="random_timed_quota">{{ tx('随机限时额度', 'Random Timed Quota') }}</option>
-                  </select>
-                </div>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="input-label">{{ tx('权重', 'Weight') }}</label>
-                  <input v-model.number="prizeForm.weight" type="number" min="0" class="input" :disabled="!selectedCampaign" />
-                </div>
-                <div>
-                  <label class="input-label">{{ tx('总库存', 'Total stock') }}</label>
-                  <input v-model.number="prizeForm.stock_total" type="number" min="0" class="input" :disabled="!selectedCampaign" />
-                </div>
-              </div>
-              <div v-if="prizeForm.redeem_type !== 'invitation' && prizeForm.redeem_type !== 'random_timed_quota'">
-                <label class="input-label">{{ tx('奖励值', 'Reward value') }}</label>
-                <input v-model.number="prizeForm.redeem_value" type="number" min="0" step="0.01" class="input" :disabled="!selectedCampaign" />
-              </div>
-              <div v-if="prizeForm.redeem_type === 'random_timed_quota'" class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="input-label">{{ tx('最小额度', 'Min value') }}</label>
-                  <input v-model.number="prizeForm.min_value" type="number" min="0" step="0.01" class="input" :disabled="!selectedCampaign" />
-                </div>
-                <div>
-                  <label class="input-label">{{ tx('最大额度', 'Max value') }}</label>
-                  <input v-model.number="prizeForm.max_value" type="number" min="0" step="0.01" class="input" :disabled="!selectedCampaign" />
-                </div>
-              </div>
-              <div v-if="prizeForm.redeem_type === 'subscription'">
-                <label class="input-label">{{ tx('订阅分组 ID', 'Subscription group ID') }}</label>
-                <input v-model.trim="prizeForm.redeem_group_id" type="number" min="1" class="input" :disabled="!selectedCampaign" />
-              </div>
-              <div v-if="['subscription', 'timed_quota', 'random_timed_quota'].includes(prizeForm.redeem_type)">
-                <label class="input-label">{{ tx('有效天数', 'Validity days') }}</label>
-                <input v-model.number="prizeForm.redeem_validity_days" type="number" min="1" max="3650" class="input" :disabled="!selectedCampaign" />
-              </div>
-              <div>
-                <label class="input-label">{{ tx('排序', 'Sort order') }}</label>
-                <input v-model.number="prizeForm.sort_order" type="number" class="input" :disabled="!selectedCampaign" />
-              </div>
-              <div class="flex gap-2">
-                <button class="btn btn-primary flex-1" :disabled="!selectedCampaign || prizeSaving" type="submit">
-                  <Icon v-if="prizeSaving" name="refresh" size="sm" class="animate-spin" />
-                  <span>{{ prizeForm.id ? tx('保存奖品', 'Save Prize') : tx('添加奖品', 'Add Prize') }}</span>
-                </button>
-                <button class="btn btn-secondary" type="button" @click="resetPrizeForm">{{ tx('重置', 'Reset') }}</button>
-              </div>
-            </form>
-          </div>
-
-          <div class="card p-6" :class="!selectedCampaign ? 'opacity-60' : ''">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('发放抽奖机会', 'Grant Chances') }}</h2>
-            <form class="mt-4 space-y-4" @submit.prevent="grantChances">
-              <div>
-                <label class="input-label">{{ tx('用户 ID', 'User ID') }}</label>
-                <input v-model.trim="grantForm.user_id" type="number" min="1" class="input" required :disabled="!selectedCampaign" />
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="input-label">{{ tx('数量', 'Count') }}</label>
-                  <input v-model.number="grantForm.count" type="number" min="1" max="1000" class="input" :disabled="!selectedCampaign" />
-                </div>
-                <div>
-                  <label class="input-label">{{ tx('来源', 'Source') }}</label>
-                  <input v-model.trim="grantForm.source" class="input" :disabled="!selectedCampaign" />
-                </div>
-              </div>
-              <div>
-                <label class="input-label">{{ tx('来源 ID', 'Source ID') }}</label>
-                <input v-model.trim="grantForm.source_id" class="input" :disabled="!selectedCampaign" />
-              </div>
-              <div>
-                <label class="input-label">{{ tx('过期时间', 'Expires at') }}</label>
-                <input v-model="grantForm.expires_at" type="datetime-local" class="input" :disabled="!selectedCampaign" />
-              </div>
-              <button class="btn btn-primary w-full" :disabled="!selectedCampaign || granting" type="submit">
-                <Icon v-if="granting" name="refresh" size="sm" class="animate-spin" />
-                <span>{{ tx('发放机会', 'Grant Chances') }}</span>
-              </button>
-            </form>
+        <div v-if="selectedGrantUser" class="rounded-lg border border-primary-100 bg-primary-50 p-3 text-sm dark:border-primary-900/50 dark:bg-primary-900/20">
+          <div class="font-medium text-primary-700 dark:text-primary-300">{{ selectedGrantUser.email }}</div>
+          <div class="mt-1 text-primary-600 dark:text-primary-400">
+            {{ selectedGrantUser.username || selectedGrantUser.notes || tx('已选择用户', 'User selected') }} · #{{ selectedGrantUser.id }}
           </div>
         </div>
-      </div>
-    </div>
+
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">{{ tx('数量', 'Count') }}</label>
+            <input v-model.number="grantForm.count" type="number" min="1" max="1000" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ tx('过期时间', 'Expires at') }}</label>
+            <input v-model="grantForm.expires_at" type="datetime-local" class="input" />
+          </div>
+        </div>
+        <div class="rounded-lg bg-gray-50 p-3 text-sm text-gray-500 dark:bg-dark-800 dark:text-gray-400">
+          {{ tx('来源会自动记录为管理员手动发放，并自动生成来源编号。', 'The source is recorded automatically as an admin grant with a generated source ID.') }}
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeGrantDialog">{{ tx('取消', 'Cancel') }}</button>
+        <button class="btn btn-primary" :disabled="!selectedGrantUser || granting" form="lottery-grant-form" type="submit">
+          <Icon v-if="granting" name="refresh" size="sm" class="animate-spin" />
+          <span>{{ tx('发放机会', 'Grant Chances') }}</span>
+        </button>
+      </template>
+    </BaseDialog>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import DataTable from '@/components/common/DataTable.vue'
+import Pagination from '@/components/common/Pagination.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { adminAPI } from '@/api/admin'
+import lotteryAPI from '@/api/admin/lottery'
 import { useAppStore } from '@/stores/app'
 import { formatCurrency, formatDateTime } from '@/utils/format'
 import { extractApiErrorMessage } from '@/utils/apiError'
-import lotteryAPI from '@/api/admin/lottery'
+import type { AdminGroup, AdminUser } from '@/types'
+import type { Column } from '@/components/common/types'
 import type {
   CreateLotteryCampaignRequest,
   CreateLotteryPrizeRequest,
@@ -333,13 +409,24 @@ const prizesLoading = ref(false)
 const campaignSaving = ref(false)
 const prizeSaving = ref(false)
 const granting = ref(false)
+const userSearchLoading = ref(false)
+
 const campaigns = ref<LotteryCampaign[]>([])
 const prizes = ref<LotteryPrize[]>([])
-const statusFilter = ref('')
-const selectedCampaignId = ref<number | null>(null)
-const pagination = reactive({ page: 1, page_size: 20, total: 0, pages: 1 })
+const groups = ref<AdminGroup[]>([])
+const activeCampaign = ref<LotteryCampaign | null>(null)
+const statusFilter = ref<string | null>('')
+const showCampaignDialog = ref(false)
+const showPrizeManagerDialog = ref(false)
+const showPrizeDialog = ref(false)
+const showGrantDialog = ref(false)
+const userSearchQuery = ref('')
+const userSearchResults = ref<AdminUser[]>([])
+const showUserResults = ref(false)
+const selectedGrantUser = ref<AdminUser | null>(null)
+let userSearchTimeout: ReturnType<typeof setTimeout> | null = null
 
-const selectedCampaign = computed(() => campaigns.value.find((item) => item.id === selectedCampaignId.value) || null)
+const pagination = reactive({ page: 1, page_size: 20, total: 0, pages: 1 })
 
 const campaignForm = reactive({
   id: null as number | null,
@@ -360,7 +447,7 @@ const prizeForm = reactive({
   stock_total: 1,
   redeem_type: 'balance' as LotteryRedeemType,
   redeem_value: 0,
-  redeem_group_id: '',
+  redeem_group_id: null as number | null,
   redeem_validity_days: 30,
   min_value: 1,
   max_value: 10,
@@ -368,12 +455,65 @@ const prizeForm = reactive({
 })
 
 const grantForm = reactive({
-  user_id: '',
   count: 1,
-  source: 'admin',
-  source_id: '',
   expires_at: '',
 })
+
+const campaignColumns = computed<Column[]>(() => [
+  { key: 'name', label: tx('活动', 'Campaign'), sortable: true },
+  { key: 'status', label: tx('状态', 'Status'), sortable: true },
+  { key: 'window', label: tx('活动时间', 'Window') },
+  { key: 'chance_expires_in_days', label: tx('机会有效期', 'Chance TTL'), sortable: true },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const prizeColumns = computed<Column[]>(() => [
+  { key: 'name', label: tx('奖品', 'Prize'), sortable: true },
+  { key: 'status', label: tx('状态', 'Status'), sortable: true },
+  { key: 'weight', label: tx('权重', 'Weight'), sortable: true },
+  { key: 'stock', label: tx('库存', 'Stock') },
+  { key: 'reward', label: tx('奖励', 'Reward') },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const statusFilterOptions = computed<SelectOption[]>(() => [
+  { value: '', label: tx('全部状态', 'All status') },
+  { value: 'draft', label: statusLabel('draft') },
+  { value: 'active', label: statusLabel('active') },
+  { value: 'disabled', label: statusLabel('disabled') },
+  { value: 'ended', label: statusLabel('ended') },
+])
+
+const campaignStatusOptions = computed<SelectOption[]>(() => [
+  { value: 'draft', label: statusLabel('draft') },
+  { value: 'active', label: statusLabel('active') },
+  { value: 'disabled', label: statusLabel('disabled') },
+  { value: 'ended', label: statusLabel('ended') },
+])
+
+const prizeStatusOptions = computed<SelectOption[]>(() => [
+  { value: 'active', label: prizeStatusLabel('active') },
+  { value: 'disabled', label: prizeStatusLabel('disabled') },
+])
+
+const rewardTypeOptions = computed<SelectOption[]>(() => [
+  { value: 'balance', label: tx('余额', 'Balance') },
+  { value: 'concurrency', label: tx('并发', 'Concurrency') },
+  { value: 'subscription', label: tx('订阅', 'Subscription') },
+  { value: 'invitation', label: tx('邀请码', 'Invitation') },
+  { value: 'timed_quota', label: tx('限时额度', 'Timed Quota') },
+  { value: 'random_timed_quota', label: tx('随机限时额度', 'Random Timed Quota') },
+])
+
+const subscriptionGroupOptions = computed<SelectOption[]>(() =>
+  groups.value
+    .filter((group) => group.subscription_type === 'subscription' || group.id === prizeForm.redeem_group_id)
+    .map((group) => ({
+      value: group.id,
+      label: `${group.name} (#${group.id})`,
+      description: [group.platform, group.status].filter(Boolean).join(' · '),
+    }))
+)
 
 function tx(zh: string, en: string): string {
   return String(locale.value).startsWith('zh') ? zh : en
@@ -430,6 +570,12 @@ function metadataNumber(metadata: Record<string, unknown> | null | undefined, ke
   return fallback
 }
 
+function groupLabel(groupID: number | null | undefined): string {
+  if (!groupID) return tx('未选择分组', 'No group')
+  const group = groups.value.find((item) => item.id === groupID)
+  return group ? `${group.name} (#${group.id})` : `#${groupID}`
+}
+
 function rewardLabel(prize: LotteryPrize): string {
   if (prize.redeem_type === 'balance' || prize.redeem_type === 'timed_quota') {
     const suffix = prize.redeem_type === 'timed_quota' ? ` · ${prize.redeem_validity_days}${tx('天', 'd')}` : ''
@@ -440,27 +586,55 @@ function rewardLabel(prize: LotteryPrize): string {
     const max = metadataNumber(prize.redeem_metadata, 'max_value', 0)
     return `${formatCurrency(min)} - ${formatCurrency(max)} · ${prize.redeem_validity_days}${tx('天', 'd')}`
   }
-  if (prize.redeem_type === 'subscription') return `${tx('订阅', 'Subscription')} · ${prize.redeem_validity_days}${tx('天', 'd')}`
+  if (prize.redeem_type === 'subscription') return `${groupLabel(prize.redeem_group_id)} · ${prize.redeem_validity_days}${tx('天', 'd')}`
   if (prize.redeem_type === 'concurrency') return `${prize.redeem_value} ${tx('并发', 'concurrency')}`
   return tx('邀请码', 'Invitation')
+}
+
+function resetCampaignForm(): void {
+  campaignForm.id = null
+  campaignForm.name = ''
+  campaignForm.description = ''
+  campaignForm.status = 'draft'
+  campaignForm.starts_at = ''
+  campaignForm.ends_at = ''
+  campaignForm.chance_expires_in_days = 30
+}
+
+function resetPrizeForm(): void {
+  prizeForm.id = null
+  prizeForm.name = ''
+  prizeForm.description = ''
+  prizeForm.status = 'active'
+  prizeForm.weight = 1
+  prizeForm.stock_total = 1
+  prizeForm.redeem_type = 'balance'
+  prizeForm.redeem_value = 0
+  prizeForm.redeem_group_id = null
+  prizeForm.redeem_validity_days = 30
+  prizeForm.min_value = 1
+  prizeForm.max_value = 10
+  prizeForm.sort_order = 0
+}
+
+function resetGrantForm(): void {
+  grantForm.count = 1
+  grantForm.expires_at = ''
+  userSearchQuery.value = ''
+  userSearchResults.value = []
+  showUserResults.value = false
+  selectedGrantUser.value = null
 }
 
 async function loadCampaigns(page = pagination.page): Promise<void> {
   loading.value = true
   try {
-    const result = await lotteryAPI.listCampaigns({ page, page_size: pagination.page_size, status: statusFilter.value })
+    const result = await lotteryAPI.listCampaigns({ page, page_size: pagination.page_size, status: statusFilter.value || undefined })
     campaigns.value = result.items || []
     pagination.page = result.page
     pagination.page_size = result.page_size
     pagination.total = result.total
     pagination.pages = result.pages
-    if (!selectedCampaignId.value && campaigns.value.length > 0) {
-      await selectCampaign(campaigns.value[0].id)
-    } else if (selectedCampaignId.value && !campaigns.value.some((item) => item.id === selectedCampaignId.value)) {
-      selectedCampaignId.value = campaigns.value[0]?.id ?? null
-      prizes.value = []
-      if (selectedCampaignId.value) await loadPrizes(selectedCampaignId.value)
-    }
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('加载抽奖活动失败', 'Failed to load campaigns')))
   } finally {
@@ -468,15 +642,12 @@ async function loadCampaigns(page = pagination.page): Promise<void> {
   }
 }
 
-async function changePage(page: number): Promise<void> {
-  if (page < 1 || page > pagination.pages) return
-  await loadCampaigns(page)
-}
-
-async function selectCampaign(id: number): Promise<void> {
-  selectedCampaignId.value = id
-  resetPrizeForm()
-  await loadPrizes(id)
+async function loadGroups(): Promise<void> {
+  try {
+    groups.value = await adminAPI.groups.getAll()
+  } catch (error) {
+    console.error('Failed to load groups:', error)
+  }
 }
 
 async function loadPrizes(campaignId: number): Promise<void> {
@@ -490,17 +661,27 @@ async function loadPrizes(campaignId: number): Promise<void> {
   }
 }
 
-function resetCampaignForm(): void {
-  campaignForm.id = null
-  campaignForm.name = ''
-  campaignForm.description = ''
-  campaignForm.status = 'draft'
-  campaignForm.starts_at = ''
-  campaignForm.ends_at = ''
-  campaignForm.chance_expires_in_days = 30
+function handleStatusFilterChange(): void {
+  pagination.page = 1
+  loadCampaigns(1)
 }
 
-function editCampaign(campaign: LotteryCampaign): void {
+function handlePageChange(page: number): void {
+  loadCampaigns(page)
+}
+
+function handlePageSizeChange(pageSize: number): void {
+  pagination.page_size = pageSize
+  pagination.page = 1
+  loadCampaigns(1)
+}
+
+function openCreateCampaignDialog(): void {
+  resetCampaignForm()
+  showCampaignDialog.value = true
+}
+
+function openEditCampaignDialog(campaign: LotteryCampaign): void {
   campaignForm.id = campaign.id
   campaignForm.name = campaign.name
   campaignForm.description = campaign.description || ''
@@ -508,6 +689,11 @@ function editCampaign(campaign: LotteryCampaign): void {
   campaignForm.starts_at = toLocalInput(campaign.starts_at)
   campaignForm.ends_at = toLocalInput(campaign.ends_at)
   campaignForm.chance_expires_in_days = campaign.chance_expires_in_days || 30
+  showCampaignDialog.value = true
+}
+
+function closeCampaignDialog(): void {
+  showCampaignDialog.value = false
 }
 
 async function saveCampaign(): Promise<void> {
@@ -526,7 +712,8 @@ async function saveCampaign(): Promise<void> {
       }
       if (startsAt) payload.starts_at = startsAt
       if (endsAt) payload.ends_at = endsAt
-      await lotteryAPI.updateCampaign(campaignForm.id, payload)
+      const updated = await lotteryAPI.updateCampaign(campaignForm.id, payload)
+      if (activeCampaign.value?.id === updated.id) activeCampaign.value = updated
       appStore.showSuccess(tx('活动已保存', 'Campaign saved'))
     } else {
       const payload: CreateLotteryCampaignRequest = {
@@ -538,9 +725,10 @@ async function saveCampaign(): Promise<void> {
       if (startsAt) payload.starts_at = startsAt
       if (endsAt) payload.ends_at = endsAt
       const created = await lotteryAPI.createCampaign(payload)
-      selectedCampaignId.value = created.id
+      activeCampaign.value = created
       appStore.showSuccess(tx('活动已创建', 'Campaign created'))
     }
+    showCampaignDialog.value = false
     resetCampaignForm()
     await loadCampaigns()
   } catch (error) {
@@ -550,23 +738,25 @@ async function saveCampaign(): Promise<void> {
   }
 }
 
-function resetPrizeForm(): void {
-  prizeForm.id = null
-  prizeForm.name = ''
-  prizeForm.description = ''
-  prizeForm.status = 'active'
-  prizeForm.weight = 1
-  prizeForm.stock_total = 1
-  prizeForm.redeem_type = 'balance'
-  prizeForm.redeem_value = 0
-  prizeForm.redeem_group_id = ''
-  prizeForm.redeem_validity_days = 30
-  prizeForm.min_value = 1
-  prizeForm.max_value = 10
-  prizeForm.sort_order = 0
+function openPrizeManager(campaign: LotteryCampaign): void {
+  activeCampaign.value = campaign
+  prizes.value = []
+  resetPrizeForm()
+  showPrizeManagerDialog.value = true
+  loadPrizes(campaign.id)
 }
 
-function editPrize(prize: LotteryPrize): void {
+function closePrizeManager(): void {
+  showPrizeManagerDialog.value = false
+  showPrizeDialog.value = false
+}
+
+function openCreatePrizeDialog(): void {
+  resetPrizeForm()
+  showPrizeDialog.value = true
+}
+
+function openEditPrizeDialog(prize: LotteryPrize): void {
   prizeForm.id = prize.id
   prizeForm.name = prize.name
   prizeForm.description = prize.description || ''
@@ -575,11 +765,16 @@ function editPrize(prize: LotteryPrize): void {
   prizeForm.stock_total = prize.stock_total
   prizeForm.redeem_type = prize.redeem_type
   prizeForm.redeem_value = prize.redeem_value
-  prizeForm.redeem_group_id = prize.redeem_group_id ? String(prize.redeem_group_id) : ''
+  prizeForm.redeem_group_id = prize.redeem_group_id ?? null
   prizeForm.redeem_validity_days = prize.redeem_validity_days || 30
   prizeForm.min_value = metadataNumber(prize.redeem_metadata, 'min_value', 1)
   prizeForm.max_value = metadataNumber(prize.redeem_metadata, 'max_value', 10)
   prizeForm.sort_order = prize.sort_order
+  showPrizeDialog.value = true
+}
+
+function closePrizeDialog(): void {
+  showPrizeDialog.value = false
 }
 
 function validatePrizeForm(): boolean {
@@ -594,12 +789,9 @@ function validatePrizeForm(): boolean {
     appStore.showError(tx('有效天数必须大于 0', 'Validity days must be greater than 0'))
     return false
   }
-  if (prizeForm.redeem_type === 'subscription') {
-    const groupID = Number(prizeForm.redeem_group_id)
-    if (!Number.isFinite(groupID) || groupID <= 0) {
-      appStore.showError(tx('订阅奖品必须填写有效分组 ID', 'Subscription prizes require a valid group ID'))
-      return false
-    }
+  if (prizeForm.redeem_type === 'subscription' && !prizeForm.redeem_group_id) {
+    appStore.showError(tx('请选择订阅分组', 'Please select a subscription group'))
+    return false
   }
   if (prizeForm.redeem_type === 'balance' || prizeForm.redeem_type === 'timed_quota') {
     const value = Number(prizeForm.redeem_value)
@@ -644,7 +836,7 @@ function buildPrizePayload(): CreateLotteryPrizeRequest {
 }
 
 async function savePrize(): Promise<void> {
-  if (!selectedCampaign.value || !prizeForm.name.trim()) return
+  if (!activeCampaign.value || !prizeForm.name.trim()) return
   if (!validatePrizeForm()) return
   prizeSaving.value = true
   try {
@@ -657,11 +849,12 @@ async function savePrize(): Promise<void> {
       await lotteryAPI.updatePrize(prizeForm.id, updatePayload)
       appStore.showSuccess(tx('奖品已保存', 'Prize saved'))
     } else {
-      await lotteryAPI.createPrize(selectedCampaign.value.id, payload)
+      await lotteryAPI.createPrize(activeCampaign.value.id, payload)
       appStore.showSuccess(tx('奖品已添加', 'Prize added'))
     }
+    showPrizeDialog.value = false
     resetPrizeForm()
-    await loadPrizes(selectedCampaign.value.id)
+    await loadPrizes(activeCampaign.value.id)
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('保存奖品失败', 'Failed to save prize')))
   } finally {
@@ -669,22 +862,68 @@ async function savePrize(): Promise<void> {
   }
 }
 
+function openGrantDialog(campaign: LotteryCampaign): void {
+  activeCampaign.value = campaign
+  resetGrantForm()
+  showGrantDialog.value = true
+}
+
+function closeGrantDialog(): void {
+  showGrantDialog.value = false
+  resetGrantForm()
+}
+
+function handleUserSearch(): void {
+  if (userSearchTimeout) clearTimeout(userSearchTimeout)
+  selectedGrantUser.value = null
+  const query = userSearchQuery.value.trim()
+  if (query.length < 2) {
+    userSearchResults.value = []
+    showUserResults.value = false
+    return
+  }
+  userSearchTimeout = setTimeout(async () => {
+    userSearchLoading.value = true
+    try {
+      const result = await adminAPI.users.list(1, 10, { search: query })
+      userSearchResults.value = result.items || []
+      showUserResults.value = true
+    } catch {
+      userSearchResults.value = []
+      showUserResults.value = false
+    } finally {
+      userSearchLoading.value = false
+    }
+  }, 300)
+}
+
+function selectGrantUser(user: AdminUser): void {
+  selectedGrantUser.value = user
+  userSearchQuery.value = user.email
+  userSearchResults.value = []
+  showUserResults.value = false
+}
+
+function createGrantSourceID(): string {
+  return `manual:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+}
+
 async function grantChances(): Promise<void> {
-  if (!selectedCampaign.value || !grantForm.user_id) return
+  if (!activeCampaign.value || !selectedGrantUser.value) return
   granting.value = true
   try {
     const expiresAt = localInputToISO(grantForm.expires_at)
-    const granted = await lotteryAPI.grantChances(selectedCampaign.value.id, {
-      user_id: Number(grantForm.user_id),
+    const granted = await lotteryAPI.grantChances(activeCampaign.value.id, {
+      user_id: selectedGrantUser.value.id,
       count: Number(grantForm.count) || 1,
-      source: grantForm.source || 'admin',
-      source_id: grantForm.source_id,
+      source: 'admin',
+      source_id: createGrantSourceID(),
       expires_at: expiresAt || undefined,
+      metadata: { granted_from: 'admin_lottery_page' },
     })
     appStore.showSuccess(tx(`已发放 ${granted.length} 次抽奖机会`, `Granted ${granted.length} chances`))
-    grantForm.user_id = ''
-    grantForm.count = 1
-    grantForm.source_id = ''
+    showGrantDialog.value = false
+    resetGrantForm()
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('发放抽奖机会失败', 'Failed to grant chances')))
   } finally {
@@ -694,5 +933,10 @@ async function grantChances(): Promise<void> {
 
 onMounted(() => {
   loadCampaigns()
+  loadGroups()
+})
+
+onUnmounted(() => {
+  if (userSearchTimeout) clearTimeout(userSearchTimeout)
 })
 </script>

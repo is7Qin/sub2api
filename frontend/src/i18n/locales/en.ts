@@ -362,6 +362,7 @@ export default {
     channels: 'Channels',
     availableChannels: 'Available Channels',
     subscriptions: 'Subscriptions',
+    rechargeReset: 'Recharge Reset',
     accounts: 'Accounts',
     proxies: 'Proxies',
     redeemCodes: 'Redeem Codes',
@@ -1044,7 +1045,6 @@ export default {
     }
   },
 
-<<<<<<< HEAD
   lottery: {
     title: 'Lottery',
     description: 'Use lottery chances to draw rewards from active campaigns',
@@ -1106,7 +1106,8 @@ export default {
     rewardTypes: {
       invitation: 'Invitation Code',
     },
-=======
+  },
+
   rankingReward: {
     title: 'Ranking Rewards',
     description: 'View daily ranking reward results with anonymous users and awarded lottery chances only',
@@ -1126,7 +1127,6 @@ export default {
       reward: 'Reward',
       status: 'Status'
     }
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
   },
 
   affiliate: {
@@ -1506,6 +1506,11 @@ export default {
     rankingReward: {
       title: 'Ranking Rewards',
       description: 'Grant lottery chances to daily usage ranking winners',
+    },
+
+    rechargeReset: {
+      title: 'Recharge Reset',
+      description: 'Reset subscription quotas after qualifying balance recharges',
     },
 
     backup: {
@@ -5352,21 +5357,19 @@ export default {
           enabled: 'Enable Risk Control',
           enabledHint: 'When off, the admin sidebar entry is hidden and gateway moderation is skipped.',
         },
-<<<<<<< HEAD
         lottery: {
           title: 'Lottery',
           description: 'Enable lottery campaigns, user draw entry points and user lottery APIs. Disabled by default.',
           configureLink: 'Configure lottery campaigns',
           enabled: 'Enable Lottery',
           enabledHint: 'When off, lottery sidebar entries are hidden and user lottery APIs return forbidden.',
-=======
+        },
         rankingReward: {
           title: 'Ranking Rewards',
           description: 'Enable admin ranking reward configuration and the user-facing anonymous reward leaderboard. Disabled by default.',
           configureLink: 'Configure ranking reward campaigns',
           enabled: 'Enable Ranking Rewards',
           enabledHint: 'When off, user/admin sidebar entries are hidden and user endpoints return a disabled error.',
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
         },
         affiliate: {
           title: 'Affiliate (Invite Rebate)',

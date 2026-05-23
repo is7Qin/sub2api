@@ -5134,7 +5134,6 @@
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-<<<<<<< HEAD
               {{ t('admin.settings.features.lottery.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -5146,7 +5145,28 @@
                 class="inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
               >
                 {{ t('admin.settings.features.lottery.configureLink') }}
-=======
+                <span aria-hidden="true">→</span>
+              </router-link>
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.lottery.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.lottery.enabledHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.lottery_enabled" />
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.rankingReward.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -5158,7 +5178,6 @@
                 class="inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
               >
                 {{ t('admin.settings.features.rankingReward.configureLink') }}
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
                 <span aria-hidden="true">→</span>
               </router-link>
             </p>
@@ -5167,15 +5186,6 @@
             <div class="flex items-center justify-between">
               <div>
                 <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
-<<<<<<< HEAD
-                  {{ t('admin.settings.features.lottery.enabled') }}
-                </label>
-                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                  {{ t('admin.settings.features.lottery.enabledHint') }}
-                </p>
-              </div>
-              <Toggle v-model="form.lottery_enabled" />
-=======
                   {{ t('admin.settings.features.rankingReward.enabled') }}
                 </label>
                 <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
@@ -5183,7 +5193,6 @@
                 </p>
               </div>
               <Toggle v-model="form.ranking_reward_enabled" />
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
             </div>
           </div>
         </div>
@@ -6927,11 +6936,8 @@ const form = reactive<SettingsForm>({
   hide_ccs_import_button: false,
   payment_enabled: false,
   risk_control_enabled: false,
-<<<<<<< HEAD
   lottery_enabled: false,
-=======
   ranking_reward_enabled: false,
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
   payment_min_amount: 1,
   payment_max_amount: 10000,
   payment_daily_limit: 50000,
@@ -8198,11 +8204,8 @@ async function saveSettings() {
       // Payment configuration
       payment_enabled: form.payment_enabled,
       risk_control_enabled: form.risk_control_enabled,
-<<<<<<< HEAD
       lottery_enabled: form.lottery_enabled,
-=======
       ranking_reward_enabled: form.ranking_reward_enabled,
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
       payment_min_amount: Number(form.payment_min_amount) || 0,
       payment_max_amount: Number(form.payment_max_amount) || 0,
       payment_daily_limit: Number(form.payment_daily_limit) || 0,

@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/lotterydraw"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 )
@@ -214,6 +215,21 @@ func (_c *RedeemCodeCreate) AddLotteryDraws(v ...*LotteryDraw) *RedeemCodeCreate
 		ids[i] = v[i].ID
 	}
 	return _c.AddLotteryDrawIDs(ids...)
+}
+
+// AddRechargeResetRecordIDs adds the "recharge_reset_records" edge to the RechargeResetRecord entity by IDs.
+func (_c *RedeemCodeCreate) AddRechargeResetRecordIDs(ids ...int64) *RedeemCodeCreate {
+	_c.mutation.AddRechargeResetRecordIDs(ids...)
+	return _c
+}
+
+// AddRechargeResetRecords adds the "recharge_reset_records" edges to the RechargeResetRecord entity.
+func (_c *RedeemCodeCreate) AddRechargeResetRecords(v ...*RechargeResetRecord) *RedeemCodeCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddRechargeResetRecordIDs(ids...)
 }
 
 // Mutation returns the RedeemCodeMutation object of the builder.
@@ -418,6 +434,22 @@ func (_c *RedeemCodeCreate) createSpec() (*RedeemCode, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(lotterydraw.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.RechargeResetRecordsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   redeemcode.RechargeResetRecordsTable,
+			Columns: []string{redeemcode.RechargeResetRecordsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(rechargeresetrecord.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

@@ -88,6 +88,7 @@ func (RedeemCode) Edges() []ent.Edge {
 			Field("group_id").
 			Unique(),
 		edge.To("lottery_draws", LotteryDraw.Type),
+		edge.To("recharge_reset_records", RechargeResetRecord.Type),
 	}
 }
 

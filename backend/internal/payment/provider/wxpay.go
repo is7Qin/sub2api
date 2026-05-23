@@ -450,9 +450,10 @@ func (w *Wxpay) VerifyNotification(ctx context.Context, rawBody string, headers 
 	if wxSV(tx.TradeState) == wxpayTradeStateSuccess {
 		st = payment.ProviderStatusSuccess
 	}
+	occurredAt, _ := parseProviderTime(wxSV(tx.SuccessTime))
 	return &payment.PaymentNotification{
 		TradeNo: wxSV(tx.TransactionId), OrderID: wxSV(tx.OutTradeNo),
-		Amount: amt, Status: st, RawData: rawBody, Metadata: buildWxpayTransactionMetadata(&tx),
+		Amount: amt, Status: st, OccurredAt: occurredAt, RawData: rawBody, Metadata: buildWxpayTransactionMetadata(&tx),
 	}, nil
 }
 

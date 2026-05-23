@@ -114,17 +114,15 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Risk Control',
   }),
-<<<<<<< HEAD
   lottery: defineFlag({
     key: 'lottery_enabled',
     mode: 'opt-in',
     label: 'Lottery',
-=======
+  }),
   rankingReward: defineFlag({
     key: 'ranking_reward_enabled',
     mode: 'opt-in',
     label: 'Ranking Reward',
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
   }),
   affiliate: defineFlag({
     key: 'affiliate_enabled',

@@ -511,11 +511,8 @@ export interface SystemSettings {
   // Payment configuration
   payment_enabled: boolean;
   risk_control_enabled: boolean;
-<<<<<<< HEAD
   lottery_enabled: boolean;
-=======
   ranking_reward_enabled: boolean;
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
   payment_min_amount: number;
   payment_max_amount: number;
   payment_daily_limit: number;
@@ -737,11 +734,8 @@ export interface UpdateSettingsRequest {
   // Payment configuration
   payment_enabled?: boolean;
   risk_control_enabled?: boolean;
-<<<<<<< HEAD
   lottery_enabled?: boolean;
-=======
   ranking_reward_enabled?: boolean;
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
   payment_min_amount?: number;
   payment_max_amount?: number;
   payment_daily_limit?: number;

@@ -96,6 +96,15 @@ type RankingRewardExcludedUser func(*sql.Selector)
 // RankingRewardRun is the predicate function for rankingrewardrun builders.
 type RankingRewardRun func(*sql.Selector)
 
+// RechargeResetCampaign is the predicate function for rechargeresetcampaign builders.
+type RechargeResetCampaign func(*sql.Selector)
+
+// RechargeResetCampaignRule is the predicate function for rechargeresetcampaignrule builders.
+type RechargeResetCampaignRule func(*sql.Selector)
+
+// RechargeResetRecord is the predicate function for rechargeresetrecord builders.
+type RechargeResetRecord func(*sql.Selector)
+
 // RedeemCode is the predicate function for redeemcode builders.
 type RedeemCode func(*sql.Selector)
 

@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
 // --- Cancel & Expire ---
@@ -32,6 +33,28 @@ const (
 
 type checkPaidOptions struct {
 	cancelIfUnpaid bool
+}
+
+func parsePaymentProviderPaidAt(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05-0700", "2006-01-02T15:04:05.000-0700"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC(), true
+		}
+	}
+	if t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, timezone.Location()); err == nil {
+		return t.UTC(), true
+	}
+	if ts, err := strconv.ParseInt(raw, 10, 64); err == nil && ts > 0 {
+		if ts > 1_000_000_000_000 {
+			return time.UnixMilli(ts).UTC(), true
+		}
+		return time.Unix(ts, 0).UTC(), true
+	}
+	return time.Time{}, false
 }
 
 func (s *PaymentService) checkCancelRateLimit(ctx context.Context, userID int64, cfg *PaymentConfig) error {
@@ -190,7 +213,8 @@ func (s *PaymentService) checkPaidWithOptions(ctx context.Context, o *dbent.Paym
 			}
 			notificationTradeNo = upstreamTradeNo
 		}
-		if err := s.HandlePaymentNotification(ctx, &payment.PaymentNotification{TradeNo: notificationTradeNo, OrderID: o.OutTradeNo, Amount: resp.Amount, Status: payment.ProviderStatusSuccess, Metadata: resp.Metadata}, prov.ProviderKey()); err != nil {
+		occurredAt, _ := parsePaymentProviderPaidAt(resp.PaidAt)
+		if err := s.HandlePaymentNotification(ctx, &payment.PaymentNotification{TradeNo: notificationTradeNo, OrderID: o.OutTradeNo, Amount: resp.Amount, Status: payment.ProviderStatusSuccess, OccurredAt: occurredAt, Metadata: resp.Metadata}, prov.ProviderKey()); err != nil {
 			slog.Error("fulfillment failed during checkPaid", "orderID", o.ID, "error", err)
 			// Still return already_paid — order was paid, fulfillment can be retried
 		}

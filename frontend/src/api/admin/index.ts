@@ -31,11 +31,9 @@ import channelMonitorTemplateAPI from './channelMonitorTemplate'
 import adminPaymentAPI from './payment'
 import affiliatesAPI from './affiliates'
 import riskControlAPI from './riskControl'
-<<<<<<< HEAD
 import lotteryAPI from './lottery'
-=======
 import rankingRewardAPI from './rankingReward'
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
+import rechargeResetAPI from './rechargeReset'
 
 /**
  * Unified admin API object for convenient access
@@ -69,11 +67,9 @@ export const adminAPI = {
   payment: adminPaymentAPI,
   affiliates: affiliatesAPI,
   riskControl: riskControlAPI,
-<<<<<<< HEAD
-  lottery: lotteryAPI
-=======
-  rankingReward: rankingRewardAPI
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
+  lottery: lotteryAPI,
+  rankingReward: rankingRewardAPI,
+  rechargeReset: rechargeResetAPI
 }
 
 export {
@@ -105,11 +101,9 @@ export {
   adminPaymentAPI,
   affiliatesAPI,
   riskControlAPI,
-<<<<<<< HEAD
-  lotteryAPI
-=======
-  rankingRewardAPI
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
+  lotteryAPI,
+  rankingRewardAPI,
+  rechargeResetAPI
 }
 
 export default adminAPI

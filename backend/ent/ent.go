@@ -42,6 +42,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -145,6 +148,9 @@ func checkColumn(t, c string) error {
 			rankingrewardcampaign.Table:         rankingrewardcampaign.ValidColumn,
 			rankingrewardexcludeduser.Table:     rankingrewardexcludeduser.ValidColumn,
 			rankingrewardrun.Table:              rankingrewardrun.ValidColumn,
+			rechargeresetcampaign.Table:         rechargeresetcampaign.ValidColumn,
+			rechargeresetcampaignrule.Table:     rechargeresetcampaignrule.ValidColumn,
+			rechargeresetrecord.Table:           rechargeresetrecord.ValidColumn,
 			redeemcode.Table:                    redeemcode.ValidColumn,
 			securitysecret.Table:                securitysecret.ValidColumn,
 			setting.Table:                       setting.ValidColumn,

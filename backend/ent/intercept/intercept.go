@@ -39,6 +39,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -920,6 +923,87 @@ func (f TraverseRankingRewardRun) Traverse(ctx context.Context, q ent.Query) err
 	return fmt.Errorf("unexpected query type %T. expect *ent.RankingRewardRunQuery", q)
 }
 
+// The RechargeResetCampaignFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RechargeResetCampaignFunc func(context.Context, *ent.RechargeResetCampaignQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RechargeResetCampaignFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RechargeResetCampaignQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RechargeResetCampaignQuery", q)
+}
+
+// The TraverseRechargeResetCampaign type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRechargeResetCampaign func(context.Context, *ent.RechargeResetCampaignQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRechargeResetCampaign) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRechargeResetCampaign) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RechargeResetCampaignQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RechargeResetCampaignQuery", q)
+}
+
+// The RechargeResetCampaignRuleFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RechargeResetCampaignRuleFunc func(context.Context, *ent.RechargeResetCampaignRuleQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RechargeResetCampaignRuleFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RechargeResetCampaignRuleQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RechargeResetCampaignRuleQuery", q)
+}
+
+// The TraverseRechargeResetCampaignRule type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRechargeResetCampaignRule func(context.Context, *ent.RechargeResetCampaignRuleQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRechargeResetCampaignRule) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRechargeResetCampaignRule) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RechargeResetCampaignRuleQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RechargeResetCampaignRuleQuery", q)
+}
+
+// The RechargeResetRecordFunc type is an adapter to allow the use of ordinary function as a Querier.
+type RechargeResetRecordFunc func(context.Context, *ent.RechargeResetRecordQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f RechargeResetRecordFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.RechargeResetRecordQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.RechargeResetRecordQuery", q)
+}
+
+// The TraverseRechargeResetRecord type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseRechargeResetRecord func(context.Context, *ent.RechargeResetRecordQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseRechargeResetRecord) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseRechargeResetRecord) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.RechargeResetRecordQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.RechargeResetRecordQuery", q)
+}
+
 // The RedeemCodeFunc type is an adapter to allow the use of ordinary function as a Querier.
 type RedeemCodeFunc func(context.Context, *ent.RedeemCodeQuery) (ent.Value, error)
 
@@ -1334,6 +1418,12 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.RankingRewardExcludedUserQuery, predicate.RankingRewardExcludedUser, rankingrewardexcludeduser.OrderOption]{typ: ent.TypeRankingRewardExcludedUser, tq: q}, nil
 	case *ent.RankingRewardRunQuery:
 		return &query[*ent.RankingRewardRunQuery, predicate.RankingRewardRun, rankingrewardrun.OrderOption]{typ: ent.TypeRankingRewardRun, tq: q}, nil
+	case *ent.RechargeResetCampaignQuery:
+		return &query[*ent.RechargeResetCampaignQuery, predicate.RechargeResetCampaign, rechargeresetcampaign.OrderOption]{typ: ent.TypeRechargeResetCampaign, tq: q}, nil
+	case *ent.RechargeResetCampaignRuleQuery:
+		return &query[*ent.RechargeResetCampaignRuleQuery, predicate.RechargeResetCampaignRule, rechargeresetcampaignrule.OrderOption]{typ: ent.TypeRechargeResetCampaignRule, tq: q}, nil
+	case *ent.RechargeResetRecordQuery:
+		return &query[*ent.RechargeResetRecordQuery, predicate.RechargeResetRecord, rechargeresetrecord.OrderOption]{typ: ent.TypeRechargeResetRecord, tq: q}, nil
 	case *ent.RedeemCodeQuery:
 		return &query[*ent.RedeemCodeQuery, predicate.RedeemCode, redeemcode.OrderOption]{typ: ent.TypeRedeemCode, tq: q}, nil
 	case *ent.SecuritySecretQuery:

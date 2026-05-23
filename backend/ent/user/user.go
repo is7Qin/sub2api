@@ -91,6 +91,8 @@ const (
 	EdgePromoCodeUsages = "promo_code_usages"
 	// EdgePaymentOrders holds the string denoting the payment_orders edge name in mutations.
 	EdgePaymentOrders = "payment_orders"
+	// EdgeRechargeResetRecords holds the string denoting the recharge_reset_records edge name in mutations.
+	EdgeRechargeResetRecords = "recharge_reset_records"
 	// EdgeAuthIdentities holds the string denoting the auth_identities edge name in mutations.
 	EdgeAuthIdentities = "auth_identities"
 	// EdgePendingAuthSessions holds the string denoting the pending_auth_sessions edge name in mutations.
@@ -202,6 +204,13 @@ const (
 	PaymentOrdersInverseTable = "payment_orders"
 	// PaymentOrdersColumn is the table column denoting the payment_orders relation/edge.
 	PaymentOrdersColumn = "user_id"
+	// RechargeResetRecordsTable is the table that holds the recharge_reset_records relation/edge.
+	RechargeResetRecordsTable = "recharge_reset_records"
+	// RechargeResetRecordsInverseTable is the table name for the RechargeResetRecord entity.
+	// It exists in this package in order to avoid circular dependency with the "rechargeresetrecord" package.
+	RechargeResetRecordsInverseTable = "recharge_reset_records"
+	// RechargeResetRecordsColumn is the table column denoting the recharge_reset_records relation/edge.
+	RechargeResetRecordsColumn = "user_id"
 	// AuthIdentitiesTable is the table that holds the auth_identities relation/edge.
 	AuthIdentitiesTable = "auth_identities"
 	// AuthIdentitiesInverseTable is the table name for the AuthIdentity entity.
@@ -656,6 +665,20 @@ func ByPaymentOrders(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByRechargeResetRecordsCount orders the results by recharge_reset_records count.
+func ByRechargeResetRecordsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newRechargeResetRecordsStep(), opts...)
+	}
+}
+
+// ByRechargeResetRecords orders the results by recharge_reset_records terms.
+func ByRechargeResetRecords(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newRechargeResetRecordsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByAuthIdentitiesCount orders the results by auth_identities count.
 func ByAuthIdentitiesCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -800,6 +823,13 @@ func newPaymentOrdersStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(PaymentOrdersInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, PaymentOrdersTable, PaymentOrdersColumn),
+	)
+}
+func newRechargeResetRecordsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(RechargeResetRecordsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, RechargeResetRecordsTable, RechargeResetRecordsColumn),
 	)
 }
 func newAuthIdentitiesStep() *sqlgraph.Step {

@@ -503,6 +503,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/recharge-reset',
+    name: 'AdminRechargeReset',
+    component: () => import('@/views/admin/RechargeResetView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Recharge Reset',
+      titleKey: 'admin.rechargeReset.title',
+      descriptionKey: 'admin.rechargeReset.description'
+    }
+  },
+  {
     path: '/admin/accounts',
     name: 'AdminAccounts',
     component: () => import('@/views/admin/AccountsView.vue'),
@@ -877,17 +889,19 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
-<<<<<<< HEAD
   if (to.meta.requiresLottery) {
     const publicSettings = appStore.cachedPublicSettings || await appStore.fetchPublicSettings()
     const lotteryEnabled = publicSettings?.lottery_enabled === true
     if (!lotteryEnabled) {
-=======
+      next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+      return
+    }
+  }
+
   if (to.meta.requiresRankingReward) {
     const publicSettings = appStore.cachedPublicSettings || await appStore.fetchPublicSettings()
     const rankingRewardEnabled = publicSettings?.ranking_reward_enabled === true
     if (!rankingRewardEnabled) {
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
       next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
       return
     }
@@ -899,17 +913,12 @@ router.beforeEach(async (to, _from, next) => {
       '/admin/groups',
       '/admin/subscriptions',
       '/admin/redeem',
-<<<<<<< HEAD
       '/admin/lottery',
-      '/subscriptions',
-      '/redeem',
-      '/lottery'
-=======
       '/admin/ranking-rewards',
       '/subscriptions',
-      '/ranking-rewards',
-      '/redeem'
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
+      '/redeem',
+      '/lottery',
+      '/ranking-rewards'
     ]
 
     if (restrictedPaths.some((path) => to.path.startsWith(path))) {

@@ -168,6 +168,8 @@ func (Group) Edges() []ent.Edge {
 		edge.To("api_keys", APIKey.Type),
 		edge.To("redeem_codes", RedeemCode.Type),
 		edge.To("subscriptions", UserSubscription.Type),
+		edge.To("recharge_reset_rules", RechargeResetCampaignRule.Type),
+		edge.To("recharge_reset_records", RechargeResetRecord.Type),
 		edge.To("usage_logs", UsageLog.Type),
 		edge.From("accounts", Account.Type).
 			Ref("groups").

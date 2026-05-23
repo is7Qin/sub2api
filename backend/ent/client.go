@@ -45,6 +45,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardcampaign"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardexcludeduser"
 	"github.com/Wei-Shaw/sub2api/ent/rankingrewardrun"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaign"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetcampaignrule"
+	"github.com/Wei-Shaw/sub2api/ent/rechargeresetrecord"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
@@ -127,6 +130,12 @@ type Client struct {
 	RankingRewardExcludedUser *RankingRewardExcludedUserClient
 	// RankingRewardRun is the client for interacting with the RankingRewardRun builders.
 	RankingRewardRun *RankingRewardRunClient
+	// RechargeResetCampaign is the client for interacting with the RechargeResetCampaign builders.
+	RechargeResetCampaign *RechargeResetCampaignClient
+	// RechargeResetCampaignRule is the client for interacting with the RechargeResetCampaignRule builders.
+	RechargeResetCampaignRule *RechargeResetCampaignRuleClient
+	// RechargeResetRecord is the client for interacting with the RechargeResetRecord builders.
+	RechargeResetRecord *RechargeResetRecordClient
 	// RedeemCode is the client for interacting with the RedeemCode builders.
 	RedeemCode *RedeemCodeClient
 	// SecuritySecret is the client for interacting with the SecuritySecret builders.
@@ -194,6 +203,9 @@ func (c *Client) init() {
 	c.RankingRewardCampaign = NewRankingRewardCampaignClient(c.config)
 	c.RankingRewardExcludedUser = NewRankingRewardExcludedUserClient(c.config)
 	c.RankingRewardRun = NewRankingRewardRunClient(c.config)
+	c.RechargeResetCampaign = NewRechargeResetCampaignClient(c.config)
+	c.RechargeResetCampaignRule = NewRechargeResetCampaignRuleClient(c.config)
+	c.RechargeResetRecord = NewRechargeResetRecordClient(c.config)
 	c.RedeemCode = NewRedeemCodeClient(c.config)
 	c.SecuritySecret = NewSecuritySecretClient(c.config)
 	c.Setting = NewSettingClient(c.config)
@@ -329,6 +341,9 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		RankingRewardCampaign:         NewRankingRewardCampaignClient(cfg),
 		RankingRewardExcludedUser:     NewRankingRewardExcludedUserClient(cfg),
 		RankingRewardRun:              NewRankingRewardRunClient(cfg),
+		RechargeResetCampaign:         NewRechargeResetCampaignClient(cfg),
+		RechargeResetCampaignRule:     NewRechargeResetCampaignRuleClient(cfg),
+		RechargeResetRecord:           NewRechargeResetRecordClient(cfg),
 		RedeemCode:                    NewRedeemCodeClient(cfg),
 		SecuritySecret:                NewSecuritySecretClient(cfg),
 		Setting:                       NewSettingClient(cfg),
@@ -391,6 +406,9 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		RankingRewardCampaign:         NewRankingRewardCampaignClient(cfg),
 		RankingRewardExcludedUser:     NewRankingRewardExcludedUserClient(cfg),
 		RankingRewardRun:              NewRankingRewardRunClient(cfg),
+		RechargeResetCampaign:         NewRechargeResetCampaignClient(cfg),
+		RechargeResetCampaignRule:     NewRechargeResetCampaignRuleClient(cfg),
+		RechargeResetRecord:           NewRechargeResetRecordClient(cfg),
 		RedeemCode:                    NewRedeemCodeClient(cfg),
 		SecuritySecret:                NewSecuritySecretClient(cfg),
 		Setting:                       NewSettingClient(cfg),
@@ -441,7 +459,8 @@ func (c *Client) Use(hooks ...Hook) {
 		c.LotteryChance, c.LotteryDraw, c.LotteryPrize, c.PaymentAuditLog,
 		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
 		c.PromoCodeUsage, c.Proxy, c.RankingRewardAward, c.RankingRewardCampaign,
-		c.RankingRewardExcludedUser, c.RankingRewardRun, c.RedeemCode,
+		c.RankingRewardExcludedUser, c.RankingRewardRun, c.RechargeResetCampaign,
+		c.RechargeResetCampaignRule, c.RechargeResetRecord, c.RedeemCode,
 		c.SecuritySecret, c.Setting, c.SubscriptionPlan, c.TLSFingerprintProfile,
 		c.UsageCleanupTask, c.UsageLog, c.User, c.UserAllowedGroup,
 		c.UserAttributeDefinition, c.UserAttributeValue, c.UserQuotaGrant,
@@ -463,7 +482,8 @@ func (c *Client) Intercept(interceptors ...Interceptor) {
 		c.LotteryChance, c.LotteryDraw, c.LotteryPrize, c.PaymentAuditLog,
 		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
 		c.PromoCodeUsage, c.Proxy, c.RankingRewardAward, c.RankingRewardCampaign,
-		c.RankingRewardExcludedUser, c.RankingRewardRun, c.RedeemCode,
+		c.RankingRewardExcludedUser, c.RankingRewardRun, c.RechargeResetCampaign,
+		c.RechargeResetCampaignRule, c.RechargeResetRecord, c.RedeemCode,
 		c.SecuritySecret, c.Setting, c.SubscriptionPlan, c.TLSFingerprintProfile,
 		c.UsageCleanupTask, c.UsageLog, c.User, c.UserAllowedGroup,
 		c.UserAttributeDefinition, c.UserAttributeValue, c.UserQuotaGrant,
@@ -536,6 +556,12 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.RankingRewardExcludedUser.mutate(ctx, m)
 	case *RankingRewardRunMutation:
 		return c.RankingRewardRun.mutate(ctx, m)
+	case *RechargeResetCampaignMutation:
+		return c.RechargeResetCampaign.mutate(ctx, m)
+	case *RechargeResetCampaignRuleMutation:
+		return c.RechargeResetCampaignRule.mutate(ctx, m)
+	case *RechargeResetRecordMutation:
+		return c.RechargeResetRecord.mutate(ctx, m)
 	case *RedeemCodeMutation:
 		return c.RedeemCode.mutate(ctx, m)
 	case *SecuritySecretMutation:
@@ -2619,6 +2645,38 @@ func (c *GroupClient) QuerySubscriptions(_m *Group) *UserSubscriptionQuery {
 			sqlgraph.From(group.Table, group.FieldID, id),
 			sqlgraph.To(usersubscription.Table, usersubscription.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, group.SubscriptionsTable, group.SubscriptionsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRechargeResetRules queries the recharge_reset_rules edge of a Group.
+func (c *GroupClient) QueryRechargeResetRules(_m *Group) *RechargeResetCampaignRuleQuery {
+	query := (&RechargeResetCampaignRuleClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, id),
+			sqlgraph.To(rechargeresetcampaignrule.Table, rechargeresetcampaignrule.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.RechargeResetRulesTable, group.RechargeResetRulesColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRechargeResetRecords queries the recharge_reset_records edge of a Group.
+func (c *GroupClient) QueryRechargeResetRecords(_m *Group) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.RechargeResetRecordsTable, group.RechargeResetRecordsColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -5572,6 +5630,581 @@ func (c *RankingRewardRunClient) mutate(ctx context.Context, m *RankingRewardRun
 	}
 }
 
+// RechargeResetCampaignClient is a client for the RechargeResetCampaign schema.
+type RechargeResetCampaignClient struct {
+	config
+}
+
+// NewRechargeResetCampaignClient returns a client for the RechargeResetCampaign from the given config.
+func NewRechargeResetCampaignClient(c config) *RechargeResetCampaignClient {
+	return &RechargeResetCampaignClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rechargeresetcampaign.Hooks(f(g(h())))`.
+func (c *RechargeResetCampaignClient) Use(hooks ...Hook) {
+	c.hooks.RechargeResetCampaign = append(c.hooks.RechargeResetCampaign, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rechargeresetcampaign.Intercept(f(g(h())))`.
+func (c *RechargeResetCampaignClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RechargeResetCampaign = append(c.inters.RechargeResetCampaign, interceptors...)
+}
+
+// Create returns a builder for creating a RechargeResetCampaign entity.
+func (c *RechargeResetCampaignClient) Create() *RechargeResetCampaignCreate {
+	mutation := newRechargeResetCampaignMutation(c.config, OpCreate)
+	return &RechargeResetCampaignCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RechargeResetCampaign entities.
+func (c *RechargeResetCampaignClient) CreateBulk(builders ...*RechargeResetCampaignCreate) *RechargeResetCampaignCreateBulk {
+	return &RechargeResetCampaignCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RechargeResetCampaignClient) MapCreateBulk(slice any, setFunc func(*RechargeResetCampaignCreate, int)) *RechargeResetCampaignCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RechargeResetCampaignCreateBulk{err: fmt.Errorf("calling to RechargeResetCampaignClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RechargeResetCampaignCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RechargeResetCampaignCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RechargeResetCampaign.
+func (c *RechargeResetCampaignClient) Update() *RechargeResetCampaignUpdate {
+	mutation := newRechargeResetCampaignMutation(c.config, OpUpdate)
+	return &RechargeResetCampaignUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RechargeResetCampaignClient) UpdateOne(_m *RechargeResetCampaign) *RechargeResetCampaignUpdateOne {
+	mutation := newRechargeResetCampaignMutation(c.config, OpUpdateOne, withRechargeResetCampaign(_m))
+	return &RechargeResetCampaignUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RechargeResetCampaignClient) UpdateOneID(id int64) *RechargeResetCampaignUpdateOne {
+	mutation := newRechargeResetCampaignMutation(c.config, OpUpdateOne, withRechargeResetCampaignID(id))
+	return &RechargeResetCampaignUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RechargeResetCampaign.
+func (c *RechargeResetCampaignClient) Delete() *RechargeResetCampaignDelete {
+	mutation := newRechargeResetCampaignMutation(c.config, OpDelete)
+	return &RechargeResetCampaignDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RechargeResetCampaignClient) DeleteOne(_m *RechargeResetCampaign) *RechargeResetCampaignDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RechargeResetCampaignClient) DeleteOneID(id int64) *RechargeResetCampaignDeleteOne {
+	builder := c.Delete().Where(rechargeresetcampaign.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RechargeResetCampaignDeleteOne{builder}
+}
+
+// Query returns a query builder for RechargeResetCampaign.
+func (c *RechargeResetCampaignClient) Query() *RechargeResetCampaignQuery {
+	return &RechargeResetCampaignQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRechargeResetCampaign},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RechargeResetCampaign entity by its id.
+func (c *RechargeResetCampaignClient) Get(ctx context.Context, id int64) (*RechargeResetCampaign, error) {
+	return c.Query().Where(rechargeresetcampaign.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RechargeResetCampaignClient) GetX(ctx context.Context, id int64) *RechargeResetCampaign {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryRules queries the rules edge of a RechargeResetCampaign.
+func (c *RechargeResetCampaignClient) QueryRules(_m *RechargeResetCampaign) *RechargeResetCampaignRuleQuery {
+	query := (&RechargeResetCampaignRuleClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetcampaign.Table, rechargeresetcampaign.FieldID, id),
+			sqlgraph.To(rechargeresetcampaignrule.Table, rechargeresetcampaignrule.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rechargeresetcampaign.RulesTable, rechargeresetcampaign.RulesColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRecords queries the records edge of a RechargeResetCampaign.
+func (c *RechargeResetCampaignClient) QueryRecords(_m *RechargeResetCampaign) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetcampaign.Table, rechargeresetcampaign.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rechargeresetcampaign.RecordsTable, rechargeresetcampaign.RecordsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RechargeResetCampaignClient) Hooks() []Hook {
+	return c.hooks.RechargeResetCampaign
+}
+
+// Interceptors returns the client interceptors.
+func (c *RechargeResetCampaignClient) Interceptors() []Interceptor {
+	return c.inters.RechargeResetCampaign
+}
+
+func (c *RechargeResetCampaignClient) mutate(ctx context.Context, m *RechargeResetCampaignMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RechargeResetCampaignCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RechargeResetCampaignUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RechargeResetCampaignUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RechargeResetCampaignDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RechargeResetCampaign mutation op: %q", m.Op())
+	}
+}
+
+// RechargeResetCampaignRuleClient is a client for the RechargeResetCampaignRule schema.
+type RechargeResetCampaignRuleClient struct {
+	config
+}
+
+// NewRechargeResetCampaignRuleClient returns a client for the RechargeResetCampaignRule from the given config.
+func NewRechargeResetCampaignRuleClient(c config) *RechargeResetCampaignRuleClient {
+	return &RechargeResetCampaignRuleClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rechargeresetcampaignrule.Hooks(f(g(h())))`.
+func (c *RechargeResetCampaignRuleClient) Use(hooks ...Hook) {
+	c.hooks.RechargeResetCampaignRule = append(c.hooks.RechargeResetCampaignRule, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rechargeresetcampaignrule.Intercept(f(g(h())))`.
+func (c *RechargeResetCampaignRuleClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RechargeResetCampaignRule = append(c.inters.RechargeResetCampaignRule, interceptors...)
+}
+
+// Create returns a builder for creating a RechargeResetCampaignRule entity.
+func (c *RechargeResetCampaignRuleClient) Create() *RechargeResetCampaignRuleCreate {
+	mutation := newRechargeResetCampaignRuleMutation(c.config, OpCreate)
+	return &RechargeResetCampaignRuleCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RechargeResetCampaignRule entities.
+func (c *RechargeResetCampaignRuleClient) CreateBulk(builders ...*RechargeResetCampaignRuleCreate) *RechargeResetCampaignRuleCreateBulk {
+	return &RechargeResetCampaignRuleCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RechargeResetCampaignRuleClient) MapCreateBulk(slice any, setFunc func(*RechargeResetCampaignRuleCreate, int)) *RechargeResetCampaignRuleCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RechargeResetCampaignRuleCreateBulk{err: fmt.Errorf("calling to RechargeResetCampaignRuleClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RechargeResetCampaignRuleCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RechargeResetCampaignRuleCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RechargeResetCampaignRule.
+func (c *RechargeResetCampaignRuleClient) Update() *RechargeResetCampaignRuleUpdate {
+	mutation := newRechargeResetCampaignRuleMutation(c.config, OpUpdate)
+	return &RechargeResetCampaignRuleUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RechargeResetCampaignRuleClient) UpdateOne(_m *RechargeResetCampaignRule) *RechargeResetCampaignRuleUpdateOne {
+	mutation := newRechargeResetCampaignRuleMutation(c.config, OpUpdateOne, withRechargeResetCampaignRule(_m))
+	return &RechargeResetCampaignRuleUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RechargeResetCampaignRuleClient) UpdateOneID(id int64) *RechargeResetCampaignRuleUpdateOne {
+	mutation := newRechargeResetCampaignRuleMutation(c.config, OpUpdateOne, withRechargeResetCampaignRuleID(id))
+	return &RechargeResetCampaignRuleUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RechargeResetCampaignRule.
+func (c *RechargeResetCampaignRuleClient) Delete() *RechargeResetCampaignRuleDelete {
+	mutation := newRechargeResetCampaignRuleMutation(c.config, OpDelete)
+	return &RechargeResetCampaignRuleDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RechargeResetCampaignRuleClient) DeleteOne(_m *RechargeResetCampaignRule) *RechargeResetCampaignRuleDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RechargeResetCampaignRuleClient) DeleteOneID(id int64) *RechargeResetCampaignRuleDeleteOne {
+	builder := c.Delete().Where(rechargeresetcampaignrule.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RechargeResetCampaignRuleDeleteOne{builder}
+}
+
+// Query returns a query builder for RechargeResetCampaignRule.
+func (c *RechargeResetCampaignRuleClient) Query() *RechargeResetCampaignRuleQuery {
+	return &RechargeResetCampaignRuleQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRechargeResetCampaignRule},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RechargeResetCampaignRule entity by its id.
+func (c *RechargeResetCampaignRuleClient) Get(ctx context.Context, id int64) (*RechargeResetCampaignRule, error) {
+	return c.Query().Where(rechargeresetcampaignrule.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RechargeResetCampaignRuleClient) GetX(ctx context.Context, id int64) *RechargeResetCampaignRule {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryCampaign queries the campaign edge of a RechargeResetCampaignRule.
+func (c *RechargeResetCampaignRuleClient) QueryCampaign(_m *RechargeResetCampaignRule) *RechargeResetCampaignQuery {
+	query := (&RechargeResetCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetcampaignrule.Table, rechargeresetcampaignrule.FieldID, id),
+			sqlgraph.To(rechargeresetcampaign.Table, rechargeresetcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetcampaignrule.CampaignTable, rechargeresetcampaignrule.CampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryGroup queries the group edge of a RechargeResetCampaignRule.
+func (c *RechargeResetCampaignRuleClient) QueryGroup(_m *RechargeResetCampaignRule) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetcampaignrule.Table, rechargeresetcampaignrule.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetcampaignrule.GroupTable, rechargeresetcampaignrule.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRecords queries the records edge of a RechargeResetCampaignRule.
+func (c *RechargeResetCampaignRuleClient) QueryRecords(_m *RechargeResetCampaignRule) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetcampaignrule.Table, rechargeresetcampaignrule.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, rechargeresetcampaignrule.RecordsTable, rechargeresetcampaignrule.RecordsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RechargeResetCampaignRuleClient) Hooks() []Hook {
+	return c.hooks.RechargeResetCampaignRule
+}
+
+// Interceptors returns the client interceptors.
+func (c *RechargeResetCampaignRuleClient) Interceptors() []Interceptor {
+	return c.inters.RechargeResetCampaignRule
+}
+
+func (c *RechargeResetCampaignRuleClient) mutate(ctx context.Context, m *RechargeResetCampaignRuleMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RechargeResetCampaignRuleCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RechargeResetCampaignRuleUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RechargeResetCampaignRuleUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RechargeResetCampaignRuleDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RechargeResetCampaignRule mutation op: %q", m.Op())
+	}
+}
+
+// RechargeResetRecordClient is a client for the RechargeResetRecord schema.
+type RechargeResetRecordClient struct {
+	config
+}
+
+// NewRechargeResetRecordClient returns a client for the RechargeResetRecord from the given config.
+func NewRechargeResetRecordClient(c config) *RechargeResetRecordClient {
+	return &RechargeResetRecordClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `rechargeresetrecord.Hooks(f(g(h())))`.
+func (c *RechargeResetRecordClient) Use(hooks ...Hook) {
+	c.hooks.RechargeResetRecord = append(c.hooks.RechargeResetRecord, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `rechargeresetrecord.Intercept(f(g(h())))`.
+func (c *RechargeResetRecordClient) Intercept(interceptors ...Interceptor) {
+	c.inters.RechargeResetRecord = append(c.inters.RechargeResetRecord, interceptors...)
+}
+
+// Create returns a builder for creating a RechargeResetRecord entity.
+func (c *RechargeResetRecordClient) Create() *RechargeResetRecordCreate {
+	mutation := newRechargeResetRecordMutation(c.config, OpCreate)
+	return &RechargeResetRecordCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of RechargeResetRecord entities.
+func (c *RechargeResetRecordClient) CreateBulk(builders ...*RechargeResetRecordCreate) *RechargeResetRecordCreateBulk {
+	return &RechargeResetRecordCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *RechargeResetRecordClient) MapCreateBulk(slice any, setFunc func(*RechargeResetRecordCreate, int)) *RechargeResetRecordCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &RechargeResetRecordCreateBulk{err: fmt.Errorf("calling to RechargeResetRecordClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*RechargeResetRecordCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &RechargeResetRecordCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for RechargeResetRecord.
+func (c *RechargeResetRecordClient) Update() *RechargeResetRecordUpdate {
+	mutation := newRechargeResetRecordMutation(c.config, OpUpdate)
+	return &RechargeResetRecordUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *RechargeResetRecordClient) UpdateOne(_m *RechargeResetRecord) *RechargeResetRecordUpdateOne {
+	mutation := newRechargeResetRecordMutation(c.config, OpUpdateOne, withRechargeResetRecord(_m))
+	return &RechargeResetRecordUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *RechargeResetRecordClient) UpdateOneID(id int64) *RechargeResetRecordUpdateOne {
+	mutation := newRechargeResetRecordMutation(c.config, OpUpdateOne, withRechargeResetRecordID(id))
+	return &RechargeResetRecordUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for RechargeResetRecord.
+func (c *RechargeResetRecordClient) Delete() *RechargeResetRecordDelete {
+	mutation := newRechargeResetRecordMutation(c.config, OpDelete)
+	return &RechargeResetRecordDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *RechargeResetRecordClient) DeleteOne(_m *RechargeResetRecord) *RechargeResetRecordDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *RechargeResetRecordClient) DeleteOneID(id int64) *RechargeResetRecordDeleteOne {
+	builder := c.Delete().Where(rechargeresetrecord.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &RechargeResetRecordDeleteOne{builder}
+}
+
+// Query returns a query builder for RechargeResetRecord.
+func (c *RechargeResetRecordClient) Query() *RechargeResetRecordQuery {
+	return &RechargeResetRecordQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeRechargeResetRecord},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a RechargeResetRecord entity by its id.
+func (c *RechargeResetRecordClient) Get(ctx context.Context, id int64) (*RechargeResetRecord, error) {
+	return c.Query().Where(rechargeresetrecord.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *RechargeResetRecordClient) GetX(ctx context.Context, id int64) *RechargeResetRecord {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryCampaign queries the campaign edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QueryCampaign(_m *RechargeResetRecord) *RechargeResetCampaignQuery {
+	query := (&RechargeResetCampaignClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
+			sqlgraph.To(rechargeresetcampaign.Table, rechargeresetcampaign.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.CampaignTable, rechargeresetrecord.CampaignColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRule queries the rule edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QueryRule(_m *RechargeResetRecord) *RechargeResetCampaignRuleQuery {
+	query := (&RechargeResetCampaignRuleClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
+			sqlgraph.To(rechargeresetcampaignrule.Table, rechargeresetcampaignrule.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.RuleTable, rechargeresetrecord.RuleColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRedeemCode queries the redeem_code edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QueryRedeemCode(_m *RechargeResetRecord) *RedeemCodeQuery {
+	query := (&RedeemCodeClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
+			sqlgraph.To(redeemcode.Table, redeemcode.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.RedeemCodeTable, rechargeresetrecord.RedeemCodeColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryUser queries the user edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QueryUser(_m *RechargeResetRecord) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.UserTable, rechargeresetrecord.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QuerySubscription queries the subscription edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QuerySubscription(_m *RechargeResetRecord) *UserSubscriptionQuery {
+	query := (&UserSubscriptionClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
+			sqlgraph.To(usersubscription.Table, usersubscription.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.SubscriptionTable, rechargeresetrecord.SubscriptionColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryGroup queries the group edge of a RechargeResetRecord.
+func (c *RechargeResetRecordClient) QueryGroup(_m *RechargeResetRecord) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(rechargeresetrecord.Table, rechargeresetrecord.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, rechargeresetrecord.GroupTable, rechargeresetrecord.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *RechargeResetRecordClient) Hooks() []Hook {
+	return c.hooks.RechargeResetRecord
+}
+
+// Interceptors returns the client interceptors.
+func (c *RechargeResetRecordClient) Interceptors() []Interceptor {
+	return c.inters.RechargeResetRecord
+}
+
+func (c *RechargeResetRecordClient) mutate(ctx context.Context, m *RechargeResetRecordMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&RechargeResetRecordCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&RechargeResetRecordUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&RechargeResetRecordUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&RechargeResetRecordDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown RechargeResetRecord mutation op: %q", m.Op())
+	}
+}
+
 // RedeemCodeClient is a client for the RedeemCode schema.
 type RedeemCodeClient struct {
 	config
@@ -5721,6 +6354,22 @@ func (c *RedeemCodeClient) QueryLotteryDraws(_m *RedeemCode) *LotteryDrawQuery {
 			sqlgraph.From(redeemcode.Table, redeemcode.FieldID, id),
 			sqlgraph.To(lotterydraw.Table, lotterydraw.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, redeemcode.LotteryDrawsTable, redeemcode.LotteryDrawsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryRechargeResetRecords queries the recharge_reset_records edge of a RedeemCode.
+func (c *RedeemCodeClient) QueryRechargeResetRecords(_m *RedeemCode) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(redeemcode.Table, redeemcode.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, redeemcode.RechargeResetRecordsTable, redeemcode.RechargeResetRecordsColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -6979,6 +7628,22 @@ func (c *UserClient) QueryPaymentOrders(_m *User) *PaymentOrderQuery {
 	return query
 }
 
+// QueryRechargeResetRecords queries the recharge_reset_records edge of a User.
+func (c *UserClient) QueryRechargeResetRecords(_m *User) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.RechargeResetRecordsTable, user.RechargeResetRecordsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryAuthIdentities queries the auth_identities edge of a User.
 func (c *UserClient) QueryAuthIdentities(_m *User) *AuthIdentityQuery {
 	query := (&AuthIdentityClient{config: c.config}).Query()
@@ -7791,6 +8456,22 @@ func (c *UserSubscriptionClient) QueryAssignedByUser(_m *UserSubscription) *User
 	return query
 }
 
+// QueryRechargeResetRecords queries the recharge_reset_records edge of a UserSubscription.
+func (c *UserSubscriptionClient) QueryRechargeResetRecords(_m *UserSubscription) *RechargeResetRecordQuery {
+	query := (&RechargeResetRecordClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(usersubscription.Table, usersubscription.FieldID, id),
+			sqlgraph.To(rechargeresetrecord.Table, rechargeresetrecord.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, usersubscription.RechargeResetRecordsTable, usersubscription.RechargeResetRecordsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryUsageLogs queries the usage_logs edge of a UserSubscription.
 func (c *UserSubscriptionClient) QueryUsageLogs(_m *UserSubscription) *UsageLogQuery {
 	query := (&UsageLogClient{config: c.config}).Query()
@@ -7844,7 +8525,8 @@ type (
 		LotteryChance, LotteryDraw, LotteryPrize, PaymentAuditLog, PaymentOrder,
 		PaymentProviderInstance, PendingAuthSession, PromoCode, PromoCodeUsage, Proxy,
 		RankingRewardAward, RankingRewardCampaign, RankingRewardExcludedUser,
-		RankingRewardRun, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
+		RankingRewardRun, RechargeResetCampaign, RechargeResetCampaignRule,
+		RechargeResetRecord, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
 		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
 		UserAttributeDefinition, UserAttributeValue, UserQuotaGrant,
 		UserSubscription []ent.Hook
@@ -7857,7 +8539,8 @@ type (
 		LotteryChance, LotteryDraw, LotteryPrize, PaymentAuditLog, PaymentOrder,
 		PaymentProviderInstance, PendingAuthSession, PromoCode, PromoCodeUsage, Proxy,
 		RankingRewardAward, RankingRewardCampaign, RankingRewardExcludedUser,
-		RankingRewardRun, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
+		RankingRewardRun, RechargeResetCampaign, RechargeResetCampaignRule,
+		RechargeResetRecord, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
 		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
 		UserAttributeDefinition, UserAttributeValue, UserQuotaGrant,
 		UserSubscription []ent.Interceptor

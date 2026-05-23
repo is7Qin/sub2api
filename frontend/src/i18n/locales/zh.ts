@@ -362,6 +362,7 @@ export default {
     channels: '渠道管理',
     availableChannels: '可用渠道',
     subscriptions: '订阅管理',
+    rechargeReset: '充值重置',
     accounts: '账号管理',
     proxies: 'IP管理',
     redeemCodes: '兑换码',
@@ -1048,7 +1049,6 @@ export default {
     }
   },
 
-<<<<<<< HEAD
   lottery: {
     title: '抽奖中心',
     description: '使用抽奖机会参与活动并领取奖励',
@@ -1110,7 +1110,8 @@ export default {
     rewardTypes: {
       invitation: '邀请码',
     },
-=======
+  },
+
   rankingReward: {
     title: '排行榜奖励',
     description: '查看每日排行榜奖励结果，榜单仅展示匿名用户与获得的抽奖机会',
@@ -1130,7 +1131,6 @@ export default {
       reward: '奖励',
       status: '状态'
     }
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
   },
 
   affiliate: {
@@ -1527,6 +1527,11 @@ export default {
     rankingReward: {
       title: '排行榜奖励',
       description: '按每日用量排行榜向获奖用户发放抽奖机会',
+    },
+
+    rechargeReset: {
+      title: '充值重置',
+      description: '用户余额充值达到规则阈值后重置订阅周期额度',
     },
 
     backup: {
@@ -5515,21 +5520,19 @@ export default {
           enabled: '启用风控中心',
           enabledHint: '关闭后管理员侧边栏入口隐藏，网关内容审计不会执行。',
         },
-<<<<<<< HEAD
         lottery: {
           title: '抽奖中心',
           description: '启用抽奖活动、用户抽奖入口和用户抽奖接口。默认关闭。',
           configureLink: '配置抽奖活动',
           enabled: '启用抽奖中心',
           enabledHint: '关闭后抽奖侧边栏入口隐藏，用户抽奖接口返回无权限。',
-=======
+        },
         rankingReward: {
           title: '排行榜奖励',
           description: '启用管理员排行榜奖励配置和用户端匿名奖励榜单。默认关闭。',
           configureLink: '前往 排行榜奖励 配置奖励活动',
           enabled: '启用排行榜奖励',
           enabledHint: '关闭后用户和管理员侧边栏入口隐藏，用户接口返回禁用错误。',
->>>>>>> 72e52528 (chore: stage ranking follow-up changes)
         },
         affiliate: {
           title: '邀请返利',

@@ -58,9 +58,11 @@ type RedeemCodeEdges struct {
 	Group *Group `json:"group,omitempty"`
 	// LotteryDraws holds the value of the lottery_draws edge.
 	LotteryDraws []*LotteryDraw `json:"lottery_draws,omitempty"`
+	// RechargeResetRecords holds the value of the recharge_reset_records edge.
+	RechargeResetRecords []*RechargeResetRecord `json:"recharge_reset_records,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [3]bool
+	loadedTypes [4]bool
 }
 
 // UserOrErr returns the User value or an error if the edge
@@ -92,6 +94,15 @@ func (e RedeemCodeEdges) LotteryDrawsOrErr() ([]*LotteryDraw, error) {
 		return e.LotteryDraws, nil
 	}
 	return nil, &NotLoadedError{edge: "lottery_draws"}
+}
+
+// RechargeResetRecordsOrErr returns the RechargeResetRecords value or an error if the edge
+// was not loaded in eager-loading.
+func (e RedeemCodeEdges) RechargeResetRecordsOrErr() ([]*RechargeResetRecord, error) {
+	if e.loadedTypes[3] {
+		return e.RechargeResetRecords, nil
+	}
+	return nil, &NotLoadedError{edge: "recharge_reset_records"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -235,6 +246,11 @@ func (_m *RedeemCode) QueryGroup() *GroupQuery {
 // QueryLotteryDraws queries the "lottery_draws" edge of the RedeemCode entity.
 func (_m *RedeemCode) QueryLotteryDraws() *LotteryDrawQuery {
 	return NewRedeemCodeClient(_m.config).QueryLotteryDraws(_m)
+}
+
+// QueryRechargeResetRecords queries the "recharge_reset_records" edge of the RedeemCode entity.
+func (_m *RedeemCode) QueryRechargeResetRecords() *RechargeResetRecordQuery {
+	return NewRedeemCodeClient(_m.config).QueryRechargeResetRecords(_m)
 }
 
 // Update returns a builder for updating this RedeemCode.

@@ -211,11 +211,21 @@ func (a *Airwallex) QueryOrder(ctx context.Context, tradeNo string) (*payment.Qu
 	if err := a.doJSON(ctx, http.MethodGet, "/pa/payment_intents/"+url.PathEscape(intentID), token, nil, &intent); err != nil {
 		return nil, fmt.Errorf("airwallex query order: %w", err)
 	}
+	status := airwallexProviderStatus(intent.Status)
+	metadata := a.intentMetadata(intent, "")
+	paidAt := ""
+	if status == payment.ProviderStatusPaid {
+		paidAt = strings.TrimSpace(intent.SucceededAt)
+		if paidAt == "" {
+			metadata["paid_at_unavailable"] = "true"
+		}
+	}
 	return &payment.QueryOrderResponse{
 		TradeNo:  intent.ID,
-		Status:   airwallexProviderStatus(intent.Status),
+		Status:   status,
 		Amount:   intent.Amount.InexactFloat64(),
-		Metadata: a.intentMetadata(intent, ""),
+		PaidAt:   paidAt,
+		Metadata: metadata,
 	}, nil
 }
 
@@ -249,13 +259,15 @@ func (a *Airwallex) VerifyNotification(_ context.Context, rawBody string, header
 		status = payment.NotificationStatusSuccess
 	}
 
+	occurredAt, _ := parseProviderTime(intent.SucceededAt)
 	return &payment.PaymentNotification{
-		TradeNo:  intent.ID,
-		OrderID:  intent.MerchantOrderID,
-		Amount:   intent.Amount.InexactFloat64(),
-		Status:   status,
-		RawData:  rawBody,
-		Metadata: a.intentMetadata(intent, event.accountID()),
+		TradeNo:    intent.ID,
+		OrderID:    intent.MerchantOrderID,
+		Amount:     intent.Amount.InexactFloat64(),
+		Status:     status,
+		OccurredAt: occurredAt,
+		RawData:    rawBody,
+		Metadata:   a.intentMetadata(intent, event.accountID()),
 	}, nil
 }
 
@@ -603,6 +615,9 @@ type airwallexPaymentIntent struct {
 	Amount          decimal.Decimal   `json:"amount"`
 	Currency        string            `json:"currency"`
 	Status          string            `json:"status"`
+	SucceededAt     string            `json:"succeeded_at"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
 	Metadata        map[string]string `json:"metadata"`
 }
 

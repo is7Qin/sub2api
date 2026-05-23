@@ -6,9 +6,9 @@
           <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ t('admin.rechargeReset.title') }}</h1>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.rechargeReset.description') }}</p>
         </div>
-        <button class="btn btn-secondary" :disabled="loadingCampaigns" @click="loadCampaigns()">
-          <Icon name="refresh" size="sm" :class="loadingCampaigns ? 'animate-spin' : ''" />
-          <span>{{ t('common.refresh') }}</span>
+        <button class="btn btn-primary" type="button" @click="openCreateCampaignDialog">
+          <Icon name="plus" size="sm" />
+          <span>{{ tx('新建活动', 'New Campaign') }}</span>
         </button>
       </div>
 
@@ -31,207 +31,210 @@
         </div>
       </div>
 
-      <div class="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,0.85fr)]">
-        <div class="card overflow-hidden">
-          <div class="flex flex-col gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('重置活动', 'Reset Campaigns') }}</h2>
-            <div class="flex gap-2">
-              <select v-model="statusFilter" class="input w-36" @change="loadCampaigns()">
-                <option value="">{{ tx('全部状态', 'All Status') }}</option>
-                <option value="draft">{{ statusLabel('draft') }}</option>
-                <option value="active">{{ statusLabel('active') }}</option>
-                <option value="disabled">{{ statusLabel('disabled') }}</option>
-                <option value="ended">{{ statusLabel('ended') }}</option>
-              </select>
-              <button class="btn btn-primary" @click="startCreateCampaign">
-                <Icon name="plus" size="sm" />
-                <span>{{ tx('新建活动', 'New Campaign') }}</span>
-              </button>
+      <TablePageLayout>
+        <template #filters>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="w-full sm:w-48">
+              <Select v-model="statusFilter" :options="statusFilterOptions" @change="loadCampaigns" />
             </div>
-          </div>
-
-          <div v-if="loadingCampaigns" class="flex justify-center py-12">
-            <div class="h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
-          </div>
-          <div v-else-if="campaigns.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ tx('暂无充值重置活动', 'No recharge reset campaigns yet.') }}
-          </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full min-w-[840px] text-left text-sm">
-              <thead>
-                <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                  <th class="px-6 py-3 font-medium">{{ tx('名称', 'Name') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('状态', 'Status') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('重置周期', 'Reset Windows') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('开始时间', 'Starts At') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('结束时间', 'Ends At') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('规则数', 'Rules') }}</th>
-                  <th class="px-6 py-3 text-right font-medium">{{ tx('操作', 'Actions') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="campaign in campaigns" :key="campaign.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                  <td class="px-6 py-4">
-                    <button class="text-left font-medium text-primary-600 hover:underline dark:text-primary-400" @click="selectCampaign(campaign)">
-                      {{ campaign.name }}
-                    </button>
-                    <p class="mt-1 max-w-xs truncate text-xs text-gray-500 dark:text-gray-400">{{ campaign.description || '-' }}</p>
-                  </td>
-                  <td class="px-4 py-4">
-                    <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="campaignStatusClass(campaign.status)">{{ statusLabel(campaign.status) }}</span>
-                  </td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ resetWindowLabel(campaign) }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatDateTime(campaign.starts_at) }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatDateTime(campaign.ends_at) || tx('不限', 'No limit') }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ campaign.rules?.length || 0 }}</td>
-                  <td class="px-6 py-4">
-                    <div class="flex justify-end gap-2">
-                      <button class="btn btn-sm btn-secondary" @click="startEditCampaign(campaign)">{{ tx('编辑', 'Edit') }}</button>
-                      <button class="btn btn-sm btn-secondary" @click="selectCampaign(campaign)">{{ tx('规则', 'Rules') }}</button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ formMode === 'create' ? tx('新建活动', 'Create Campaign') : tx('编辑活动', 'Edit Campaign') }}</h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('至少选择一个要重置的订阅周期。', 'Select at least one subscription period to reset.') }}</p>
-          </div>
-          <form class="space-y-4 p-6" @submit.prevent="saveCampaign">
-            <div>
-              <label class="label">{{ tx('名称', 'Name') }}</label>
-              <input v-model="campaignForm.name" class="input" required />
-            </div>
-            <div>
-              <label class="label">{{ tx('说明', 'Description') }}</label>
-              <textarea v-model="campaignForm.description" class="input min-h-[80px]"></textarea>
-            </div>
-            <div class="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label class="label">{{ tx('状态', 'Status') }}</label>
-                <select v-model="campaignForm.status" class="input">
-                  <option value="draft">{{ statusLabel('draft') }}</option>
-                  <option value="active">{{ statusLabel('active') }}</option>
-                  <option value="disabled">{{ statusLabel('disabled') }}</option>
-                  <option value="ended">{{ statusLabel('ended') }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="label">{{ tx('开始时间', 'Starts At') }}</label>
-                <input v-model="campaignForm.starts_at" class="input" required type="datetime-local" />
-              </div>
-            </div>
-            <div>
-              <label class="label">{{ tx('结束时间', 'Ends At') }}</label>
-              <input v-model="campaignForm.ends_at" class="input" type="datetime-local" />
-            </div>
-            <div>
-              <label class="label">{{ tx('重置周期', 'Reset Windows') }}</label>
-              <div class="mt-2 grid gap-2 sm:grid-cols-3">
-                <label class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
-                  <input v-model="campaignForm.reset_daily" type="checkbox" />
-                  <span>{{ tx('日额度', 'Daily') }}</span>
-                </label>
-                <label class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
-                  <input v-model="campaignForm.reset_weekly" type="checkbox" />
-                  <span>{{ tx('周额度', 'Weekly') }}</span>
-                </label>
-                <label class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
-                  <input v-model="campaignForm.reset_monthly" type="checkbox" />
-                  <span>{{ tx('月额度', 'Monthly') }}</span>
-                </label>
-              </div>
-            </div>
-            <div class="flex justify-end gap-2">
-              <button v-if="formMode === 'edit'" class="btn btn-secondary" type="button" @click="startCreateCampaign">{{ tx('取消编辑', 'Cancel Edit') }}</button>
-              <button class="btn btn-primary" :disabled="savingCampaign" type="submit">
-                <Icon v-if="savingCampaign" name="refresh" size="sm" class="animate-spin" />
-                <span>{{ tx('保存', 'Save') }}</span>
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <div v-if="selectedCampaign" class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <div class="card overflow-hidden">
-          <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <div>
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ tx('规则', 'Rules') }}</h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ selectedCampaign.name }}</p>
-            </div>
-            <button class="btn btn-secondary" :disabled="loadingRules" @click="loadRules(selectedCampaign.id)">
-              <Icon name="refresh" size="sm" :class="loadingRules ? 'animate-spin' : ''" />
+            <button class="btn btn-secondary" :disabled="loadingCampaigns" type="button" @click="loadCampaigns">
+              <Icon name="refresh" size="sm" :class="loadingCampaigns ? 'animate-spin' : ''" />
               <span>{{ t('common.refresh') }}</span>
             </button>
           </div>
-          <div v-if="rules.length === 0" class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ tx('暂无规则', 'No rules yet.') }}
+        </template>
+
+        <template #table>
+          <DataTable
+            :columns="campaignColumns"
+            :data="campaigns"
+            :loading="loadingCampaigns"
+            row-key="id"
+            sticky-actions-column
+            :actions-count="2"
+          >
+            <template #cell-name="{ row }">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="font-medium text-gray-900 dark:text-white">{{ row.name }}</span>
+                  <span class="text-xs text-gray-400 dark:text-gray-500">#{{ row.id }}</span>
+                </div>
+                <p class="mt-1 max-w-xl truncate text-xs text-gray-500 dark:text-gray-400">{{ row.description || '-' }}</p>
+              </div>
+            </template>
+
+            <template #cell-status="{ row }">
+              <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="campaignStatusClass(row.status)">{{ statusLabel(row.status) }}</span>
+            </template>
+
+            <template #cell-reset_windows="{ row }">
+              <span>{{ resetWindowLabel(row) }}</span>
+            </template>
+
+            <template #cell-starts_at="{ row }">
+              <span>{{ formatDateTime(row.starts_at) }}</span>
+            </template>
+
+            <template #cell-ends_at="{ row }">
+              <span>{{ formatDateTime(row.ends_at) || tx('不限', 'No limit') }}</span>
+            </template>
+
+            <template #cell-rules="{ row }">
+              <span>{{ row.rules?.length || 0 }}</span>
+            </template>
+
+            <template #cell-actions="{ row }">
+              <div class="flex justify-end gap-2">
+                <button class="btn btn-sm btn-secondary" type="button" @click="openEditCampaignDialog(row)">{{ tx('编辑', 'Edit') }}</button>
+                <button class="btn btn-sm btn-primary" type="button" @click="openRulesDialog(row)">{{ tx('规则', 'Rules') }}</button>
+              </div>
+            </template>
+
+            <template #empty>
+              <div class="flex flex-col items-center py-8 text-center">
+                <p class="text-base font-medium text-gray-900 dark:text-white">{{ tx('暂无充值重置活动', 'No recharge reset campaigns yet.') }}</p>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('新建活动后，在规则弹窗里用分组选择器配置触发条件。', 'Create a campaign, then configure trigger rules with the group selector.') }}</p>
+                <button class="btn btn-primary mt-4" type="button" @click="openCreateCampaignDialog">
+                  <Icon name="plus" size="sm" />
+                  <span>{{ tx('新建活动', 'New Campaign') }}</span>
+                </button>
+              </div>
+            </template>
+          </DataTable>
+        </template>
+      </TablePageLayout>
+    </div>
+
+    <BaseDialog
+      :show="showCampaignDialog"
+      :title="formMode === 'create' ? tx('新建活动', 'Create Campaign') : tx('编辑活动', 'Edit Campaign')"
+      width="wide"
+      @close="closeCampaignDialog"
+    >
+      <form id="recharge-reset-campaign-form" class="space-y-4" @submit.prevent="saveCampaign">
+        <div>
+          <label class="label">{{ tx('名称', 'Name') }}</label>
+          <input v-model.trim="campaignForm.name" class="input" required />
+        </div>
+        <div>
+          <label class="label">{{ tx('说明', 'Description') }}</label>
+          <textarea v-model="campaignForm.description" class="input min-h-[80px]"></textarea>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label">{{ tx('状态', 'Status') }}</label>
+            <Select v-model="campaignForm.status" :options="campaignStatusOptions" />
           </div>
-          <div v-else class="overflow-x-auto">
-            <table class="w-full min-w-[620px] text-left text-sm">
-              <thead>
-                <tr class="border-b border-gray-100 text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                  <th class="px-6 py-3 font-medium">{{ tx('分组ID', 'Group ID') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('充值阈值', 'Threshold') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('状态', 'Status') }}</th>
-                  <th class="px-4 py-3 font-medium">{{ tx('更新时间', 'Updated') }}</th>
-                  <th class="px-6 py-3 text-right font-medium">{{ tx('操作', 'Actions') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="rule in rules" :key="rule.id" class="border-b border-gray-100 last:border-b-0 dark:border-dark-800">
-                  <td class="px-6 py-4 text-gray-900 dark:text-white">#{{ rule.group_id }}</td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatCurrency(rule.threshold_amount) }}</td>
-                  <td class="px-4 py-4">
-                    <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="ruleStatusClass(rule.status)">{{ ruleStatusLabel(rule.status) }}</span>
-                  </td>
-                  <td class="px-4 py-4 text-gray-700 dark:text-gray-300">{{ formatDateTime(rule.updated_at) }}</td>
-                  <td class="px-6 py-4 text-right">
-                    <button class="text-sm text-primary-600 hover:underline dark:text-primary-400" @click="startEditRule(rule)">{{ tx('编辑', 'Edit') }}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          <div>
+            <label class="label">{{ tx('开始时间', 'Starts At') }}</label>
+            <input v-model="campaignForm.starts_at" class="input" required type="datetime-local" />
           </div>
+        </div>
+        <div>
+          <label class="label">{{ tx('结束时间', 'Ends At') }}</label>
+          <input v-model="campaignForm.ends_at" class="input" type="datetime-local" />
+        </div>
+        <div>
+          <label class="label">{{ tx('重置周期', 'Reset Windows') }}</label>
+          <div class="mt-2 grid gap-2 sm:grid-cols-3">
+            <label class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
+              <input v-model="campaignForm.reset_daily" type="checkbox" />
+              <span>{{ tx('日额度', 'Daily') }}</span>
+            </label>
+            <label class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
+              <input v-model="campaignForm.reset_weekly" type="checkbox" />
+              <span>{{ tx('周额度', 'Weekly') }}</span>
+            </label>
+            <label class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-700">
+              <input v-model="campaignForm.reset_monthly" type="checkbox" />
+              <span>{{ tx('月额度', 'Monthly') }}</span>
+            </label>
+          </div>
+          <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ tx('至少选择一个要重置的订阅周期。', 'Select at least one subscription period to reset.') }}</p>
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeCampaignDialog">{{ tx('取消', 'Cancel') }}</button>
+        <button class="btn btn-primary" :disabled="savingCampaign" form="recharge-reset-campaign-form" type="submit">
+          <Icon v-if="savingCampaign" name="refresh" size="sm" class="animate-spin" />
+          <span>{{ tx('保存', 'Save') }}</span>
+        </button>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showRulesDialog"
+      :title="activeCampaign ? `${tx('规则', 'Rules')} · ${activeCampaign.name}` : tx('规则', 'Rules')"
+      width="extra-wide"
+      @close="closeRulesDialog"
+    >
+      <div v-if="activeCampaign" class="space-y-5">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="text-sm text-gray-500 dark:text-gray-400">
+            <span>{{ tx('活动', 'Campaign') }} #{{ activeCampaign.id }}</span>
+            <span class="mx-2">·</span>
+            <span>{{ resetWindowLabel(activeCampaign) }}</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" :disabled="loadingRules" type="button" @click="loadRules(activeCampaign.id)">
+            <Icon name="refresh" size="sm" :class="loadingRules ? 'animate-spin' : ''" />
+            <span>{{ t('common.refresh') }}</span>
+          </button>
         </div>
 
-        <div class="card">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ ruleFormMode === 'create' ? tx('新建规则', 'Create Rule') : tx('编辑规则', 'Edit Rule') }}</h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ tx('用户在该分组有有效订阅且余额充值达到阈值时触发重置。', 'Triggered when a balance recharge reaches the threshold for a user with an active subscription in this group.') }}</p>
+        <form class="grid gap-4 rounded-lg border border-gray-200 p-4 dark:border-dark-700 lg:grid-cols-[minmax(240px,1fr)_180px_150px_auto]" @submit.prevent="saveRule">
+          <div>
+            <label class="label">{{ tx('分组', 'Group') }}</label>
+            <Select
+              v-model="ruleForm.group_id"
+              :options="groupOptions"
+              searchable
+              :placeholder="tx('选择分组', 'Select group')"
+            />
           </div>
-          <form class="space-y-4 p-6" @submit.prevent="saveRule">
+          <div>
+            <label class="label">{{ tx('充值阈值', 'Threshold Amount') }}</label>
+            <input v-model.number="ruleForm.threshold_amount" class="input" min="0.01" required step="0.01" type="number" />
+          </div>
+          <div>
+            <label class="label">{{ tx('状态', 'Status') }}</label>
+            <Select v-model="ruleForm.status" :options="ruleStatusOptions" />
+          </div>
+          <div class="flex items-end gap-2">
+            <button v-if="ruleFormMode === 'edit'" class="btn btn-secondary" type="button" @click="startCreateRule">{{ tx('取消', 'Cancel') }}</button>
+            <button class="btn btn-primary" :disabled="savingRule" type="submit">
+              <Icon v-if="savingRule" name="refresh" size="sm" class="animate-spin" />
+              <span>{{ ruleFormMode === 'create' ? tx('添加', 'Add') : tx('保存', 'Save') }}</span>
+            </button>
+          </div>
+        </form>
+
+        <DataTable :columns="ruleColumns" :data="rules" :loading="loadingRules" row-key="id" :actions-count="1">
+          <template #cell-group_id="{ row }">
             <div>
-              <label class="label">{{ tx('分组ID', 'Group ID') }}</label>
-              <input v-model.number="ruleForm.group_id" class="input" min="1" required type="number" />
+              <div class="font-medium text-gray-900 dark:text-white">{{ groupLabel(row.group_id) }}</div>
+              <div class="text-xs text-gray-500 dark:text-gray-400">#{{ row.group_id }}</div>
             </div>
-            <div>
-              <label class="label">{{ tx('充值阈值', 'Threshold Amount') }}</label>
-              <input v-model.number="ruleForm.threshold_amount" class="input" min="0.01" required step="0.01" type="number" />
+          </template>
+          <template #cell-threshold_amount="{ row }">
+            <span>{{ formatCurrency(row.threshold_amount) }}</span>
+          </template>
+          <template #cell-status="{ row }">
+            <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="ruleStatusClass(row.status)">{{ ruleStatusLabel(row.status) }}</span>
+          </template>
+          <template #cell-updated_at="{ row }">
+            <span>{{ formatDateTime(row.updated_at) }}</span>
+          </template>
+          <template #cell-actions="{ row }">
+            <div class="flex justify-end">
+              <button class="text-sm text-primary-600 hover:underline dark:text-primary-400" type="button" @click="startEditRule(row)">{{ tx('编辑', 'Edit') }}</button>
             </div>
-            <div>
-              <label class="label">{{ tx('状态', 'Status') }}</label>
-              <select v-model="ruleForm.status" class="input">
-                <option value="active">{{ ruleStatusLabel('active') }}</option>
-                <option value="disabled">{{ ruleStatusLabel('disabled') }}</option>
-              </select>
-            </div>
-            <div class="flex justify-end gap-2">
-              <button v-if="ruleFormMode === 'edit'" class="btn btn-secondary" type="button" @click="startCreateRule">{{ tx('取消编辑', 'Cancel Edit') }}</button>
-              <button class="btn btn-primary" :disabled="savingRule" type="submit">
-                <Icon v-if="savingRule" name="refresh" size="sm" class="animate-spin" />
-                <span>{{ tx('保存', 'Save') }}</span>
-              </button>
-            </div>
-          </form>
-        </div>
+          </template>
+          <template #empty>
+            <div class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ tx('暂无规则', 'No rules yet.') }}</div>
+          </template>
+        </DataTable>
       </div>
-    </div>
+    </BaseDialog>
   </AppLayout>
 </template>
 
@@ -239,11 +242,18 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import DataTable from '@/components/common/DataTable.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { adminAPI } from '@/api/admin'
 import rechargeResetAPI from '@/api/admin/rechargeReset'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatCurrency, formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
+import type { AdminGroup } from '@/types'
+import type { Column } from '@/components/common/types'
 import type {
   CreateRechargeResetCampaignRequest,
   RechargeResetCampaign,
@@ -259,14 +269,17 @@ const loadingCampaigns = ref(false)
 const loadingRules = ref(false)
 const savingCampaign = ref(false)
 const savingRule = ref(false)
-const statusFilter = ref('')
+const statusFilter = ref<string | null>('')
 const campaigns = ref<RechargeResetCampaign[]>([])
-const selectedCampaign = ref<RechargeResetCampaign | null>(null)
+const groups = ref<AdminGroup[]>([])
+const activeCampaign = ref<RechargeResetCampaign | null>(null)
 const rules = ref<RechargeResetCampaignRule[]>([])
 const formMode = ref<'create' | 'edit'>('create')
 const editingCampaignId = ref<number | null>(null)
 const ruleFormMode = ref<'create' | 'edit'>('create')
 const editingRuleId = ref<number | null>(null)
+const showCampaignDialog = ref(false)
+const showRulesDialog = ref(false)
 
 const activeCampaignCount = computed(() => campaigns.value.filter((item) => item.status === 'active').length)
 const totalRuleCount = computed(() => campaigns.value.reduce((sum, item) => sum + (item.rules?.length || 0), 0))
@@ -283,10 +296,56 @@ const campaignForm = reactive({
 })
 
 const ruleForm = reactive({
-  group_id: 0,
+  group_id: null as number | null,
   threshold_amount: 0,
   status: 'active' as RechargeResetRuleStatus,
 })
+
+const campaignColumns = computed<Column[]>(() => [
+  { key: 'name', label: tx('名称', 'Name'), sortable: true },
+  { key: 'status', label: tx('状态', 'Status'), sortable: true },
+  { key: 'reset_windows', label: tx('重置周期', 'Reset Windows') },
+  { key: 'starts_at', label: tx('开始时间', 'Starts At') },
+  { key: 'ends_at', label: tx('结束时间', 'Ends At') },
+  { key: 'rules', label: tx('规则数', 'Rules') },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const ruleColumns = computed<Column[]>(() => [
+  { key: 'group_id', label: tx('分组', 'Group') },
+  { key: 'threshold_amount', label: tx('充值阈值', 'Threshold') },
+  { key: 'status', label: tx('状态', 'Status') },
+  { key: 'updated_at', label: tx('更新时间', 'Updated') },
+  { key: 'actions', label: tx('操作', 'Actions'), class: 'text-right' },
+])
+
+const statusFilterOptions = computed<SelectOption[]>(() => [
+  { value: '', label: tx('全部状态', 'All Status') },
+  { value: 'draft', label: statusLabel('draft') },
+  { value: 'active', label: statusLabel('active') },
+  { value: 'disabled', label: statusLabel('disabled') },
+  { value: 'ended', label: statusLabel('ended') },
+])
+
+const campaignStatusOptions = computed<SelectOption[]>(() => [
+  { value: 'draft', label: statusLabel('draft') },
+  { value: 'active', label: statusLabel('active') },
+  { value: 'disabled', label: statusLabel('disabled') },
+  { value: 'ended', label: statusLabel('ended') },
+])
+
+const ruleStatusOptions = computed<SelectOption[]>(() => [
+  { value: 'active', label: ruleStatusLabel('active') },
+  { value: 'disabled', label: ruleStatusLabel('disabled') },
+])
+
+const groupOptions = computed<SelectOption[]>(() =>
+  groups.value.map((group) => ({
+    value: group.id,
+    label: `${group.name} (#${group.id})`,
+    description: [group.platform, group.status, group.subscription_type].filter(Boolean).join(' · '),
+  }))
+)
 
 function tx(zh: string, en: string): string {
   return String(locale.value).startsWith('zh') ? zh : en
@@ -342,6 +401,11 @@ function resetWindowLabel(campaign: Pick<RechargeResetCampaign, 'reset_daily' | 
   return windows.join(' / ') || '-'
 }
 
+function groupLabel(groupID: number): string {
+  const group = groups.value.find((item) => item.id === groupID)
+  return group ? group.name : `#${groupID}`
+}
+
 function resetCampaignForm(): void {
   Object.assign(campaignForm, {
     name: '',
@@ -357,19 +421,20 @@ function resetCampaignForm(): void {
 
 function resetRuleForm(): void {
   Object.assign(ruleForm, {
-    group_id: 0,
+    group_id: null,
     threshold_amount: 0,
     status: 'active',
   })
 }
 
-function startCreateCampaign(): void {
+function openCreateCampaignDialog(): void {
   formMode.value = 'create'
   editingCampaignId.value = null
   resetCampaignForm()
+  showCampaignDialog.value = true
 }
 
-function startEditCampaign(campaign: RechargeResetCampaign): void {
+function openEditCampaignDialog(campaign: RechargeResetCampaign): void {
   formMode.value = 'edit'
   editingCampaignId.value = campaign.id
   Object.assign(campaignForm, {
@@ -382,6 +447,11 @@ function startEditCampaign(campaign: RechargeResetCampaign): void {
     reset_weekly: campaign.reset_weekly,
     reset_monthly: campaign.reset_monthly,
   })
+  showCampaignDialog.value = true
+}
+
+function closeCampaignDialog(): void {
+  showCampaignDialog.value = false
 }
 
 function startCreateRule(): void {
@@ -424,17 +494,19 @@ function buildCampaignPayload(): CreateRechargeResetCampaignRequest | null {
   return payload
 }
 
+async function loadGroups(): Promise<void> {
+  try {
+    groups.value = await adminAPI.groups.getAll()
+  } catch (error) {
+    console.error('Failed to load groups:', error)
+  }
+}
+
 async function loadCampaigns(): Promise<void> {
   loadingCampaigns.value = true
   try {
     const result = await rechargeResetAPI.listCampaigns({ page: 1, page_size: 100, status: statusFilter.value || undefined })
     campaigns.value = result.items || []
-    if (!selectedCampaign.value && campaigns.value.length > 0) {
-      await selectCampaign(campaigns.value[0])
-    } else if (selectedCampaign.value) {
-      const updated = campaigns.value.find((item) => item.id === selectedCampaign.value?.id)
-      if (updated) selectedCampaign.value = updated
-    }
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('加载充值重置活动失败', 'Failed to load recharge reset campaigns')))
   } finally {
@@ -452,7 +524,6 @@ async function saveCampaign(): Promise<void> {
   try {
     const payload = buildCampaignPayload()
     if (!payload) return
-    const wasCreating = formMode.value === 'create'
     const item = formMode.value === 'edit' && editingCampaignId.value
       ? await rechargeResetAPI.updateCampaign(editingCampaignId.value, {
         ...payload,
@@ -460,9 +531,10 @@ async function saveCampaign(): Promise<void> {
       })
       : await rechargeResetAPI.createCampaign(payload)
     appStore.showSuccess(tx('充值重置活动已保存', 'Recharge reset campaign saved'))
+    showCampaignDialog.value = false
+    activeCampaign.value = item
     await loadCampaigns()
-    await selectCampaign(item)
-    if (wasCreating) resetCampaignForm()
+    if (showRulesDialog.value) await loadRules(item.id)
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, tx('保存充值重置活动失败', 'Failed to save recharge reset campaign')))
   } finally {
@@ -470,10 +542,16 @@ async function saveCampaign(): Promise<void> {
   }
 }
 
-async function selectCampaign(campaign: RechargeResetCampaign): Promise<void> {
-  selectedCampaign.value = campaign
+async function openRulesDialog(campaign: RechargeResetCampaign): Promise<void> {
+  activeCampaign.value = campaign
   startCreateRule()
+  showRulesDialog.value = true
   await loadRules(campaign.id)
+}
+
+function closeRulesDialog(): void {
+  showRulesDialog.value = false
+  startCreateRule()
 }
 
 async function loadRules(campaignId: number): Promise<void> {
@@ -488,11 +566,11 @@ async function loadRules(campaignId: number): Promise<void> {
 }
 
 async function saveRule(): Promise<void> {
-  if (!selectedCampaign.value) return
+  if (!activeCampaign.value) return
   const groupID = Number(ruleForm.group_id)
   const thresholdAmount = Number(ruleForm.threshold_amount)
   if (!Number.isFinite(groupID) || groupID <= 0) {
-    appStore.showError(tx('分组 ID 必须大于 0', 'Group ID must be greater than 0'))
+    appStore.showError(tx('请选择分组', 'Please select a group'))
     return
   }
   if (!Number.isFinite(thresholdAmount) || thresholdAmount <= 0) {
@@ -509,10 +587,10 @@ async function saveRule(): Promise<void> {
     if (ruleFormMode.value === 'edit' && editingRuleId.value) {
       await rechargeResetAPI.updateRule(editingRuleId.value, payload)
     } else {
-      await rechargeResetAPI.createRule(selectedCampaign.value.id, payload)
+      await rechargeResetAPI.createRule(activeCampaign.value.id, payload)
     }
     appStore.showSuccess(tx('规则已保存', 'Rule saved'))
-    await loadRules(selectedCampaign.value.id)
+    await loadRules(activeCampaign.value.id)
     await loadCampaigns()
     startCreateRule()
   } catch (error) {
@@ -524,6 +602,7 @@ async function saveRule(): Promise<void> {
 
 onMounted(() => {
   resetCampaignForm()
+  loadGroups()
   loadCampaigns()
 })
 </script>

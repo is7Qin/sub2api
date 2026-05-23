@@ -319,6 +319,7 @@ type PublicSettings struct {
 	RiskControlEnabled   bool `json:"risk_control_enabled"`
 	LotteryEnabled       bool `json:"lottery_enabled"`
 	RankingRewardEnabled bool `json:"ranking_reward_enabled"`
+	RechargeResetEnabled bool `json:"recharge_reset_enabled"`
 }
 
 type LoginAgreementDocument struct {

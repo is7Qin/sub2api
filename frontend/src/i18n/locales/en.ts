@@ -1641,6 +1641,82 @@ export default {
     rechargeReset: {
       title: 'Recharge Reset',
       description: 'Reset subscription quotas after qualifying balance recharges',
+      newCampaign: 'New Campaign',
+      noLimit: 'No limit',
+      stats: {
+        campaigns: 'Campaigns',
+        active: 'Active',
+        rules: 'Rules',
+        selectedRules: 'Selected Rules'
+      },
+      fields: {
+        name: 'Name',
+        description: 'Description',
+        status: 'Status',
+        startsAt: 'Starts At',
+        endsAt: 'Ends At',
+        resetWindows: 'Reset Windows',
+        campaign: 'Campaign',
+        group: 'Group',
+        thresholdAmount: 'Threshold Amount'
+      },
+      columns: {
+        rules: 'Rules',
+        threshold: 'Threshold',
+        updated: 'Updated'
+      },
+      actions: {
+        edit: 'Edit',
+        rules: 'Rules'
+      },
+      dialogs: {
+        createCampaign: 'Create Campaign',
+        editCampaign: 'Edit Campaign'
+      },
+      placeholders: {
+        selectGroup: 'Select group'
+      },
+      filters: {
+        allStatus: 'All Status'
+      },
+      empty: {
+        campaignsTitle: 'No recharge reset campaigns yet.',
+        campaignsDescription: 'Create a campaign, then configure trigger rules with the group selector.',
+        noRules: 'No rules yet.'
+      },
+      hints: {
+        resetWindows: 'Select at least one subscription period to reset.'
+      },
+      resetWindows: {
+        dailyQuota: 'Daily',
+        weeklyQuota: 'Weekly',
+        monthlyQuota: 'Monthly',
+        daily: 'Daily',
+        weekly: 'Weekly',
+        monthly: 'Monthly'
+      },
+      status: {
+        draft: 'Draft',
+        active: 'Active',
+        disabled: 'Disabled',
+        ended: 'Ended'
+      },
+      messages: {
+        campaignSaved: 'Recharge reset campaign saved',
+        ruleSaved: 'Rule saved'
+      },
+      errors: {
+        invalidStartTime: 'Invalid start time',
+        invalidEndTime: 'Invalid end time',
+        endAfterStart: 'End time must be later than start time',
+        loadCampaigns: 'Failed to load recharge reset campaigns',
+        selectResetWindow: 'Select at least one reset window',
+        saveCampaign: 'Failed to save recharge reset campaign',
+        loadRules: 'Failed to load rules',
+        selectGroup: 'Please select a group',
+        thresholdPositive: 'Threshold amount must be greater than 0',
+        saveRule: 'Failed to save rule'
+      }
     },
 
     backup: {

@@ -1831,6 +1831,8 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *test
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
+	c.Request.Header.Set(openAICodexSubagentHeader, "compact")
+	c.Request.Header.Set(openAITraceparentHeader, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{Type: AccountTypeOAuth}
@@ -1842,6 +1844,17 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *test
 	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 	require.NotEmpty(t, req.Header.Get("Session_Id"))
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
+	require.Equal(t, req.Header.Get("Session_Id"), req.Header.Get(openAICodexSessionIDHeader))
+	require.Equal(t, req.Header.Get("Conversation_Id"), req.Header.Get(openAICodexThreadIDHeader))
+	require.NotEmpty(t, req.Header.Get(openAICodexClientRequestIDHeader))
+	require.NotEmpty(t, req.Header.Get(openAICodexInstallationIDHeader))
+	require.NotEmpty(t, req.Header.Get(openAICodexWindowIDHeader))
+	require.Equal(t, "compact", req.Header.Get(openAICodexSubagentHeader))
+	require.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", req.Header.Get(openAITraceparentHeader))
+	bodyBytes, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	require.Equal(t, req.Header.Get(openAICodexInstallationIDHeader), gjson.GetBytes(bodyBytes, "client_metadata."+openAICodexInstallationIDHeader).String())
+	require.Equal(t, req.Header.Get(openAICodexWindowIDHeader), gjson.GetBytes(bodyBytes, "client_metadata."+openAICodexWindowIDHeader).String())
 }
 
 func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T) {

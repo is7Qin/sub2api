@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
@@ -263,19 +264,34 @@ func hasOpenAIWSHeader(headers http.Header, key string) bool {
 type openAIWSSessionHeaderResolution struct {
 	SessionID          string
 	ConversationID     string
+	CodexThreadID      string
 	SessionSource      string
 	ConversationSource string
+	ThreadSource       string
 }
 
 func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAIWSSessionHeaderResolution {
 	resolution := openAIWSSessionHeaderResolution{
 		SessionSource:      "none",
 		ConversationSource: "none",
+		ThreadSource:       "none",
 	}
 	if c != nil && c.Request != nil {
-		if sessionID := strings.TrimSpace(c.Request.Header.Get("session_id")); sessionID != "" {
+		if sessionID := strings.TrimSpace(c.Request.Header.Get(openAICodexSessionIDHeader)); sessionID != "" {
 			resolution.SessionID = sessionID
+			resolution.SessionSource = "header_session_id_hyphen"
+		}
+		if legacySessionID := strings.TrimSpace(c.Request.Header.Get("session_id")); legacySessionID != "" {
+			resolution.SessionID = legacySessionID
 			resolution.SessionSource = "header_session_id"
+		}
+		if threadID := strings.TrimSpace(c.Request.Header.Get(openAICodexThreadIDHeader)); threadID != "" {
+			resolution.CodexThreadID = threadID
+			resolution.ThreadSource = "header_thread_id"
+			if resolution.SessionID == "" {
+				resolution.SessionID = threadID
+				resolution.SessionSource = "header_thread_id"
+			}
 		}
 		if conversationID := strings.TrimSpace(c.Request.Header.Get("conversation_id")); conversationID != "" {
 			resolution.ConversationID = conversationID
@@ -283,6 +299,10 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAI
 			if resolution.SessionID == "" {
 				resolution.SessionID = conversationID
 				resolution.SessionSource = "header_conversation_id"
+			}
+			if resolution.CodexThreadID == "" {
+				resolution.CodexThreadID = conversationID
+				resolution.ThreadSource = "header_conversation_id"
 			}
 		}
 	}
@@ -293,6 +313,14 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAI
 			resolution.SessionID = cacheKey
 			resolution.SessionSource = "prompt_cache_key"
 		}
+		if resolution.CodexThreadID == "" {
+			resolution.CodexThreadID = cacheKey
+			resolution.ThreadSource = "prompt_cache_key"
+		}
+	}
+	if resolution.CodexThreadID == "" {
+		resolution.CodexThreadID = resolution.SessionID
+		resolution.ThreadSource = resolution.SessionSource
 	}
 	return resolution
 }
@@ -1128,16 +1156,35 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if sessionResolution.SessionID != "" {
 			headers.Set("session_id", isolateOpenAISessionID(apiKeyID, sessionResolution.SessionID))
 		}
-		if sessionResolution.ConversationID != "" {
-			headers.Set("conversation_id", isolateOpenAISessionID(apiKeyID, sessionResolution.ConversationID))
+		if sessionResolution.CodexThreadID != "" {
+			isolatedThreadID := isolateOpenAISessionID(apiKeyID, sessionResolution.CodexThreadID)
+			if headers.Get("session_id") != "" {
+				headers.Set(openAICodexSessionIDHeader, headers.Get("session_id"))
+			} else {
+				headers.Set(openAICodexSessionIDHeader, isolatedThreadID)
+			}
+			headers.Set(openAICodexThreadIDHeader, isolatedThreadID)
+			if sessionResolution.ConversationID != "" {
+				headers.Set("conversation_id", isolatedThreadID)
+			}
 		}
 	} else {
 		if sessionResolution.SessionID != "" {
 			headers.Set("session_id", sessionResolution.SessionID)
+			headers.Set(openAICodexSessionIDHeader, sessionResolution.SessionID)
+		}
+		if sessionResolution.CodexThreadID != "" {
+			headers.Set(openAICodexThreadIDHeader, sessionResolution.CodexThreadID)
 		}
 		if sessionResolution.ConversationID != "" {
 			headers.Set("conversation_id", sessionResolution.ConversationID)
 		}
+	}
+	if headers.Get(openAICodexSessionIDHeader) == "" && headers.Get("session_id") != "" {
+		headers.Set(openAICodexSessionIDHeader, headers.Get("session_id"))
+	}
+	if headers.Get(openAICodexThreadIDHeader) == "" && headers.Get(openAICodexSessionIDHeader) != "" {
+		headers.Set(openAICodexThreadIDHeader, headers.Get(openAICodexSessionIDHeader))
 	}
 	if state := strings.TrimSpace(turnState); state != "" {
 		headers.Set(openAIWSTurnStateHeader, state)
@@ -1151,6 +1198,16 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
 		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+	}
+	copyOpenAICodexOptionalHeaders(headers, c)
+	if headers.Get(openAICodexClientRequestIDHeader) == "" {
+		headers.Set(openAICodexClientRequestIDHeader, firstNonEmptyOpenAICodexString(headers.Get(openAICodexThreadIDHeader), headers.Get(openAICodexSessionIDHeader), uuid.NewString()))
+	}
+	if headers.Get(openAICodexInstallationIDHeader) == "" {
+		headers.Set(openAICodexInstallationIDHeader, deterministicOpenAICodexInstallationID(c, account))
+	}
+	if headers.Get(openAICodexWindowIDHeader) == "" && headers.Get(openAICodexThreadIDHeader) != "" {
+		headers.Set(openAICodexWindowIDHeader, headers.Get(openAICodexThreadIDHeader)+":0")
 	}
 
 	betaValue := openAIWSBetaV2Value
@@ -1205,26 +1262,47 @@ func setOpenAIWSTurnMetadata(payload map[string]any, turnMetadata string) {
 	if len(payload) == 0 {
 		return
 	}
-	metadata := strings.TrimSpace(turnMetadata)
-	if metadata == "" {
+	metadata := ensureOpenAIWSClientMetadata(payload)
+	if value := strings.TrimSpace(turnMetadata); value != "" {
+		metadata[openAIWSTurnMetadataHeader] = value
+	}
+}
+
+func setOpenAIWSCodexClientMetadata(payload map[string]any, headers http.Header) {
+	if len(payload) == 0 || headers == nil {
 		return
 	}
+	metadata := ensureOpenAIWSClientMetadata(payload)
+	for _, key := range []string{
+		openAICodexInstallationIDHeader,
+		openAICodexWindowIDHeader,
+		openAICodexSubagentHeader,
+		openAICodexParentThreadIDHeader,
+		openAICodexThreadIDHeader,
+		openAITraceparentHeader,
+		openAITracestateHeader,
+	} {
+		if value := strings.TrimSpace(headers.Get(key)); value != "" {
+			metadata[key] = value
+		}
+	}
+}
 
+func ensureOpenAIWSClientMetadata(payload map[string]any) map[string]any {
 	switch existing := payload["client_metadata"].(type) {
 	case map[string]any:
-		existing[openAIWSTurnMetadataHeader] = metadata
-		payload["client_metadata"] = existing
+		return existing
 	case map[string]string:
 		next := make(map[string]any, len(existing)+1)
 		for k, v := range existing {
 			next[k] = v
 		}
-		next[openAIWSTurnMetadataHeader] = metadata
 		payload["client_metadata"] = next
+		return next
 	default:
-		payload["client_metadata"] = map[string]any{
-			openAIWSTurnMetadataHeader: metadata,
-		}
+		next := make(map[string]any)
+		payload["client_metadata"] = next
+		return next
 	}
 }
 
@@ -1833,6 +1911,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
 	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	setOpenAIWSCodexClientMetadata(payload, wsHeaders)
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
 		account.ID,

@@ -42,7 +42,7 @@ const (
 	// OpenAI Platform API for API Key accounts (fallback)
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.125.0"
+	codexCLIUserAgent      = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -61,31 +61,72 @@ const (
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 )
 
+const (
+	openAICodexSessionIDHeader            = "session-id"
+	openAICodexThreadIDHeader             = "thread-id"
+	openAICodexClientRequestIDHeader      = "x-client-request-id"
+	openAICodexInstallationIDHeader       = "x-codex-installation-id"
+	openAICodexWindowIDHeader             = "x-codex-window-id"
+	openAICodexParentThreadIDHeader       = "x-codex-parent-thread-id"
+	openAICodexSubagentHeader             = "x-openai-subagent"
+	openAICodexMemgenRequestHeader        = "x-openai-memgen-request"
+	openAICodexAttestationHeader          = "x-oai-attestation"
+	openAICodexIncludeTimingMetricsHeader = "x-responsesapi-include-timing-metrics"
+	openAITraceparentHeader               = "traceparent"
+	openAITracestateHeader                = "tracestate"
+)
+
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
+	"accept-language":                     true,
+	"content-type":                        true,
+	"conversation_id":                     true,
+	"user-agent":                          true,
+	"originator":                          true,
+	"session_id":                          true,
+	"version":                             true,
+	openAICodexSessionIDHeader:            true,
+	openAICodexThreadIDHeader:             true,
+	openAICodexClientRequestIDHeader:      true,
+	openAICodexInstallationIDHeader:       true,
+	openAICodexWindowIDHeader:             true,
+	openAICodexParentThreadIDHeader:       true,
+	openAICodexSubagentHeader:             true,
+	openAICodexMemgenRequestHeader:        true,
+	openAICodexAttestationHeader:          true,
+	openAICodexIncludeTimingMetricsHeader: true,
+	openAITraceparentHeader:               true,
+	openAITracestateHeader:                true,
+	"x-codex-turn-state":                  true,
+	"x-codex-turn-metadata":               true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                true,
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"openai-beta":           true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
+	"accept":                              true,
+	"accept-language":                     true,
+	"content-type":                        true,
+	"conversation_id":                     true,
+	"openai-beta":                         true,
+	"user-agent":                          true,
+	"originator":                          true,
+	"session_id":                          true,
+	"version":                             true,
+	openAICodexSessionIDHeader:            true,
+	openAICodexThreadIDHeader:             true,
+	openAICodexClientRequestIDHeader:      true,
+	openAICodexInstallationIDHeader:       true,
+	openAICodexWindowIDHeader:             true,
+	openAICodexParentThreadIDHeader:       true,
+	openAICodexSubagentHeader:             true,
+	openAICodexMemgenRequestHeader:        true,
+	openAICodexAttestationHeader:          true,
+	openAICodexIncludeTimingMetricsHeader: true,
+	openAITraceparentHeader:               true,
+	openAITracestateHeader:                true,
+	"x-codex-turn-state":                  true,
+	"x-codex-turn-metadata":               true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -933,6 +974,174 @@ func isolateOpenAISessionID(apiKeyID int64, raw string) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
+type openAICodexRequestIdentity struct {
+	SessionID       string
+	ThreadID        string
+	ClientRequestID string
+	InstallationID  string
+	WindowID        string
+}
+
+func applyOpenAICodexHTTPRequestAlignment(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string, allowLegacyConversationID bool) ([]byte, openAICodexRequestIdentity) {
+	identity := resolveOpenAICodexRequestIdentity(req, c, account, body, promptCacheKey)
+	applyOpenAICodexIdentityHeaders(req, identity, allowLegacyConversationID)
+	body = setOpenAICodexHTTPClientMetadata(body, identity)
+	resetHTTPRequestBody(req, body)
+	return body, identity
+}
+
+func resolveOpenAICodexRequestIdentity(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string) openAICodexRequestIdentity {
+	apiKeyID := getAPIKeyIDFromContext(c)
+	codexSessionID := openAIHeaderValue(req, c, openAICodexSessionIDHeader)
+	codexThreadID := openAIHeaderValue(req, c, openAICodexThreadIDHeader)
+	legacySessionID := openAIHeaderValue(req, c, "session_id")
+	legacyConversationID := openAIHeaderValue(req, c, "conversation_id")
+	rawSessionID := firstNonEmptyOpenAICodexString(codexSessionID, legacySessionID, legacyConversationID, promptCacheKey, bodyPromptCacheKey(body))
+	rawThreadID := firstNonEmptyOpenAICodexString(codexThreadID, legacyConversationID, rawSessionID)
+
+	sessionID := rawSessionID
+	threadID := rawThreadID
+	if account != nil && account.Type == AccountTypeOAuth {
+		sessionID = isolateOpenAISessionID(apiKeyID, sessionID)
+		threadID = isolateOpenAISessionID(apiKeyID, threadID)
+	}
+	if threadID == "" {
+		threadID = sessionID
+	}
+
+	clientRequestID := firstNonEmptyOpenAICodexString(openAIHeaderValue(req, c, openAICodexClientRequestIDHeader), threadID, sessionID)
+	if clientRequestID == "" {
+		clientRequestID = uuid.NewString()
+	}
+	installationID := firstNonEmptyOpenAICodexString(openAIHeaderValue(req, c, openAICodexInstallationIDHeader), deterministicOpenAICodexInstallationID(c, account))
+	windowID := openAIHeaderValue(req, c, openAICodexWindowIDHeader)
+	if windowID == "" && threadID != "" {
+		windowID = threadID + ":0"
+	}
+
+	return openAICodexRequestIdentity{
+		SessionID:       sessionID,
+		ThreadID:        threadID,
+		ClientRequestID: clientRequestID,
+		InstallationID:  installationID,
+		WindowID:        windowID,
+	}
+}
+
+func applyOpenAICodexIdentityHeaders(req *http.Request, identity openAICodexRequestIdentity, allowLegacyConversationID bool) {
+	if req == nil {
+		return
+	}
+	copyOpenAICodexOptionalHeaders(req.Header, nil)
+	if identity.SessionID != "" {
+		req.Header.Set(openAICodexSessionIDHeader, identity.SessionID)
+		req.Header.Set("session_id", identity.SessionID)
+	}
+	if identity.ThreadID != "" {
+		req.Header.Set(openAICodexThreadIDHeader, identity.ThreadID)
+		if allowLegacyConversationID {
+			req.Header.Set("conversation_id", identity.ThreadID)
+		}
+	}
+	if identity.ClientRequestID != "" {
+		req.Header.Set(openAICodexClientRequestIDHeader, identity.ClientRequestID)
+	}
+	if identity.InstallationID != "" {
+		req.Header.Set(openAICodexInstallationIDHeader, identity.InstallationID)
+	}
+	if identity.WindowID != "" {
+		req.Header.Set(openAICodexWindowIDHeader, identity.WindowID)
+	}
+}
+
+func setOpenAICodexHTTPClientMetadata(body []byte, identity openAICodexRequestIdentity) []byte {
+	if len(bytes.TrimSpace(body)) == 0 || identity.InstallationID == "" {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "client_metadata."+openAICodexInstallationIDHeader, identity.InstallationID)
+	if err != nil {
+		return body
+	}
+	if identity.WindowID != "" {
+		if next, err := sjson.SetBytes(updated, "client_metadata."+openAICodexWindowIDHeader, identity.WindowID); err == nil {
+			updated = next
+		}
+	}
+	return updated
+}
+
+func resetHTTPRequestBody(req *http.Request, body []byte) {
+	if req == nil {
+		return
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+}
+
+func copyOpenAICodexOptionalHeaders(dst http.Header, c *gin.Context) {
+	if dst == nil {
+		return
+	}
+	for _, key := range []string{
+		openAICodexParentThreadIDHeader,
+		openAICodexSubagentHeader,
+		openAICodexMemgenRequestHeader,
+		openAICodexAttestationHeader,
+		openAICodexIncludeTimingMetricsHeader,
+		openAITraceparentHeader,
+		openAITracestateHeader,
+	} {
+		if dst.Get(key) != "" {
+			continue
+		}
+		if c == nil {
+			continue
+		}
+		if value := strings.TrimSpace(c.GetHeader(key)); value != "" {
+			dst.Set(key, value)
+		}
+	}
+}
+
+func openAIHeaderValue(req *http.Request, c *gin.Context, key string) string {
+	if req != nil {
+		if value := strings.TrimSpace(req.Header.Get(key)); value != "" {
+			return value
+		}
+	}
+	if c != nil {
+		return strings.TrimSpace(c.GetHeader(key))
+	}
+	return ""
+}
+
+func firstNonEmptyOpenAICodexString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func bodyPromptCacheKey(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+}
+
+func deterministicOpenAICodexInstallationID(c *gin.Context, account *Account) string {
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	return generateSessionUUID(fmt.Sprintf("openai-codex-installation:%d:%d", accountID, getAPIKeyIDFromContext(c)))
+}
+
 func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {
 	if !result.Enabled {
 		return
@@ -1159,7 +1368,13 @@ func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) str
 	if c == nil {
 		return ""
 	}
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	sessionID := strings.TrimSpace(c.GetHeader(openAICodexSessionIDHeader))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("session_id"))
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader(openAICodexThreadIDHeader))
+	}
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
 	}
@@ -1174,7 +1389,13 @@ func explicitOpenAISessionID(c *gin.Context, body []byte) string {
 		return ""
 	}
 
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	sessionID := strings.TrimSpace(c.GetHeader(openAICodexSessionIDHeader))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("session_id"))
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader(openAICodexThreadIDHeader))
+	}
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
 	}
@@ -3258,17 +3479,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		apiKeyID := getAPIKeyIDFromContext(c)
-		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
-		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
-		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
-			if clientSessionID == "" {
-				clientSessionID = resolveOpenAICompactSessionID(c)
+			if req.Header.Get("session_id") == "" && req.Header.Get(openAICodexSessionIDHeader) == "" {
+				req.Header.Set(openAICodexSessionIDHeader, resolveOpenAICompactSessionID(c))
 			}
 		} else if req.Header.Get("accept") == "" {
 			req.Header.Set("accept", "text/event-stream")
@@ -3279,19 +3496,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if req.Header.Get("originator") == "" {
 			req.Header.Set("originator", "codex_cli_rs")
 		}
-		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
-		if clientSessionID == "" {
-			clientSessionID = promptCacheKey
-		}
-		if clientConversationID == "" {
-			clientConversationID = promptCacheKey
-		}
-		if clientSessionID != "" {
-			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, clientSessionID))
-		}
-		if clientConversationID != "" {
-			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
-		}
+		body, _ = applyOpenAICodexHTTPRequestAlignment(req, c, account, body, promptCacheKey, true)
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
@@ -3981,7 +4186,6 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 	if account.Type == AccountTypeOAuth {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
-		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
 		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
 		req.Header.Del("conversation_id")
 		req.Header.Del("session_id")
@@ -3993,24 +4197,18 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
 			req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 		}
-		apiKeyID := getAPIKeyIDFromContext(c)
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
-			compactSession := resolveOpenAICompactSessionID(c)
-			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
+			if req.Header.Get(openAICodexSessionIDHeader) == "" {
+				req.Header.Set(openAICodexSessionIDHeader, resolveOpenAICompactSessionID(c))
+			}
 		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
-		if promptCacheKey != "" {
-			isolated := isolateOpenAISessionID(apiKeyID, promptCacheKey)
-			req.Header.Set("session_id", isolated)
-			if !compatMessagesBridge || clientConversationID != "" {
-				req.Header.Set("conversation_id", isolated)
-			}
-		}
+		body, _ = applyOpenAICodexHTTPRequestAlignment(req, c, account, body, promptCacheKey, !compatMessagesBridge || clientConversationID != "")
 	}
 
 	// Apply custom User-Agent if configured
@@ -5369,8 +5567,14 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 
 func resolveOpenAICompactSessionID(c *gin.Context) string {
 	if c != nil {
+		if sessionID := strings.TrimSpace(c.GetHeader(openAICodexSessionIDHeader)); sessionID != "" {
+			return sessionID
+		}
 		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
 			return sessionID
+		}
+		if threadID := strings.TrimSpace(c.GetHeader(openAICodexThreadIDHeader)); threadID != "" {
+			return threadID
 		}
 		if conversationID := strings.TrimSpace(c.GetHeader("conversation_id")); conversationID != "" {
 			return conversationID

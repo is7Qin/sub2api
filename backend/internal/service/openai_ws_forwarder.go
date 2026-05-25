@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,7 @@ const (
 
 	openAIWSIngressStagePreviousResponseNotFound = "previous_response_not_found"
 	openAIWSMaxPrevResponseIDDeletePasses        = 8
+	openAICodexWSStreamRequestStartMSKey         = "x-codex-ws-stream-request-start-ms"
 )
 
 var openAIWSLogValueReplacer = strings.NewReplacer(
@@ -271,6 +273,10 @@ type openAIWSSessionHeaderResolution struct {
 }
 
 func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAIWSSessionHeaderResolution {
+	return resolveOpenAIWSSessionHeadersWithFallback(c, promptCacheKey, "")
+}
+
+func resolveOpenAIWSSessionHeadersWithFallback(c *gin.Context, promptCacheKey string, fallbackSessionID string) openAIWSSessionHeaderResolution {
 	resolution := openAIWSSessionHeaderResolution{
 		SessionSource:      "none",
 		ConversationSource: "none",
@@ -316,6 +322,17 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAI
 		if resolution.CodexThreadID == "" {
 			resolution.CodexThreadID = cacheKey
 			resolution.ThreadSource = "prompt_cache_key"
+		}
+	}
+	fallback := strings.TrimSpace(fallbackSessionID)
+	if fallback != "" {
+		if resolution.SessionID == "" {
+			resolution.SessionID = fallback
+			resolution.SessionSource = "fallback_session_id"
+		}
+		if resolution.CodexThreadID == "" {
+			resolution.CodexThreadID = fallback
+			resolution.ThreadSource = "fallback_session_id"
 		}
 	}
 	if resolution.CodexThreadID == "" {
@@ -1145,11 +1162,12 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	turnState string,
 	turnMetadata string,
 	promptCacheKey string,
+	fallbackSessionID string,
 ) (http.Header, openAIWSSessionHeaderResolution) {
 	headers := make(http.Header)
 	headers.Set("authorization", "Bearer "+token)
 
-	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
+	sessionResolution := resolveOpenAIWSSessionHeadersWithFallback(c, promptCacheKey, fallbackSessionID)
 	if c != nil && c.Request != nil {
 		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)
@@ -1201,6 +1219,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if account != nil && account.Type == AccountTypeOAuth {
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
+		}
+		if headers.Get("version") == "" {
+			headers.Set("version", codexCLIVersion)
 		}
 		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
@@ -1291,6 +1312,7 @@ func setOpenAIWSCodexClientMetadata(payload map[string]any, headers http.Header)
 			metadata[key] = value
 		}
 	}
+	metadata[openAICodexWSStreamRequestStartMSKey] = strconv.FormatInt(time.Now().UnixMilli(), 10)
 }
 
 func ensureOpenAIWSClientMetadata(payload map[string]any) map[string]any {
@@ -1915,7 +1937,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
-	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	fallbackSessionID := fallbackOpenAICodexSessionID(c, account, payloadAsJSONBytes(payload))
+	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey, fallbackSessionID)
 	setOpenAIWSCodexClientMetadata(payload, wsHeaders)
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
@@ -2774,7 +2797,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
-	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
+	fallbackSessionID := fallbackOpenAICodexSessionID(c, account, firstPayload.rawForHash)
+	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey, fallbackSessionID)
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account: account,
 		WSURL:   wsURL,
@@ -3750,7 +3774,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if nextPayload.promptCacheKey != "" {
 			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
-			updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
+			updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey, fallbackOpenAICodexSessionID(c, account, nextPayload.rawForHash))
 			baseAcquireReq.Headers = updatedHeaders
 		}
 		if nextPayload.previousResponseID != "" {

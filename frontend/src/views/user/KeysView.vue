@@ -839,6 +839,31 @@
             </div>
           </div>
         </div>
+
+        <!-- OpenAI overrides -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="space-y-1">
+              <label class="input-label mb-0">{{ t('keys.openaiForcePriorityTier') }}</label>
+              <p class="input-hint">{{ t('keys.openaiForcePriorityTierHint') }}</p>
+            </div>
+            <button
+              type="button"
+              @click="formData.openai_force_priority_tier = !formData.openai_force_priority_tier"
+              :class="[
+                'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+                formData.openai_force_priority_tier ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  formData.openai_force_priority_tier ? 'translate-x-4' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
       </form>
       <template #footer>
         <div class="flex justify-end gap-3">
@@ -1187,7 +1212,8 @@ const formData = ref({
   rate_limit_7d: null as number | null,
   enable_expiration: false,
   expiration_preset: '30' as '7' | '30' | '90' | 'custom',
-  expiration_date: ''
+  expiration_date: '',
+  openai_force_priority_tier: false
 })
 
 // 自定义Key验证
@@ -1408,7 +1434,8 @@ const editKey = (key: ApiKey) => {
     rate_limit_7d: key.rate_limit_7d || null,
     enable_expiration: hasExpiration,
     expiration_preset: 'custom',
-    expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : ''
+    expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : '',
+    openai_force_priority_tier: !!key.openai_force_priority_tier
   }
   showEditModal.value = true
 }
@@ -1553,6 +1580,7 @@ const handleSubmit = async () => {
         rate_limit_5h: rateLimitData.rate_limit_5h,
         rate_limit_1d: rateLimitData.rate_limit_1d,
         rate_limit_7d: rateLimitData.rate_limit_7d,
+        openai_force_priority_tier: formData.value.openai_force_priority_tier,
       })
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
@@ -1565,7 +1593,8 @@ const handleSubmit = async () => {
         ipBlacklist,
         quota,
         expiresInDays,
-        rateLimitData
+        rateLimitData,
+        { openai_force_priority_tier: formData.value.openai_force_priority_tier }
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
@@ -1625,7 +1654,8 @@ const closeModals = () => {
     rate_limit_7d: null,
     enable_expiration: false,
     expiration_preset: '30',
-    expiration_date: ''
+    expiration_date: '',
+    openai_force_priority_tier: false
   }
 }
 

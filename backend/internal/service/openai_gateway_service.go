@@ -2666,6 +2666,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 	}
 
+	// Per-key override: force service_tier=priority before fast policy.
+	if forceOpenAIPriorityTierInReqBody(apiKey, reqBody) {
+		bodyModified = true
+		markPatchSet("service_tier", "priority")
+	}
+
 	// Apply OpenAI fast policy (参照 Claude BetaPolicy 的 fast-mode 过滤)：
 	// 针对 body 的 service_tier 字段（"priority" 即 fast，"flex"），按策略
 	// 执行 filter（删除字段）或 block（拒绝请求）。对 gpt-5.5 等模型屏蔽
@@ -3215,6 +3221,12 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	if policyModel == "" {
 		policyModel = reqModel
 	}
+	apiKey := getAPIKeyFromContext(c)
+	forcedBody, forceErr := forceOpenAIPriorityTierInBody(apiKey, body)
+	if forceErr != nil {
+		return nil, forceErr
+	}
+	body = forcedBody
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, policyModel, body)
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
@@ -3225,7 +3237,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	body = updatedBody
 
-	apiKey := getAPIKeyFromContext(c)
 	if IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) && !GroupAllowsImageGeneration(apiKeyGroup(apiKey)) {
 		setOpsUpstreamError(c, http.StatusForbidden, ImageGenerationPermissionMessage(), "")
 		c.JSON(http.StatusForbidden, gin.H{
@@ -6461,6 +6472,41 @@ func openAIFastPolicySettingsFromContext(ctx context.Context) *OpenAIFastPolicyS
 		return v
 	}
 	return nil
+}
+
+// shouldForceOpenAIPriorityTier reports whether the per-key override forces
+// service_tier=priority for this API key.
+func shouldForceOpenAIPriorityTier(apiKey *APIKey) bool {
+	return apiKey != nil && apiKey.OpenAIForcePriorityTier
+}
+
+// forceOpenAIPriorityTierInReqBody mutates a parsed request map; returns true
+// when service_tier was rewritten.
+func forceOpenAIPriorityTierInReqBody(apiKey *APIKey, reqBody map[string]any) bool {
+	if !shouldForceOpenAIPriorityTier(apiKey) || reqBody == nil {
+		return false
+	}
+	if cur, _ := reqBody["service_tier"].(string); cur == "priority" {
+		return false
+	}
+	reqBody["service_tier"] = "priority"
+	return true
+}
+
+// forceOpenAIPriorityTierInBody returns body with service_tier="priority"
+// injected; no-op when the override is off or the field already matches.
+func forceOpenAIPriorityTierInBody(apiKey *APIKey, body []byte) ([]byte, error) {
+	if !shouldForceOpenAIPriorityTier(apiKey) || len(body) == 0 {
+		return body, nil
+	}
+	if gjson.GetBytes(body, "service_tier").String() == "priority" {
+		return body, nil
+	}
+	updated, err := sjson.SetBytes(body, "service_tier", "priority")
+	if err != nil {
+		return body, fmt.Errorf("force service_tier=priority: %w", err)
+	}
+	return updated, nil
 }
 
 // applyOpenAIFastPolicyToBody applies the OpenAI fast policy to a raw request

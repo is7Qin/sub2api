@@ -42,7 +42,8 @@ const (
 	// OpenAI Platform API for API Key accounts (fallback)
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+	codexCLIVersion        = "0.133.0-alpha.4"
+	codexCLIUserAgent      = "codex_cli_rs/" + codexCLIVersion + " (Ubuntu 22.4.0; x86_64) xterm-256color"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -56,7 +57,6 @@ const (
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
-	codexCLIVersion                    = "0.125.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 )
@@ -979,9 +979,15 @@ type openAICodexRequestIdentity struct {
 }
 
 func applyOpenAICodexHTTPRequestAlignment(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string, allowLegacyConversationID bool) ([]byte, openAICodexRequestIdentity) {
+	return applyOpenAICodexHTTPRequestAlignmentWithBody(req, c, account, body, promptCacheKey, allowLegacyConversationID, true)
+}
+
+func applyOpenAICodexHTTPRequestAlignmentWithBody(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string, allowLegacyConversationID bool, mutateBody bool) ([]byte, openAICodexRequestIdentity) {
 	identity := resolveOpenAICodexRequestIdentity(req, c, account, body, promptCacheKey)
 	applyOpenAICodexIdentityHeaders(req, identity, allowLegacyConversationID)
-	body = setOpenAICodexHTTPClientMetadata(body, identity)
+	if mutateBody {
+		body = setOpenAICodexHTTPClientMetadata(body, identity)
+	}
 	resetHTTPRequestBody(req, body)
 	return body, identity
 }
@@ -993,6 +999,9 @@ func resolveOpenAICodexRequestIdentity(req *http.Request, c *gin.Context, accoun
 	legacySessionID := openAIHeaderValue(req, c, "session_id")
 	legacyConversationID := openAIHeaderValue(req, c, "conversation_id")
 	rawSessionID := firstNonEmptyOpenAICodexString(codexSessionID, legacySessionID, legacyConversationID, promptCacheKey, bodyPromptCacheKey(body))
+	if rawSessionID == "" {
+		rawSessionID = fallbackOpenAICodexSessionID(c, account, body)
+	}
 	rawThreadID := firstNonEmptyOpenAICodexString(codexThreadID, legacyConversationID, rawSessionID)
 
 	sessionID := rawSessionID
@@ -1051,12 +1060,23 @@ func applyOpenAICodexIdentityHeaders(req *http.Request, identity openAICodexRequ
 }
 
 func setOpenAICodexHTTPClientMetadata(body []byte, identity openAICodexRequestIdentity) []byte {
-	if len(bytes.TrimSpace(body)) == 0 || identity.InstallationID == "" {
+	if len(bytes.TrimSpace(body)) == 0 {
 		return body
 	}
-	updated, err := sjson.SetBytes(body, "client_metadata."+openAICodexInstallationIDHeader, identity.InstallationID)
-	if err != nil {
-		return body
+	updated := body
+	if identity.ThreadID != "" {
+		next, err := sjson.SetBytes(updated, "prompt_cache_key", identity.ThreadID)
+		if err != nil {
+			return body
+		}
+		updated = next
+	}
+	if identity.InstallationID != "" {
+		next, err := sjson.SetBytes(updated, "client_metadata."+openAICodexInstallationIDHeader, identity.InstallationID)
+		if err != nil {
+			return body
+		}
+		updated = next
 	}
 	if identity.WindowID != "" {
 		if next, err := sjson.SetBytes(updated, "client_metadata."+openAICodexWindowIDHeader, identity.WindowID); err == nil {
@@ -1128,6 +1148,18 @@ func bodyPromptCacheKey(body []byte) string {
 		return ""
 	}
 	return strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+}
+
+func fallbackOpenAICodexSessionID(c *gin.Context, account *Account, body []byte) string {
+	seed := ""
+	if len(body) > 0 {
+		seed = deriveOpenAIContentSessionSeed(body)
+	}
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	return generateSessionUUID(fmt.Sprintf("openai-codex-session:%d:%d:%s", accountID, getAPIKeyIDFromContext(c), seed))
 }
 
 func deterministicOpenAICodexInstallationID(c *gin.Context, account *Account) string {
@@ -1461,14 +1493,14 @@ func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, b
 
 func resolveOpenAIUpstreamOriginator(c *gin.Context, isOfficialClient bool) string {
 	if c != nil {
-		if originator := strings.TrimSpace(c.GetHeader("originator")); originator != "" {
+		if originator := strings.TrimSpace(c.GetHeader("originator")); originator != "" && openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), originator) {
 			return originator
 		}
 	}
 	if isOfficialClient {
 		return "codex_cli_rs"
 	}
-	return "opencode"
+	return "codex_cli_rs"
 }
 
 // BindStickySession sets session -> account binding with standard TTL.
@@ -3492,6 +3524,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if req.Header.Get("OpenAI-Beta") == "" {
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
 		}
+		if req.Header.Get("version") == "" {
+			req.Header.Set("version", codexCLIVersion)
+		}
 		if req.Header.Get("originator") == "" {
 			req.Header.Set("originator", "codex_cli_rs")
 		}
@@ -4189,8 +4224,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		if compatMessagesBridge {
 			req.Header.Del("OpenAI-Beta")
 			req.Header.Del("originator")
+			req.Header.Del("version")
 		} else {
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
+			if req.Header.Get("version") == "" {
+				req.Header.Set("version", codexCLIVersion)
+			}
 			req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 		}
 		if isOpenAIResponsesCompactPath(c) {
@@ -4204,7 +4243,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
-		body, _ = applyOpenAICodexHTTPRequestAlignment(req, c, account, body, promptCacheKey, !compatMessagesBridge || clientConversationID != "")
+		body, _ = applyOpenAICodexHTTPRequestAlignmentWithBody(req, c, account, body, promptCacheKey, !compatMessagesBridge || clientConversationID != "", !compatMessagesBridge)
 	}
 
 	// Apply custom User-Agent if configured
@@ -4216,6 +4255,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 若开启 ForceCodexCLI，则强制将上游 User-Agent 伪装为 Codex CLI。
 	// 用于网关未透传/改写 User-Agent 时，仍能命中 Codex 侧识别逻辑。
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+		req.Header.Set("user-agent", codexCLIUserAgent)
+	}
+	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 

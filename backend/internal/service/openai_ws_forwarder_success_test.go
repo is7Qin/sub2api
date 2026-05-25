@@ -517,6 +517,9 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
 	c.Request.Header.Set("session_id", "sess-oauth-1")
 	c.Request.Header.Set("conversation_id", "conv-oauth-1")
+	c.Request.Header.Set(openAICodexSubagentHeader, "collab_spawn")
+	c.Request.Header.Set(openAICodexParentThreadIDHeader, "parent-thread-1")
+	c.Request.Header.Set(openAITracestateHeader, "vendor=value")
 
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -579,7 +582,20 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	// OAuth 账号的 session_id/conversation_id 应被 isolateOpenAISessionID 隔离，
 	// 测试中未设置 api_key 到 context，apiKeyID=0。
 	require.Equal(t, isolateOpenAISessionID(0, "sess-oauth-1"), captureDialer.lastHeaders.Get("session_id"))
+	require.Equal(t, isolateOpenAISessionID(0, "sess-oauth-1"), captureDialer.lastHeaders.Get(openAICodexSessionIDHeader))
 	require.Equal(t, isolateOpenAISessionID(0, "conv-oauth-1"), captureDialer.lastHeaders.Get("conversation_id"))
+	require.Equal(t, isolateOpenAISessionID(0, "conv-oauth-1"), captureDialer.lastHeaders.Get(openAICodexThreadIDHeader))
+	require.NotEmpty(t, captureDialer.lastHeaders.Get(openAICodexClientRequestIDHeader))
+	require.NotEmpty(t, captureDialer.lastHeaders.Get(openAICodexInstallationIDHeader))
+	require.NotEmpty(t, captureDialer.lastHeaders.Get(openAICodexWindowIDHeader))
+	require.Equal(t, "collab_spawn", captureDialer.lastHeaders.Get(openAICodexSubagentHeader))
+	require.Equal(t, "parent-thread-1", captureDialer.lastHeaders.Get(openAICodexParentThreadIDHeader))
+	require.Equal(t, "vendor=value", captureDialer.lastHeaders.Get(openAITracestateHeader))
+	require.Equal(t, captureDialer.lastHeaders.Get(openAICodexInstallationIDHeader), gjson.Get(requestJSON, "client_metadata."+openAICodexInstallationIDHeader).String())
+	require.Equal(t, captureDialer.lastHeaders.Get(openAICodexWindowIDHeader), gjson.Get(requestJSON, "client_metadata."+openAICodexWindowIDHeader).String())
+	require.Equal(t, "collab_spawn", gjson.Get(requestJSON, "client_metadata."+openAICodexSubagentHeader).String())
+	require.Equal(t, "parent-thread-1", gjson.Get(requestJSON, "client_metadata."+openAICodexParentThreadIDHeader).String())
+	require.Equal(t, "vendor=value", gjson.Get(requestJSON, "client_metadata."+openAITracestateHeader).String())
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testing.T) {

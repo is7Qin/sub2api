@@ -174,22 +174,17 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Error logs (legacy)
 		ops.GET("/errors", h.Admin.Ops.GetErrorLogs)
 		ops.GET("/errors/:id", h.Admin.Ops.GetErrorLogByID)
-		ops.GET("/errors/:id/retries", h.Admin.Ops.ListRetryAttempts)
-		ops.POST("/errors/:id/retry", h.Admin.Ops.RetryErrorRequest)
 		ops.PUT("/errors/:id/resolve", h.Admin.Ops.UpdateErrorResolution)
 
 		// Request errors (client-visible failures)
 		ops.GET("/request-errors", h.Admin.Ops.ListRequestErrors)
 		ops.GET("/request-errors/:id", h.Admin.Ops.GetRequestError)
 		ops.GET("/request-errors/:id/upstream-errors", h.Admin.Ops.ListRequestErrorUpstreamErrors)
-		ops.POST("/request-errors/:id/retry-client", h.Admin.Ops.RetryRequestErrorClient)
-		ops.POST("/request-errors/:id/upstream-errors/:idx/retry", h.Admin.Ops.RetryRequestErrorUpstreamEvent)
 		ops.PUT("/request-errors/:id/resolve", h.Admin.Ops.ResolveRequestError)
 
 		// Upstream errors (independent upstream failures)
 		ops.GET("/upstream-errors", h.Admin.Ops.ListUpstreamErrors)
 		ops.GET("/upstream-errors/:id", h.Admin.Ops.GetUpstreamError)
-		ops.POST("/upstream-errors/:id/retry", h.Admin.Ops.RetryUpstreamError)
 		ops.PUT("/upstream-errors/:id/resolve", h.Admin.Ops.ResolveUpstreamError)
 
 		// Request drilldown (success + error)
@@ -246,6 +241,9 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		users.POST("/:id/replace-group", h.Admin.User.ReplaceGroup)
 		users.GET("/:id/rpm-status", h.Admin.User.GetUserRPMStatus)
 		users.POST("/batch-concurrency", h.Admin.User.BatchUpdateConcurrency)
+		users.GET("/:id/platform-quotas", h.Admin.User.GetUserPlatformQuotas)
+		users.PUT("/:id/platform-quotas", h.Admin.User.UpdateUserPlatformQuotas)
+		users.POST("/:id/platform-quotas/reset", h.Admin.User.ResetUserPlatformQuotaWindow)
 
 		// User attribute values
 		users.GET("/:id/attributes", h.Admin.UserAttribute.GetUserAttributes)
@@ -303,6 +301,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.DELETE("/:id/temp-unschedulable", h.Admin.Account.ClearTempUnschedulable)
 		accounts.POST("/:id/schedulable", h.Admin.Account.SetSchedulable)
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
+		accounts.POST("/:id/models/sync-upstream", h.Admin.Account.SyncUpstreamModels)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", h.Admin.Account.ExportData)
 		accounts.POST("/data", h.Admin.Account.ImportData)
@@ -397,6 +396,7 @@ func registerRedeemCodeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		codes.POST("/generate", h.Admin.Redeem.Generate)
 		codes.DELETE("/:id", h.Admin.Redeem.Delete)
 		codes.POST("/batch-delete", h.Admin.Redeem.BatchDelete)
+		codes.POST("/batch-update", h.Admin.Redeem.BatchUpdate)
 		codes.POST("/:id/expire", h.Admin.Redeem.Expire)
 	}
 }
@@ -420,6 +420,11 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.PUT("", h.Admin.Setting.UpdateSettings)
 		adminSettings.POST("/test-smtp", h.Admin.Setting.TestSMTPConnection)
 		adminSettings.POST("/send-test-email", h.Admin.Setting.SendTestEmail)
+		adminSettings.GET("/email-templates", h.Admin.Setting.ListEmailTemplates)
+		adminSettings.POST("/email-template-preview", h.Admin.Setting.PreviewEmailTemplate)
+		adminSettings.GET("/email-templates/:event/:locale", h.Admin.Setting.GetEmailTemplate)
+		adminSettings.PUT("/email-templates/:event/:locale", h.Admin.Setting.UpdateEmailTemplate)
+		adminSettings.POST("/email-templates/:event/:locale/restore-official", h.Admin.Setting.RestoreOfficialEmailTemplate)
 		// Admin API Key 管理
 		adminSettings.GET("/admin-api-key", h.Admin.Setting.GetAdminAPIKey)
 		adminSettings.POST("/admin-api-key/regenerate", h.Admin.Setting.RegenerateAdminAPIKey)
@@ -514,6 +519,7 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		subscriptions.POST("/assign", h.Admin.Subscription.Assign)
 		subscriptions.POST("/bulk-assign", h.Admin.Subscription.BulkAssign)
 		subscriptions.POST("/:id/extend", h.Admin.Subscription.Extend)
+		subscriptions.POST("/:id/switch", h.Admin.Subscription.SwitchGroup)
 		subscriptions.POST("/:id/reset-quota", h.Admin.Subscription.ResetQuota)
 		subscriptions.DELETE("/:id", h.Admin.Subscription.Revoke)
 	}
@@ -589,6 +595,7 @@ func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	{
 		channels.GET("", h.Admin.Channel.List)
 		channels.GET("/model-pricing", h.Admin.Channel.GetModelDefaultPricing)
+		channels.GET("/pricing/sync-models", h.Admin.Channel.SyncPricingModels)
 		channels.GET("/:id", h.Admin.Channel.GetByID)
 		channels.POST("", h.Admin.Channel.Create)
 		channels.PUT("/:id", h.Admin.Channel.Update)

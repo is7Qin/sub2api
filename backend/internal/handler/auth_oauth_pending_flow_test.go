@@ -2233,6 +2233,7 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 		nil,
 		options.defaultSubAssigner,
 		affiliateService,
+		nil,
 	)
 	userSvc := service.NewUserService(userRepo, nil, nil, nil)
 	var totpSvc *service.TotpService
@@ -2490,6 +2491,10 @@ func (r *oauthPendingFlowRedeemCodeRepo) Update(ctx context.Context, code *servi
 	}
 	_, err := update.Save(ctx)
 	return err
+}
+
+func (r *oauthPendingFlowRedeemCodeRepo) BatchUpdate(context.Context, []int64, service.RedeemCodeBatchUpdateFields) (int64, error) {
+	panic("unexpected BatchUpdate call")
 }
 
 func (r *oauthPendingFlowRedeemCodeRepo) Delete(context.Context, int64) error {

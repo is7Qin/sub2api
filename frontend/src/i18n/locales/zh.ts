@@ -825,6 +825,8 @@ export default {
     rateLimitResetSuccess: '速率限制已重置',
     failedToResetRateLimit: '重置速率限制失败',
     resetNow: '即将重置',
+    openaiForcePriorityTier: '强制开启Fast模式',
+    openaiForcePriorityTierHint: '使用本 key 时，OpenAI 网关请求会强制注入 service_tier=priority，覆盖客户端传入的值。',
     expiration: '密钥有效期',
     expiresInDays: '{days} 天',
     extendDays: '+{days} 天',

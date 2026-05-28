@@ -137,6 +137,47 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	require.Contains(t, recorder.Body.String(), "test_complete")
 }
 
+func TestAccountTestService_OpenAIOAuthProbeSendsCodexFingerprint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusOK, "")
+	resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.completed"}
+
+`))
+
+	upstream := &httpUpstreamRecorder{resp: resp}
+	svc := &AccountTestService{httpUpstream: upstream}
+	account := &Account{
+		ID:          92,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "test-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
+	require.Equal(t, "responses=experimental", upstream.lastReq.Header.Get("OpenAI-Beta"))
+	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
+	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, codexCLIVersion, upstream.lastReq.Header.Get("Version"))
+	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexSessionIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexThreadIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexClientRequestIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexInstallationIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexWindowIDHeader))
+	require.Equal(t, upstream.lastReq.Header.Get(openAICodexThreadIDHeader), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.Equal(t, upstream.lastReq.Header.Get(openAICodexInstallationIDHeader), gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").String())
+	require.Equal(t, upstream.lastReq.Header.Get(openAICodexWindowIDHeader), gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-window-id").String())
+}
+
 func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newTestContext()

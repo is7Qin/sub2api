@@ -3260,8 +3260,10 @@ export default {
         disableScheduling: 'Disable Scheduling',
         resetStatus: 'Reset Status',
         refreshToken: 'Refresh Token',
+        refreshPlanType: 'Refresh Plan Type',
         resetStatusSuccess: 'Successfully reset {count} account(s) status',
         refreshTokenSuccess: 'Successfully refreshed {count} account(s) token',
+        refreshPlanTypeSuccess: 'Successfully refreshed {count} account(s) plan type',
         partialSuccess: 'Partially completed: {success} succeeded, {failed} failed'
       },
       bulkEdit: {

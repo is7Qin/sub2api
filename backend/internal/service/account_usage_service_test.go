@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -97,6 +98,61 @@ func TestAccountUsageService_GetOpenAIUsageRefreshesPlanType(t *testing.T) {
 
 	if got := account.Credentials["plan_type"]; got != "plus" {
 		t.Fatalf("in-memory plan_type = %v, want plus", got)
+	}
+}
+
+func TestAccountUsageService_RefreshOpenAIPlanTypeUpdatesOAuthAccount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/accounts/check/v4-2023-04-27" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer batch-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"accounts":{"org-123":{"account":{"plan_type":"pro","is_default":true},"entitlement":{"expires_at":"2026-07-31T00:00:00Z"}}}}`)
+	}))
+	defer server.Close()
+	originalURL := chatGPTAccountsCheckURL
+	chatGPTAccountsCheckURL = server.URL + "/backend-api/accounts/check/v4-2023-04-27"
+	t.Cleanup(func() { chatGPTAccountsCheckURL = originalURL })
+
+	repo := &accountUsageCodexProbeRepo{bulkUpdateCh: make(chan AccountBulkUpdate, 1)}
+	svc := &AccountUsageService{
+		accountRepo: repo,
+		privacyClientFactory: func(_ string) (*req.Client, error) {
+			return req.C(), nil
+		},
+	}
+	account := &Account{
+		ID:       101,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":    "batch-token",
+			"organization_id": "org-123",
+			"plan_type":       "free",
+		},
+	}
+
+	if err := svc.RefreshOpenAIPlanType(context.Background(), account); err != nil {
+		t.Fatalf("RefreshOpenAIPlanType() error = %v", err)
+	}
+
+	select {
+	case updates := <-repo.bulkUpdateCh:
+		if got := updates.Credentials["plan_type"]; got != "pro" {
+			t.Fatalf("plan_type update = %v, want pro", got)
+		}
+		if got := updates.Credentials["subscription_expires_at"]; got != "2026-07-31T00:00:00Z" {
+			t.Fatalf("subscription_expires_at update = %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待批量 plan_type 写入 credentials 超时")
+	}
+
+	if got := account.Credentials["plan_type"]; got != "pro" {
+		t.Fatalf("in-memory plan_type = %v, want pro", got)
 	}
 }
 

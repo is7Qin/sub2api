@@ -513,7 +513,9 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 
 	shouldRefreshRemote := force || shouldRefreshOpenAICodexSnapshot(account, usage, now)
 	if shouldRefreshRemote {
-		s.refreshOpenAIUsagePlanType(ctx, account)
+		if err := s.RefreshOpenAIPlanType(ctx, account); err != nil {
+			slog.Warn("openai_usage_plan_type_sync_failed", "account_id", account.ID, "error", err)
+		}
 	}
 	if shouldRefreshRemote && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
@@ -551,13 +553,19 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	return usage, nil
 }
 
-func (s *AccountUsageService) refreshOpenAIUsagePlanType(ctx context.Context, account *Account) {
-	if s == nil || s.accountRepo == nil || s.privacyClientFactory == nil || account == nil || !account.IsOpenAIOAuth() {
-		return
+func (s *AccountUsageService) RefreshOpenAIPlanType(ctx context.Context, account *Account) error {
+	if s == nil || s.accountRepo == nil || s.privacyClientFactory == nil {
+		return fmt.Errorf("plan type refresh is not configured")
+	}
+	if account == nil {
+		return fmt.Errorf("account is required")
+	}
+	if !account.IsOpenAIOAuth() {
+		return fmt.Errorf("only OpenAI OAuth accounts support plan type refresh")
 	}
 	accessToken := account.GetOpenAIAccessToken()
 	if accessToken == "" {
-		return
+		return fmt.Errorf("OpenAI OAuth access token is required")
 	}
 
 	proxyURL := ""
@@ -566,7 +574,7 @@ func (s *AccountUsageService) refreshOpenAIUsagePlanType(ctx context.Context, ac
 	}
 	info := fetchChatGPTAccountInfo(ctx, s.privacyClientFactory, accessToken, proxyURL, account.GetOpenAIOrganizationID())
 	if info == nil || info.PlanType == "" {
-		return
+		return fmt.Errorf("ChatGPT account info did not include plan_type")
 	}
 
 	updates := map[string]any{"plan_type": info.PlanType}
@@ -574,8 +582,7 @@ func (s *AccountUsageService) refreshOpenAIUsagePlanType(ctx context.Context, ac
 		updates["subscription_expires_at"] = info.SubscriptionExpiresAt
 	}
 	if _, err := s.accountRepo.BulkUpdate(ctx, []int64{account.ID}, AccountBulkUpdate{Credentials: updates}); err != nil {
-		slog.Warn("openai_usage_plan_type_sync_failed", "account_id", account.ID, "plan_type", info.PlanType, "error", err)
-		return
+		return err
 	}
 	if account.Credentials == nil {
 		account.Credentials = make(map[string]any, len(updates))
@@ -583,6 +590,7 @@ func (s *AccountUsageService) refreshOpenAIUsagePlanType(ctx context.Context, ac
 	for k, v := range updates {
 		account.Credentials[k] = v
 	}
+	return nil
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {

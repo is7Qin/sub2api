@@ -1325,6 +1325,22 @@ func TestBuildOpenAIImagesResponsesRequest_PassesCodexEditOptions(t *testing.T) 
 	require.Equal(t, "edit", gjson.GetBytes(body, "tools.0.action").String())
 }
 
+func TestBuildOpenAIImagesResponsesRequest_AppendsStyleToPromptOnly(t *testing.T) {
+	parsed := &OpenAIImagesRequest{
+		Endpoint: openAIImagesGenerationsEndpoint,
+		Model:    "gpt-image-2",
+		Prompt:   "draw a cat",
+		Style:    "watercolor",
+	}
+
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
+
+	require.NoError(t, err)
+	require.Contains(t, gjson.GetBytes(body, "input.0.content.0.text").String(), "draw a cat")
+	require.Contains(t, gjson.GetBytes(body, "input.0.content.0.text").String(), "Style guidance: watercolor")
+	require.False(t, gjson.GetBytes(body, "tools.0.style").Exists())
+}
+
 func TestCollectOpenAIImagesFromResponsesBody_FallsBackToOutputItemDone(t *testing.T) {
 	body := []byte(
 		"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000004}}\n\n" +

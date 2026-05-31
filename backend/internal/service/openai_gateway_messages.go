@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -224,6 +225,12 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 	}
 
+	forcedBody, forceErr := forceOpenAIPriorityTierInBody(getAPIKeyFromContext(c), responsesBody)
+	if forceErr != nil {
+		return nil, forceErr
+	}
+	responsesBody = forcedBody
+
 	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).
 	// Mirrors the Claude anthropic-beta "fast-mode-2026-02-01" filter, but keyed
 	// on the body-level service_tier field (priority/flex).
@@ -238,6 +245,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	responsesBody = updatedBody
 
+	// Refresh ServiceTier so billing reflects the final body sent upstream.
+	if responsesReq != nil {
+		responsesReq.ServiceTier = strings.TrimSpace(gjson.GetBytes(responsesBody, "service_tier").String())
+	}
+
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -245,6 +257,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 6. Build upstream request
+	setOpenAICompatMessagesBridgeContext(c, account.Type == AccountTypeOAuth)
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, isStream, promptCacheKey, false)
 	releaseUpstreamCtx()
@@ -300,7 +313,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// 8. Handle error response with failover
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		respBody := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 

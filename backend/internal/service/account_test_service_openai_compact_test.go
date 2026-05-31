@@ -58,9 +58,17 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 	require.Equal(t, codexCLIVersion, upstream.lastReq.Header.Get("Version"))
 	require.NotEmpty(t, upstream.lastReq.Header.Get("Session_Id"))
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexSessionIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexThreadIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexClientRequestIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexInstallationIDHeader))
+	require.NotEmpty(t, upstream.lastReq.Header.Get(openAICodexWindowIDHeader))
 	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, upstream.lastReq.Header.Get(openAICodexThreadIDHeader), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.Equal(t, upstream.lastReq.Header.Get(openAICodexInstallationIDHeader), gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").String())
+	require.Equal(t, upstream.lastReq.Header.Get(openAICodexWindowIDHeader), gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-window-id").String())
 
 	updates := <-updateCalls
 	require.Equal(t, true, updates["openai_compact_supported"])

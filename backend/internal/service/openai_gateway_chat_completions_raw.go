@@ -89,6 +89,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	// 4. Apply OpenAI fast policy on the CC body
+	forcedBody, forceErr := forceOpenAIPriorityTierInBody(getAPIKeyFromContext(c), upstreamBody)
+	if forceErr != nil {
+		return nil, forceErr
+	}
+	upstreamBody = forcedBody
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, upstreamBody)
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
@@ -99,6 +104,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, policyErr
 	}
 	upstreamBody = updatedBody
+	// Refresh service tier from the final body for billing fidelity.
+	serviceTier = extractOpenAIServiceTierFromBody(upstreamBody)
 	if clientStream {
 		var usageErr error
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
@@ -183,7 +190,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		respBody := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 

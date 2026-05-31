@@ -289,18 +289,9 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	inputImages := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
-	for _, imageURL := range parsed.InputImageURLs {
-		if trimmed := strings.TrimSpace(imageURL); trimmed != "" {
-			inputImages = append(inputImages, trimmed)
-		}
-	}
-	for _, upload := range parsed.Uploads {
-		dataURL, err := openAIImageUploadToDataURL(upload)
-		if err != nil {
-			return nil, err
-		}
-		inputImages = append(inputImages, dataURL)
+	inputImages, err := collectOpenAIImagesInputDataURLs(parsed)
+	if err != nil {
+		return nil, err
 	}
 	if parsed.IsEdits() && len(inputImages) == 0 {
 		return nil, fmt.Errorf("image input is required")
@@ -337,6 +328,7 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 		{path: "quality", value: parsed.Quality},
 		{path: "background", value: parsed.Background},
 		{path: "output_format", value: parsed.OutputFormat},
+		{path: "input_fidelity", value: parsed.InputFidelity},
 		{path: "moderation", value: parsed.Moderation},
 		{path: "style", value: parsed.Style},
 	} {
@@ -366,6 +358,26 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	req, _ = sjson.SetRawBytes(req, "tools.-1", tool)
 	return req, nil
+}
+
+func collectOpenAIImagesInputDataURLs(parsed *OpenAIImagesRequest) ([]string, error) {
+	if parsed == nil {
+		return nil, nil
+	}
+	inputImages := make([]string, 0, len(parsed.InputImageURLs)+len(parsed.Uploads))
+	for _, imageURL := range parsed.InputImageURLs {
+		if trimmed := strings.TrimSpace(imageURL); trimmed != "" {
+			inputImages = append(inputImages, trimmed)
+		}
+	}
+	for _, upload := range parsed.Uploads {
+		dataURL, err := openAIImageUploadToDataURL(upload)
+		if err != nil {
+			return nil, err
+		}
+		inputImages = append(inputImages, dataURL)
+	}
+	return inputImages, nil
 }
 
 func shouldPassOpenAIImagesN(model string, n int) bool {

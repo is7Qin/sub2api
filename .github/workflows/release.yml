@@ -172,11 +172,28 @@ jobs:
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+      - name: Select GoReleaser config
+        id: goreleaser_config
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_NAME=${{ github.event.inputs.tag }}
+          else
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+          fi
+
+          if [[ "$TAG_NAME" == v*-dev.* ]]; then
+            echo "args=release --clean --skip=validate --config=.goreleaser.dev.yaml" >> $GITHUB_OUTPUT
+          elif [ "${{ env.SIMPLE_RELEASE }}" = "true" ]; then
+            echo "args=release --clean --skip=validate --config=.goreleaser.simple.yaml" >> $GITHUB_OUTPUT
+          else
+            echo "args=release --clean --skip=validate" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           version: '~> v2'
-          args: release --clean --skip=validate ${{ env.SIMPLE_RELEASE == 'true' && '--config=.goreleaser.simple.yaml' || '' }}
+          args: ${{ steps.goreleaser_config.outputs.args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_MESSAGE: ${{ steps.tag_message.outputs.message }}
@@ -274,7 +291,7 @@ jobs:
 
   sync-version-file:
     needs: [release]
-    if: ${{ needs.release.result == 'success' }}
+    if: ${{ needs.release.result == 'success' && !contains(github.ref_name, '-dev.') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout default branch

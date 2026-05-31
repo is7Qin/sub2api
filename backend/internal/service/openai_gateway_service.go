@@ -40,10 +40,14 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIVersion        = "0.133.0-alpha.4"
-	codexCLIUserAgent      = "codex_cli_rs/" + codexCLIVersion + " (Ubuntu 22.4.0; x86_64) xterm-256color"
+	openaiPlatformAPIURL          = "https://api.openai.com/v1/responses"
+	openaiStickySessionTTL        = time.Hour // 粘性会话TTL
+	codexCLIVersion               = "0.135.0-alpha.1"
+	codexDesktopAppVersion        = "26.527.31326"
+	codexDesktopOSFingerprint     = "Windows 10.0.19045; x86_64"
+	codexDesktopTerminalName      = "unknown"
+	codexDesktopOriginator        = "Codex Desktop"
+	codexCLIUserAgent             = codexDesktopOriginator + "/" + codexCLIVersion + " (" + codexDesktopOSFingerprint + ") " + codexDesktopTerminalName + " (" + codexDesktopOriginator + "; " + codexDesktopAppVersion + ")"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -68,10 +72,20 @@ const (
 	openAICodexInstallationIDHeader       = "x-codex-installation-id"
 	openAICodexWindowIDHeader             = "x-codex-window-id"
 	openAICodexParentThreadIDHeader       = "x-codex-parent-thread-id"
+	openAICodexBetaFeaturesHeader         = "x-codex-beta-features"
+	openAICodexTurnStateHeader            = "x-codex-turn-state"
+	openAICodexTurnMetadataHeader         = "x-codex-turn-metadata"
 	openAICodexSubagentHeader             = "x-openai-subagent"
 	openAICodexMemgenRequestHeader        = "x-openai-memgen-request"
 	openAICodexAttestationHeader          = "x-oai-attestation"
 	openAICodexIncludeTimingMetricsHeader = "x-responsesapi-include-timing-metrics"
+	openAICodexPrimaryUsedPercentHeader   = "x-codex-primary-used-percent"
+	openAICodexPrimaryResetSecondsHeader  = "x-codex-primary-reset-after-seconds"
+	openAICodexPrimaryWindowMinutesHeader = "x-codex-primary-window-minutes"
+	openAICodexSecondUsedPercentHeader    = "x-codex-secondary-used-percent"
+	openAICodexSecondResetSecondsHeader   = "x-codex-secondary-reset-after-seconds"
+	openAICodexSecondWindowMinutesHeader  = "x-codex-secondary-window-minutes"
+	openAICodexPrimaryOverSecondHeader    = "x-codex-primary-over-secondary-limit-percent"
 	openAITraceparentHeader               = "traceparent"
 	openAITracestateHeader                = "tracestate"
 )
@@ -97,8 +111,8 @@ var openaiAllowedHeaders = map[string]bool{
 	openAICodexIncludeTimingMetricsHeader: true,
 	openAITraceparentHeader:               true,
 	openAITracestateHeader:                true,
-	"x-codex-turn-state":                  true,
-	"x-codex-turn-metadata":               true,
+	openAICodexTurnStateHeader:            true,
+	openAICodexTurnMetadataHeader:         true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
@@ -125,8 +139,8 @@ var openaiPassthroughAllowedHeaders = map[string]bool{
 	openAICodexIncludeTimingMetricsHeader: true,
 	openAITraceparentHeader:               true,
 	openAITracestateHeader:                true,
-	"x-codex-turn-state":                  true,
-	"x-codex-turn-metadata":               true,
+	openAICodexTurnStateHeader:            true,
+	openAICodexTurnMetadataHeader:         true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -998,7 +1012,7 @@ func applyOpenAICodexHTTPRequestAlignment(req *http.Request, c *gin.Context, acc
 
 func applyOpenAICodexHTTPRequestAlignmentWithBody(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string, allowLegacyConversationID bool, mutateBody bool) ([]byte, openAICodexRequestIdentity) {
 	identity := resolveOpenAICodexRequestIdentity(req, c, account, body, promptCacheKey)
-	applyOpenAICodexIdentityHeaders(req, identity, allowLegacyConversationID)
+	applyOpenAICodexIdentityHeaders(req, c, identity, allowLegacyConversationID)
 	if mutateBody {
 		body = setOpenAICodexHTTPClientMetadata(body, identity)
 	}
@@ -1047,11 +1061,11 @@ func resolveOpenAICodexRequestIdentity(req *http.Request, c *gin.Context, accoun
 	}
 }
 
-func applyOpenAICodexIdentityHeaders(req *http.Request, identity openAICodexRequestIdentity, allowLegacyConversationID bool) {
+func applyOpenAICodexIdentityHeaders(req *http.Request, c *gin.Context, identity openAICodexRequestIdentity, allowLegacyConversationID bool) {
 	if req == nil {
 		return
 	}
-	copyOpenAICodexOptionalHeaders(req.Header, nil)
+	copyOpenAICodexOptionalHeaders(req.Header, c)
 	if identity.SessionID != "" {
 		req.Header.Set(openAICodexSessionIDHeader, identity.SessionID)
 		req.Header.Set("session_id", identity.SessionID)
@@ -1117,6 +1131,9 @@ func copyOpenAICodexOptionalHeaders(dst http.Header, c *gin.Context) {
 	}
 	for _, key := range []string{
 		openAICodexParentThreadIDHeader,
+		openAICodexBetaFeaturesHeader,
+		openAICodexTurnStateHeader,
+		openAICodexTurnMetadataHeader,
 		openAICodexSubagentHeader,
 		openAICodexMemgenRequestHeader,
 		openAICodexAttestationHeader,
@@ -1513,9 +1530,9 @@ func resolveOpenAIUpstreamOriginator(c *gin.Context, isOfficialClient bool) stri
 		}
 	}
 	if isOfficialClient {
-		return "codex_cli_rs"
+		return codexDesktopOriginator
 	}
-	return "codex_cli_rs"
+	return codexDesktopOriginator
 }
 
 // BindStickySession sets session -> account binding with standard TTL.
@@ -3746,7 +3763,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			req.Header.Set("version", codexCLIVersion)
 		}
 		if req.Header.Get("originator") == "" {
-			req.Header.Set("originator", "codex_cli_rs")
+			req.Header.Set("originator", codexDesktopOriginator)
 		}
 		body, _ = applyOpenAICodexHTTPRequestAlignment(req, c, account, body, promptCacheKey, true)
 	}
@@ -3760,7 +3777,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if account.Type == AccountTypeOAuth && !openai.IsCodexOfficialClientRequest(req.Header.Get("user-agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
@@ -4363,13 +4380,13 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 	}
 
 	for _, rawKey := range []string{
-		"x-codex-primary-used-percent",
-		"x-codex-primary-reset-after-seconds",
-		"x-codex-primary-window-minutes",
-		"x-codex-secondary-used-percent",
-		"x-codex-secondary-reset-after-seconds",
-		"x-codex-secondary-window-minutes",
-		"x-codex-primary-over-secondary-limit-percent",
+		openAICodexPrimaryUsedPercentHeader,
+		openAICodexPrimaryResetSecondsHeader,
+		openAICodexPrimaryWindowMinutesHeader,
+		openAICodexSecondUsedPercentHeader,
+		openAICodexSecondResetSecondsHeader,
+		openAICodexSecondWindowMinutesHeader,
+		openAICodexPrimaryOverSecondHeader,
 	} {
 		vals := getCaseInsensitiveValues(src, rawKey)
 		if len(vals) == 0 {
@@ -4478,7 +4495,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if account.Type == AccountTypeOAuth && !openai.IsCodexOfficialClientRequest(req.Header.Get("user-agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
@@ -6276,35 +6293,35 @@ func ParseCodexRateLimitHeaders(headers http.Header) *OpenAICodexUsageSnapshot {
 	}
 
 	// Primary (weekly) limits
-	if v := parseFloat("x-codex-primary-used-percent"); v != nil {
+	if v := parseFloat(openAICodexPrimaryUsedPercentHeader); v != nil {
 		snapshot.PrimaryUsedPercent = v
 		hasData = true
 	}
-	if v := parseInt("x-codex-primary-reset-after-seconds"); v != nil {
+	if v := parseInt(openAICodexPrimaryResetSecondsHeader); v != nil {
 		snapshot.PrimaryResetAfterSeconds = v
 		hasData = true
 	}
-	if v := parseInt("x-codex-primary-window-minutes"); v != nil {
+	if v := parseInt(openAICodexPrimaryWindowMinutesHeader); v != nil {
 		snapshot.PrimaryWindowMinutes = v
 		hasData = true
 	}
 
 	// Secondary (5h) limits
-	if v := parseFloat("x-codex-secondary-used-percent"); v != nil {
+	if v := parseFloat(openAICodexSecondUsedPercentHeader); v != nil {
 		snapshot.SecondaryUsedPercent = v
 		hasData = true
 	}
-	if v := parseInt("x-codex-secondary-reset-after-seconds"); v != nil {
+	if v := parseInt(openAICodexSecondResetSecondsHeader); v != nil {
 		snapshot.SecondaryResetAfterSeconds = v
 		hasData = true
 	}
-	if v := parseInt("x-codex-secondary-window-minutes"); v != nil {
+	if v := parseInt(openAICodexSecondWindowMinutesHeader); v != nil {
 		snapshot.SecondaryWindowMinutes = v
 		hasData = true
 	}
 
 	// Overflow ratio
-	if v := parseFloat("x-codex-primary-over-secondary-limit-percent"); v != nil {
+	if v := parseFloat(openAICodexPrimaryOverSecondHeader); v != nil {
 		snapshot.PrimaryOverSecondaryPercent = v
 		hasData = true
 	}

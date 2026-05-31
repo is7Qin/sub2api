@@ -3,14 +3,18 @@ package service
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/imroc/req/v3"
 )
 
 type accountUsageCodexProbeRepo struct {
 	stubOpenAIAccountRepo
 	updateExtraCh chan map[string]any
 	rateLimitCh   chan time.Time
+	bulkUpdateCh  chan AccountBulkUpdate
 }
 
 func (r *accountUsageCodexProbeRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -29,6 +33,111 @@ func (r *accountUsageCodexProbeRepo) SetRateLimited(_ context.Context, _ int64, 
 		r.rateLimitCh <- resetAt
 	}
 	return nil
+}
+
+func (r *accountUsageCodexProbeRepo) BulkUpdate(_ context.Context, _ []int64, updates AccountBulkUpdate) (int64, error) {
+	if r.bulkUpdateCh != nil {
+		r.bulkUpdateCh <- updates
+	}
+	return 1, nil
+}
+
+func TestAccountUsageService_GetOpenAIUsageRefreshesPlanType(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/accounts/check/v4-2023-04-27" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accounts":{"org-123":{"account":{"plan_type":"plus","is_default":true},"entitlement":{"expires_at":"2026-06-30T00:00:00Z"}}}}`))
+	}))
+	defer server.Close()
+	originalURL := chatGPTAccountsCheckURL
+	chatGPTAccountsCheckURL = server.URL + "/backend-api/accounts/check/v4-2023-04-27"
+	t.Cleanup(func() { chatGPTAccountsCheckURL = originalURL })
+
+	repo := &accountUsageCodexProbeRepo{bulkUpdateCh: make(chan AccountBulkUpdate, 1)}
+	svc := &AccountUsageService{
+		accountRepo: repo,
+		privacyClientFactory: func(_ string) (*req.Client, error) {
+			return req.C(), nil
+		},
+	}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":    "access-token",
+			"organization_id": "org-123",
+			"plan_type":       "free",
+		},
+	}
+
+	_, err := svc.getOpenAIUsage(context.Background(), account, false)
+	if err != nil {
+		t.Fatalf("getOpenAIUsage() error = %v", err)
+	}
+
+	select {
+	case updates := <-repo.bulkUpdateCh:
+		if got := updates.Credentials["plan_type"]; got != "plus" {
+			t.Fatalf("plan_type update = %v, want plus", got)
+		}
+		if got := updates.Credentials["subscription_expires_at"]; got != "2026-06-30T00:00:00Z" {
+			t.Fatalf("subscription_expires_at update = %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 plan_type 写入 credentials 超时")
+	}
+
+	if got := account.Credentials["plan_type"]; got != "plus" {
+		t.Fatalf("in-memory plan_type = %v, want plus", got)
+	}
+}
+
+func TestAccountUsageService_GetOpenAIUsageSkipsPlanTypeRefreshWhenCodexSnapshotIsFresh(t *testing.T) {
+	t.Parallel()
+
+	repo := &accountUsageCodexProbeRepo{bulkUpdateCh: make(chan AccountBulkUpdate, 1)}
+	svc := &AccountUsageService{
+		accountRepo: repo,
+		privacyClientFactory: func(_ string) (*req.Client, error) {
+			t.Fatal("fresh codex usage snapshot should not refresh plan_type")
+			return nil, nil
+		},
+	}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "access-token",
+			"plan_type":    "plus",
+		},
+		Extra: map[string]any{
+			"openai_oauth_responses_websockets_v2_enabled": true,
+			"codex_usage_updated_at":                       time.Now().UTC().Format(time.RFC3339),
+			"codex_5h_used_percent":                        10.0,
+			"codex_5h_reset_at":                            time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			"codex_7d_used_percent":                        20.0,
+			"codex_7d_reset_at":                            time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+
+	if _, err := svc.getOpenAIUsage(context.Background(), account, false); err != nil {
+		t.Fatalf("getOpenAIUsage() error = %v", err)
+	}
+
+	select {
+	case updates := <-repo.bulkUpdateCh:
+		t.Fatalf("不应刷新新鲜 usage 快照的 plan_type: %#v", updates)
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 func TestShouldRefreshOpenAICodexSnapshot(t *testing.T) {

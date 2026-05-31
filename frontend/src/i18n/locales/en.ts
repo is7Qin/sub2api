@@ -3107,6 +3107,8 @@ export default {
       },
       allPrivacyModes: 'All Privacy States',
       privacyUnset: 'Unset',
+      allPlanTypes: 'All Plan Types',
+      planTypeAbnormal: 'Abnormal',
       privacyTrainingOff: 'Training data sharing disabled',
       privacyCfBlocked: 'Blocked by Cloudflare, training may still be on',
       privacyFailed: 'Failed to disable training',

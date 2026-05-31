@@ -208,6 +208,7 @@ func TestBulkUpdateAcceptsFilterTargetRequest(t *testing.T) {
 			"status":       "active",
 			"group":        "12",
 			"privacy_mode": "blocked",
+			"plan_type":    "plus",
 			"search":       "bulk-target",
 		},
 		"schedulable": true,
@@ -221,4 +222,7 @@ func TestBulkUpdateAcceptsFilterTargetRequest(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, float64(0), resp["code"])
+	require.NotNil(t, adminSvc.lastBulkUpdateInput)
+	require.NotNil(t, adminSvc.lastBulkUpdateInput.Filters)
+	require.Equal(t, "plus", adminSvc.lastBulkUpdateInput.Filters.PlanType)
 }

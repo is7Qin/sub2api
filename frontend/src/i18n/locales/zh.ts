@@ -3157,6 +3157,8 @@ export default {
       },
       allPrivacyModes: '全部Privacy状态',
       privacyUnset: '未设置',
+      allPlanTypes: '全部 Plan 类型',
+      planTypeAbnormal: '异常',
       privacyTrainingOff: '已关闭训练数据共享',
       privacyCfBlocked: '被 Cloudflare 拦截，训练可能仍开启',
       privacyFailed: '关闭训练数据共享失败',

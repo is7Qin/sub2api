@@ -265,6 +265,7 @@ type AccountUsageService struct {
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
+	privacyClientFactory    PrivacyClientFactory
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -277,6 +278,7 @@ func NewAccountUsageService(
 	cache *UsageCache,
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	privacyClientFactory PrivacyClientFactory,
 ) *AccountUsageService {
 	return &AccountUsageService{
 		accountRepo:             accountRepo,
@@ -287,6 +289,7 @@ func NewAccountUsageService(
 		cache:                   cache,
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
+		privacyClientFactory:    privacyClientFactory,
 	}
 }
 
@@ -508,7 +511,11 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay = progress
 	}
 
-	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
+	shouldRefreshRemote := force || shouldRefreshOpenAICodexSnapshot(account, usage, now)
+	if shouldRefreshRemote {
+		s.refreshOpenAIUsagePlanType(ctx, account)
+	}
+	if shouldRefreshRemote && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
 			mergeAccountExtra(account, updates)
 			if usage.UpdatedAt == nil {
@@ -542,6 +549,40 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	return usage, nil
+}
+
+func (s *AccountUsageService) refreshOpenAIUsagePlanType(ctx context.Context, account *Account) {
+	if s == nil || s.accountRepo == nil || s.privacyClientFactory == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+	accessToken := account.GetOpenAIAccessToken()
+	if accessToken == "" {
+		return
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	info := fetchChatGPTAccountInfo(ctx, s.privacyClientFactory, accessToken, proxyURL, account.GetOpenAIOrganizationID())
+	if info == nil || info.PlanType == "" {
+		return
+	}
+
+	updates := map[string]any{"plan_type": info.PlanType}
+	if info.SubscriptionExpiresAt != "" {
+		updates["subscription_expires_at"] = info.SubscriptionExpiresAt
+	}
+	if _, err := s.accountRepo.BulkUpdate(ctx, []int64{account.ID}, AccountBulkUpdate{Credentials: updates}); err != nil {
+		slog.Warn("openai_usage_plan_type_sync_failed", "account_id", account.ID, "plan_type", info.PlanType, "error", err)
+		return
+	}
+	if account.Credentials == nil {
+		account.Credentials = make(map[string]any, len(updates))
+	}
+	for k, v := range updates {
+		account.Credentials[k] = v
+	}
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {

@@ -40,14 +40,14 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL          = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL        = time.Hour // 粘性会话TTL
-	codexCLIVersion               = "0.135.0-alpha.1"
-	codexDesktopAppVersion        = "26.527.31326"
-	codexDesktopOSFingerprint     = "Windows 10.0.19045; x86_64"
-	codexDesktopTerminalName      = "unknown"
-	codexDesktopOriginator        = "Codex Desktop"
-	codexCLIUserAgent             = codexDesktopOriginator + "/" + codexCLIVersion + " (" + codexDesktopOSFingerprint + ") " + codexDesktopTerminalName + " (" + codexDesktopOriginator + "; " + codexDesktopAppVersion + ")"
+	openaiPlatformAPIURL      = "https://api.openai.com/v1/responses"
+	openaiStickySessionTTL    = time.Hour // 粘性会话TTL
+	codexCLIVersion           = "0.135.0-alpha.1"
+	codexDesktopAppVersion    = "26.527.31326"
+	codexDesktopOSFingerprint = "Windows 10.0.19045; x86_64"
+	codexDesktopTerminalName  = "unknown"
+	codexDesktopOriginator    = "Codex Desktop"
+	codexCLIUserAgent         = codexDesktopOriginator + "/" + codexCLIVersion + " (" + codexDesktopOSFingerprint + ") " + codexDesktopTerminalName + " (" + codexDesktopOriginator + "; " + codexDesktopAppVersion + ")"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -5785,7 +5785,6 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 		"parallel_tool_calls",
 		"reasoning",
 		"text",
-		"previous_response_id",
 	} {
 		value := gjson.GetBytes(body, field)
 		if !value.Exists() {

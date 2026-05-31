@@ -73,12 +73,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	compatReplayTrimmed := false
 	compatReplayGuardEnabled := shouldAutoInjectPromptCacheKeyForCompat(upstreamModel)
 	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel)
-	previousResponseID := ""
-	if compatContinuationEnabled {
-		previousResponseID = s.getOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey)
-	}
 	compatContinuationDisabled := compatContinuationEnabled &&
 		s.isOpenAICompatSessionContinuationDisabled(ctx, c, account, promptCacheKey)
+	previousResponseID := ""
 	compatTurnState := ""
 	// OAuth/Plus relies on session_id + x-codex-turn-state; trimming to a
 	// sliding 12-message window makes the cached prefix stall at system/tools.

@@ -2938,13 +2938,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	// 仅在 WSv2 模式保留 previous_response_id，其他模式（HTTP/WSv1）统一过滤。
-	// 注意：该规则同样适用于 Codex CLI 请求，避免 WSv1 向上游透传不支持字段。
+	// WS frame 字段只能出现在 Responses WebSocket v2 的 response.create 载荷中。
+	// HTTP /responses 与 /responses/compact 共享 Responses API schema，不能透传这些字段。
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-		if _, has := reqBody["previous_response_id"]; has {
-			delete(reqBody, "previous_response_id")
-			bodyModified = true
-			markPatchDelete("previous_response_id")
+		for _, field := range []string{"previous_response_id", "generate", "type"} {
+			if _, has := reqBody[field]; has {
+				delete(reqBody, field)
+				bodyModified = true
+				markPatchDelete(field)
+			}
 		}
 	}
 
@@ -5826,8 +5828,7 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 	}
 
 	normalized := []byte(`{}`)
-	// Keep the current Codex /compact schema while still dropping request-scoped
-	// fields such as prompt_cache_key, store, and stream.
+	// 保留 Codex /compact 当前 schema，避免把 HTTP/WS 会话字段串到压缩请求里。
 	for _, field := range []string{
 		"model",
 		"input",
@@ -5835,6 +5836,8 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 		"tools",
 		"parallel_tool_calls",
 		"reasoning",
+		"service_tier",
+		"prompt_cache_key",
 		"text",
 	} {
 		value := gjson.GetBytes(body, field)
@@ -6527,12 +6530,17 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 	return model, stream, promptCacheKey
 }
 
-// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
+// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛到对应上游 schema：
 // 1) 删除 ChatGPT internal API 不支持的顶层 Responses 参数
-// 2) store=false 3) 非 compact 保持 stream=true；compact 强制 stream=false
+// 2) 普通 HTTP /responses 保留 client_metadata，但移除 WS frame 字段
+// 3) /responses/compact 使用 Codex compact allowlist，避免混入请求级字段
 func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
+	}
+
+	if compact {
+		return normalizeOpenAICompactRequestBody(body)
 	}
 
 	normalized := body
@@ -6550,40 +6558,33 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		changed = true
 	}
 
-	if compact {
-		if store := gjson.GetBytes(normalized, "store"); store.Exists() {
-			next, err := sjson.DeleteBytes(normalized, "store")
-			if err != nil {
-				return body, false, fmt.Errorf("normalize passthrough body delete store: %w", err)
-			}
-			normalized = next
-			changed = true
+	for _, field := range []string{"previous_response_id", "generate", "type"} {
+		if value := gjson.GetBytes(normalized, field); !value.Exists() {
+			continue
 		}
-		if stream := gjson.GetBytes(normalized, "stream"); stream.Exists() {
-			next, err := sjson.DeleteBytes(normalized, "stream")
-			if err != nil {
-				return body, false, fmt.Errorf("normalize passthrough body delete stream: %w", err)
-			}
-			normalized = next
-			changed = true
+		next, err := sjson.DeleteBytes(normalized, field)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body delete %s: %w", field, err)
 		}
-	} else {
-		if store := gjson.GetBytes(normalized, "store"); !store.Exists() || store.Type != gjson.False {
-			next, err := sjson.SetBytes(normalized, "store", false)
-			if err != nil {
-				return body, false, fmt.Errorf("normalize passthrough body store=false: %w", err)
-			}
-			normalized = next
-			changed = true
+		normalized = next
+		changed = true
+	}
+
+	if store := gjson.GetBytes(normalized, "store"); !store.Exists() || store.Type != gjson.False {
+		next, err := sjson.SetBytes(normalized, "store", false)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body store=false: %w", err)
 		}
-		if stream := gjson.GetBytes(normalized, "stream"); !stream.Exists() || stream.Type != gjson.True {
-			next, err := sjson.SetBytes(normalized, "stream", true)
-			if err != nil {
-				return body, false, fmt.Errorf("normalize passthrough body stream=true: %w", err)
-			}
-			normalized = next
-			changed = true
+		normalized = next
+		changed = true
+	}
+	if stream := gjson.GetBytes(normalized, "stream"); !stream.Exists() || stream.Type != gjson.True {
+		next, err := sjson.SetBytes(normalized, "stream", true)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body stream=true: %w", err)
 		}
+		normalized = next
+		changed = true
 	}
 
 	return normalized, changed, nil

@@ -42,7 +42,7 @@ func TestOpenAIWSHeadersOAuthAddsCodexIdentityFallbacks(t *testing.T) {
 	require.NotEmpty(t, resolution.SessionID)
 	require.Equal(t, "fallback_session_id", resolution.SessionSource)
 	require.Equal(t, "fallback_session_id", resolution.ThreadSource)
-	require.Equal(t, "codex_cli_rs", headers.Get("originator"))
+	require.Equal(t, codexDesktopOriginator, headers.Get("originator"))
 	require.Equal(t, codexCLIVersion, headers.Get("Version"))
 	require.Equal(t, codexCLIUserAgent, headers.Get("User-Agent"))
 	require.Equal(t, openAIWSBetaV2Value, headers.Get("OpenAI-Beta"))

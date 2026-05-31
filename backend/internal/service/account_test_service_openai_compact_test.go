@@ -67,8 +67,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, upstream.lastReq.Header.Get(openAICodexThreadIDHeader), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
-	require.Equal(t, upstream.lastReq.Header.Get(openAICodexInstallationIDHeader), gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").String())
-	require.Equal(t, upstream.lastReq.Header.Get(openAICodexWindowIDHeader), gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-window-id").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata").Exists())
 
 	updates := <-updateCalls
 	require.Equal(t, true, updates["openai_compact_supported"])

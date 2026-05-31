@@ -25,7 +25,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/tidwall/sjson"
 )
 
 // sseDataPrefix matches SSE data lines with optional whitespace after colon.
@@ -826,13 +825,7 @@ func applyOpenAICodexAccountTestAlignment(req *http.Request, c *gin.Context, acc
 		req.Header.Set("conversation_id", promptCacheKey)
 	}
 
-	body, identity := applyOpenAICodexHTTPRequestAlignment(req, c, account, body, promptCacheKey, true)
-	if identity.ThreadID != "" {
-		if updated, err := sjson.SetBytes(body, "prompt_cache_key", identity.ThreadID); err == nil {
-			body = updated
-			resetHTTPRequestBody(req, body)
-		}
-	}
+	body, _ = applyOpenAICodexHTTPRequestAlignmentWithBodyOptions(req, c, account, body, promptCacheKey, true, true, !strings.HasSuffix(strings.TrimRight(req.URL.Path, "/"), "/compact"))
 	return body
 }
 

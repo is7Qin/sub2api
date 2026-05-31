@@ -1878,6 +1878,12 @@ func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T)
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
 }
 
+func TestCodexDefaultUserAgentUsesDesktopFingerprint(t *testing.T) {
+	require.Equal(t, "0.135.0-alpha.1", codexCLIVersion)
+	require.Equal(t, "26.527.31326", codexDesktopAppVersion)
+	require.Equal(t, "Codex Desktop/0.135.0-alpha.1 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.527.31326)", codexCLIUserAgent)
+}
+
 func TestOpenAIBuildUpstreamRequestOAuthAddsCodexIdentityFallbacks(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1895,7 +1901,7 @@ func TestOpenAIBuildUpstreamRequestOAuthAddsCodexIdentityFallbacks(t *testing.T)
 
 	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5","input":"hello"}`), "token", true, "", false)
 	require.NoError(t, err)
-	require.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+	require.Equal(t, codexDesktopOriginator, req.Header.Get("originator"))
 	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 	require.Equal(t, codexCLIUserAgent, req.Header.Get("User-Agent"))
 	require.NotEmpty(t, req.Header.Get(openAICodexSessionIDHeader))
@@ -1909,6 +1915,59 @@ func TestOpenAIBuildUpstreamRequestOAuthAddsCodexIdentityFallbacks(t *testing.T)
 	require.Equal(t, req.Header.Get(openAICodexThreadIDHeader), gjson.GetBytes(bodyBytes, "prompt_cache_key").String())
 	require.Equal(t, req.Header.Get(openAICodexInstallationIDHeader), gjson.GetBytes(bodyBytes, "client_metadata."+openAICodexInstallationIDHeader).String())
 	require.Equal(t, req.Header.Get(openAICodexWindowIDHeader), gjson.GetBytes(bodyBytes, "client_metadata."+openAICodexWindowIDHeader).String())
+}
+
+func TestOpenAIBuildUpstreamRequestOAuthPreservesIncomingDesktopUserAgent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+	incomingUA := "Codex Desktop/0.135.0-alpha.2 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.528.10000)"
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", incomingUA)
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          42,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", true, "", false)
+	require.NoError(t, err)
+	require.Equal(t, incomingUA, req.Header.Get("User-Agent"))
+}
+
+func TestOpenAIBuildUpstreamRequestOAuthPreservesCodexReleaseHTTPHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set(openAICodexSessionIDHeader, "release-session")
+	c.Request.Header.Set(openAICodexThreadIDHeader, "release-thread")
+	c.Request.Header.Set(openAICodexClientRequestIDHeader, "release-client-request")
+	c.Request.Header.Set(openAICodexWindowIDHeader, "release-window")
+	c.Request.Header.Set(openAICodexBetaFeaturesHeader, "feature-a,feature-b")
+	c.Request.Header.Set(openAICodexTurnStateHeader, "release-turn-state")
+	c.Request.Header.Set(openAICodexTurnMetadataHeader, "release-turn-metadata")
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          42,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", true, "", false)
+	require.NoError(t, err)
+	require.NotEmpty(t, req.Header.Get(openAICodexSessionIDHeader))
+	require.NotEmpty(t, req.Header.Get(openAICodexThreadIDHeader))
+	require.Equal(t, "release-client-request", req.Header.Get(openAICodexClientRequestIDHeader))
+	require.Equal(t, "release-window", req.Header.Get(openAICodexWindowIDHeader))
+	require.Equal(t, "feature-a,feature-b", req.Header.Get(openAICodexBetaFeaturesHeader))
+	require.Equal(t, "release-turn-state", req.Header.Get(openAICodexTurnStateHeader))
+	require.Equal(t, "release-turn-metadata", req.Header.Get(openAICodexTurnMetadataHeader))
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing.T) {
@@ -1966,10 +2025,10 @@ func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t 
 		originator     string
 		wantOriginator string
 	}{
-		{name: "desktop originator preserved", userAgent: "Codex Desktop/1.2.3", originator: "Codex Desktop", wantOriginator: "Codex Desktop"},
+		{name: "desktop originator preserved", userAgent: "Codex Desktop/1.2.3", originator: codexDesktopOriginator, wantOriginator: codexDesktopOriginator},
 		{name: "vscode originator preserved", userAgent: "codex_vscode/1.2.3", originator: "codex_vscode", wantOriginator: "codex_vscode"},
-		{name: "official ua fallback to codex_cli_rs", userAgent: "Codex Desktop/1.2.3", wantOriginator: "codex_cli_rs"},
-		{name: "non official originator normalized", userAgent: "opencode/0.9", originator: "opencode", wantOriginator: "codex_cli_rs"},
+		{name: "official ua fallback to desktop originator", userAgent: "Codex Desktop/1.2.3", wantOriginator: codexDesktopOriginator},
+		{name: "non official originator normalized", userAgent: "opencode/0.9", originator: "opencode", wantOriginator: codexDesktopOriginator},
 	}
 
 	for _, tt := range tests {

@@ -1853,8 +1853,7 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *test
 	require.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", req.Header.Get(openAITraceparentHeader))
 	bodyBytes, err := io.ReadAll(req.Body)
 	require.NoError(t, err)
-	require.Equal(t, req.Header.Get(openAICodexInstallationIDHeader), gjson.GetBytes(bodyBytes, "client_metadata."+openAICodexInstallationIDHeader).String())
-	require.Equal(t, req.Header.Get(openAICodexWindowIDHeader), gjson.GetBytes(bodyBytes, "client_metadata."+openAICodexWindowIDHeader).String())
+	require.False(t, gjson.GetBytes(bodyBytes, "client_metadata").Exists())
 }
 
 func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T) {

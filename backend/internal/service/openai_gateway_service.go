@@ -1011,9 +1011,16 @@ func applyOpenAICodexHTTPRequestAlignment(req *http.Request, c *gin.Context, acc
 }
 
 func applyOpenAICodexHTTPRequestAlignmentWithBody(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string, allowLegacyConversationID bool, mutateBody bool) ([]byte, openAICodexRequestIdentity) {
+	return applyOpenAICodexHTTPRequestAlignmentWithBodyOptions(req, c, account, body, promptCacheKey, allowLegacyConversationID, mutateBody, mutateBody)
+}
+
+func applyOpenAICodexHTTPRequestAlignmentWithBodyOptions(req *http.Request, c *gin.Context, account *Account, body []byte, promptCacheKey string, allowLegacyConversationID bool, mutatePromptCacheKey bool, mutateClientMetadata bool) ([]byte, openAICodexRequestIdentity) {
 	identity := resolveOpenAICodexRequestIdentity(req, c, account, body, promptCacheKey)
 	applyOpenAICodexIdentityHeaders(req, c, identity, allowLegacyConversationID)
-	if mutateBody {
+	if mutatePromptCacheKey {
+		body = setOpenAICodexHTTPPromptCacheKey(body, identity)
+	}
+	if mutateClientMetadata {
 		body = setOpenAICodexHTTPClientMetadata(body, identity)
 	}
 	resetHTTPRequestBody(req, body)
@@ -1087,18 +1094,22 @@ func applyOpenAICodexIdentityHeaders(req *http.Request, c *gin.Context, identity
 	}
 }
 
+func setOpenAICodexHTTPPromptCacheKey(body []byte, identity openAICodexRequestIdentity) []byte {
+	if len(bytes.TrimSpace(body)) == 0 || identity.ThreadID == "" {
+		return body
+	}
+	next, err := sjson.SetBytes(body, "prompt_cache_key", identity.ThreadID)
+	if err != nil {
+		return body
+	}
+	return next
+}
+
 func setOpenAICodexHTTPClientMetadata(body []byte, identity openAICodexRequestIdentity) []byte {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return body
 	}
 	updated := body
-	if identity.ThreadID != "" {
-		next, err := sjson.SetBytes(updated, "prompt_cache_key", identity.ThreadID)
-		if err != nil {
-			return body
-		}
-		updated = next
-	}
 	if identity.InstallationID != "" {
 		next, err := sjson.SetBytes(updated, "client_metadata."+openAICodexInstallationIDHeader, identity.InstallationID)
 		if err != nil {
@@ -3745,7 +3756,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		if isOpenAIResponsesCompactPath(c) {
+		isCompactRequest := isOpenAIResponsesCompactPath(c)
+		if isCompactRequest {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
@@ -3765,7 +3777,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if req.Header.Get("originator") == "" {
 			req.Header.Set("originator", codexDesktopOriginator)
 		}
-		body, _ = applyOpenAICodexHTTPRequestAlignment(req, c, account, body, promptCacheKey, true)
+		body, _ = applyOpenAICodexHTTPRequestAlignmentWithBodyOptions(req, c, account, body, promptCacheKey, true, true, !isCompactRequest)
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
@@ -4470,7 +4482,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 			req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 		}
-		if isOpenAIResponsesCompactPath(c) {
+		isCompactRequest := isOpenAIResponsesCompactPath(c)
+		if isCompactRequest {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
@@ -4481,7 +4494,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
-		body, _ = applyOpenAICodexHTTPRequestAlignmentWithBody(req, c, account, body, promptCacheKey, !compatMessagesBridge || clientConversationID != "", !compatMessagesBridge)
+		mutateBody := !compatMessagesBridge
+		body, _ = applyOpenAICodexHTTPRequestAlignmentWithBodyOptions(req, c, account, body, promptCacheKey, !compatMessagesBridge || clientConversationID != "", mutateBody, mutateBody && !isCompactRequest)
 	}
 
 	// Apply custom User-Agent if configured

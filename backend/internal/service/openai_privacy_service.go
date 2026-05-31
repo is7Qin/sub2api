@@ -78,7 +78,7 @@ func disableOpenAITraining(ctx context.Context, clientFactory PrivacyClientFacto
 	}
 
 	if !resp.IsSuccessState() {
-		slog.Warn("openai_privacy_failed", "status", resp.StatusCode, "body", truncate(resp.String(), 200))
+		slog.Warn("openai_privacy_failed", "status", resp.StatusCode)
 		return PrivacyModeFailed
 	}
 
@@ -129,7 +129,7 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 	}
 
 	if !resp.IsSuccessState() {
-		slog.Debug("chatgpt_account_check_failed", "status", resp.StatusCode, "body", truncate(resp.String(), 200))
+		slog.Debug("chatgpt_account_check_failed", "status", resp.StatusCode)
 		return nil
 	}
 
@@ -137,7 +137,7 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 
 	accounts, ok := result["accounts"].(map[string]any)
 	if !ok {
-		slog.Debug("chatgpt_account_check_no_accounts", "body", truncate(resp.String(), 300))
+		slog.Debug("chatgpt_account_check_no_accounts")
 		return nil
 	}
 
@@ -191,7 +191,7 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 	}
 
 	if info.PlanType == "" {
-		slog.Debug("chatgpt_account_check_no_plan_type", "body", truncate(resp.String(), 300))
+		slog.Debug("chatgpt_account_check_no_plan_type")
 		return nil
 	}
 

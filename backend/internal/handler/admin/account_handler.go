@@ -44,6 +44,10 @@ func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
 }
 
 // AccountHandler handles admin account management
+type openAIPlanTypeRefresher interface {
+	RefreshOpenAIPlanType(context.Context, *service.Account) error
+}
+
 type AccountHandler struct {
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
@@ -52,6 +56,7 @@ type AccountHandler struct {
 	antigravityOAuthService *service.AntigravityOAuthService
 	rateLimitService        *service.RateLimitService
 	accountUsageService     *service.AccountUsageService
+	planTypeRefresher      openAIPlanTypeRefresher
 	accountTestService      *service.AccountTestService
 	concurrencyService      *service.ConcurrencyService
 	crsSyncService          *service.CRSSyncService
@@ -84,6 +89,7 @@ func NewAccountHandler(
 		antigravityOAuthService: antigravityOAuthService,
 		rateLimitService:        rateLimitService,
 		accountUsageService:     accountUsageService,
+		planTypeRefresher:      accountUsageService,
 		accountTestService:      accountTestService,
 		concurrencyService:      concurrencyService,
 		crsSyncService:          crsSyncService,
@@ -1293,6 +1299,86 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		"failed":   failedCount,
 		"errors":   errors,
 		"warnings": warnings,
+	})
+}
+
+// BatchRefreshPlanType handles batch refreshing OpenAI OAuth plan_type.
+// POST /api/v1/admin/accounts/batch-refresh-plan-type
+func (h *AccountHandler) BatchRefreshPlanType(c *gin.Context) {
+	var req struct {
+		AccountIDs []int64 `json:"account_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if len(req.AccountIDs) == 0 {
+		response.BadRequest(c, "account_ids is required")
+		return
+	}
+	if h.planTypeRefresher == nil {
+		response.BadRequest(c, "plan_type refresh is not configured")
+		return
+	}
+
+	ctx := c.Request.Context()
+	accounts, err := h.adminService.GetAccountsByIDs(ctx, req.AccountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	foundIDs := make(map[int64]bool, len(accounts))
+	for _, acc := range accounts {
+		if acc != nil {
+			foundIDs[acc.ID] = true
+		}
+	}
+
+	const maxConcurrency = 10
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxConcurrency)
+
+	var mu sync.Mutex
+	var successCount, failedCount int
+	var errors []gin.H
+
+	for _, id := range req.AccountIDs {
+		if !foundIDs[id] {
+			failedCount++
+			errors = append(errors, gin.H{"account_id": id, "error": "account not found"})
+		}
+	}
+
+	for _, account := range accounts {
+		acc := account
+		if acc == nil {
+			continue
+		}
+		g.Go(func() error {
+			err := h.planTypeRefresher.RefreshOpenAIPlanType(gctx, acc)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failedCount++
+				errors = append(errors, gin.H{"account_id": acc.ID, "error": err.Error()})
+			} else {
+				successCount++
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{
+		"total":   len(req.AccountIDs),
+		"success": successCount,
+		"failed":  failedCount,
+		"errors":  errors,
 	})
 }
 

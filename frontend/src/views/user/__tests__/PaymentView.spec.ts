@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 
@@ -19,6 +19,13 @@ const showInfo = vi.hoisted(() => vi.fn())
 const showWarning = vi.hoisted(() => vi.fn())
 const getCheckoutInfo = vi.hoisted(() => vi.fn())
 const bridgeInvoke = vi.hoisted(() => vi.fn())
+const authState = vi.hoisted(() => ({
+  user: {
+    username: 'demo-user',
+    balance: 0 as number | undefined,
+  },
+  refreshUser,
+}))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -45,11 +52,8 @@ vi.mock('vue-i18n', async () => {
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
-    user: {
-      username: 'demo-user',
-      balance: 0,
-    },
-    refreshUser,
+    user: authState.user,
+    refreshUser: authState.refreshUser,
   }),
 }))
 
@@ -182,6 +186,8 @@ function oauthOrderFixture() {
 
 describe('PaymentView WeChat JSAPI flow', () => {
   beforeEach(() => {
+    authState.user.username = 'demo-user'
+    authState.user.balance = 0
     routeState.path = '/purchase'
     routeState.query = {
       wechat_resume: '1',
@@ -414,5 +420,28 @@ describe('PaymentView WeChat JSAPI flow', () => {
     expect(showWarning).toHaveBeenCalledWith('payment.errors.mobilePaymentFallbackToQr')
     expect(showError).not.toHaveBeenCalled()
     expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).toContain('weixin://wxpay/bizpayurl?pr=fallback-native')
+  })
+
+  it('shows placeholder instead of 0.00 before balance is refreshed', async () => {
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
+    authState.user.balance = undefined
+
+    const wrapper = mount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          AmountInput: true,
+          PaymentMethodSelector: true,
+          SubscriptionPlanCard: true,
+          PaymentStatusPanel: true,
+          Icon: true,
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('payment.currentBalance: ...')
   })
 })

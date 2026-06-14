@@ -135,6 +135,9 @@ func TestValidateEndpoint_AllowPrivateHostsUsesConfigSwitch(t *testing.T) {
 		t.Fatalf("allow_private_hosts=true should allow RFC1918 literal, got %v", err)
 	}
 
+	requireBlocked(t, validateEndpoint("https://169.254.169.254", false))
+	requireBlocked(t, validateEndpoint("https://169.254.169.254", true))
+
 	requireBlocked(t, validateEndpoint("https://localhost", false))
 	requireBlocked(t, validateEndpoint("https://localhost", true))
 }

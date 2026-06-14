@@ -161,7 +161,5 @@ func TestBillingCacheServiceGetUserBalance_Singleflight(t *testing.T) {
 	}
 
 	require.Equal(t, int64(1), userRepo.calls.Load(), "并发穿透应被 singleflight 合并")
-	require.Eventually(t, func() bool {
-		return cache.setBalanceCalls.Load() >= 1
-	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(0), cache.setBalanceCalls.Load(), "余额不应再回填缓存")
 }

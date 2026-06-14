@@ -11,7 +11,7 @@
         </div>
         <div>
           <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('dashboard.balance') }}</p>
-          <p class="text-xl font-bold text-emerald-600 dark:text-emerald-400">${{ formatBalance(balance) }}</p>
+          <p class="text-xl font-bold text-emerald-600 dark:text-emerald-400">{{ formatBalanceValue(balance) }}</p>
           <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('common.available') }}</p>
         </div>
       </div>
@@ -379,6 +379,13 @@ const formatBalance = (b: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }).format(b)
+
+const formatBalanceValue = (b: number | null | undefined) => {
+  if (typeof b !== 'number' || Number.isNaN(b)) {
+    return '...'
+  }
+  return `$${formatBalance(b)}`
+}
 
 const formatNumber = (n: number) => n.toLocaleString()
 const formatCost = (c: number) => c.toFixed(4)

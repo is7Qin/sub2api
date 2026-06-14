@@ -21,6 +21,12 @@ import type {
  */
 export type LoginResponse = AuthResponse | TotpLoginResponse
 
+function stripPersistedUserBalance<T extends Record<string, any>>(user: T): T {
+  const cloned = { ...user }
+  delete cloned.balance
+  return cloned
+}
+
 /**
  * Type guard to check if login response requires 2FA
  */
@@ -100,7 +106,7 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
     if (data.expires_in) {
       setTokenExpiresAt(data.expires_in)
     }
-    localStorage.setItem('auth_user', JSON.stringify(data.user))
+    localStorage.setItem('auth_user', JSON.stringify(stripPersistedUserBalance(data.user)))
   }
 
   return data
@@ -122,7 +128,7 @@ export async function login2FA(request: TotpLogin2FARequest): Promise<AuthRespon
   if (data.expires_in) {
     setTokenExpiresAt(data.expires_in)
   }
-  localStorage.setItem('auth_user', JSON.stringify(data.user))
+  localStorage.setItem('auth_user', JSON.stringify(stripPersistedUserBalance(data.user)))
 
   return data
 }
@@ -143,7 +149,7 @@ export async function register(userData: RegisterRequest): Promise<AuthResponse>
   if (data.expires_in) {
     setTokenExpiresAt(data.expires_in)
   }
-  localStorage.setItem('auth_user', JSON.stringify(data.user))
+  localStorage.setItem('auth_user', JSON.stringify(stripPersistedUserBalance(data.user)))
 
   return data
 }

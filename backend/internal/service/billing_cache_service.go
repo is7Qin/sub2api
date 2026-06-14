@@ -304,18 +304,6 @@ func (s *BillingCacheService) logCacheWriteDrop(task cacheWriteTask, reason stri
 
 // GetUserBalance 获取用户余额（优先从缓存读取）
 func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
-	if s.cache == nil {
-		// Redis不可用，直接查询数据库
-		return s.getUserBalanceFromDB(ctx, userID)
-	}
-
-	// 尝试从缓存读取
-	balance, err := s.cache.GetUserBalance(ctx, userID)
-	if err == nil {
-		return balance, nil
-	}
-
-	// 缓存未命中：singleflight 合并同一 userID 的并发回源请求。
 	value, err, _ := s.balanceLoadSF.Do(strconv.FormatInt(userID, 10), func() (any, error) {
 		loadCtx, cancel := context.WithTimeout(context.Background(), balanceLoadTimeout)
 		defer cancel()
@@ -324,13 +312,6 @@ func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64) 
 		if err != nil {
 			return nil, err
 		}
-
-		// 异步建立缓存
-		_ = s.enqueueCacheWrite(cacheWriteTask{
-			kind:    cacheWriteSetBalance,
-			userID:  userID,
-			balance: balance,
-		})
 		return balance, nil
 	})
 	if err != nil {
@@ -354,51 +335,29 @@ func (s *BillingCacheService) getUserBalanceFromDB(ctx context.Context, userID i
 
 // setBalanceCache 设置余额缓存
 func (s *BillingCacheService) setBalanceCache(ctx context.Context, userID int64, balance float64) {
-	if s.cache == nil {
-		return
-	}
-	if err := s.cache.SetUserBalance(ctx, userID, balance); err != nil {
-		logger.LegacyPrintf("service.billing_cache", "Warning: set balance cache failed for user %d: %v", userID, err)
-	}
+	_ = ctx
+	_ = userID
+	_ = balance
 }
 
 // DeductBalanceCache 扣减余额缓存（同步调用）
 func (s *BillingCacheService) DeductBalanceCache(ctx context.Context, userID int64, amount float64) error {
-	if s.cache == nil {
-		return nil
-	}
-	return s.cache.DeductUserBalance(ctx, userID, amount)
+	_ = ctx
+	_ = userID
+	_ = amount
+	return nil
 }
 
 // QueueDeductBalance 异步扣减余额缓存
 func (s *BillingCacheService) QueueDeductBalance(userID int64, amount float64) {
-	if s.cache == nil {
-		return
-	}
-	// 队列满时同步回退，避免关键扣减被静默丢弃。
-	if s.enqueueCacheWrite(cacheWriteTask{
-		kind:   cacheWriteDeductBalance,
-		userID: userID,
-		amount: amount,
-	}) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
-	defer cancel()
-	if err := s.DeductBalanceCache(ctx, userID, amount); err != nil {
-		logger.LegacyPrintf("service.billing_cache", "Warning: deduct balance cache fallback failed for user %d: %v", userID, err)
-	}
+	_ = userID
+	_ = amount
 }
 
 // InvalidateUserBalance 失效用户余额缓存
 func (s *BillingCacheService) InvalidateUserBalance(ctx context.Context, userID int64) error {
-	if s.cache == nil {
-		return nil
-	}
-	if err := s.cache.InvalidateUserBalance(ctx, userID); err != nil {
-		logger.LegacyPrintf("service.billing_cache", "Warning: invalidate balance cache failed for user %d: %v", userID, err)
-		return err
-	}
+	_ = ctx
+	_ = userID
 	return nil
 }
 

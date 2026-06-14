@@ -18,6 +18,10 @@ const TOKEN_REFRESH_BUFFER = 120 * 1000 // 120 seconds before expiry to refresh 
 
 type PendingAuthTokenField = 'pending_auth_token' | 'pending_oauth_token'
 
+type PersistedUser = User & {
+  run_mode?: 'standard' | 'simple'
+}
+
 interface PendingAuthSessionSummary {
   token: string
   token_field: PendingAuthTokenField
@@ -66,6 +70,19 @@ function persistPendingAuthSession(session: PendingAuthSessionSummary): void {
 
 function clearPendingAuthSessionStorage(): void {
   localStorage.removeItem(PENDING_AUTH_SESSION_KEY)
+}
+
+function stripBalanceFromPersistedUser<T extends Partial<PersistedUser> | null | undefined>(user: T): T {
+  if (!user || typeof user !== 'object') {
+    return user
+  }
+  const cloned = { ...user } as Record<string, unknown>
+  delete cloned.balance
+  return cloned as T
+}
+
+function persistAuthUser(user: PersistedUser): void {
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(stripBalanceFromPersistedUser(user)))
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -298,7 +315,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     // Persist to localStorage
     localStorage.setItem(AUTH_TOKEN_KEY, response.access_token)
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
+    persistAuthUser({ ...userData, run_mode: response.user.run_mode })
     clearPendingAuthSession()
 
     // Start auto-refresh interval for user data
@@ -423,8 +440,8 @@ export const useAuthStore = defineStore('auth', () => {
       const { run_mode: _run_mode, ...userData } = response.data
       user.value = userData
 
-      // Update localStorage
-      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
+      // Update localStorage without persisting stale balance
+      persistAuthUser({ ...userData, run_mode: response.data.run_mode })
 
       return userData
     } catch (error) {

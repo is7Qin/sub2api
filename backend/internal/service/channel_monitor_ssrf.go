@@ -85,12 +85,15 @@ func isPrivateIP(ip net.IP) bool {
 // 任一 IP 落在私网/loopback 段即认为不安全。
 //
 // hostname 是 IP 字面量时也走同一路径。
-func isPrivateOrLoopbackHost(ctx context.Context, hostname string) (bool, error) {
+func isPrivateOrLoopbackHost(ctx context.Context, hostname string, allowPrivateHosts bool) (bool, error) {
 	if isBlockedHostname(hostname) {
 		return true, nil
 	}
 	// IP 字面量直接判断。
 	if ip := net.ParseIP(hostname); ip != nil {
+		if allowPrivateHosts {
+			return false, nil
+		}
 		return isPrivateIP(ip), nil
 	}
 	resolver := net.DefaultResolver
@@ -100,6 +103,9 @@ func isPrivateOrLoopbackHost(ctx context.Context, hostname string) (bool, error)
 	}
 	if len(addrs) == 0 {
 		return true, nil
+	}
+	if allowPrivateHosts {
+		return false, nil
 	}
 	for _, a := range addrs {
 		if isPrivateIP(a.IP) {
@@ -111,14 +117,14 @@ func isPrivateOrLoopbackHost(ctx context.Context, hostname string) (bool, error)
 
 // safeDialContext 在真实 dial 前再次校验目标 IP，防止 DNS rebinding。
 // 解析 hostname 后逐个 IP 尝试连接，命中私网即拒绝（即便 validateEndpoint 时返回的是公网 IP）。
-func safeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+func safeDialContext(ctx context.Context, network, address string, allowPrivateHosts bool) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
 	}
 	// 字面量 IP 走快速路径。
 	if ip := net.ParseIP(host); ip != nil {
-		if isPrivateIP(ip) {
+		if !allowPrivateHosts && isPrivateIP(ip) {
 			return nil, &net.AddrError{Err: "blocked by SSRF policy", Addr: address}
 		}
 		return monitorDialer.DialContext(ctx, network, address)
@@ -135,7 +141,7 @@ func safeDialContext(ctx context.Context, network, address string) (net.Conn, er
 	}
 	var lastErr error
 	for _, a := range addrs {
-		if isPrivateIP(a.IP) {
+		if !allowPrivateHosts && isPrivateIP(a.IP) {
 			lastErr = &net.AddrError{Err: "blocked by SSRF policy", Addr: a.IP.String()}
 			continue
 		}

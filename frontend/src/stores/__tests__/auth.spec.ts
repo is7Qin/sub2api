@@ -51,6 +51,18 @@ const fakeAuthResponse = {
   user: { ...fakeUser },
 }
 
+const persistedUserWithoutBalance = {
+  id: fakeUser.id,
+  username: fakeUser.username,
+  email: fakeUser.email,
+  role: fakeUser.role,
+  concurrency: fakeUser.concurrency,
+  status: fakeUser.status,
+  allowed_groups: fakeUser.allowed_groups,
+  created_at: fakeUser.created_at,
+  updated_at: fakeUser.updated_at,
+}
+
 describe('useAuthStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -76,7 +88,7 @@ describe('useAuthStore', () => {
       expect(store.user).toEqual(fakeUser)
       expect(store.isAuthenticated).toBe(true)
       expect(localStorage.getItem('auth_token')).toBe('test-token-123')
-      expect(localStorage.getItem('auth_user')).toBe(JSON.stringify(fakeUser))
+      expect(localStorage.getItem('auth_user')).toBe(JSON.stringify(persistedUserWithoutBalance))
     })
 
     it('登录失败时清除状态并抛出错误', async () => {
@@ -163,7 +175,7 @@ describe('useAuthStore', () => {
   describe('checkAuth', () => {
     it('从 localStorage 恢复持久化状态', () => {
       localStorage.setItem('auth_token', 'saved-token')
-      localStorage.setItem('auth_user', JSON.stringify(fakeUser))
+      localStorage.setItem('auth_user', JSON.stringify(persistedUserWithoutBalance))
 
       // Mock refreshUser (getCurrentUser) 防止后台刷新报错
       mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
@@ -172,7 +184,7 @@ describe('useAuthStore', () => {
       store.checkAuth()
 
       expect(store.token).toBe('saved-token')
-      expect(store.user).toEqual(fakeUser)
+      expect(store.user).toEqual(persistedUserWithoutBalance)
       expect(store.isAuthenticated).toBe(true)
     })
 
@@ -200,7 +212,7 @@ describe('useAuthStore', () => {
     it('恢复 refresh token 和过期时间', () => {
       const futureTs = String(Date.now() + 3600_000)
       localStorage.setItem('auth_token', 'saved-token')
-      localStorage.setItem('auth_user', JSON.stringify(fakeUser))
+      localStorage.setItem('auth_user', JSON.stringify(persistedUserWithoutBalance))
       localStorage.setItem('refresh_token', 'saved-refresh')
       localStorage.setItem('token_expires_at', futureTs)
 
@@ -357,7 +369,17 @@ describe('useAuthStore', () => {
 
       expect(result).toEqual(updatedUser)
       expect(store.user).toEqual(updatedUser)
-      expect(JSON.parse(localStorage.getItem('auth_user')!)).toEqual(updatedUser)
+      expect(JSON.parse(localStorage.getItem('auth_user')!)).toEqual({
+        id: updatedUser.id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        concurrency: updatedUser.concurrency,
+        status: updatedUser.status,
+        allowed_groups: updatedUser.allowed_groups,
+        created_at: updatedUser.created_at,
+        updated_at: updatedUser.updated_at,
+      })
     })
 
     it('未认证时抛出错误', async () => {

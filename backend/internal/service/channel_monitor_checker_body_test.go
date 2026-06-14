@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -114,6 +115,28 @@ func setupFakeOpenAI(t *testing.T, handler *openAICaptureHandler) string {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+func TestValidateEndpoint_AllowPrivateHostsUsesConfigSwitch(t *testing.T) {
+	requireBlocked := func(t *testing.T, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrChannelMonitorEndpointPrivate) {
+			t.Fatalf("expected ErrChannelMonitorEndpointPrivate, got %v", err)
+		}
+	}
+
+	requireBlocked(t, validateEndpoint("https://127.0.0.1", false))
+	if err := validateEndpoint("https://127.0.0.1", true); err != nil {
+		t.Fatalf("allow_private_hosts=true should allow loopback literal, got %v", err)
+	}
+
+	requireBlocked(t, validateEndpoint("https://192.168.2.1", false))
+	if err := validateEndpoint("https://192.168.2.1", true); err != nil {
+		t.Fatalf("allow_private_hosts=true should allow RFC1918 literal, got %v", err)
+	}
+
+	requireBlocked(t, validateEndpoint("https://localhost", false))
+	requireBlocked(t, validateEndpoint("https://localhost", true))
 }
 
 func answerFromOpenAIRequest(body map[string]any) string {

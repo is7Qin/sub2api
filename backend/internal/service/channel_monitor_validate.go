@@ -51,7 +51,7 @@ func validateInterval(sec int) error {
 //   - 解析所有 IP，任一落在 loopback/RFC1918/link-local/ULA 段即拒绝（防 SSRF）
 //
 // 错误信息不暴露具体 IP / hostname，避免泄露内网拓扑。
-func validateEndpoint(ep string) error {
+func validateEndpoint(ep string, allowPrivateHosts bool) error {
 	ep = strings.TrimSpace(ep)
 	if ep == "" {
 		return ErrChannelMonitorInvalidEndpoint
@@ -76,7 +76,7 @@ func validateEndpoint(ep string) error {
 	hostname := u.Hostname()
 	ctx, cancel := context.WithTimeout(context.Background(), monitorEndpointResolveTimeout)
 	defer cancel()
-	blocked, err := isPrivateOrLoopbackHost(ctx, hostname)
+	blocked, err := isPrivateOrLoopbackHost(ctx, hostname, allowPrivateHosts)
 	if err != nil {
 		return ErrChannelMonitorEndpointUnreachable
 	}

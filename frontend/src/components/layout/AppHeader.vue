@@ -63,7 +63,7 @@
             />
           </svg>
           <span class="text-sm font-semibold text-primary-700 dark:text-primary-300">
-            ${{ user.balance?.toFixed(2) || '0.00' }}
+            {{ balanceDisplay }}
           </span>
         </div>
 
@@ -111,7 +111,7 @@
                   {{ t('common.balance') }}
                 </div>
                 <div class="text-sm font-semibold text-primary-600 dark:text-primary-400">
-                  ${{ user.balance?.toFixed(2) || '0.00' }}
+                  {{ balanceDisplay }}
                 </div>
               </div>
 
@@ -260,6 +260,13 @@ const userInitials = computed(() => {
 const displayName = computed(() => {
   if (!user.value) return ''
   return user.value.username || user.value.email?.split('@')[0] || ''
+})
+
+const balanceDisplay = computed(() => {
+  if (typeof user.value?.balance !== 'number') {
+    return '...'
+  }
+  return `$${user.value.balance.toFixed(2)}`
 })
 
 const pageTitle = computed(() => {

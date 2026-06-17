@@ -76,6 +76,62 @@ func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *te
 	require.NotContains(t, reqBody, "prompt_cache_key")
 }
 
+func TestApplyCodexOAuthTransformWithOptions_InjectZZTool(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": "hello",
+	}
+
+	result := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+		InjectZZTool:            true,
+		SkipDefaultInstructions: true,
+	})
+
+	require.True(t, result.Modified)
+	tools, ok := reqBody["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "function", tool["type"])
+	require.Equal(t, "zz", tool["name"])
+	require.True(t, tool["strict"].(bool))
+	require.Contains(t, tool, "description")
+
+	params, ok := tool["parameters"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "object", params["type"])
+	require.Equal(t, map[string]any{}, params["properties"])
+	require.Equal(t, []any{}, params["required"])
+	require.Equal(t, false, params["additionalProperties"])
+}
+
+func TestApplyCodexOAuthTransformWithOptions_DoesNotDuplicateZZTool(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":       "zz",
+					"parameters": map[string]any{"type": "object"},
+				},
+			},
+		},
+	}
+
+	result := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+		InjectZZTool:            true,
+		SkipDefaultInstructions: true,
+	})
+
+	require.True(t, result.Modified)
+	tools, ok := reqBody["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	require.True(t, codexToolsContainFunctionName(tools, "zz"))
+}
+
 func TestApplyCodexOAuthTransform_ToolContinuationPreservesNativeMessageAndReasoningIDs(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",

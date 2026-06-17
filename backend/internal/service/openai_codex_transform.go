@@ -73,6 +73,7 @@ type codexTransformResult struct {
 type codexOAuthTransformOptions struct {
 	IsCodexCLI              bool
 	IsCompact               bool
+	InjectZZTool            bool
 	SkipDefaultInstructions bool
 	PreserveToolCallIDs     bool
 }
@@ -155,6 +156,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	}
 
 	if normalizeCodexTools(reqBody) {
+		result.Modified = true
+	}
+	if opts.InjectZZTool && ensureCodexZZFunctionTool(reqBody) {
 		result.Modified = true
 	}
 	if normalizeCodexToolChoice(reqBody) {
@@ -307,6 +311,38 @@ func codexToolsContainFunctionName(rawTools any, name string) bool {
 		}
 	}
 	return false
+}
+
+func ensureCodexZZFunctionTool(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	if codexToolsContainFunctionName(reqBody["tools"], "zz") {
+		return false
+	}
+	zzTool := map[string]any{
+		"type":        "function",
+		"name":        "zz",
+		"description": nil,
+		"parameters": map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"required":             []any{},
+			"additionalProperties": false,
+		},
+		"strict": true,
+	}
+	rawTools, hasTools := reqBody["tools"]
+	if !hasTools || rawTools == nil {
+		reqBody["tools"] = []any{zzTool}
+		return true
+	}
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+	reqBody["tools"] = append(tools, zzTool)
+	return true
 }
 
 func normalizeCodexToolRoleMessages(input []any) ([]any, bool) {

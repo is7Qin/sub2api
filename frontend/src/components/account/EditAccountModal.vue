@@ -1650,6 +1650,30 @@
         v-if="account?.platform === 'openai' && account?.type === 'oauth'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
+        <div class="mb-4 flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexInjectZZTool') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.codexInjectZZToolDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="codex-inject-zz-tool-toggle"
+            @click="codexInjectZZToolEnabled = !codexInjectZZToolEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              codexInjectZZToolEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                codexInjectZZToolEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
         <div class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.codexCLIOnly') }}</label>
@@ -2583,6 +2607,7 @@ const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const codexInjectZZToolEnabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled'
@@ -2960,6 +2985,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  codexInjectZZToolEnabled.value = false
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   codexImageGenerationBridgeMode.value = 'inherit'
@@ -2998,6 +3024,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       defaultMode: OPENAI_WS_MODE_OFF
     })
     if (newAccount.type === 'oauth') {
+      const codexInjectZZToolValue = typeof extra?.codex_inject_zz_tool === 'boolean'
+        ? extra.codex_inject_zz_tool
+        : extra?.codex_inject_zz_tool_enabled
+      codexInjectZZToolEnabled.value = codexInjectZZToolValue === true
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
       codexCLIOnlyAllowClaudeCodeEnabled.value =
         Array.isArray(extra?.codex_cli_only_allowed_clients) &&
@@ -4076,6 +4106,8 @@ const handleSubmit = async () => {
 	if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'apikey')) {
 		const currentExtra = (props.account.extra as Record<string, unknown>) || {}
 		const newExtra: Record<string, unknown> = { ...currentExtra }
+      const hadCodexInjectZZToolEnabled =
+        currentExtra.codex_inject_zz_tool === true || currentExtra.codex_inject_zz_tool_enabled === true
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth') {
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
@@ -4133,6 +4165,14 @@ const handleSubmit = async () => {
       }
 
       if (props.account.type === 'oauth') {
+        delete newExtra.codex_inject_zz_tool_enabled
+        if (codexInjectZZToolEnabled.value) {
+          newExtra.codex_inject_zz_tool = true
+        } else if (hadCodexInjectZZToolEnabled) {
+          newExtra.codex_inject_zz_tool = false
+        } else {
+          delete newExtra.codex_inject_zz_tool
+        }
         if (codexCLIOnlyEnabled.value) {
           newExtra.codex_cli_only = true
         } else if (hadCodexCLIOnlyEnabled) {

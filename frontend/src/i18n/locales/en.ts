@@ -3426,6 +3426,9 @@ export default {
         codexCLIOnly: 'Codex official clients only',
         codexCLIOnlyDesc:
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',
+        codexInjectZZTool: 'Inject zz tool',
+        codexInjectZZToolDesc:
+          'Only applies to the OpenAI OAuth ChatGPT / Codex tool-injection path. When enabled, an extra function tool named zz is appended; when disabled, it is not added.',
         codexCLIOnlyAllowClaudeCode: "Also allow Claude Code's Codex plugin",
         codexCLIOnlyAllowClaudeCodeDesc:
           'Only takes effect when the switch above is on. Additionally allows requests from the Claude Code Codex plugin (exact match on originator=Claude Code) without weakening blocking of other non-official clients.',

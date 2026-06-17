@@ -156,6 +156,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
 		}
 		codexResult := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+			InjectZZTool:            account.IsCodexInjectZZToolEnabled(),
 			SkipDefaultInstructions: true,
 			PreserveToolCallIDs:     true,
 		})

@@ -3570,6 +3570,8 @@ export default {
         responsesStatusForcedChatCompletions: '已强制 Chat Completions',
         codexCLIOnly: '仅允许 Codex 官方客户端',
         codexCLIOnlyDesc: '仅对 OpenAI OAuth 生效。开启后仅允许 Codex 官方客户端家族访问；关闭后完全绕过并保持原逻辑。',
+        codexInjectZZTool: '额外注入 zz 工具',
+        codexInjectZZToolDesc: '仅对 OpenAI OAuth 的 ChatGPT / Codex 工具注入链路生效。开启后会额外附加一个名为 zz 的 function tool；关闭后不附加。',
         codexCLIOnlyAllowClaudeCode: '额外放行 Claude Code 的 Codex 插件',
         codexCLIOnlyAllowClaudeCodeDesc: '仅在上方开关开启时生效。额外放行通过 Claude Code 的 Codex 插件发起的请求（精确匹配 originator=Claude Code），不影响对其他非官方客户端的拦截。',
         codexImageGenerationBridge: 'Codex 图片生成桥接',

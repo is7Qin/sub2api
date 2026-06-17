@@ -168,6 +168,25 @@ describe('useAuthStore', () => {
       expect(localStorage.getItem('refresh_token')).toBeNull()
       expect(localStorage.getItem('token_expires_at')).toBeNull()
     })
+
+    it('后端登出失败时仍清除本地状态', async () => {
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+      mockLogout.mockRejectedValue(new Error('logout failed'))
+      const store = useAuthStore()
+
+      await store.login({ email: 'test@example.com', password: '123456' })
+      expect(store.isAuthenticated).toBe(true)
+
+      await expect(store.logout()).rejects.toThrow('logout failed')
+
+      expect(store.token).toBeNull()
+      expect(store.user).toBeNull()
+      expect(store.isAuthenticated).toBe(false)
+      expect(localStorage.getItem('auth_token')).toBeNull()
+      expect(localStorage.getItem('auth_user')).toBeNull()
+      expect(localStorage.getItem('refresh_token')).toBeNull()
+      expect(localStorage.getItem('token_expires_at')).toBeNull()
+    })
   })
 
   // --- checkAuth ---
@@ -186,6 +205,32 @@ describe('useAuthStore', () => {
       expect(store.token).toBe('saved-token')
       expect(store.user).toEqual(persistedUserWithoutBalance)
       expect(store.isAuthenticated).toBe(true)
+    })
+
+    it('等待首轮刷新时用 /auth/me 返回的最新余额覆盖本地快照', async () => {
+      localStorage.setItem('auth_token', 'saved-token')
+      localStorage.setItem('auth_user', JSON.stringify(persistedUserWithoutBalance))
+
+      const updatedUser = { ...fakeUser, balance: 256.75 }
+      mockGetCurrentUser.mockResolvedValue({ data: updatedUser })
+
+      const store = useAuthStore()
+      const restored = await store.checkAuth({ waitForRefresh: true })
+
+      expect(restored).toBe(true)
+      expect(mockGetCurrentUser).toHaveBeenCalledTimes(1)
+      expect(store.user).toEqual(updatedUser)
+      expect(JSON.parse(localStorage.getItem('auth_user')!)).toEqual({
+        id: updatedUser.id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        concurrency: updatedUser.concurrency,
+        status: updatedUser.status,
+        allowed_groups: updatedUser.allowed_groups,
+        created_at: updatedUser.created_at,
+        updated_at: updatedUser.updated_at,
+      })
     })
 
     it('localStorage 无数据时保持未认证状态', () => {
@@ -385,6 +430,32 @@ describe('useAuthStore', () => {
     it('未认证时抛出错误', async () => {
       const store = useAuthStore()
       await expect(store.refreshUser()).rejects.toThrow('Not authenticated')
+    })
+
+    it('并发刷新时只发一次请求', async () => {
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+      const store = useAuthStore()
+      await store.login({ email: 'test@example.com', password: '123456' })
+
+      const updatedUser = { ...fakeUser, balance: 188.88 }
+      let resolveRequest: ((value: { data: typeof updatedUser }) => void) | null = null
+      mockGetCurrentUser.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRequest = resolve
+          })
+      )
+
+      const first = store.refreshUser()
+      const second = store.refreshUser()
+
+      expect(mockGetCurrentUser).toHaveBeenCalledTimes(1)
+
+      resolveRequest?.({ data: updatedUser })
+
+      await expect(first).resolves.toEqual(updatedUser)
+      await expect(second).resolves.toEqual(updatedUser)
+      expect(store.user).toEqual(updatedUser)
     })
   })
 

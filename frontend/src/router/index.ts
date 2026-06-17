@@ -7,6 +7,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
+import { useGeoGateStore } from '@/stores/geoGate'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
@@ -17,6 +18,15 @@ import { resolveDocumentTitle } from './title'
  * Route definitions with lazy loading
  */
 const routes: RouteRecordRaw[] = [
+  {
+    path: '/region-blocked',
+    name: 'RegionBlocked',
+    component: () => import('@/views/RegionBlockedView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'Region Restricted'
+    }
+  },
   // ==================== Setup Routes ====================
   {
     path: '/setup',
@@ -722,11 +732,17 @@ router.beforeEach(async (to, _from, next) => {
   navigationLoading.startNavigation()
 
   const authStore = useAuthStore()
+  const geoGateStore = useGeoGateStore()
 
   // Restore auth state from localStorage on first navigation (page refresh)
   if (!authInitialized) {
-    authStore.checkAuth()
+    await authStore.checkAuth({ waitForRefresh: true })
     authInitialized = true
+  }
+
+  if (geoGateStore.blocked && to.name !== 'RegionBlocked') {
+    next({ name: 'RegionBlocked' })
+    return
   }
 
   // Set page title

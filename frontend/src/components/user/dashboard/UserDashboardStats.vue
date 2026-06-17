@@ -241,7 +241,7 @@ interface FusedPlatformCard {
 
 const props = defineProps<{
   stats: UserStatsType
-  balance: number
+  balance?: number
   isSimple: boolean
   platformQuotas?: PlatformQuotaItem[] | null
 }>()

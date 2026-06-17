@@ -5,7 +5,8 @@ import Toast from '@/components/common/Toast.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import { resolveDocumentTitle } from '@/router/title'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
-import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore } from '@/stores'
+import RegionBlockedView from '@/views/RegionBlockedView.vue'
+import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useGeoGateStore } from '@/stores'
 import { getSetupStatus } from '@/api/setup'
 
 const router = useRouter()
@@ -14,6 +15,7 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const subscriptionStore = useSubscriptionStore()
 const announcementStore = useAnnouncementStore()
+const geoGateStore = useGeoGateStore()
 
 /**
  * Update favicon dynamically
@@ -105,6 +107,8 @@ onMounted(async () => {
 
   // Load public settings into appStore (will be cached for other components)
   await appStore.fetchPublicSettings()
+  geoGateStore.configure(appStore.frontendRegionRestrictionEnabled)
+  await geoGateStore.check(true)
 
   // Re-resolve document title now that siteName is available
   document.title = resolveDocumentTitle(route.meta.title, appStore.siteName, route.meta.titleKey as string)
@@ -113,7 +117,8 @@ onMounted(async () => {
 
 <template>
   <NavigationProgress />
-  <RouterView />
+  <RegionBlockedView v-if="geoGateStore.blocked" />
+  <RouterView v-else />
   <Toast />
   <AnnouncementPopup />
 </template>

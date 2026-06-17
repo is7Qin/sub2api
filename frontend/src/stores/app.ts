@@ -49,6 +49,9 @@ export const useAppStore = defineStore('app', () => {
 
   const hasActiveToasts = computed(() => toasts.value.length > 0)
   const backendModeEnabled = computed(() => cachedPublicSettings.value?.backend_mode_enabled ?? false)
+  const frontendRegionRestrictionEnabled = computed(
+    () => cachedPublicSettings.value?.frontend_region_restriction_enabled === true
+  )
 
   const loadingCount = ref<number>(0)
 
@@ -357,6 +360,7 @@ export const useAppStore = defineStore('app', () => {
         channel_monitor_enabled: true,
         channel_monitor_default_interval_seconds: 60,
         available_channels_enabled: false,
+        frontend_region_restriction_enabled: false,
         risk_control_enabled: false,
         service_quota_enabled: false,
         affiliate_enabled: false,
@@ -434,6 +438,7 @@ export const useAppStore = defineStore('app', () => {
     // Computed
     hasActiveToasts,
     backendModeEnabled,
+    frontendRegionRestrictionEnabled,
 
     // Actions
     toggleSidebar,

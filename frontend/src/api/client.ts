@@ -6,10 +6,43 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
+import { createPinia, getActivePinia } from 'pinia'
+import { useGeoGateStore } from '@/stores/geoGate'
 
 // ==================== Axios Instance Configuration ====================
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+const GEO_GATE_ALLOWED_PATHS = new Set([
+  '/settings/public',
+  '/auth/logout'
+])
+
+function getGeoGateStoreSafe() {
+  const activePinia = getActivePinia() || createPinia()
+  return useGeoGateStore(activePinia)
+}
+
+function normalizeRequestPath(url: string): string {
+  const trimmed = url.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  try {
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return new URL(trimmed).pathname
+    }
+  } catch {
+    return ''
+  }
+
+  return trimmed.split('?')[0].split('#')[0]
+}
+
+function isGeoGateBypassRequest(config: InternalAxiosRequestConfig): boolean {
+  const path = normalizeRequestPath(String(config.url || ''))
+  return GEO_GATE_ALLOWED_PATHS.has(path)
+}
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -55,6 +88,15 @@ const getUserTimezone = (): string => {
 
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    const geoGateStore = getGeoGateStoreSafe()
+    if (geoGateStore.blocked && !isGeoGateBypassRequest(config)) {
+      return Promise.reject({
+        status: 451,
+        code: 'REGION_RESTRICTED',
+        message: 'Frontend region restriction is active'
+      })
+    }
+
     // Attach token from localStorage
     const token = localStorage.getItem('auth_token')
     if (token && config.headers) {
@@ -106,6 +148,10 @@ apiClient.interceptors.response.use(
     return response
   },
   async (error: AxiosError<ApiResponse<unknown>>) => {
+    if ((error as unknown as { code?: string }).code === 'REGION_RESTRICTED') {
+      return Promise.reject(error)
+    }
+
     // Request cancellation: keep the original axios cancellation error so callers can ignore it.
     // Otherwise we'd misclassify it as a generic "network error".
     if (error.code === 'ERR_CANCELED' || axios.isCancel(error)) {

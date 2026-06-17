@@ -1335,6 +1335,18 @@ export default {
     }
   },
 
+  regionGate: {
+    title: 'Service Unavailable In This Region',
+    subtitle: 'Region Access Check',
+    notice: 'Due to policy and compliance requirements, we will no longer provide AI relay services to mainland China IP addresses and other ineligible regions. Affected visitors will see this notice page, while supported regions remain unaffected. We apologize for the inconvenience and appreciate your understanding.',
+    detecting: 'Visitor info: detecting...',
+    detected: 'Visitor info: {country}',
+    fallback: 'Visitor info: region unavailable',
+    supportHint: 'If you believe this region result is incorrect, please try again later. This first rollout only blocks frontend access; backend APIs are not region-restricted yet.',
+    retry: 'Check Again',
+    rechecking: 'Checking...',
+  },
+
   // Empty States
   empty: {
     noData: 'No data found'
@@ -6370,6 +6382,13 @@ export default {
         sourceLabel: 'Payment source',
         sourceHint: 'Choose an explicit source before enabling the method. Not configured methods are not exposed.',
         sourceRequiredError: 'Select a payment source before enabling {title}.'
+      },
+      frontendRegionRestriction: {
+        title: 'Frontend Region Restriction',
+        description: 'Browser-only gating. When enabled, the frontend checks visitor region on page load and blocks mainland China IPs from using the site UI.',
+        enabled: 'Enable frontend region restriction',
+        enabledHint: 'The first rollout only blocks country_code=CN from ipapi.co and fails open if detection cannot complete. Backend APIs remain unaffected.',
+        notice: 'Due to policy and compliance requirements, we will no longer provide AI relay services to mainland China IP addresses and other ineligible regions. Affected visitors will see this notice page, while supported regions remain unaffected. We apologize for the inconvenience and appreciate your understanding.'
       },
       openaiExperimentalScheduler: {
         title: 'OpenAI experimental scheduler policy',

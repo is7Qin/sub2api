@@ -361,6 +361,11 @@ const (
 	// sidebar entry is hidden. Defaults to false (opt-in feature).
 	SettingKeyAvailableChannelsEnabled = "available_channels_enabled"
 
+	// SettingKeyFrontendRegionRestrictionEnabled enables browser-only region gating.
+	// When true, the frontend blocks CN visitors before normal app usage.
+	// This does not affect backend API authorization.
+	SettingKeyFrontendRegionRestrictionEnabled = "frontend_region_restriction_enabled"
+
 	// =========================
 	// Overload Cooldown (529)
 	// =========================

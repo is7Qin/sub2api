@@ -261,6 +261,7 @@ describe('useAppStore', () => {
         contact_info: 'test@test.com',
         api_base_url: 'https://api.test.com',
         doc_url: 'https://docs.test.com',
+        frontend_region_restriction_enabled: true,
       }
 
       const store = useAppStore()
@@ -271,6 +272,7 @@ describe('useAppStore', () => {
       expect(store.siteLogo).toBe('/logo.png')
       expect(store.siteVersion).toBe('1.0.0')
       expect(store.publicSettingsLoaded).toBe(true)
+      expect(store.frontendRegionRestrictionEnabled).toBe(true)
     })
 
     it('无注入配置时返回 false', () => {
@@ -321,7 +323,8 @@ describe('useAppStore', () => {
         custom_endpoints: [],
         linuxdo_oauth_enabled: false,
         backend_mode_enabled: false,
-        version: '1.0.0'
+        version: '1.0.0',
+        frontend_region_restriction_enabled: true,
       })
 
       const store = useAppStore()
@@ -329,6 +332,7 @@ describe('useAppStore', () => {
 
       expect((window as any).__APP_CONFIG__.table_default_page_size).toBe(1000)
       expect((window as any).__APP_CONFIG__.table_page_size_options).toEqual([20, 100, 1000])
+      expect((window as any).__APP_CONFIG__.frontend_region_restriction_enabled).toBe(true)
       expect(localStorage.getItem('table-page-size')).toBeNull()
       expect(localStorage.getItem('table-page-size-source')).toBeNull()
     })

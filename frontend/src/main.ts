@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import i18n, { initI18n } from './i18n'
-import { useAppStore } from '@/stores/app'
+import { useAppStore, useGeoGateStore } from '@/stores'
 import './style.css'
 
 function initThemeClass() {
@@ -26,6 +26,7 @@ async function bootstrap() {
   // This must happen after pinia is installed but before router and i18n
   const appStore = useAppStore()
   appStore.initFromInjectedConfig()
+  const geoGateStore = useGeoGateStore()
 
   // Set document title immediately after config is loaded
   if (appStore.siteName && appStore.siteName !== 'Sub2API') {
@@ -33,6 +34,8 @@ async function bootstrap() {
   }
 
   await initI18n()
+  geoGateStore.configure(appStore.frontendRegionRestrictionEnabled)
+  await geoGateStore.check(true)
 
   app.use(router)
   app.use(i18n)

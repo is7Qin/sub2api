@@ -150,15 +150,6 @@ func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code st
 
 	s.invalidatePromoCaches(ctx, userID, promoCode.BonusAmount)
 
-	// 失效余额缓存
-	if s.billingCacheService != nil {
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = s.billingCacheService.InvalidateUserBalance(cacheCtx, userID)
-		}()
-	}
-
 	return nil
 }
 

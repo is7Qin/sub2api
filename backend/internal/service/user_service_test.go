@@ -356,15 +356,7 @@ func TestUpdateBalance_Success(t *testing.T) {
 
 	err := svc.UpdateBalance(context.Background(), 42, 100.0)
 	require.NoError(t, err)
-
-	// 等待异步 goroutine 完成
-	require.Eventually(t, func() bool {
-		return cache.invalidateCallCount.Load() == 1
-	}, 2*time.Second, 10*time.Millisecond, "应异步调用 InvalidateUserBalance")
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	require.Equal(t, []int64{42}, cache.invalidatedUserIDs, "应对 userID=42 失效缓存")
+	require.Equal(t, int64(0), cache.invalidateCallCount.Load(), "余额写路径不应再触发余额缓存失效")
 }
 
 func TestGetProfileIdentitySummaries_AllowsUnbindWhenAnotherLoginMethodRemains(t *testing.T) {
@@ -600,12 +592,8 @@ func TestUpdateBalance_CacheFailure_DoesNotAffectReturn(t *testing.T) {
 	svc := NewUserService(repo, nil, nil, cache)
 
 	err := svc.UpdateBalance(context.Background(), 99, 200.0)
-	require.NoError(t, err, "缓存失效失败不应影响主流程返回值")
-
-	// 等待异步 goroutine 完成（即使失败也应调用）
-	require.Eventually(t, func() bool {
-		return cache.invalidateCallCount.Load() == 1
-	}, 2*time.Second, 10*time.Millisecond, "即使失败也应调用 InvalidateUserBalance")
+	require.NoError(t, err, "余额路径已不再依赖余额缓存失效")
+	require.Equal(t, int64(0), cache.invalidateCallCount.Load(), "余额写路径不应再触发余额缓存失效")
 }
 
 func TestTouchLastActive_UpdatesWhenStale(t *testing.T) {
@@ -670,10 +658,7 @@ func TestUpdateBalance_WithAuthCacheInvalidator(t *testing.T) {
 	require.Equal(t, []int64{77}, auth.invalidatedUserIDs)
 	auth.mu.Unlock()
 
-	// 验证 billing cache 异步失效
-	require.Eventually(t, func() bool {
-		return cache.invalidateCallCount.Load() == 1
-	}, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(0), cache.invalidateCallCount.Load(), "余额写路径不应再触发余额缓存失效")
 }
 
 func TestNewUserService_FieldsAssignment(t *testing.T) {

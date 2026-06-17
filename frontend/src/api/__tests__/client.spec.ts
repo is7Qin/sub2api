@@ -7,11 +7,20 @@ vi.mock('@/i18n', () => ({
   getLocale: () => 'zh-CN',
 }))
 
+const geoGateState = vi.hoisted(() => ({
+  blocked: false,
+}))
+
+vi.mock('@/stores/geoGate', () => ({
+  useGeoGateStore: () => geoGateState,
+}))
+
 describe('API Client', () => {
   let apiClient: AxiosInstance
 
   beforeEach(async () => {
     localStorage.clear()
+    geoGateState.blocked = false
     // 每次测试重新导入以获取干净的模块状态
     vi.resetModules()
     const mod = await import('@/api/client')
@@ -25,6 +34,50 @@ describe('API Client', () => {
   // --- 请求拦截器 ---
 
   describe('请求拦截器', () => {
+    it('地区受限时直接拒绝前端请求', async () => {
+      geoGateState.blocked = true
+      const adapter = vi.fn()
+      apiClient.defaults.adapter = adapter
+
+      await expect(apiClient.get('/test')).rejects.toMatchObject({
+        status: 451,
+        code: 'REGION_RESTRICTED',
+      })
+      expect(adapter).not.toHaveBeenCalled()
+    })
+
+    it('地区受限时仍允许公开设置请求通过', async () => {
+      geoGateState.blocked = true
+      const adapter = vi.fn().mockResolvedValue({
+        status: 200,
+        data: { code: 0, data: {} },
+        headers: {},
+        config: {},
+        statusText: 'OK',
+      })
+      apiClient.defaults.adapter = adapter
+
+      await apiClient.get('/settings/public')
+
+      expect(adapter).toHaveBeenCalledTimes(1)
+    })
+
+    it('地区受限时仍允许登出请求通过', async () => {
+      geoGateState.blocked = true
+      const adapter = vi.fn().mockResolvedValue({
+        status: 200,
+        data: { code: 0, data: {} },
+        headers: {},
+        config: {},
+        statusText: 'OK',
+      })
+      apiClient.defaults.adapter = adapter
+
+      await apiClient.post('/auth/logout', { refresh_token: 'refresh-token' })
+
+      expect(adapter).toHaveBeenCalledTimes(1)
+    })
+
     it('自动附加 Authorization 头', async () => {
       localStorage.setItem('auth_token', 'my-jwt-token')
 

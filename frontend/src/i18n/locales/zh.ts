@@ -1339,6 +1339,18 @@ export default {
     }
   },
 
+  regionGate: {
+    title: '该地区暂不提供服务',
+    subtitle: '访问地区检测',
+    notice: '因政策与合规要求,即日起我们将不再向中国大陆 IP 及其他不符合条件地区IP提供 AI 中转服务,以遵守当地法律法规。受影响地区访问将看到提示页面,支持地区用户不受影响。给您带来不便,敬请谅解,感谢理解',
+    detecting: '访问信息：正在识别...',
+    detected: '访问信息：{country}',
+    fallback: '访问信息：暂未获取到地区信息',
+    supportHint: '如你认为地区识别有误，请稍后重试。首版仅限制前端访问，后端接口尚未执行地区封禁。',
+    retry: '重新检测',
+    rechecking: '重新检测中...',
+  },
+
   // Empty States
   empty: {
     noData: '暂无数据'
@@ -6525,6 +6537,13 @@ export default {
         sourceLabel: '支付来源',
         sourceHint: '启用后必须明确选择一个来源；未配置状态不会对外展示该支付方式。',
         sourceRequiredError: '{title} 已启用，请先选择支付来源。'
+      },
+      frontendRegionRestriction: {
+        title: '前端地区访问限制',
+        description: '仅在浏览器前端生效。开启后会在页面加载时检测访客地区，并阻止中国大陆 IP 使用站点前端。',
+        enabled: '启用前端地区访问限制',
+        enabledHint: '首版仅根据 ipapi.co 的 country_code=CN 判断并拦截，识别失败时放行，后端 API 暂不执行地区封禁。',
+        notice: '因政策与合规要求,即日起我们将不再向中国大陆 IP 及其他不符合条件地区IP提供 AI 中转服务,以遵守当地法律法规。受影响地区访问将看到提示页面,支持地区用户不受影响。给您带来不便,敬请谅解,感谢理解'
       },
       openaiExperimentalScheduler: {
         title: 'OpenAI 实验调度策略',

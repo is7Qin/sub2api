@@ -36,6 +36,13 @@ var (
 	ErrRestoreInProgress     = infraerrors.Conflict("RESTORE_IN_PROGRESS", "a restore is already in progress")
 	ErrBackupRecordsCorrupt  = infraerrors.InternalServer("BACKUP_RECORDS_CORRUPT", "backup records data is corrupted")
 	ErrBackupS3ConfigCorrupt = infraerrors.InternalServer("BACKUP_S3_CONFIG_CORRUPT", "backup S3 config data is corrupted")
+
+	// Persisted secrets must not use the auto-generated key because it changes
+	// on every restart and makes existing ciphertext unrecoverable.
+	ErrSecretEncryptionKeyNotConfigured = infraerrors.BadRequest(
+		"SECRET_ENCRYPTION_KEY_NOT_CONFIGURED",
+		"cannot store the S3 secret access key: no fixed secret encryption key is configured. Set TOTP_ENCRYPTION_KEY and try again",
+	)
 )
 
 // ─── 接口定义 ───
@@ -105,11 +112,12 @@ type BackupRecord struct {
 
 // BackupService 数据库备份恢复服务
 type BackupService struct {
-	settingRepo  SettingRepository
-	dbCfg        *config.DatabaseConfig
-	encryptor    SecretEncryptor
-	storeFactory BackupObjectStoreFactory
-	dumper       DBDumper
+	settingRepo             SettingRepository
+	dbCfg                   *config.DatabaseConfig
+	encryptor               SecretEncryptor
+	encryptionKeyConfigured bool
+	storeFactory            BackupObjectStoreFactory
+	dumper                  DBDumper
 
 	opMu      sync.Mutex // 保护 backingUp/restoring 标志
 	backingUp bool
@@ -140,13 +148,14 @@ func NewBackupService(
 ) *BackupService {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	return &BackupService{
-		settingRepo:  settingRepo,
-		dbCfg:        &cfg.Database,
-		encryptor:    encryptor,
-		storeFactory: storeFactory,
-		dumper:       dumper,
-		bgCtx:        bgCtx,
-		bgCancel:     bgCancel,
+		settingRepo:             settingRepo,
+		dbCfg:                   &cfg.Database,
+		encryptor:               encryptor,
+		encryptionKeyConfigured: cfg.Totp.EncryptionKeyConfigured,
+		storeFactory:            storeFactory,
+		dumper:                  dumper,
+		bgCtx:                   bgCtx,
+		bgCancel:                bgCancel,
 	}
 }
 
@@ -257,6 +266,9 @@ func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) 
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
 	} else {
+		if !s.encryptionKeyConfigured {
+			return nil, ErrSecretEncryptionKeyNotConfigured
+		}
 		// 加密 SecretAccessKey
 		encrypted, err := s.encryptor.Encrypt(cfg.SecretAccessKey)
 		if err != nil {

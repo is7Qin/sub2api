@@ -222,6 +222,58 @@ func TestAPIKeyService_UpdateEscapesNameInConfigPatch(t *testing.T) {
 	require.Equal(t, *repo.patch.Name, updated.Name)
 }
 
+func TestAPIKeyService_UpdatePreservesIPRulesWhenOmitted(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID:          1,
+		UserID:      2,
+		Key:         "sk-test",
+		Status:      StatusAPIKeyActive,
+		IPWhitelist: []string{"192.0.2.1"},
+		IPBlacklist: []string{"198.51.100.1"},
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{})
+	require.NoError(t, err)
+	require.Nil(t, repo.patch.IPWhitelist)
+	require.Nil(t, repo.patch.IPBlacklist)
+}
+
+func TestAPIKeyService_UpdateCanClearIPRules(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID:          1,
+		UserID:      2,
+		Key:         "sk-test",
+		Status:      StatusAPIKeyActive,
+		IPWhitelist: []string{"192.0.2.1"},
+		IPBlacklist: []string{"198.51.100.1"},
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	emptyWhitelist := []string{}
+	emptyBlacklist := []string{}
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{
+		IPWhitelist: &emptyWhitelist,
+		IPBlacklist: &emptyBlacklist,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, repo.patch.IPWhitelist)
+	require.NotNil(t, repo.patch.IPBlacklist)
+	require.Empty(t, *repo.patch.IPWhitelist)
+	require.Empty(t, *repo.patch.IPBlacklist)
+}
+
+func TestAPIKeyService_UpdateValidatesProvidedIPRules(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive,
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	invalid := []string{"not-an-ip"}
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{IPWhitelist: &invalid})
+	require.ErrorIs(t, err, ErrInvalidIPPattern)
+}
+
 func TestAPIKeyService_UpdateQuotaUsed_UsesAtomicStatePath(t *testing.T) {
 	repo := &quotaStateRepoStub{
 		state: &APIKeyQuotaUsageState{

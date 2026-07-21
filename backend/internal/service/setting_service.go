@@ -4143,12 +4143,28 @@ func (s *SettingService) GetOpenAI403CooldownSettings(ctx context.Context) (*Ope
 		}
 		return nil, fmt.Errorf("get OpenAI 403 cooldown settings: %w", err)
 	}
-	settings := DefaultOpenAI403CooldownSettings()
-	if value == "" || json.Unmarshal([]byte(value), settings) != nil {
+	if value == "" {
 		return DefaultOpenAI403CooldownSettings(), nil
 	}
-	normalizeOpenAI403CooldownSettings(settings)
-	return settings, nil
+	var settings OpenAI403CooldownSettings
+	if json.Unmarshal([]byte(value), &settings) != nil {
+		return DefaultOpenAI403CooldownSettings(), nil
+	}
+	// Convert the short-lived minute-based schema without changing its duration.
+	if settings.CooldownSeconds == 0 && settings.CounterWindowSeconds == 0 {
+		var legacy struct {
+			CooldownMinutes       int `json:"cooldown_minutes"`
+			CounterWindowMinutes  int `json:"counter_window_minutes"`
+			ThresholdPauseMinutes int `json:"threshold_pause_minutes"`
+		}
+		if json.Unmarshal([]byte(value), &legacy) == nil {
+			settings.CooldownSeconds = legacy.CooldownMinutes * 60
+			settings.CounterWindowSeconds = legacy.CounterWindowMinutes * 60
+			settings.ThresholdPauseSeconds = legacy.ThresholdPauseMinutes * 60
+		}
+	}
+	normalizeOpenAI403CooldownSettings(&settings)
+	return &settings, nil
 }
 
 func (s *SettingService) SetOpenAI403CooldownSettings(ctx context.Context, settings *OpenAI403CooldownSettings) error {
@@ -4164,33 +4180,33 @@ func (s *SettingService) SetOpenAI403CooldownSettings(ctx context.Context, setti
 
 func normalizeOpenAI403CooldownSettings(settings *OpenAI403CooldownSettings) {
 	defaults := DefaultOpenAI403CooldownSettings()
-	settings.CooldownMinutes = clampInt(settings.CooldownMinutes, 1, OpenAI403MaxCooldownMinutes)
+	settings.CooldownSeconds = clampInt(settings.CooldownSeconds, 1, OpenAI403MaxDurationSeconds)
 	settings.ThresholdCount = clampInt(settings.ThresholdCount, 2, 100)
-	settings.CounterWindowMinutes = clampInt(settings.CounterWindowMinutes, 1, OpenAI403MaxCounterWindowMinutes)
+	settings.CounterWindowSeconds = clampInt(settings.CounterWindowSeconds, 1, OpenAI403MaxDurationSeconds)
 	if settings.ThresholdAction != OpenAI403ThresholdActionError && settings.ThresholdAction != OpenAI403ThresholdActionTempPause {
 		settings.ThresholdAction = defaults.ThresholdAction
 	}
-	settings.ThresholdPauseMinutes = clampInt(settings.ThresholdPauseMinutes, 1, OpenAI403MaxThresholdPauseMinutes)
+	settings.ThresholdPauseSeconds = clampInt(settings.ThresholdPauseSeconds, 1, OpenAI403MaxDurationSeconds)
 }
 
 func validateOpenAI403CooldownSettings(settings *OpenAI403CooldownSettings) error {
 	if settings == nil {
 		return fmt.Errorf("settings cannot be nil")
 	}
-	if settings.CooldownMinutes < 1 || settings.CooldownMinutes > OpenAI403MaxCooldownMinutes {
-		return fmt.Errorf("cooldown_minutes must be between 1-%d", OpenAI403MaxCooldownMinutes)
+	if settings.CooldownSeconds < 1 || settings.CooldownSeconds > OpenAI403MaxDurationSeconds {
+		return fmt.Errorf("cooldown_seconds must be between 1-%d", OpenAI403MaxDurationSeconds)
 	}
 	if settings.ThresholdCount < 2 || settings.ThresholdCount > 100 {
 		return fmt.Errorf("threshold_count must be between 2-100")
 	}
-	if settings.CounterWindowMinutes < 1 || settings.CounterWindowMinutes > OpenAI403MaxCounterWindowMinutes {
-		return fmt.Errorf("counter_window_minutes must be between 1-%d", OpenAI403MaxCounterWindowMinutes)
+	if settings.CounterWindowSeconds < 1 || settings.CounterWindowSeconds > OpenAI403MaxDurationSeconds {
+		return fmt.Errorf("counter_window_seconds must be between 1-%d", OpenAI403MaxDurationSeconds)
 	}
 	if settings.ThresholdAction != OpenAI403ThresholdActionError && settings.ThresholdAction != OpenAI403ThresholdActionTempPause {
 		return fmt.Errorf("threshold_action must be error or temp_unsched")
 	}
-	if settings.ThresholdPauseMinutes < 1 || settings.ThresholdPauseMinutes > OpenAI403MaxThresholdPauseMinutes {
-		return fmt.Errorf("threshold_pause_minutes must be between 1-%d", OpenAI403MaxThresholdPauseMinutes)
+	if settings.ThresholdPauseSeconds < 1 || settings.ThresholdPauseSeconds > OpenAI403MaxDurationSeconds {
+		return fmt.Errorf("threshold_pause_seconds must be between 1-%d", OpenAI403MaxDurationSeconds)
 	}
 	return nil
 }

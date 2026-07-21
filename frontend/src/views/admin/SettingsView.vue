@@ -433,16 +433,16 @@
                 </div>
                 <div v-if="openai403CooldownForm.enabled" class="grid gap-4 border-t border-gray-100 pt-4 md:grid-cols-2 dark:border-dark-700">
                   <label class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.cooldownMinutes") }}
-                    <input v-model.number="openai403CooldownForm.cooldown_minutes" data-testid="openai-403-cooldown-minutes" type="number" min="1" max="43200" class="input mt-2 w-40" />
+                    {{ t("admin.settings.openai403Cooldown.cooldownSeconds") }}
+                    <input v-model.number="openai403CooldownForm.cooldown_seconds" data-testid="openai-403-cooldown-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
                   </label>
                   <label class="text-sm text-gray-700 dark:text-gray-300">
                     {{ t("admin.settings.openai403Cooldown.thresholdCount") }}
                     <input v-model.number="openai403CooldownForm.threshold_count" data-testid="openai-403-threshold-count" type="number" min="2" max="100" class="input mt-2 w-40" />
                   </label>
                   <label class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.counterWindowMinutes") }}
-                    <input v-model.number="openai403CooldownForm.counter_window_minutes" data-testid="openai-403-window-minutes" type="number" min="1" max="43200" class="input mt-2 w-40" />
+                    {{ t("admin.settings.openai403Cooldown.counterWindowSeconds") }}
+                    <input v-model.number="openai403CooldownForm.counter_window_seconds" data-testid="openai-403-window-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
                   </label>
                   <label class="text-sm text-gray-700 dark:text-gray-300">
                     {{ t("admin.settings.openai403Cooldown.thresholdAction") }}
@@ -452,8 +452,8 @@
                     </select>
                   </label>
                   <label v-if="openai403CooldownForm.threshold_action === 'temp_unsched'" class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.thresholdPauseMinutes") }}
-                    <input v-model.number="openai403CooldownForm.threshold_pause_minutes" data-testid="openai-403-threshold-pause-minutes" type="number" min="1" max="43200" class="input mt-2 w-40" />
+                    {{ t("admin.settings.openai403Cooldown.thresholdPauseSeconds") }}
+                    <input v-model.number="openai403CooldownForm.threshold_pause_seconds" data-testid="openai-403-threshold-pause-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
                   </label>
                 </div>
                 <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
@@ -7331,11 +7331,11 @@ const openai403CooldownSaving = ref(false);
 const openai403CooldownLoaded = ref(false);
 const openai403CooldownForm = reactive<OpenAI403CooldownSettings>({
   enabled: true,
-  cooldown_minutes: 10,
+  cooldown_seconds: 600,
   threshold_count: 3,
-  counter_window_minutes: 180,
+  counter_window_seconds: 10800,
   threshold_action: "error",
-  threshold_pause_minutes: 60,
+  threshold_pause_seconds: 3600,
 });
 
 // OpenAI OAuth 429 动态调度状态
@@ -9180,11 +9180,11 @@ function normalizeOpenAI403CooldownForm(
   const action = raw.threshold_action === "temp_unsched" ? "temp_unsched" : "error";
   return {
     enabled: Boolean(raw.enabled),
-    cooldown_minutes: boundedInteger(raw.cooldown_minutes, 1, 43200, 10),
+    cooldown_seconds: boundedInteger(raw.cooldown_seconds, 1, 2592000, 600),
     threshold_count: boundedInteger(raw.threshold_count, 2, 100, 3),
-    counter_window_minutes: boundedInteger(raw.counter_window_minutes, 1, 43200, 180),
+    counter_window_seconds: boundedInteger(raw.counter_window_seconds, 1, 2592000, 10800),
     threshold_action: action,
-    threshold_pause_minutes: boundedInteger(raw.threshold_pause_minutes, 1, 43200, 60),
+    threshold_pause_seconds: boundedInteger(raw.threshold_pause_seconds, 1, 2592000, 3600),
   };
 }
 

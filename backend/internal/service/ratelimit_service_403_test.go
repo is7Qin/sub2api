@@ -65,19 +65,37 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403FirstHitTempUnschedulable
 func TestOpenAI403CooldownSettings_ValidationAndNormalization(t *testing.T) {
 	settings := DefaultOpenAI403CooldownSettings()
 	settings.ThresholdAction = OpenAI403ThresholdActionTempPause
-	settings.CooldownMinutes = OpenAI403MaxCooldownMinutes
-	settings.CounterWindowMinutes = OpenAI403MaxCounterWindowMinutes
-	settings.ThresholdPauseMinutes = OpenAI403MaxThresholdPauseMinutes
+	settings.CooldownSeconds = OpenAI403MaxDurationSeconds
+	settings.CounterWindowSeconds = OpenAI403MaxDurationSeconds
+	settings.ThresholdPauseSeconds = OpenAI403MaxDurationSeconds
 	require.NoError(t, validateOpenAI403CooldownSettings(settings))
 
-	settings.CooldownMinutes++
-	require.EqualError(t, validateOpenAI403CooldownSettings(settings), "cooldown_minutes must be between 1-43200")
+	settings.CooldownSeconds++
+	require.EqualError(t, validateOpenAI403CooldownSettings(settings), "cooldown_seconds must be between 1-2592000")
 	normalizeOpenAI403CooldownSettings(settings)
-	require.Equal(t, OpenAI403MaxCooldownMinutes, settings.CooldownMinutes)
+	require.Equal(t, OpenAI403MaxDurationSeconds, settings.CooldownSeconds)
 
 	settings.ThresholdAction = "unknown"
 	normalizeOpenAI403CooldownSettings(settings)
 	require.Equal(t, OpenAI403ThresholdActionError, settings.ThresholdAction)
+}
+
+func TestGetOpenAI403CooldownSettings_ConvertsLegacyMinutesToSeconds(t *testing.T) {
+	repo := newMockSettingRepo()
+	repo.data[SettingKeyOpenAI403CooldownSettings] = `{
+		"enabled":true,
+		"cooldown_minutes":10,
+		"threshold_count":3,
+		"counter_window_minutes":180,
+		"threshold_action":"temp_unsched",
+		"threshold_pause_minutes":60
+	}`
+
+	settings, err := NewSettingService(repo, &config.Config{}).GetOpenAI403CooldownSettings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 600, settings.CooldownSeconds)
+	require.Equal(t, 10800, settings.CounterWindowSeconds)
+	require.Equal(t, 3600, settings.ThresholdPauseSeconds)
 }
 
 func TestRateLimitService_HandleUpstreamError_OpenAI403ConfiguredThresholdTempPause(t *testing.T) {
@@ -85,9 +103,9 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403ConfiguredThresholdTempPa
 	counter := &openAI403CounterCacheStub{counts: []int64{4}}
 	settingRepo := newMockSettingRepo()
 	data, err := json.Marshal(OpenAI403CooldownSettings{
-		Enabled: true, CooldownMinutes: 15, ThresholdCount: 4,
-		CounterWindowMinutes: 90, ThresholdAction: OpenAI403ThresholdActionTempPause,
-		ThresholdPauseMinutes: 24 * 60,
+		Enabled: true, CooldownSeconds: 15, ThresholdCount: 4,
+		CounterWindowSeconds: 90, ThresholdAction: OpenAI403ThresholdActionTempPause,
+		ThresholdPauseSeconds: 24 * 60 * 60,
 	})
 	require.NoError(t, err)
 	settingRepo.data[SettingKeyOpenAI403CooldownSettings] = string(data)

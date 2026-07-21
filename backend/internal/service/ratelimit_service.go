@@ -915,7 +915,7 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		return true
 	}
 
-	count, err := s.openAI403CounterCache.IncrementOpenAI403Count(ctx, account.ID, settings.CounterWindowMinutes)
+	count, err := s.openAI403CounterCache.IncrementOpenAI403Count(ctx, account.ID, settings.CounterWindowSeconds)
 	if err != nil {
 		slog.Warn("openai_403_increment_failed", "account_id", account.ID, "error", err)
 		s.handleAuthError(ctx, account, msg)
@@ -928,13 +928,13 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 			s.handleAuthError(ctx, account, msg)
 			return true
 		}
-		until := time.Now().Add(time.Duration(settings.ThresholdPauseMinutes) * time.Minute)
+		until := time.Now().Add(time.Duration(settings.ThresholdPauseSeconds) * time.Second)
 		reason := fmt.Sprintf("OpenAI 403 threshold cooldown (%d/%d): %s", count, settings.ThresholdCount, msg)
 		s.setOpenAI403TempUnschedulable(ctx, account, until, reason, "openai_403_threshold")
 		return true
 	}
 
-	until := time.Now().Add(time.Duration(settings.CooldownMinutes) * time.Minute)
+	until := time.Now().Add(time.Duration(settings.CooldownSeconds) * time.Second)
 	reason := fmt.Sprintf("OpenAI 403 temporary cooldown (%d/%d): %s", count, settings.ThresholdCount, msg)
 	s.setOpenAI403TempUnschedulable(ctx, account, until, reason, "openai_403_temp")
 	return true

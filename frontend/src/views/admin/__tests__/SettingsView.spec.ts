@@ -542,11 +542,11 @@ describe("admin SettingsView payment visible method controls", () => {
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAI403CooldownSettings.mockResolvedValue({
       enabled: true,
-      cooldown_minutes: 10,
+      cooldown_seconds: 600,
       threshold_count: 3,
-      counter_window_minutes: 180,
+      counter_window_seconds: 10800,
       threshold_action: "error",
-      threshold_pause_minutes: 60,
+      threshold_pause_seconds: 3600,
     });
     updateOpenAI403CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAIOAuth429DynamicSettings.mockResolvedValue({
@@ -841,20 +841,20 @@ describe("admin SettingsView payment visible method controls", () => {
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.get('[data-testid="openai-403-cooldown-minutes"]').setValue("50000");
+    await wrapper.get('[data-testid="openai-403-cooldown-seconds"]').setValue("2592001");
     await wrapper.get('[data-testid="openai-403-threshold-count"]').setValue("1");
     await wrapper.get('[data-testid="openai-403-threshold-action"]').setValue("temp_unsched");
-    await wrapper.get('[data-testid="openai-403-threshold-pause-minutes"]').setValue("50000");
+    await wrapper.get('[data-testid="openai-403-threshold-pause-seconds"]').setValue("2592001");
     await wrapper.get('[data-testid="openai-403-cooldown-save"]').trigger("click");
     await flushPromises();
 
     expect(updateOpenAI403CooldownSettings).toHaveBeenCalledWith({
       enabled: true,
-      cooldown_minutes: 43200,
+      cooldown_seconds: 2592000,
       threshold_count: 2,
-      counter_window_minutes: 180,
+      counter_window_seconds: 10800,
       threshold_action: "temp_unsched",
-      threshold_pause_minutes: 43200,
+      threshold_pause_seconds: 2592000,
     });
   });
 
@@ -1034,11 +1034,11 @@ describe("admin SettingsView wechat connect controls", () => {
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAI403CooldownSettings.mockResolvedValue({
       enabled: true,
-      cooldown_minutes: 10,
+      cooldown_seconds: 600,
       threshold_count: 3,
-      counter_window_minutes: 180,
+      counter_window_seconds: 10800,
       threshold_action: "error",
-      threshold_pause_minutes: 60,
+      threshold_pause_seconds: 3600,
     });
     updateOpenAI403CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAIOAuth429DynamicSettings.mockResolvedValue({

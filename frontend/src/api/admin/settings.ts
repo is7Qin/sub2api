@@ -1140,11 +1140,11 @@ export async function updateRateLimit429CooldownSettings(
 
 export interface OpenAI403CooldownSettings {
   enabled: boolean;
-  cooldown_minutes: number;
+  cooldown_seconds: number;
   threshold_count: number;
-  counter_window_minutes: number;
+  counter_window_seconds: number;
   threshold_action: "error" | "temp_unsched";
-  threshold_pause_minutes: number;
+  threshold_pause_seconds: number;
 }
 
 export async function getOpenAI403CooldownSettings(): Promise<OpenAI403CooldownSettings> {

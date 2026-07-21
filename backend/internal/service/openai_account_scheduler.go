@@ -870,11 +870,13 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
+	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 	if len(accounts) == 0 {
+		if isPureOpenAIModelSupportMiss(ctx, s.service, req.GroupID, nil, req.RequestedModel, req.ExcludedIDs, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport, schedGroup) {
+			return nil, 0, 0, 0, newModelNotSupportedByAccountsError(req.RequestedModel)
+		}
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
 	}
-
-	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))

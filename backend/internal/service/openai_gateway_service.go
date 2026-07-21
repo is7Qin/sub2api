@@ -1920,16 +1920,21 @@ func noAvailableOpenAISelectionErrorForAccounts(ctx context.Context, service *Op
 
 func isPureOpenAIModelSupportMiss(ctx context.Context, service *OpenAIGatewayService, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport, schedGroup *Group) bool {
 	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" || len(accounts) == 0 {
+	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 || service == nil {
 		return false
 	}
-	if !publicModelSupportMiss404Enabled(ctx) {
+	if candidateRepo, ok := service.accountRepo.(ModelAvailabilityCandidateRepository); ok {
+		includeGrouped := groupID == nil && service.cfg != nil && service.cfg.RunMode == config.RunModeSimple
+		configuredAccounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, groupID, []string{PlatformOpenAI}, includeGrouped)
+		if err != nil {
+			return false
+		}
+		accounts = configuredAccounts
+	}
+	if len(accounts) == 0 {
 		return false
 	}
-	if len(excludedIDs) > 0 {
-		return false
-	}
-	needsUpstreamCheck := service != nil && service.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	needsUpstreamCheck := service.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 
 	otherwiseEligible := 0
 	for i := range accounts {
@@ -1940,22 +1945,10 @@ func isPureOpenAIModelSupportMiss(ctx context.Context, service *OpenAIGatewaySer
 		if account.IsModelSupported(requestedModel) {
 			return false
 		}
-		if !account.IsSchedulable() {
-			continue
-		}
-		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
-			continue
-		}
 		if shouldBlockAccountForPrivacyRequirement(account, schedGroup) {
 			continue
 		}
-		if service != nil && service.isOpenAIAccountRuntimeBlocked(account) {
-			continue
-		}
 		if needsUpstreamCheck && service.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
-			continue
-		}
-		if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 			continue
 		}
 		if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
@@ -2642,6 +2635,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return nil, err
 	}
 	if len(accounts) == 0 {
+		if isPureOpenAIModelSupportMiss(ctx, s, groupID, nil, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, schedGroup) {
+			return nil, newModelNotSupportedByAccountsError(requestedModel)
+		}
 		return nil, noAvailableOpenAISelectionError(requestedModel, false)
 	}
 

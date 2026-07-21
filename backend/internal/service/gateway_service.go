@@ -1715,48 +1715,45 @@ func (s *GatewayService) isPureModelSupportMiss(
 	groupID *int64,
 ) bool {
 	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" || len(accounts) == 0 {
+	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 {
 		return false
 	}
-	if !publicModelSupportMiss404Enabled(ctx) {
-		return false
-	}
-	if len(excludedIDs) > 0 {
-		return false
-	}
-	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 
+	// Scheduling lists exclude temporary cooldown and overload state. Re-read the
+	// persistent pool before declaring a permanent model miss, otherwise a brief
+	// capacity outage is misreported as 404.
+	if candidateRepo, ok := s.accountRepo.(ModelAvailabilityCandidateRepository); ok {
+		platforms := []string{platform}
+		if allowMixedScheduling {
+			platforms = append(platforms, PlatformAntigravity)
+		}
+		includeGrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
+		configuredAccounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, groupID, platforms, includeGrouped)
+		if err != nil {
+			return false
+		}
+		accounts = configuredAccounts
+	}
+	// Legacy repository doubles do not expose the narrow diagnostic capability;
+	// retain their supplied pool while production repositories always re-query.
+	if len(accounts) == 0 {
+		return false
+	}
+
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	otherwiseEligible := 0
 	for i := range accounts {
 		acc := &accounts[i]
-		if acc == nil {
-			continue
-		}
-		if !s.isAccountAllowedForPlatform(acc, platform, allowMixedScheduling) {
+		if acc == nil || !s.isAccountAllowedForPlatform(acc, platform, allowMixedScheduling) {
 			continue
 		}
 		if s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
 			return false
 		}
-		if !s.isAccountSchedulableForSelection(acc) {
-			continue
-		}
 		if shouldBlockAccountForPrivacyRequirement(acc, schedGroup) {
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
-			continue
-		}
-		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-			continue
-		}
-		if !s.isAccountSchedulableForQuota(acc) {
-			continue
-		}
-		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
-			continue
-		}
-		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
 		otherwiseEligible++

@@ -79,6 +79,13 @@ type AccountRepository interface {
 	ResetQuotaUsed(ctx context.Context, id int64) error
 }
 
+// ModelAvailabilityCandidateRepository is a narrow diagnostic capability.
+// Keeping it separate avoids forcing unrelated AccountRepository test doubles
+// and consumers to implement an error-path-only query.
+type ModelAvailabilityCandidateRepository interface {
+	ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error)
+}
+
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {

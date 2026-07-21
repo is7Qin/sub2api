@@ -21,10 +21,11 @@ func testConfig() *config.Config {
 
 // mockAccountRepoForPlatform 单平台测试用的 mock
 type mockAccountRepoForPlatform struct {
-	accounts         []Account
-	accountsByID     map[int64]*Account
-	listPlatformFunc func(ctx context.Context, platform string) ([]Account, error)
-	getByIDCalls     int
+	accounts                        []Account
+	accountsByID                    map[int64]*Account
+	listPlatformFunc                func(ctx context.Context, platform string) ([]Account, error)
+	listModelAvailabilityCandidates func(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error)
+	getByIDCalls                    int
 }
 
 func (m *mockAccountRepoForPlatform) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -68,6 +69,27 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByPlatform(ctx context.Conte
 
 func (m *mockAccountRepoForPlatform) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	return m.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (m *mockAccountRepoForPlatform) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error) {
+	if m.listModelAvailabilityCandidates != nil {
+		return m.listModelAvailabilityCandidates(ctx, groupID, platforms, includeGrouped)
+	}
+	allowed := make(map[string]struct{}, len(platforms))
+	for _, platform := range platforms {
+		allowed[platform] = struct{}{}
+	}
+	result := make([]Account, 0, len(m.accounts))
+	for _, account := range m.accounts {
+		if account.Status != StatusActive || !account.Schedulable {
+			continue
+		}
+		if _, ok := allowed[account.Platform]; !ok {
+			continue
+		}
+		result = append(result, account)
+	}
+	return result, nil
 }
 
 // Stub methods to implement AccountRepository interface
@@ -454,7 +476,7 @@ func TestGatewayService_SelectAccountForModelWithPlatform_NoAvailableAccounts(t 
 }
 
 func TestGatewayService_SelectAccountForModelWithPlatform_ModelRateLimitedNotUnsupportedModel(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithPublicModelSupportMiss404(context.Background())
 	resetAt := time.Now().Add(time.Hour)
 
 	repo := &mockAccountRepoForPlatform{
@@ -488,6 +510,58 @@ func TestGatewayService_SelectAccountForModelWithPlatform_ModelRateLimitedNotUns
 	require.Nil(t, acc)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+}
+
+func TestGatewayService_SelectAccountForModelWithPlatform_AvailabilityLookupFailureStaysRetryable(t *testing.T) {
+	repo := &mockAccountRepoForPlatform{
+		accounts: []Account{{
+			ID:          1,
+			Platform:    PlatformAnthropic,
+			Status:      StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{"model_mapping": map[string]any{"claude-haiku": "claude-haiku"}},
+		}},
+		accountsByID: map[int64]*Account{},
+		listModelAvailabilityCandidates: func(context.Context, *int64, []string, bool) ([]Account, error) {
+			return nil, errors.New("database unavailable")
+		},
+	}
+	svc := &GatewayService{accountRepo: repo, cache: &mockGatewayCacheForPlatform{}, cfg: testConfig()}
+
+	acc, err := svc.selectAccountForModelWithPlatform(WithPublicModelSupportMiss404(context.Background()), nil, "", "claude-sonnet", nil, PlatformAnthropic)
+	require.Error(t, err)
+	require.Nil(t, acc)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+}
+
+func TestGatewayService_IsPureModelSupportMiss_MixedSchedulingScope(t *testing.T) {
+	tests := []struct {
+		name         string
+		mixedEnabled bool
+		wantMiss     bool
+	}{
+		{name: "enabled Antigravity support keeps miss retryable", mixedEnabled: true, wantMiss: false},
+		{name: "disabled Antigravity support stays out of scope", mixedEnabled: false, wantMiss: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requestedPlatforms []string
+			repo := &mockAccountRepoForPlatform{
+				listModelAvailabilityCandidates: func(_ context.Context, _ *int64, platforms []string, _ bool) ([]Account, error) {
+					requestedPlatforms = append([]string(nil), platforms...)
+					return []Account{
+						{ID: 1, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true, Credentials: map[string]any{"model_mapping": map[string]any{"claude-haiku": "claude-haiku"}}},
+						{ID: 2, Platform: PlatformAntigravity, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": tc.mixedEnabled}},
+					}, nil
+				},
+			}
+			svc := &GatewayService{accountRepo: repo, cfg: testConfig()}
+			miss := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), nil, "claude-sonnet-4-5", PlatformAnthropic, nil, true, nil, nil)
+			require.Equal(t, tc.wantMiss, miss)
+			require.ElementsMatch(t, []string{PlatformAnthropic, PlatformAntigravity}, requestedPlatforms)
+		})
+	}
 }
 
 // TestGatewayService_SelectAccountForModelWithPlatform_AllExcluded 测试所有账户被排除

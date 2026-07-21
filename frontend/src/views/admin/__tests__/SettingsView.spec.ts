@@ -13,6 +13,8 @@ const {
   getOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getOpenAI403CooldownSettings,
+  updateOpenAI403CooldownSettings,
   getOpenAIOAuth429DynamicSettings,
   updateOpenAIOAuth429DynamicSettings,
   getStreamTimeoutSettings,
@@ -37,6 +39,8 @@ const {
   getOverloadCooldownSettings: vi.fn(),
   getRateLimit429CooldownSettings: vi.fn(),
   updateRateLimit429CooldownSettings: vi.fn(),
+  getOpenAI403CooldownSettings: vi.fn(),
+  updateOpenAI403CooldownSettings: vi.fn(),
   getOpenAIOAuth429DynamicSettings: vi.fn(),
   updateOpenAIOAuth429DynamicSettings: vi.fn(),
   getStreamTimeoutSettings: vi.fn(),
@@ -67,6 +71,8 @@ vi.mock("@/api", () => ({
       getOverloadCooldownSettings,
       getRateLimit429CooldownSettings,
       updateRateLimit429CooldownSettings,
+      getOpenAI403CooldownSettings,
+      updateOpenAI403CooldownSettings,
       getOpenAIOAuth429DynamicSettings,
       updateOpenAIOAuth429DynamicSettings,
       getStreamTimeoutSettings,
@@ -489,6 +495,8 @@ describe("admin SettingsView payment visible method controls", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAI403CooldownSettings.mockReset();
+    updateOpenAI403CooldownSettings.mockReset();
     getOpenAIOAuth429DynamicSettings.mockReset();
     updateOpenAIOAuth429DynamicSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -532,6 +540,15 @@ describe("admin SettingsView payment visible method controls", () => {
       cooldown_seconds: 5,
     });
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
+    getOpenAI403CooldownSettings.mockResolvedValue({
+      enabled: true,
+      cooldown_minutes: 10,
+      threshold_count: 3,
+      counter_window_minutes: 180,
+      threshold_action: "error",
+      threshold_pause_minutes: 60,
+    });
+    updateOpenAI403CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAIOAuth429DynamicSettings.mockResolvedValue({
       enabled: false,
       window_seconds: 300,
@@ -820,6 +837,27 @@ describe("admin SettingsView payment visible method controls", () => {
     });
   });
 
+  it("normalizes configurable OpenAI 403 threshold protection", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="openai-403-cooldown-minutes"]').setValue("50000");
+    await wrapper.get('[data-testid="openai-403-threshold-count"]').setValue("1");
+    await wrapper.get('[data-testid="openai-403-threshold-action"]').setValue("temp_unsched");
+    await wrapper.get('[data-testid="openai-403-threshold-pause-minutes"]').setValue("50000");
+    await wrapper.get('[data-testid="openai-403-cooldown-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updateOpenAI403CooldownSettings).toHaveBeenCalledWith({
+      enabled: true,
+      cooldown_minutes: 43200,
+      threshold_count: 2,
+      counter_window_minutes: 180,
+      threshold_action: "temp_unsched",
+      threshold_pause_minutes: 43200,
+    });
+  });
+
   it("caps OpenAI OAuth dynamic 429 pause at thirty days", async () => {
     getOpenAIOAuth429DynamicSettings.mockResolvedValueOnce({
       enabled: true,
@@ -946,6 +984,8 @@ describe("admin SettingsView wechat connect controls", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAI403CooldownSettings.mockReset();
+    updateOpenAI403CooldownSettings.mockReset();
     getOpenAIOAuth429DynamicSettings.mockReset();
     updateOpenAIOAuth429DynamicSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -992,6 +1032,15 @@ describe("admin SettingsView wechat connect controls", () => {
       cooldown_seconds: 5,
     });
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
+    getOpenAI403CooldownSettings.mockResolvedValue({
+      enabled: true,
+      cooldown_minutes: 10,
+      threshold_count: 3,
+      counter_window_minutes: 180,
+      threshold_action: "error",
+      threshold_pause_minutes: 60,
+    });
+    updateOpenAI403CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAIOAuth429DynamicSettings.mockResolvedValue({
       enabled: false,
       window_seconds: 300,
@@ -1203,6 +1252,8 @@ describe("admin SettingsView platform quota matrix", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAI403CooldownSettings.mockReset();
+    updateOpenAI403CooldownSettings.mockReset();
     getOpenAIOAuth429DynamicSettings.mockReset();
     updateOpenAIOAuth429DynamicSettings.mockReset();
     getStreamTimeoutSettings.mockReset();

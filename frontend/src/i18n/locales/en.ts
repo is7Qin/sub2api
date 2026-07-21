@@ -6496,6 +6496,22 @@ export default {
         saved: '429 default cooldown settings saved',
         saveFailed: 'Failed to save 429 default cooldown settings'
       },
+      openai403Cooldown: {
+        title: 'OpenAI 403 Temporary Protection',
+        description: 'Configure short scheduling pauses and threshold actions for non-definitive OpenAI 403 responses',
+        enabled: 'Enable 403 Temporary Protection',
+        enabledHint: 'When disabled, ordinary 403 responses mark the account as error immediately; definitive PAT permission failures always do so',
+        cooldownMinutes: 'Per-hit Pause (minutes)',
+        thresholdCount: 'Trigger Threshold',
+        counterWindowMinutes: 'Counter Window (minutes)',
+        thresholdAction: 'Threshold Action',
+        actionError: 'Mark as Error',
+        actionTempUnsched: 'Extend Temporary Pause',
+        thresholdPauseMinutes: 'Threshold Pause (minutes)',
+        saved: 'OpenAI 403 temporary protection settings saved',
+        loadFailed: 'Failed to load OpenAI 403 temporary protection settings',
+        saveFailed: 'Failed to save OpenAI 403 temporary protection settings'
+      },
       openaiOAuth429Dynamic: {
         title: 'OpenAI OAuth 429 Dynamic Scheduling',
         description: 'Treat OpenAI OAuth-like 429s as statistical signals and pause scheduling only when the window ratio crosses the threshold',

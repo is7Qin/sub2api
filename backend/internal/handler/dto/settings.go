@@ -351,6 +351,16 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int  `json:"cooldown_seconds"`
 }
 
+// OpenAI403CooldownSettings OpenAI 403临时不可调度配置 DTO
+type OpenAI403CooldownSettings struct {
+	Enabled               bool   `json:"enabled"`
+	CooldownMinutes       int    `json:"cooldown_minutes"`
+	ThresholdCount        int    `json:"threshold_count"`
+	CounterWindowMinutes  int    `json:"counter_window_minutes"`
+	ThresholdAction       string `json:"threshold_action"`
+	ThresholdPauseMinutes int    `json:"threshold_pause_minutes"`
+}
+
 // OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置 DTO
 type OpenAIOAuth429DynamicSettings struct {
 	Enabled        bool    `json:"enabled"`

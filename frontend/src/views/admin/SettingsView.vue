@@ -411,6 +411,60 @@
             </div>
           </div>
 
+          <!-- OpenAI 403 Cooldown Settings -->
+          <div class="card" @keydown.enter.prevent="saveOpenAI403CooldownSettings">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.openai403Cooldown.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.openai403Cooldown.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div v-if="openai403CooldownLoading" class="text-gray-500">{{ t("common.loading") }}</div>
+              <template v-else>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openai403Cooldown.enabled") }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openai403Cooldown.enabledHint") }}</p>
+                  </div>
+                  <Toggle v-model="openai403CooldownForm.enabled" />
+                </div>
+                <div v-if="openai403CooldownForm.enabled" class="grid gap-4 border-t border-gray-100 pt-4 md:grid-cols-2 dark:border-dark-700">
+                  <label class="text-sm text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openai403Cooldown.cooldownMinutes") }}
+                    <input v-model.number="openai403CooldownForm.cooldown_minutes" data-testid="openai-403-cooldown-minutes" type="number" min="1" max="43200" class="input mt-2 w-40" />
+                  </label>
+                  <label class="text-sm text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openai403Cooldown.thresholdCount") }}
+                    <input v-model.number="openai403CooldownForm.threshold_count" data-testid="openai-403-threshold-count" type="number" min="2" max="100" class="input mt-2 w-40" />
+                  </label>
+                  <label class="text-sm text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openai403Cooldown.counterWindowMinutes") }}
+                    <input v-model.number="openai403CooldownForm.counter_window_minutes" data-testid="openai-403-window-minutes" type="number" min="1" max="43200" class="input mt-2 w-40" />
+                  </label>
+                  <label class="text-sm text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openai403Cooldown.thresholdAction") }}
+                    <select v-model="openai403CooldownForm.threshold_action" data-testid="openai-403-threshold-action" class="input mt-2 w-52">
+                      <option value="error">{{ t("admin.settings.openai403Cooldown.actionError") }}</option>
+                      <option value="temp_unsched">{{ t("admin.settings.openai403Cooldown.actionTempUnsched") }}</option>
+                    </select>
+                  </label>
+                  <label v-if="openai403CooldownForm.threshold_action === 'temp_unsched'" class="text-sm text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openai403Cooldown.thresholdPauseMinutes") }}
+                    <input v-model.number="openai403CooldownForm.threshold_pause_minutes" data-testid="openai-403-threshold-pause-minutes" type="number" min="1" max="43200" class="input mt-2 w-40" />
+                  </label>
+                </div>
+                <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <button type="button" data-testid="openai-403-cooldown-save" @click="saveOpenAI403CooldownSettings" :disabled="openai403CooldownSaving || !openai403CooldownLoaded" class="btn btn-primary btn-sm">
+                    {{ openai403CooldownSaving ? t("common.saving") : t("common.save") }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- OpenAI OAuth Dynamic 429 Settings -->
           <div class="card" @keydown.enter.prevent="saveOpenAIOAuth429DynamicSettings">
             <div
@@ -6976,6 +7030,7 @@ import type {
   DefaultPlatformQuotasMap,
   OpenAICodexUAProfile,
   OpenAIFastPolicyRule,
+  OpenAI403CooldownSettings,
   OpenAIOAuth429DynamicSettings,
   WeChatConnectMode,
   WebSearchEmulationConfig,
@@ -7268,6 +7323,19 @@ const rateLimit429CooldownSaving = ref(false);
 const rateLimit429CooldownForm = reactive({
   enabled: true,
   cooldown_seconds: 5,
+});
+
+// OpenAI 403 临时不可调度状态
+const openai403CooldownLoading = ref(true);
+const openai403CooldownSaving = ref(false);
+const openai403CooldownLoaded = ref(false);
+const openai403CooldownForm = reactive<OpenAI403CooldownSettings>({
+  enabled: true,
+  cooldown_minutes: 10,
+  threshold_count: 3,
+  counter_window_minutes: 180,
+  threshold_action: "error",
+  threshold_pause_minutes: 60,
 });
 
 // OpenAI OAuth 429 动态调度状态
@@ -9106,6 +9174,50 @@ async function saveRateLimit429CooldownSettings() {
   }
 }
 
+function normalizeOpenAI403CooldownForm(
+  raw: Partial<OpenAI403CooldownSettings>,
+): OpenAI403CooldownSettings {
+  const action = raw.threshold_action === "temp_unsched" ? "temp_unsched" : "error";
+  return {
+    enabled: Boolean(raw.enabled),
+    cooldown_minutes: boundedInteger(raw.cooldown_minutes, 1, 43200, 10),
+    threshold_count: boundedInteger(raw.threshold_count, 2, 100, 3),
+    counter_window_minutes: boundedInteger(raw.counter_window_minutes, 1, 43200, 180),
+    threshold_action: action,
+    threshold_pause_minutes: boundedInteger(raw.threshold_pause_minutes, 1, 43200, 60),
+  };
+}
+
+async function loadOpenAI403CooldownSettings() {
+  openai403CooldownLoading.value = true;
+  openai403CooldownLoaded.value = false;
+  try {
+    const settings = await adminAPI.settings.getOpenAI403CooldownSettings();
+    Object.assign(openai403CooldownForm, normalizeOpenAI403CooldownForm(settings));
+    openai403CooldownLoaded.value = true;
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.settings.openai403Cooldown.loadFailed")));
+  } finally {
+    openai403CooldownLoading.value = false;
+  }
+}
+
+async function saveOpenAI403CooldownSettings() {
+  if (!openai403CooldownLoaded.value) return;
+  openai403CooldownSaving.value = true;
+  try {
+    const payload = normalizeOpenAI403CooldownForm(openai403CooldownForm);
+    Object.assign(openai403CooldownForm, payload);
+    const updated = await adminAPI.settings.updateOpenAI403CooldownSettings(payload);
+    Object.assign(openai403CooldownForm, normalizeOpenAI403CooldownForm(updated));
+    appStore.showSuccess(t("admin.settings.openai403Cooldown.saved"));
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.settings.openai403Cooldown.saveFailed")));
+  } finally {
+    openai403CooldownSaving.value = false;
+  }
+}
+
 async function loadOpenAIOAuth429DynamicSettings() {
   openaiOAuth429DynamicLoading.value = true;
   openaiOAuth429DynamicLoaded.value = false;
@@ -9813,6 +9925,7 @@ onMounted(() => {
   loadAdminApiKey();
   loadOverloadCooldownSettings();
   loadRateLimit429CooldownSettings();
+  loadOpenAI403CooldownSettings();
   loadOpenAIOAuth429DynamicSettings();
   loadStreamTimeoutSettings();
   loadRectifierSettings();

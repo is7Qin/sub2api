@@ -3214,6 +3214,50 @@ func (h *SettingHandler) UpdateRateLimit429CooldownSettings(c *gin.Context) {
 	})
 }
 
+type UpdateOpenAI403CooldownSettingsRequest struct {
+	Enabled               bool   `json:"enabled"`
+	CooldownMinutes       int    `json:"cooldown_minutes"`
+	ThresholdCount        int    `json:"threshold_count"`
+	CounterWindowMinutes  int    `json:"counter_window_minutes"`
+	ThresholdAction       string `json:"threshold_action"`
+	ThresholdPauseMinutes int    `json:"threshold_pause_minutes"`
+}
+
+func (h *SettingHandler) GetOpenAI403CooldownSettings(c *gin.Context) {
+	settings, err := h.settingService.GetOpenAI403CooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.OpenAI403CooldownSettings{
+		Enabled: settings.Enabled, CooldownMinutes: settings.CooldownMinutes,
+		ThresholdCount: settings.ThresholdCount, CounterWindowMinutes: settings.CounterWindowMinutes,
+		ThresholdAction: settings.ThresholdAction, ThresholdPauseMinutes: settings.ThresholdPauseMinutes,
+	})
+}
+
+func (h *SettingHandler) UpdateOpenAI403CooldownSettings(c *gin.Context) {
+	var req UpdateOpenAI403CooldownSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	settings := &service.OpenAI403CooldownSettings{
+		Enabled: req.Enabled, CooldownMinutes: req.CooldownMinutes,
+		ThresholdCount: req.ThresholdCount, CounterWindowMinutes: req.CounterWindowMinutes,
+		ThresholdAction: req.ThresholdAction, ThresholdPauseMinutes: req.ThresholdPauseMinutes,
+	}
+	if err := h.settingService.SetOpenAI403CooldownSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, dto.OpenAI403CooldownSettings{
+		Enabled: settings.Enabled, CooldownMinutes: settings.CooldownMinutes,
+		ThresholdCount: settings.ThresholdCount, CounterWindowMinutes: settings.CounterWindowMinutes,
+		ThresholdAction: settings.ThresholdAction, ThresholdPauseMinutes: settings.ThresholdPauseMinutes,
+	})
+}
+
 // GetOpenAIOAuth429DynamicSettings 获取OpenAI OAuth 429动态调度配置
 // GET /api/v1/admin/settings/openai-oauth-429-dynamic
 func (h *SettingHandler) GetOpenAIOAuth429DynamicSettings(c *gin.Context) {

@@ -6487,6 +6487,22 @@ export default {
         saved: '429 默认回避设置保存成功',
         saveFailed: '保存 429 默认回避设置失败'
       },
+      openai403Cooldown: {
+        title: 'OpenAI 403 临时不可调度',
+        description: '配置 OpenAI 账号收到非确定性 403 时的短期保护与阈值动作',
+        enabled: '启用 403 临时保护',
+        enabledHint: '关闭后一般 403 会立即将账号标记为错误；确定性的 PAT 权限错误始终立即标错',
+        cooldownMinutes: '单次暂停时长（分钟）',
+        thresholdCount: '触发阈值（次数）',
+        counterWindowMinutes: '计数窗口（分钟）',
+        thresholdAction: '达阈值后动作',
+        actionError: '标记为错误',
+        actionTempUnsched: '延长临时不可调度',
+        thresholdPauseMinutes: '阈值暂停时长（分钟）',
+        saved: 'OpenAI 403 临时保护设置保存成功',
+        loadFailed: '加载 OpenAI 403 临时保护设置失败',
+        saveFailed: '保存 OpenAI 403 临时保护设置失败'
+      },
       openaiOAuth429Dynamic: {
         title: 'OpenAI OAuth 429 动态调度',
         description: '将 OpenAI OAuth-like 429 作为统计信号，按窗口内 429 比例决定是否暂停调度',

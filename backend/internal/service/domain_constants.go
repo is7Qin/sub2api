@@ -374,6 +374,9 @@ const (
 	// SettingKeyOpenAIOAuth429DynamicSettings stores JSON config for OpenAI OAuth 429 dynamic scheduling.
 	SettingKeyOpenAIOAuth429DynamicSettings = "openai_oauth_429_dynamic_settings"
 
+	// SettingKeyOpenAI403CooldownSettings stores JSON config for OpenAI 403 temporary scheduling protection.
+	SettingKeyOpenAI403CooldownSettings = "openai_403_cooldown_settings"
+
 	// =========================
 	// Stream Timeout Handling
 	// =========================

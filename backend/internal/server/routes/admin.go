@@ -443,6 +443,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 429默认回避配置
 		adminSettings.GET("/rate-limit-429-cooldown", h.Admin.Setting.GetRateLimit429CooldownSettings)
 		adminSettings.PUT("/rate-limit-429-cooldown", h.Admin.Setting.UpdateRateLimit429CooldownSettings)
+		// OpenAI 403临时不可调度配置
+		adminSettings.GET("/openai-403-cooldown", h.Admin.Setting.GetOpenAI403CooldownSettings)
+		adminSettings.PUT("/openai-403-cooldown", h.Admin.Setting.UpdateOpenAI403CooldownSettings)
 		// OpenAI OAuth 429动态调度配置
 		adminSettings.GET("/openai-oauth-429-dynamic", h.Admin.Setting.GetOpenAIOAuth429DynamicSettings)
 		adminSettings.PUT("/openai-oauth-429-dynamic", h.Admin.Setting.UpdateOpenAIOAuth429DynamicSettings)

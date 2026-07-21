@@ -466,6 +466,24 @@ type RateLimit429CooldownSettings struct {
 // A fixed duration keeps validation and persisted settings deterministic.
 const OpenAIOAuth429DynamicMaxBlockSeconds = 30 * 24 * 60 * 60
 
+const (
+	OpenAI403ThresholdActionError     = "error"
+	OpenAI403ThresholdActionTempPause = "temp_unsched"
+	OpenAI403MaxCooldownMinutes       = 30 * 24 * 60
+	OpenAI403MaxCounterWindowMinutes  = 30 * 24 * 60
+	OpenAI403MaxThresholdPauseMinutes = 30 * 24 * 60
+)
+
+// OpenAI403CooldownSettings OpenAI 403临时不可调度配置。
+type OpenAI403CooldownSettings struct {
+	Enabled               bool   `json:"enabled"`
+	CooldownMinutes       int    `json:"cooldown_minutes"`
+	ThresholdCount        int    `json:"threshold_count"`
+	CounterWindowMinutes  int    `json:"counter_window_minutes"`
+	ThresholdAction       string `json:"threshold_action"`
+	ThresholdPauseMinutes int    `json:"threshold_pause_minutes"`
+}
+
 // OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置
 type OpenAIOAuth429DynamicSettings struct {
 	// Enabled 是否启用基于429比例的动态调度暂停
@@ -495,6 +513,18 @@ func DefaultRateLimit429CooldownSettings() *RateLimit429CooldownSettings {
 	return &RateLimit429CooldownSettings{
 		Enabled:         true,
 		CooldownSeconds: 5,
+	}
+}
+
+// DefaultOpenAI403CooldownSettings preserves the existing 10-minute, 3-hit behavior.
+func DefaultOpenAI403CooldownSettings() *OpenAI403CooldownSettings {
+	return &OpenAI403CooldownSettings{
+		Enabled:               true,
+		CooldownMinutes:       10,
+		ThresholdCount:        3,
+		CounterWindowMinutes:  180,
+		ThresholdAction:       OpenAI403ThresholdActionError,
+		ThresholdPauseMinutes: 60,
 	}
 }
 

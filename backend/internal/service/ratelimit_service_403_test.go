@@ -62,6 +62,50 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403FirstHitTempUnschedulable
 	require.True(t, blocker.until[0].After(time.Now()))
 }
 
+func TestOpenAI403CooldownSettings_ValidationAndNormalization(t *testing.T) {
+	settings := DefaultOpenAI403CooldownSettings()
+	settings.ThresholdAction = OpenAI403ThresholdActionTempPause
+	settings.CooldownMinutes = OpenAI403MaxCooldownMinutes
+	settings.CounterWindowMinutes = OpenAI403MaxCounterWindowMinutes
+	settings.ThresholdPauseMinutes = OpenAI403MaxThresholdPauseMinutes
+	require.NoError(t, validateOpenAI403CooldownSettings(settings))
+
+	settings.CooldownMinutes++
+	require.EqualError(t, validateOpenAI403CooldownSettings(settings), "cooldown_minutes must be between 1-43200")
+	normalizeOpenAI403CooldownSettings(settings)
+	require.Equal(t, OpenAI403MaxCooldownMinutes, settings.CooldownMinutes)
+
+	settings.ThresholdAction = "unknown"
+	normalizeOpenAI403CooldownSettings(settings)
+	require.Equal(t, OpenAI403ThresholdActionError, settings.ThresholdAction)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI403ConfiguredThresholdTempPause(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{4}}
+	settingRepo := newMockSettingRepo()
+	data, err := json.Marshal(OpenAI403CooldownSettings{
+		Enabled: true, CooldownMinutes: 15, ThresholdCount: 4,
+		CounterWindowMinutes: 90, ThresholdAction: OpenAI403ThresholdActionTempPause,
+		ThresholdPauseMinutes: 24 * 60,
+	})
+	require.NoError(t, err)
+	settingRepo.data[SettingKeyOpenAI403CooldownSettings] = string(data)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	service.SetOpenAI403CounterCache(counter)
+	account := &Account{ID: 306, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	before := time.Now()
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, []byte(`{"error":{"message":"temporary edge rejection"}}`))
+
+	require.True(t, shouldDisable)
+	require.Zero(t, repo.setErrorCalls)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Contains(t, repo.lastTempReason, "threshold cooldown (4/4)")
+	require.False(t, repo.lastTempUntil.Before(before.Add(24*time.Hour)))
+}
+
 func TestRateLimitService_HandleUpstreamError_OpenAI403ThresholdDisables(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	counter := &openAI403CounterCacheStub{counts: []int64{3}}

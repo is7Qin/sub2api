@@ -888,10 +888,10 @@ func TestAPIKeyAuthWithSubscriptionGoogle_SecurityMatrix(t *testing.T) {
 			k.IPWhitelist = []string{"203.0.113.1"}
 			k.CompiledIPWhitelist = ip.CompileIPRules(k.IPWhitelist)
 		}, false, false, nil, "198.51.100.1:1", "", 403, service.OpsClientBusinessLimitedReasonIPRestriction, true},
-		{"spoofed forwarded ignored", func(k *service.APIKey) {
+		{"toggle cannot trust forged forwarded header from direct client", func(k *service.APIKey) {
 			k.IPWhitelist = []string{"198.51.100.1"}
 			k.CompiledIPWhitelist = ip.CompileIPRules(k.IPWhitelist)
-		}, false, false, nil, "198.51.100.1:1", "203.0.113.9", 200, "", true},
+		}, false, true, nil, "198.51.100.1:1", "203.0.113.9", 200, "", true},
 		{"trusted forwarded used", func(k *service.APIKey) {
 			k.IPWhitelist = []string{"203.0.113.9"}
 			k.CompiledIPWhitelist = ip.CompileIPRules(k.IPWhitelist)

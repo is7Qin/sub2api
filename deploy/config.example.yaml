@@ -26,6 +26,7 @@ server:
   frontend_url: ""
   # Trusted proxies for X-Forwarded-For parsing (CIDR/IP). Empty disables trusted proxies.
   # 信任的代理地址（CIDR/IP 格式），用于解析 X-Forwarded-For 头。留空则禁用代理信任。
+  # Environment: SERVER_TRUSTED_PROXIES="127.0.0.1/32,10.0.0.0/8"
   trusted_proxies: []
   # Global max request body size in bytes (default: 256MB)
   # 全局最大请求体大小（字节，默认 256MB）
@@ -83,6 +84,11 @@ cors:
 # 安全配置
 # =============================================================================
 security:
+  # Optional ordered headers for legacy/telemetry client-IP metadata only.
+  # Security-sensitive ACL and Turnstile checks always use Gin's trusted proxy chain.
+  # Environment: SECURITY_FORWARDED_CLIENT_IP_HEADERS="CF-Connecting-IP,X-Real-IP"
+  # 可选的旧版/遥测客户端 IP 请求头优先级；安全校验始终使用 Gin 可信代理链。
+  forwarded_client_ip_headers: []
   url_allowlist:
     # Enable URL allowlist validation (disable to skip all URL checks)
     # 启用 URL 白名单验证（禁用则跳过所有 URL 检查）

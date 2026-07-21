@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	ippkg "github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -49,6 +50,12 @@ func SetupRouter(
 		cachedFrameOrigins.Store(&origins)
 	}
 	refreshFrameOrigins() // 启动时初始化
+
+	// Snapshot client-IP mode before logging, auth, or route middleware consume it.
+	r.Use(ippkg.RequestMiddleware(func() ippkg.RequestSettings {
+		settings := cfg.ForwardedClientIPSettings()
+		return ippkg.RequestSettings{TrustForwardedIP: settings.TrustForwardedIP, Headers: settings.Headers}
+	}))
 
 	// 应用中间件
 	r.Use(middleware2.RequestLogger())

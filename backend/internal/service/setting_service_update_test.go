@@ -290,9 +290,10 @@ func TestSettingService_UpdateSettings_AntigravityUserAgentVersion(t *testing.T)
 	require.Equal(t, "1.23.2", repo.updates[SettingKeyAntigravityUserAgentVersion])
 }
 
-func TestSettingService_UpdateSettings_APIKeyACLTrustForwardedIPRefreshesConfig(t *testing.T) {
+func TestSettingService_UpdateSettings_APIKeyACLTrustForwardedIPRefreshesSnapshotAndPreservesHeaders(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	cfg := &config.Config{}
+	cfg.SetForwardedClientIPSettings(false, []string{"X-Cdn-IP"})
 	svc := NewSettingService(repo, cfg)
 
 	err := svc.UpdateSettings(context.Background(), &SystemSettings{
@@ -300,8 +301,12 @@ func TestSettingService_UpdateSettings_APIKeyACLTrustForwardedIPRefreshesConfig(
 	})
 	require.NoError(t, err)
 	require.Equal(t, "true", repo.updates[SettingKeyAPIKeyACLTrustForwardedIP])
-	require.True(t, cfg.Security.TrustForwardedIPForAPIKeyACL)
-	require.True(t, cfg.TrustForwardedIPForAPIKeyACL())
+	require.Equal(t, config.ForwardedClientIPSettings{
+		TrustForwardedIP: true,
+		Headers:          []string{"X-Cdn-IP"},
+	}, cfg.ForwardedClientIPSettings())
+	// Runtime publication is authoritative; the exported startup field is immutable.
+	require.False(t, cfg.Security.TrustForwardedIPForAPIKeyACL)
 }
 
 func TestSettingService_ParseSettings_APIKeyACLTrustForwardedIPFallsBackToConfigWhenMissing(t *testing.T) {

@@ -45,17 +45,8 @@ func ProvideRouter(
 
 	r := gin.New()
 	r.Use(middleware2.Recovery())
-	if len(cfg.Server.TrustedProxies) > 0 {
-		if err := r.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
-			log.Printf("Failed to set trusted proxies: %v", err)
-		}
-	} else {
-		if err := r.SetTrustedProxies(nil); err != nil {
-			log.Printf("Failed to disable trusted proxies: %v", err)
-		}
-		if cfg.Server.Mode == "release" {
-			log.Printf("Warning: server.trusted_proxies is empty in release mode; client IP trust chain is disabled")
-		}
+	if err := configureTrustedProxies(r, cfg.Server); err != nil {
+		log.Printf("Invalid server.trusted_proxies; client IP trust chain is disabled: %v", err)
 	}
 
 	// Wire up websearch Manager builder so it initializes on startup and rebuilds on config save.
@@ -95,6 +86,17 @@ func ProvideRouter(
 	})
 
 	return SetupRouter(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
+}
+
+func configureTrustedProxies(r *gin.Engine, cfg config.ServerConfig) error {
+	// Disable Gin's permissive default first so every non-valid state fails closed.
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return err
+	}
+	if !cfg.TrustedProxiesConfigured || len(cfg.TrustedProxies) == 0 {
+		return nil
+	}
+	return r.SetTrustedProxies(cfg.TrustedProxies)
 }
 
 // ProvideHTTPServer 提供 HTTP 服务器

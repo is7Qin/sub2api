@@ -80,6 +80,107 @@ func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	require.Equal(t, 1, dedupCount)
 }
 
+func TestUsageBillingRepositoryApply_PersistsUsageLogAtomically(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := NewUsageBillingRepository(client, integrationDB)
+
+	user := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("usage-billing-log-user-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Balance:      100,
+	})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{
+		UserID: user.ID,
+		Key:    "sk-usage-billing-log-" + uuid.NewString(),
+		Name:   "billing-log",
+	})
+	account := mustCreateAccount(t, client, &service.Account{
+		Name: "usage-billing-log-account-" + uuid.NewString(),
+		Type: service.AccountTypeAPIKey,
+	})
+	requestID := uuid.NewString()
+	usageLog := &service.UsageLog{
+		UserID:       user.ID,
+		APIKeyID:     apiKey.ID,
+		AccountID:    account.ID,
+		RequestID:    requestID,
+		Model:        "claude-3",
+		InputTokens:  10,
+		OutputTokens: 20,
+		TotalCost:    1.25,
+		ActualCost:   1.25,
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	result, err := repo.Apply(ctx, &service.UsageBillingCommand{
+		RequestID:   requestID,
+		APIKeyID:    apiKey.ID,
+		UserID:      user.ID,
+		AccountID:   account.ID,
+		BalanceCost: 1.25,
+		UsageLog:    usageLog,
+	})
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+	require.True(t, result.UsageLogPersisted)
+
+	var logCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM usage_logs WHERE request_id = $1 AND api_key_id = $2",
+		requestID, apiKey.ID,
+	).Scan(&logCount))
+	require.Equal(t, 1, logCount)
+
+	var balance float64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", user.ID).Scan(&balance))
+	require.InDelta(t, 98.75, balance, 0.000001)
+}
+
+func TestUsageBillingRepositoryApply_UsageLogFailureRollsBackBilling(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := NewUsageBillingRepository(client, integrationDB)
+
+	user := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("usage-billing-log-rollback-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Balance:      100,
+	})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{
+		UserID: user.ID,
+		Key:    "sk-usage-billing-log-rollback-" + uuid.NewString(),
+		Name:   "billing-log-rollback",
+	})
+	requestID := uuid.NewString()
+
+	_, err := repo.Apply(ctx, &service.UsageBillingCommand{
+		RequestID:   requestID,
+		APIKeyID:    apiKey.ID,
+		UserID:      user.ID,
+		BalanceCost: 1.25,
+		UsageLog: &service.UsageLog{
+			UserID:    user.ID,
+			APIKeyID:  apiKey.ID,
+			AccountID: -1,
+			RequestID: requestID,
+			Model:     "claude-3",
+		},
+	})
+	require.Error(t, err)
+
+	var balance float64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", user.ID).Scan(&balance))
+	require.InDelta(t, 100, balance, 0.000001)
+
+	var dedupCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM usage_billing_dedup WHERE request_id = $1 AND api_key_id = $2",
+		requestID, apiKey.ID,
+	).Scan(&dedupCount))
+	require.Zero(t, dedupCount)
+}
+
 func TestUsageBillingRepositoryApply_DeduplicatesSubscriptionBilling(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)
@@ -360,6 +461,13 @@ func TestUsageBillingRepositoryApply_DeduplicatesAgainstArchivedKey(t *testing.T
 	result2, err := repo.Apply(ctx, cmd)
 	require.NoError(t, err)
 	require.False(t, result2.Applied)
+
+	var activeDedupCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM usage_billing_dedup WHERE request_id = $1 AND api_key_id = $2",
+		requestID, apiKey.ID,
+	).Scan(&activeDedupCount))
+	require.Zero(t, activeDedupCount)
 
 	var balance float64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", user.ID).Scan(&balance))

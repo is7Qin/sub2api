@@ -4,7 +4,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -57,25 +56,23 @@ func newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo UsageLogReposi
 type openAIRecordUsageBestEffortLogRepoStub struct {
 	UsageLogRepository
 
-	bestEffortErr   error
-	createErr       error
-	bestEffortCalls int
-	createCalls     int
-	lastLog         *UsageLog
-	lastCtxErr      error
-}
-
-func (s *openAIRecordUsageBestEffortLogRepoStub) CreateBestEffort(ctx context.Context, log *UsageLog) error {
-	s.bestEffortCalls++
-	s.lastLog = log
-	s.lastCtxErr = ctx.Err()
-	return s.bestEffortErr
+	createErr          error
+	createCalls        int
+	lastLog            *UsageLog
+	lastCtxErr         error
+	createDeadline     time.Time
+	contextValueKey    any
+	createContextValue any
 }
 
 func (s *openAIRecordUsageBestEffortLogRepoStub) Create(ctx context.Context, log *UsageLog) (bool, error) {
 	s.createCalls++
 	s.lastLog = log
 	s.lastCtxErr = ctx.Err()
+	s.createDeadline, _ = ctx.Deadline()
+	if s.contextValueKey != nil {
+		s.createContextValue = ctx.Value(s.contextValueKey)
+	}
 	return false, s.createErr
 }
 
@@ -387,16 +384,21 @@ func TestGatewayServiceRecordUsage_GeneratesRequestIDWhenAllSourcesMissing(t *te
 	require.Equal(t, billingRepo.lastCmd.RequestID, usageRepo.lastLog.RequestID)
 }
 
-func TestGatewayServiceRecordUsage_DroppedUsageLogDoesNotSyncFallback(t *testing.T) {
-	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{
-		bestEffortErr: MarkUsageLogCreateDropped(errors.New("usage log best-effort queue full")),
-	}
+func TestGatewayServiceRecordUsage_FallbackUsesSingleCreateWithDetachedContext(t *testing.T) {
+	type usageContextKey struct{}
+	key := usageContextKey{}
+	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{contextValueKey: key}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
 	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+	base := context.WithValue(context.Background(), key, "trace-value")
+	ctx, cancel := context.WithTimeout(base, 50*time.Millisecond)
+	defer cancel()
+	parentDeadline, ok := ctx.Deadline()
+	require.True(t, ok)
 
-	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+	err := svc.RecordUsage(ctx, &RecordUsageInput{
 		Result: &ForwardResult{
-			RequestID: "gateway_drop_usage_log",
+			RequestID: "gateway_fallback_usage_log",
 			Usage: ClaudeUsage{
 				InputTokens:  10,
 				OutputTokens: 6,
@@ -410,8 +412,50 @@ func TestGatewayServiceRecordUsage_DroppedUsageLogDoesNotSyncFallback(t *testing
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, 1, usageRepo.bestEffortCalls)
-	require.Equal(t, 0, usageRepo.createCalls)
+	require.Equal(t, 1, usageRepo.createCalls)
+	require.NoError(t, usageRepo.lastCtxErr)
+	require.Equal(t, "trace-value", usageRepo.createContextValue)
+	require.WithinDuration(t, parentDeadline, usageRepo.createDeadline, time.Millisecond)
+}
+
+func TestGatewayServiceRecordUsage_AtomicBillingSkipsSeparateUsageLogWrite(t *testing.T) {
+	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{
+		result: &UsageBillingApplyResult{Applied: true, UsageLogPersisted: true},
+	}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_atomic_usage_log",
+			Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 6},
+			Model:     "claude-sonnet-4",
+			Duration:  time.Second,
+		},
+		APIKey:  &APIKey{ID: 509},
+		User:    &User{ID: 609},
+		Account: &Account{ID: 709},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.NotNil(t, billingRepo.lastCmd.UsageLog)
+	require.Equal(t, "gateway_atomic_usage_log", billingRepo.lastCmd.UsageLog.RequestID)
+	require.Zero(t, usageRepo.createCalls)
+}
+
+func TestDetachedBillingContextPreservesShorterDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	detached, detachedCancel := detachedBillingContext(parent)
+	defer detachedCancel()
+
+	parentDeadline, ok := parent.Deadline()
+	require.True(t, ok)
+	detachedDeadline, ok := detached.Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, parentDeadline, detachedDeadline, time.Millisecond)
 }
 
 func TestGatewayServiceRecordUsage_BillingErrorSkipsUsageLogWrite(t *testing.T) {

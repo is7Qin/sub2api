@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	defaultUsageRecordWorkerCount          = 128
-	defaultUsageRecordQueueSize            = 16384
-	defaultUsageRecordTaskTimeoutSeconds   = 5
-	defaultUsageRecordOverflowPolicy       = config.UsageRecordOverflowPolicySample
+	defaultUsageRecordWorkerCount        = 128
+	defaultUsageRecordQueueSize          = 16384
+	defaultUsageRecordTaskTimeoutSeconds = 5
+	// Default to sync so queue overflow cannot silently discard already-billed usage.
+	defaultUsageRecordOverflowPolicy       = config.UsageRecordOverflowPolicySync
 	defaultUsageRecordOverflowSampleRatio  = 10
 	defaultUsageRecordAutoScaleEnabled     = true
 	defaultUsageRecordAutoScaleMinWorkers  = 128
@@ -167,20 +168,28 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 
 	switch p.overflowPolicy {
 	case config.UsageRecordOverflowPolicySync:
-		p.syncFallback.Add(1)
-		p.execute(task)
-		return UsageRecordSubmitModeSync
+		return p.submitWithBackpressure(task)
 	case config.UsageRecordOverflowPolicySample:
 		if p.shouldSyncFallback() {
-			p.syncFallback.Add(1)
-			p.execute(task)
-			return UsageRecordSubmitModeSync
+			return p.submitWithBackpressure(task)
 		}
 	}
 
 	p.droppedQueueFull.Add(1)
 	p.logDrop("full")
 	return UsageRecordSubmitModeDropped
+}
+
+func (p *UsageRecordWorkerPool) submitWithBackpressure(task UsageRecordTask) UsageRecordSubmitMode {
+	p.syncFallback.Add(1)
+	if err := p.pool.Go(func() {
+		p.execute(task)
+	}); err != nil {
+		p.droppedPoolStopped.Add(1)
+		p.logDrop("stopped")
+		return UsageRecordSubmitModeDropped
+	}
+	return UsageRecordSubmitModeSync
 }
 
 // Stats 返回当前池状态与计数器。

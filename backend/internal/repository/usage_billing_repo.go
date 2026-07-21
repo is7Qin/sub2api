@@ -46,13 +46,18 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 	if err != nil {
 		return nil, err
 	}
-	if !applied {
-		return &service.UsageBillingApplyResult{Applied: false}, nil
-	}
 
-	result := &service.UsageBillingApplyResult{Applied: true}
-	if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
-		return nil, err
+	result := &service.UsageBillingApplyResult{Applied: applied}
+	if applied {
+		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
+			return nil, err
+		}
+	}
+	if cmd.UsageLog != nil {
+		if err := execUsageLogInsertNoResult(ctx, tx, prepareUsageLogInsert(cmd.UsageLog)); err != nil {
+			return nil, err
+		}
+		result.UsageLogPersisted = true
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -96,6 +101,14 @@ func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *s
 	if err == nil {
 		if strings.TrimSpace(archivedFingerprint) != strings.TrimSpace(cmd.RequestFingerprint) {
 			return false, service.ErrUsageBillingRequestConflict
+		}
+		// The archive is authoritative for old requests. Remove the temporary
+		// active claim while keeping this transaction available to backfill its log.
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM usage_billing_dedup
+			WHERE request_id = $1 AND api_key_id = $2
+		`, cmd.RequestID, cmd.APIKeyID); err != nil {
+			return false, err
 		}
 		return false, nil
 	}

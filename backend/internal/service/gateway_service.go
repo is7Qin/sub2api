@@ -8910,10 +8910,6 @@ type apiKeyAuthCacheInvalidator interface {
 	InvalidateAuthCacheByKey(ctx context.Context, key string)
 }
 
-type usageLogBestEffortWriter interface {
-	CreateBestEffort(ctx context.Context, log *UsageLog) error
-}
-
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
 	Cost                  *CostBreakdown
@@ -9080,6 +9076,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		AccountID:          p.Account.ID,
 		AccountType:        p.Account.Type,
 		RequestPayloadHash: strings.TrimSpace(p.RequestPayloadHash),
+		UsageLog:           usageLog,
 	}
 	if usageLog != nil {
 		cmd.Model = usageLog.Model
@@ -9133,7 +9130,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
 		postUsageBilling(ctx, p, deps)
-		return true, nil
+		return false, nil
 	}
 
 	billingCtx, cancel := detachedBillingContext(ctx)
@@ -9144,9 +9141,12 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 		return false, err
 	}
 
-	if result == nil || !result.Applied {
-		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	if result == nil {
 		return false, nil
+	}
+	if !result.Applied {
+		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		return result.UsageLogPersisted, nil
 	}
 
 	if result.APIKeyQuotaExhausted {
@@ -9156,7 +9156,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	finalizePostUsageBilling(billingCtx, p, deps, result)
-	return true, nil
+	return result.UsageLogPersisted, nil
 }
 
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
@@ -9303,6 +9303,9 @@ func detachedBillingContext(ctx context.Context) (context.Context, context.Cance
 	base := context.Background()
 	if ctx != nil {
 		base = context.WithoutCancel(ctx)
+		if deadline, ok := ctx.Deadline(); ok {
+			return context.WithDeadline(base, deadline)
+		}
 	}
 	return context.WithTimeout(base, postUsageBillingTimeout)
 }
@@ -9400,19 +9403,6 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	}
 	usageCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
-
-	if writer, ok := repo.(usageLogBestEffortWriter); ok {
-		if err := writer.CreateBestEffort(usageCtx, usageLog); err != nil {
-			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
-			if IsUsageLogCreateDropped(err) {
-				return
-			}
-			if _, syncErr := repo.Create(usageCtx, usageLog); syncErr != nil {
-				logger.LegacyPrintf(logKey, "Create usage log sync fallback failed: %v", syncErr)
-			}
-		}
-		return
-	}
 
 	if _, err := repo.Create(usageCtx, usageLog); err != nil {
 		logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
@@ -9623,7 +9613,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		quotaPlatform = PlatformFromAPIKey(apiKey)
 	}
 	requestID := usageLog.RequestID
-	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
+	usageLogPersisted, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
 		Cost:                  cost,
 		User:                  user,
 		APIKey:                apiKey,
@@ -9639,7 +9629,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	if billingErr != nil {
 		return billingErr
 	}
-	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	if !usageLogPersisted {
+		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	}
 
 	return nil
 }

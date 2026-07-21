@@ -39,6 +39,9 @@ type UsageBillingCommand struct {
 	APIKeyQuotaCost     float64
 	APIKeyRateLimitCost float64
 	AccountQuotaCost    float64
+
+	// UsageLog is persisted in the same transaction as billing effects.
+	UsageLog *UsageLog
 }
 
 func (c *UsageBillingCommand) Normalize() {
@@ -113,6 +116,7 @@ type AccountQuotaState struct {
 
 type UsageBillingApplyResult struct {
 	Applied              bool
+	UsageLogPersisted    bool
 	APIKeyQuotaExhausted bool
 	BalanceOverdrafted   bool
 	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)

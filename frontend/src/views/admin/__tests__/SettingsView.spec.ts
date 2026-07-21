@@ -820,6 +820,29 @@ describe("admin SettingsView payment visible method controls", () => {
     });
   });
 
+  it("caps OpenAI OAuth dynamic 429 pause at thirty days", async () => {
+    getOpenAIOAuth429DynamicSettings.mockResolvedValueOnce({
+      enabled: true,
+      window_seconds: 300,
+      min_samples: 20,
+      min_429: 3,
+      ratio_threshold: 0.5,
+      block_seconds: 60,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    const input = wrapper.get('[data-testid="openai-oauth-429-dynamic-block-seconds"]');
+    expect(input.attributes("max")).toBe("2592000");
+    await input.setValue("2592001");
+    await wrapper.get('[data-testid="openai-oauth-429-dynamic-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updateOpenAIOAuth429DynamicSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ block_seconds: 2592000 }),
+    );
+  });
+
   it("does not overwrite OpenAI OAuth dynamic 429 settings when loading fails", async () => {
     getOpenAIOAuth429DynamicSettings.mockRejectedValueOnce(new Error("boom"));
     const wrapper = mountView();

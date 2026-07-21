@@ -4286,8 +4286,8 @@ func normalizeOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSetti
 	if settings.BlockSeconds < 1 {
 		settings.BlockSeconds = 1
 	}
-	if settings.BlockSeconds > 7200 {
-		settings.BlockSeconds = 7200
+	if settings.BlockSeconds > OpenAIOAuth429DynamicMaxBlockSeconds {
+		settings.BlockSeconds = OpenAIOAuth429DynamicMaxBlockSeconds
 	}
 }
 
@@ -4304,8 +4304,8 @@ func validateOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettin
 	if settings.RatioThreshold <= 0 || settings.RatioThreshold > 1 {
 		return fmt.Errorf("ratio_threshold must be between 0.01-1")
 	}
-	if settings.BlockSeconds < 1 || settings.BlockSeconds > 7200 {
-		return fmt.Errorf("block_seconds must be between 1-7200")
+	if settings.BlockSeconds < 1 || settings.BlockSeconds > OpenAIOAuth429DynamicMaxBlockSeconds {
+		return fmt.Errorf("block_seconds must be between 1-%d", OpenAIOAuth429DynamicMaxBlockSeconds)
 	}
 	return nil
 }

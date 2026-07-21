@@ -6510,7 +6510,7 @@ export default {
         ratioThreshold: '429 Ratio Threshold',
         ratioThresholdHint: '429 / total samples within the window, range 0.01-1',
         blockSeconds: 'Pause Duration (seconds)',
-        blockSecondsHint: 'Scheduling pause duration after threshold hit (1-7200 seconds)',
+        blockSecondsHint: 'Scheduling pause duration after threshold hit (1-2592000 seconds, up to 30 days)',
         saved: 'OpenAI OAuth 429 dynamic scheduling settings saved',
         loadFailed: 'Failed to load OpenAI OAuth 429 dynamic scheduling settings',
         saveFailed: 'Failed to save OpenAI OAuth 429 dynamic scheduling settings'

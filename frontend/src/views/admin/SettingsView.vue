@@ -571,8 +571,8 @@
                         data-testid="openai-oauth-429-dynamic-block-seconds"
                         type="number"
                         min="1"
-                        max="7200"
-                        class="input w-32"
+                        max="2592000"
+                        class="input w-40"
                       />
                       <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                         {{
@@ -9157,7 +9157,7 @@ function normalizeOpenAIOAuth429DynamicForm(
     min_samples: minSamples,
     min_429: boundedInteger(raw.min_429, 1, minSamples, Math.min(3, minSamples)),
     ratio_threshold: boundedNumber(raw.ratio_threshold, 0.01, 1, 0.5),
-    block_seconds: boundedInteger(raw.block_seconds, 1, 7200, 60),
+    block_seconds: boundedInteger(raw.block_seconds, 1, 2592000, 60),
   };
 }
 

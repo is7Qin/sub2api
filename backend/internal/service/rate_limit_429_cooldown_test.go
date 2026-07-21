@@ -179,6 +179,33 @@ func TestOpenAIOAuth429Dynamic_RateLimitsAfterThreshold(t *testing.T) {
 	require.False(t, hasStat)
 }
 
+func TestOpenAIOAuth429Dynamic_AllowsThirtyDayPause(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled:        true,
+		WindowSeconds:  60,
+		MinSamples:     2,
+		Min429:         2,
+		RatioThreshold: 1,
+		BlockSeconds:   OpenAIOAuth429DynamicMaxBlockSeconds,
+	})
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+	account := &Account{ID: 52, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	before := time.Now()
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	after := time.Now()
+
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+	wantPause := time.Duration(OpenAIOAuth429DynamicMaxBlockSeconds) * time.Second
+	require.False(t, accountRepo.lastRateLimitReset.Before(before.Add(wantPause)))
+	require.False(t, accountRepo.lastRateLimitReset.After(after.Add(wantPause)))
+}
+
 func TestOpenAIOAuth429Dynamic_RatioBelowThresholdDoesNotRateLimit(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	settingRepo := newMockSettingRepo()
@@ -282,6 +309,22 @@ func TestOpenAIOAuth429Dynamic_DisabledSettingsClearExistingStats(t *testing.T) 
 
 	require.False(t, svc.hasOpenAIOAuth429DynamicStats(account.ID))
 	require.Zero(t, accountRepo.rateLimitCalls)
+}
+
+func TestOpenAIOAuth429Dynamic_BlockSecondsValidationAndNormalization(t *testing.T) {
+	max := OpenAIOAuth429DynamicMaxBlockSeconds
+
+	atMax := *DefaultOpenAIOAuth429DynamicSettings()
+	atMax.Enabled = true
+	atMax.BlockSeconds = max
+	require.NoError(t, validateOpenAIOAuth429DynamicSettings(&atMax))
+
+	overMax := atMax
+	overMax.BlockSeconds = max + 1
+	require.EqualError(t, validateOpenAIOAuth429DynamicSettings(&overMax), "block_seconds must be between 1-2592000")
+
+	normalizeOpenAIOAuth429DynamicSettings(&overMax)
+	require.Equal(t, max, overMax.BlockSeconds)
 }
 
 func TestOpenAIOAuth429Dynamic_StatsRetainedWhenSetRateLimitedFails(t *testing.T) {

@@ -462,6 +462,10 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int `json:"cooldown_seconds"`
 }
 
+// OpenAIOAuth429DynamicMaxBlockSeconds caps an automatic pause at 30 days.
+// A fixed duration keeps validation and persisted settings deterministic.
+const OpenAIOAuth429DynamicMaxBlockSeconds = 30 * 24 * 60 * 60
+
 // OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置
 type OpenAIOAuth429DynamicSettings struct {
 	// Enabled 是否启用基于429比例的动态调度暂停

@@ -6501,7 +6501,7 @@ export default {
         ratioThreshold: '429 比例阈值',
         ratioThresholdHint: '窗口内 429 / 总样本比例，范围 0.01-1',
         blockSeconds: '暂停时长（秒）',
-        blockSecondsHint: '达阈值后暂停调度的时长（1-7200 秒）',
+        blockSecondsHint: '达阈值后暂停调度的时长（1-2592000 秒，最长 30 天）',
         saved: 'OpenAI OAuth 429 动态调度设置保存成功',
         loadFailed: '加载 OpenAI OAuth 429 动态调度设置失败',
         saveFailed: '保存 OpenAI OAuth 429 动态调度设置失败'

@@ -98,6 +98,62 @@ func TestGetOpenAI403CooldownSettings_ConvertsLegacyMinutesToSeconds(t *testing.
 	require.Equal(t, 3600, settings.ThresholdPauseSeconds)
 }
 
+func TestRateLimitService_HandleUpstreamError_OpenAI403IgnoreHasNoSideEffects(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{7}}
+	blocker := &runtimeBlockRecorder{}
+	settingRepo := newMockSettingRepo()
+	data, err := json.Marshal(OpenAI403CooldownSettings{
+		Enabled: true,
+		Ignore:  true,
+	})
+	require.NoError(t, err)
+	settingRepo.data[SettingKeyOpenAI403CooldownSettings] = string(data)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	service.SetOpenAI403CounterCache(counter)
+	service.SetAccountRuntimeBlocker(blocker)
+	account := &Account{ID: 307, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, []byte(`{"error":{"message":"temporary edge rejection"}}`))
+
+	require.False(t, shouldDisable)
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.tempCalls)
+	require.Empty(t, blocker.accounts)
+	require.Equal(t, []int64{7}, counter.counts)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI403IgnoreStillDisablesDefinitivePATError(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{1}}
+	settingRepo := newMockSettingRepo()
+	data, err := json.Marshal(OpenAI403CooldownSettings{
+		Enabled: true,
+		Ignore:  true,
+	})
+	require.NoError(t, err)
+	settingRepo.data[SettingKeyOpenAI403CooldownSettings] = string(data)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	service.SetOpenAI403CounterCache(counter)
+	account := &Account{
+		ID:       308,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"personal_access_token": "pat-test",
+		},
+	}
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, []byte(`{"error":{"message":"Personal access token owner is inactive."}}`))
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Zero(t, repo.tempCalls)
+	require.Equal(t, []int64{1}, counter.counts)
+}
+
 func TestRateLimitService_HandleUpstreamError_OpenAI403ConfiguredThresholdTempPause(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	counter := &openAI403CounterCacheStub{counts: []int64{4}}

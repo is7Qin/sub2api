@@ -475,6 +475,7 @@ const (
 // OpenAI403CooldownSettings OpenAI 403临时不可调度配置。
 type OpenAI403CooldownSettings struct {
 	Enabled               bool   `json:"enabled"`
+	Ignore                bool   `json:"ignore"`
 	CooldownSeconds       int    `json:"cooldown_seconds"`
 	ThresholdCount        int    `json:"threshold_count"`
 	CounterWindowSeconds  int    `json:"counter_window_seconds"`

@@ -904,13 +904,17 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		return true
 	}
 
-	if s.openAI403CounterCache == nil {
+	settings := s.getOpenAI403CooldownSettings(ctx, account.ID)
+	if !settings.Enabled {
 		s.handleAuthError(ctx, account, msg)
 		return true
 	}
+	if settings.Ignore {
+		slog.Debug("openai_403_ignored", "account_id", account.ID)
+		return false
+	}
 
-	settings := s.getOpenAI403CooldownSettings(ctx, account.ID)
-	if !settings.Enabled {
+	if s.openAI403CounterCache == nil {
 		s.handleAuthError(ctx, account, msg)
 		return true
 	}

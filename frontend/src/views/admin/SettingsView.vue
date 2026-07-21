@@ -431,30 +431,39 @@
                   </div>
                   <Toggle v-model="openai403CooldownForm.enabled" />
                 </div>
-                <div v-if="openai403CooldownForm.enabled" class="grid gap-4 border-t border-gray-100 pt-4 md:grid-cols-2 dark:border-dark-700">
-                  <label class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.cooldownSeconds") }}
-                    <input v-model.number="openai403CooldownForm.cooldown_seconds" data-testid="openai-403-cooldown-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
-                  </label>
-                  <label class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.thresholdCount") }}
-                    <input v-model.number="openai403CooldownForm.threshold_count" data-testid="openai-403-threshold-count" type="number" min="2" max="100" class="input mt-2 w-40" />
-                  </label>
-                  <label class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.counterWindowSeconds") }}
-                    <input v-model.number="openai403CooldownForm.counter_window_seconds" data-testid="openai-403-window-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
-                  </label>
-                  <label class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.thresholdAction") }}
-                    <select v-model="openai403CooldownForm.threshold_action" data-testid="openai-403-threshold-action" class="input mt-2 w-52">
-                      <option value="error">{{ t("admin.settings.openai403Cooldown.actionError") }}</option>
-                      <option value="temp_unsched">{{ t("admin.settings.openai403Cooldown.actionTempUnsched") }}</option>
-                    </select>
-                  </label>
-                  <label v-if="openai403CooldownForm.threshold_action === 'temp_unsched'" class="text-sm text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.openai403Cooldown.thresholdPauseSeconds") }}
-                    <input v-model.number="openai403CooldownForm.threshold_pause_seconds" data-testid="openai-403-threshold-pause-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
-                  </label>
+                <div v-if="openai403CooldownForm.enabled" class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openai403Cooldown.ignore") }}</label>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openai403Cooldown.ignoreHint") }}</p>
+                    </div>
+                    <Toggle v-model="openai403CooldownForm.ignore" data-testid="openai-403-ignore" />
+                  </div>
+                  <div v-if="!openai403CooldownForm.ignore" class="grid gap-4 md:grid-cols-2">
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.cooldownSeconds") }}
+                      <input v-model.number="openai403CooldownForm.cooldown_seconds" data-testid="openai-403-cooldown-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
+                    </label>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.thresholdCount") }}
+                      <input v-model.number="openai403CooldownForm.threshold_count" data-testid="openai-403-threshold-count" type="number" min="2" max="100" class="input mt-2 w-40" />
+                    </label>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.counterWindowSeconds") }}
+                      <input v-model.number="openai403CooldownForm.counter_window_seconds" data-testid="openai-403-window-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
+                    </label>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.thresholdAction") }}
+                      <select v-model="openai403CooldownForm.threshold_action" data-testid="openai-403-threshold-action" class="input mt-2 w-52">
+                        <option value="error">{{ t("admin.settings.openai403Cooldown.actionError") }}</option>
+                        <option value="temp_unsched">{{ t("admin.settings.openai403Cooldown.actionTempUnsched") }}</option>
+                      </select>
+                    </label>
+                    <label v-if="openai403CooldownForm.threshold_action === 'temp_unsched'" class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.thresholdPauseSeconds") }}
+                      <input v-model.number="openai403CooldownForm.threshold_pause_seconds" data-testid="openai-403-threshold-pause-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
+                    </label>
+                  </div>
                 </div>
                 <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
                   <button type="button" data-testid="openai-403-cooldown-save" @click="saveOpenAI403CooldownSettings" :disabled="openai403CooldownSaving || !openai403CooldownLoaded" class="btn btn-primary btn-sm">
@@ -7331,6 +7340,7 @@ const openai403CooldownSaving = ref(false);
 const openai403CooldownLoaded = ref(false);
 const openai403CooldownForm = reactive<OpenAI403CooldownSettings>({
   enabled: true,
+  ignore: false,
   cooldown_seconds: 600,
   threshold_count: 3,
   counter_window_seconds: 10800,
@@ -9180,6 +9190,7 @@ function normalizeOpenAI403CooldownForm(
   const action = raw.threshold_action === "temp_unsched" ? "temp_unsched" : "error";
   return {
     enabled: Boolean(raw.enabled),
+    ignore: Boolean(raw.ignore),
     cooldown_seconds: boundedInteger(raw.cooldown_seconds, 1, 2592000, 600),
     threshold_count: boundedInteger(raw.threshold_count, 2, 100, 3),
     counter_window_seconds: boundedInteger(raw.counter_window_seconds, 1, 2592000, 10800),

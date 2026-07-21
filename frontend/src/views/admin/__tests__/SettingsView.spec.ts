@@ -542,6 +542,7 @@ describe("admin SettingsView payment visible method controls", () => {
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAI403CooldownSettings.mockResolvedValue({
       enabled: true,
+      ignore: false,
       cooldown_seconds: 600,
       threshold_count: 3,
       counter_window_seconds: 10800,
@@ -850,11 +851,34 @@ describe("admin SettingsView payment visible method controls", () => {
 
     expect(updateOpenAI403CooldownSettings).toHaveBeenCalledWith({
       enabled: true,
+      ignore: false,
       cooldown_seconds: 2592000,
       threshold_count: 2,
       counter_window_seconds: 10800,
       threshold_action: "temp_unsched",
       threshold_pause_seconds: 2592000,
+    });
+  });
+
+  it("saves ignore mode and hides irrelevant OpenAI 403 controls", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="openai-403-ignore"]').setValue(true);
+    expect(wrapper.find('[data-testid="openai-403-cooldown-seconds"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="openai-403-threshold-action"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="openai-403-cooldown-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updateOpenAI403CooldownSettings).toHaveBeenCalledWith({
+      enabled: true,
+      ignore: true,
+      cooldown_seconds: 600,
+      threshold_count: 3,
+      counter_window_seconds: 10800,
+      threshold_action: "error",
+      threshold_pause_seconds: 3600,
     });
   });
 
@@ -1034,6 +1058,7 @@ describe("admin SettingsView wechat connect controls", () => {
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAI403CooldownSettings.mockResolvedValue({
       enabled: true,
+      ignore: false,
       cooldown_seconds: 600,
       threshold_count: 3,
       counter_window_seconds: 10800,

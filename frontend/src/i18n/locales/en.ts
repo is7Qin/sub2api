@@ -6501,6 +6501,8 @@ export default {
         description: 'Configure short scheduling pauses and threshold actions for non-definitive OpenAI 403 responses',
         enabled: 'Enable 403 Temporary Protection',
         enabledHint: 'When disabled, ordinary 403 responses mark the account as error immediately; definitive PAT permission failures always do so',
+        ignore: 'Ignore Ordinary 403 Responses',
+        ignoreHint: 'When enabled, ordinary OpenAI 403 responses do not pause scheduling, increment the threshold counter, or mark the account as error; definitive PAT permission failures are still handled',
         cooldownSeconds: 'Per-hit Pause (seconds)',
         thresholdCount: 'Trigger Threshold',
         counterWindowSeconds: 'Counter Window (seconds)',

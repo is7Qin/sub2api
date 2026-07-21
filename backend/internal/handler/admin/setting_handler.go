@@ -3216,6 +3216,7 @@ func (h *SettingHandler) UpdateRateLimit429CooldownSettings(c *gin.Context) {
 
 type UpdateOpenAI403CooldownSettingsRequest struct {
 	Enabled               bool   `json:"enabled"`
+	Ignore                bool   `json:"ignore"`
 	CooldownSeconds       int    `json:"cooldown_seconds"`
 	ThresholdCount        int    `json:"threshold_count"`
 	CounterWindowSeconds  int    `json:"counter_window_seconds"`
@@ -3230,7 +3231,7 @@ func (h *SettingHandler) GetOpenAI403CooldownSettings(c *gin.Context) {
 		return
 	}
 	response.Success(c, dto.OpenAI403CooldownSettings{
-		Enabled: settings.Enabled, CooldownSeconds: settings.CooldownSeconds,
+		Enabled: settings.Enabled, Ignore: settings.Ignore, CooldownSeconds: settings.CooldownSeconds,
 		ThresholdCount: settings.ThresholdCount, CounterWindowSeconds: settings.CounterWindowSeconds,
 		ThresholdAction: settings.ThresholdAction, ThresholdPauseSeconds: settings.ThresholdPauseSeconds,
 	})
@@ -3243,7 +3244,7 @@ func (h *SettingHandler) UpdateOpenAI403CooldownSettings(c *gin.Context) {
 		return
 	}
 	settings := &service.OpenAI403CooldownSettings{
-		Enabled: req.Enabled, CooldownSeconds: req.CooldownSeconds,
+		Enabled: req.Enabled, Ignore: req.Ignore, CooldownSeconds: req.CooldownSeconds,
 		ThresholdCount: req.ThresholdCount, CounterWindowSeconds: req.CounterWindowSeconds,
 		ThresholdAction: req.ThresholdAction, ThresholdPauseSeconds: req.ThresholdPauseSeconds,
 	}
@@ -3252,7 +3253,7 @@ func (h *SettingHandler) UpdateOpenAI403CooldownSettings(c *gin.Context) {
 		return
 	}
 	response.Success(c, dto.OpenAI403CooldownSettings{
-		Enabled: settings.Enabled, CooldownSeconds: settings.CooldownSeconds,
+		Enabled: settings.Enabled, Ignore: settings.Ignore, CooldownSeconds: settings.CooldownSeconds,
 		ThresholdCount: settings.ThresholdCount, CounterWindowSeconds: settings.CounterWindowSeconds,
 		ThresholdAction: settings.ThresholdAction, ThresholdPauseSeconds: settings.ThresholdPauseSeconds,
 	})

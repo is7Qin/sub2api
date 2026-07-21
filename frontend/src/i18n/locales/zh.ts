@@ -6492,6 +6492,8 @@ export default {
         description: '配置 OpenAI 账号收到非确定性 403 时的短期保护与阈值动作',
         enabled: '启用 403 临时保护',
         enabledHint: '关闭后一般 403 会立即将账号标记为错误；确定性的 PAT 权限错误始终立即标错',
+        ignore: '忽略普通 403',
+        ignoreHint: '开启后普通 OpenAI 403 不会暂停调度、累计阈值或标记账号错误；确定性的 PAT 权限错误仍会立即处理',
         cooldownSeconds: '单次暂停时长（秒）',
         thresholdCount: '触发阈值（次数）',
         counterWindowSeconds: '计数窗口（秒）',

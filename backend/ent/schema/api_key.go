@@ -57,6 +57,10 @@ func (APIKey) Fields() []ent.Field {
 		field.JSON("ip_blacklist", []string{}).
 			Optional().
 			Comment("Blocked IPs/CIDRs"),
+		field.Int("concurrency").
+			NonNegative().
+			Default(0).
+			Comment("Maximum concurrent requests for this API key (0 = unlimited)"),
 
 		// ========== Quota fields ==========
 		// Quota limit in USD (0 = unlimited)

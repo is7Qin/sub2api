@@ -324,6 +324,21 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesRequirePrivacySet(t *testing.T
 	require.True(t, roundTrip.Group.RequirePrivacySet)
 }
 
+func TestAPIKeyService_SnapshotRoundTrip_PreservesAPIKeyConcurrency(t *testing.T) {
+	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
+	apiKey := &APIKey{
+		ID: 11, UserID: 22, Key: "sk-concurrency", Name: "limited", Status: StatusActive, Concurrency: 5,
+		User: &User{ID: 22, Status: StatusActive},
+	}
+
+	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NotNil(t, snapshot)
+	require.Equal(t, 5, snapshot.Concurrency)
+
+	restored := svc.snapshotToAPIKey(apiKey.Key, snapshot)
+	require.Equal(t, 5, restored.Concurrency)
+}
+
 func TestAPIKeyService_SnapshotRoundTrip_PreservesOpenAIForcePriorityTier(t *testing.T) {
 	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
 	apiKey := &APIKey{

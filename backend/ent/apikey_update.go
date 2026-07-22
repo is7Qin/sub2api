@@ -190,6 +190,27 @@ func (_u *APIKeyUpdate) ClearIPBlacklist() *APIKeyUpdate {
 	return _u
 }
 
+// SetConcurrency sets the "concurrency" field.
+func (_u *APIKeyUpdate) SetConcurrency(v int) *APIKeyUpdate {
+	_u.mutation.ResetConcurrency()
+	_u.mutation.SetConcurrency(v)
+	return _u
+}
+
+// SetNillableConcurrency sets the "concurrency" field if the given value is not nil.
+func (_u *APIKeyUpdate) SetNillableConcurrency(v *int) *APIKeyUpdate {
+	if v != nil {
+		_u.SetConcurrency(*v)
+	}
+	return _u
+}
+
+// AddConcurrency adds value to the "concurrency" field.
+func (_u *APIKeyUpdate) AddConcurrency(v int) *APIKeyUpdate {
+	_u.mutation.AddConcurrency(v)
+	return _u
+}
+
 // SetQuota sets the "quota" field.
 func (_u *APIKeyUpdate) SetQuota(v float64) *APIKeyUpdate {
 	_u.mutation.ResetQuota()
@@ -574,6 +595,11 @@ func (_u *APIKeyUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "APIKey.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.Concurrency(); ok {
+		if err := apikey.ConcurrencyValidator(v); err != nil {
+			return &ValidationError{Name: "concurrency", err: fmt.Errorf(`ent: validator failed for field "APIKey.concurrency": %w`, err)}
+		}
+	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "APIKey.user"`)
 	}
@@ -637,6 +663,12 @@ func (_u *APIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.IPBlacklistCleared() {
 		_spec.ClearField(apikey.FieldIPBlacklist, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Concurrency(); ok {
+		_spec.SetField(apikey.FieldConcurrency, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedConcurrency(); ok {
+		_spec.AddField(apikey.FieldConcurrency, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.Quota(); ok {
 		_spec.SetField(apikey.FieldQuota, field.TypeFloat64, value)
@@ -991,6 +1023,27 @@ func (_u *APIKeyUpdateOne) AppendIPBlacklist(v []string) *APIKeyUpdateOne {
 // ClearIPBlacklist clears the value of the "ip_blacklist" field.
 func (_u *APIKeyUpdateOne) ClearIPBlacklist() *APIKeyUpdateOne {
 	_u.mutation.ClearIPBlacklist()
+	return _u
+}
+
+// SetConcurrency sets the "concurrency" field.
+func (_u *APIKeyUpdateOne) SetConcurrency(v int) *APIKeyUpdateOne {
+	_u.mutation.ResetConcurrency()
+	_u.mutation.SetConcurrency(v)
+	return _u
+}
+
+// SetNillableConcurrency sets the "concurrency" field if the given value is not nil.
+func (_u *APIKeyUpdateOne) SetNillableConcurrency(v *int) *APIKeyUpdateOne {
+	if v != nil {
+		_u.SetConcurrency(*v)
+	}
+	return _u
+}
+
+// AddConcurrency adds value to the "concurrency" field.
+func (_u *APIKeyUpdateOne) AddConcurrency(v int) *APIKeyUpdateOne {
+	_u.mutation.AddConcurrency(v)
 	return _u
 }
 
@@ -1391,6 +1444,11 @@ func (_u *APIKeyUpdateOne) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "APIKey.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.Concurrency(); ok {
+		if err := apikey.ConcurrencyValidator(v); err != nil {
+			return &ValidationError{Name: "concurrency", err: fmt.Errorf(`ent: validator failed for field "APIKey.concurrency": %w`, err)}
+		}
+	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "APIKey.user"`)
 	}
@@ -1471,6 +1529,12 @@ func (_u *APIKeyUpdateOne) sqlSave(ctx context.Context) (_node *APIKey, err erro
 	}
 	if _u.mutation.IPBlacklistCleared() {
 		_spec.ClearField(apikey.FieldIPBlacklist, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Concurrency(); ok {
+		_spec.SetField(apikey.FieldConcurrency, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedConcurrency(); ok {
+		_spec.AddField(apikey.FieldConcurrency, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.Quota(); ok {
 		_spec.SetField(apikey.FieldQuota, field.TypeFloat64, value)

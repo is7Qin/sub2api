@@ -25,6 +25,12 @@ func TestAPIKeyFromService_MapsLastUsedAt(t *testing.T) {
 	require.WithinDuration(t, lastUsed, *out.LastUsedAt, time.Second)
 }
 
+func TestAPIKeyFromService_MapsConcurrency(t *testing.T) {
+	out := APIKeyFromService(&service.APIKey{Concurrency: 4})
+	require.NotNil(t, out)
+	require.Equal(t, 4, out.Concurrency)
+}
+
 func TestAPIKeyFromService_MapsNilLastUsedAt(t *testing.T) {
 	src := &service.APIKey{
 		ID:     1,

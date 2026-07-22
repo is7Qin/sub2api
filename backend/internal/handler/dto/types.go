@@ -57,6 +57,7 @@ type APIKey struct {
 	Status      string     `json:"status"`
 	IPWhitelist []string   `json:"ip_whitelist"`
 	IPBlacklist []string   `json:"ip_blacklist"`
+	Concurrency int        `json:"concurrency"`
 	LastUsedAt  *time.Time `json:"last_used_at"`
 	Quota       float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
 	QuotaUsed   float64    `json:"quota_used"` // Used quota amount in USD

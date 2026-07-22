@@ -1781,6 +1781,9 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 	)
 
 	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
 			return true, nil
 		},
@@ -1797,10 +1800,11 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 	}
 
 	apiKey := &service.APIKey{
-		ID:      1802,
-		GroupID: &groupID,
-		User:    &service.User{ID: 1702, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		ID:          1802,
+		GroupID:     &groupID,
+		Concurrency: 1,
+		User:        &service.User{ID: 1702, Status: service.StatusActive},
+		Group:       &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
 	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -1967,6 +1971,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	)
 
 	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
 			return true, nil
 		},

@@ -102,12 +102,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, apiKey, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
+	clientRelease, acquired := h.acquireResponsesClientSlots(c, apiKey, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
 	if !acquired {
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
-	logicalReleases.Add(userReleaseFunc)
+	logicalReleases.Add(clientRelease)
 	defer logicalReleases.finish()
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {

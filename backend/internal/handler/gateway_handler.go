@@ -211,15 +211,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 
-	// 1. 首先获取用户并发槽位
-	userReleaseFunc, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	// 1. 首先获取逻辑请求的 Key 和用户并发槽位
+	clientRelease, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
 	if err != nil {
-		reqLog.Warn("gateway.user_slot_acquire_failed", zap.Error(err))
+		reqLog.Warn("gateway.client_slots_acquire_failed", zap.Error(err))
 		h.handleConcurrencyError(c, err, "user", streamStarted)
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
-	logicalReleases.Add(userReleaseFunc)
+	logicalReleases.Add(clientRelease)
 	defer logicalReleases.finish()
 
 	// 2. 【新增】Wait后二次检查余额/订阅

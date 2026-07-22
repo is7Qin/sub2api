@@ -243,19 +243,19 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	// For Gemini native API, do not send Claude-style ping frames.
 	geminiConcurrency := NewConcurrencyHelper(h.concurrencyHelper.concurrencyService, SSEPingFormatNone, 0)
 
-	// 1) user concurrency slot
+	// 1) logical client concurrency slots
 	streamStarted := false
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
-	userReleaseFunc, err := geminiConcurrency.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, authSubject.UserID, authSubject.Concurrency, stream, &streamStarted)
+	clientRelease, err := geminiConcurrency.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, authSubject.UserID, authSubject.Concurrency, stream, &streamStarted)
 	if err != nil {
-		reqLog.Warn("gemini.user_slot_acquire_failed", zap.Error(err))
+		reqLog.Warn("gemini.client_slots_acquire_failed", zap.Error(err))
 		googleError(c, http.StatusTooManyRequests, err.Error())
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
-	logicalReleases.Add(userReleaseFunc)
+	logicalReleases.Add(clientRelease)
 	defer logicalReleases.finish()
 
 	// 2) billing eligibility check (after wait)

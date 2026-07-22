@@ -293,12 +293,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, apiKey, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
+	clientRelease, acquired := h.acquireResponsesClientSlots(c, apiKey, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
 	if !acquired {
 		return
 	}
 	// 确保请求取消时也会释放槽位，避免长连接被动中断造成泄漏
-	logicalReleases.Add(userReleaseFunc)
+	logicalReleases.Add(clientRelease)
 
 	// 2. Re-check billing eligibility after wait
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
@@ -760,12 +760,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, apiKey, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
+	clientRelease, acquired := h.acquireResponsesClientSlots(c, apiKey, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
 	if !acquired {
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
-	logicalReleases.Add(userReleaseFunc)
+	logicalReleases.Add(clientRelease)
 	defer logicalReleases.finish()
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
@@ -1168,7 +1168,7 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 	return false
 }
 
-func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
+func (h *OpenAIGatewayHandler) acquireResponsesClientSlots(
 	c *gin.Context,
 	apiKey *service.APIKey,
 	userID int64,
@@ -1177,13 +1177,13 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 	streamStarted *bool,
 	reqLog *zap.Logger,
 ) (func(), bool) {
-	userReleaseFunc, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, userID, userConcurrency, reqStream, streamStarted)
+	clientRelease, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, userID, userConcurrency, reqStream, streamStarted)
 	if err != nil {
-		reqLog.Warn("openai.user_slot_acquire_failed", zap.Error(err))
+		reqLog.Warn("openai.client_slots_acquire_failed", zap.Error(err))
 		h.handleConcurrencyError(c, err, "user", *streamStarted)
 		return nil, false
 	}
-	return userReleaseFunc, true
+	return clientRelease, true
 }
 
 func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(

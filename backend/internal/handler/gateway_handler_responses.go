@@ -118,17 +118,17 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 
-	// 1. Acquire user concurrency slot
-	userReleaseFunc, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	// 1. Acquire logical client concurrency slots
+	clientRelease, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
 	if err != nil {
-		reqLog.Warn("gateway.responses.user_slot_acquire_failed", zap.Error(err))
+		reqLog.Warn("gateway.responses.client_slots_acquire_failed", zap.Error(err))
 		h.responsesConcurrencyErrorResponse(c, err, "user", streamStarted)
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
-	userReleaseFunc = logicalReleases.Add(userReleaseFunc)
-	if userReleaseFunc != nil {
-		defer userReleaseFunc()
+	clientRelease = logicalReleases.Add(clientRelease)
+	if clientRelease != nil {
+		defer clientRelease()
 	}
 
 	// 2. Re-check billing

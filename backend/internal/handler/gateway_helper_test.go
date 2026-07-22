@@ -7,6 +7,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWrapReleaseOnDone_NoGoroutineLeak 验证 wrapReleaseOnDone 修复后不会泄露 goroutine
@@ -233,6 +236,83 @@ func TestHTTPAttemptReleaseSetRejectsLateReleaseWithoutLeak(
 		t.Fatal("late release ran more than once")
 	default:
 	}
+}
+
+func TestLogicalClientLeaseLifecycle(t *testing.T) {
+	acquireLogical := func(t *testing.T, ctx context.Context) (*httpAttemptReleaseSet, *concurrencyCacheMock) {
+		t.Helper()
+		cache := &concurrencyCacheMock{
+			acquireAPIKeySlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
+			acquireUserSlotFn:   func(context.Context, int64, int, string) (bool, error) { return true, nil },
+		}
+		helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second)
+		c, _ := newHelperTestContext("POST", "/v1/test")
+		c.Request = c.Request.WithContext(ctx)
+		streamStarted := false
+		clientRelease, err := helper.AcquireClientSlotsWithWait(c, 77, 1, 101, 1, false, &streamStarted)
+		require.NoError(t, err)
+		logical := newHTTPAttemptReleaseSet(ctx)
+		logical.Add(clientRelease)
+		return logical, cache
+	}
+	assertClientReleasedOnce := func(t *testing.T, cache *concurrencyCacheMock) {
+		t.Helper()
+		require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+		require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
+	}
+
+	t.Run("billing auth and scheduling failures release both client slots", func(t *testing.T) {
+		for _, failure := range []string{"billing", "auth", "scheduling"} {
+			t.Run(failure, func(t *testing.T) {
+				logical, cache := acquireLogical(t, context.Background())
+				logical.finish()
+				logical.finish()
+				assertClientReleasedOnce(t, cache)
+			})
+		}
+	})
+
+	t.Run("cancellation releases both client slots", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		logical, cache := acquireLogical(t, ctx)
+		cancel()
+		require.Eventually(t, func() bool {
+			return atomic.LoadInt32(&cache.releaseAPIKeyCalled) == 1 && atomic.LoadInt32(&cache.releaseUserCalled) == 1
+		}, time.Second, time.Millisecond)
+		logical.finish()
+		assertClientReleasedOnce(t, cache)
+	})
+
+	t.Run("streaming completion releases transferred client slots", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		logical, cache := acquireLogical(t, ctx)
+		require.True(t, logical.transferLogical())
+
+		cancel()
+		time.Sleep(10 * time.Millisecond)
+		require.Zero(t, atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+		require.Zero(t, atomic.LoadInt32(&cache.releaseUserCalled))
+
+		logical.finish()
+		logical.finish()
+		assertClientReleasedOnce(t, cache)
+	})
+
+	t.Run("failover keeps client slots logical and accounts per attempt", func(t *testing.T) {
+		logical, cache := acquireLogical(t, context.Background())
+		var accountReleases atomic.Int32
+		for range 2 {
+			attempt := newHTTPAttemptReleaseSet(context.Background())
+			attempt.Add(func() { accountReleases.Add(1) })
+			require.True(t, attempt.Transfer())
+			require.True(t, logical.transferLogical())
+			attempt.finish()
+		}
+		logical.finish()
+
+		assertClientReleasedOnce(t, cache)
+		require.Equal(t, int32(2), accountReleases.Load())
+	})
 }
 
 func BenchmarkWrapReleaseOnDone(b *testing.B) {

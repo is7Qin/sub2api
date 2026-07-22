@@ -810,6 +810,7 @@ export default {
     ipBlacklistHint: 'One IP or CIDR per line. These IPs will be blocked from using this key.',
     ipRestrictionEnabled: 'IP restriction enabled',
     concurrencyLabel: 'Key concurrency limit',
+    concurrencyUsage: 'Current / key concurrency limit',
     concurrencyHint: '0 removes only this key-specific ceiling. Requests still share the user concurrency limit.',
     concurrencyInvalid: 'Key concurrency must be an integer from 0 to 2147483647.',
     ccSwitchNotInstalled: 'CC-Switch is not installed or the protocol handler is not registered. Please install CC-Switch first or manually copy the API key.',

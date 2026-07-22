@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/dgraph-io/ristretto"
@@ -28,7 +29,7 @@ var (
 	ErrAPIKeyInvalidChars       = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
 	ErrAPIKeyRateLimited        = infraerrors.TooManyRequests("API_KEY_RATE_LIMITED", "too many failed attempts, please try again later")
 	ErrInvalidIPPattern         = infraerrors.BadRequest("INVALID_IP_PATTERN", "invalid IP or CIDR pattern")
-	ErrInvalidAPIKeyConcurrency = infraerrors.BadRequest("INVALID_API_KEY_CONCURRENCY", "api key concurrency must be non-negative")
+	ErrInvalidAPIKeyConcurrency = infraerrors.BadRequest("INVALID_API_KEY_CONCURRENCY", "api key concurrency must be an integer from 0 to 2147483647")
 	// ErrAPIKeyExpired        = infraerrors.Forbidden("API_KEY_EXPIRED", "api key has expired")
 	ErrAPIKeyExpired = infraerrors.Forbidden("API_KEY_EXPIRED", "api key 已过期")
 	// ErrAPIKeyQuotaExhausted = infraerrors.TooManyRequests("API_KEY_QUOTA_EXHAUSTED", "api key quota exhausted")
@@ -225,20 +226,25 @@ type RateLimitCacheInvalidator interface {
 	InvalidateAPIKeyRateLimit(ctx context.Context, keyID int64) error
 }
 
+type APIKeyConcurrencyBatchReader interface {
+	GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error)
+}
+
 type APIKeyService struct {
-	apiKeyRepo            APIKeyRepository
-	userRepo              UserRepository
-	groupRepo             GroupRepository
-	userSubRepo           UserSubscriptionRepository
-	userGroupRateRepo     UserGroupRateRepository
-	cache                 APIKeyCache
-	rateLimitCacheInvalid RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
-	cfg                   *config.Config
-	authCacheL1           *ristretto.Cache
-	authCfg               apiKeyAuthCacheConfig
-	authGroup             singleflight.Group
-	lastUsedTouchL1       sync.Map // keyID -> nextAllowedAt(time.Time)
-	lastUsedTouchSF       singleflight.Group
+	apiKeyRepo             APIKeyRepository
+	userRepo               UserRepository
+	groupRepo              GroupRepository
+	userSubRepo            UserSubscriptionRepository
+	userGroupRateRepo      UserGroupRateRepository
+	cache                  APIKeyCache
+	rateLimitCacheInvalid  RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
+	concurrencyBatchReader APIKeyConcurrencyBatchReader
+	cfg                    *config.Config
+	authCacheL1            *ristretto.Cache
+	authCfg                apiKeyAuthCacheConfig
+	authGroup              singleflight.Group
+	lastUsedTouchL1        sync.Map // keyID -> nextAllowedAt(time.Time)
+	lastUsedTouchSF        singleflight.Group
 }
 
 // NewAPIKeyService 创建API Key服务实例
@@ -268,6 +274,10 @@ func NewAPIKeyService(
 // Called after construction (e.g. in wire) to avoid circular dependencies.
 func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidator) {
 	s.rateLimitCacheInvalid = inv
+}
+
+func (s *APIKeyService) SetAPIKeyConcurrencyBatchReader(reader APIKeyConcurrencyBatchReader) {
+	s.concurrencyBatchReader = reader
 }
 
 func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
@@ -472,6 +482,32 @@ func (s *APIKeyService) List(ctx context.Context, userID int64, params paginatio
 	keys, pagination, err := s.apiKeyRepo.ListByUserID(ctx, userID, params, filters)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list api keys: %w", err)
+	}
+	if s.concurrencyBatchReader == nil {
+		return keys, pagination, nil
+	}
+	ids := make([]int64, 0, len(keys))
+	for i := range keys {
+		if keys[i].Concurrency > 0 {
+			ids = append(ids, keys[i].ID)
+		}
+	}
+	if len(ids) == 0 {
+		return keys, pagination, nil
+	}
+	counts, err := s.concurrencyBatchReader.GetAPIKeyConcurrencyBatch(ctx, ids)
+	if err != nil {
+		logger.LegacyPrintf("service.api_key", "Warning: load API key concurrency failed: %v", err)
+		return keys, pagination, nil
+	}
+	for i := range keys {
+		if keys[i].Concurrency <= 0 {
+			continue
+		}
+		count, ok := counts[keys[i].ID]
+		if ok {
+			keys[i].CurrentConcurrency = &count
+		}
 	}
 	return keys, pagination, nil
 }

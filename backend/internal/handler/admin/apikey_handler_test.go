@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +23,91 @@ func setupAPIKeyHandler(adminSvc service.AdminService) *gin.Engine {
 	h := NewAdminAPIKeyHandler(adminSvc)
 	router.PUT("/api/v1/admin/api-keys/:id", h.UpdateGroup)
 	return router
+}
+
+func TestAdminAPIKeyHandler_UpdateConcurrency(t *testing.T) {
+	t.Run("omission preserves value", func(t *testing.T) {
+		svc := newStubAdminService()
+		svc.apiKeys[0].Concurrency = 6
+		rec := performAdminAPIKeyUpdate(t, svc, `{}`)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, 6, responseConcurrency(t, rec))
+	})
+
+	for _, concurrency := range []int{12, 0} {
+		concurrency := concurrency
+		t.Run(fmt.Sprintf("sets %d", concurrency), func(t *testing.T) {
+			svc := newStubAdminService()
+			svc.apiKeys[0].Concurrency = 6
+			rec := performAdminAPIKeyUpdate(t, svc, fmt.Sprintf(`{"concurrency":%d}`, concurrency))
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Equal(t, concurrency, responseConcurrency(t, rec))
+		})
+	}
+
+	for _, body := range []string{`{"concurrency":-1}`, `{"concurrency":2147483648}`} {
+		t.Run("rejects out of range "+body, func(t *testing.T) {
+			rec := performAdminAPIKeyUpdate(t, newStubAdminService(), body)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+
+	t.Run("combines reset and concurrency", func(t *testing.T) {
+		svc := newStubAdminService()
+		svc.apiKeys[0].Concurrency = 6
+		svc.apiKeys[0].Usage5h = 1.2
+		rec := performAdminAPIKeyUpdate(t, svc, `{"reset_rate_limit_usage":true,"concurrency":9}`)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var resp struct {
+			Data struct {
+				APIKey struct {
+					Concurrency int     `json:"concurrency"`
+					Usage5h     float64 `json:"usage_5h"`
+				} `json:"api_key"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.Equal(t, 9, resp.Data.APIKey.Concurrency)
+		require.Zero(t, resp.Data.APIKey.Usage5h)
+	})
+
+	t.Run("combines group and concurrency", func(t *testing.T) {
+		rec := performAdminAPIKeyUpdate(t, newStubAdminService(), `{"group_id":2,"concurrency":9}`)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var resp struct {
+			Data struct {
+				APIKey struct {
+					GroupID     *int64 `json:"group_id"`
+					Concurrency int    `json:"concurrency"`
+				} `json:"api_key"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.Equal(t, int64(2), *resp.Data.APIKey.GroupID)
+		require.Equal(t, 9, resp.Data.APIKey.Concurrency)
+	})
+}
+
+func performAdminAPIKeyUpdate(t *testing.T, svc service.AdminService, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/api-keys/10", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	setupAPIKeyHandler(svc).ServeHTTP(rec, req)
+	return rec
+}
+
+func responseConcurrency(t *testing.T, rec *httptest.ResponseRecorder) int {
+	t.Helper()
+	var resp struct {
+		Data struct {
+			APIKey struct {
+				Concurrency int `json:"concurrency"`
+			} `json:"api_key"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	return resp.Data.APIKey.Concurrency
 }
 
 func TestAdminAPIKeyHandler_UpdateGroup_InvalidID(t *testing.T) {
@@ -237,6 +323,6 @@ type failingUpdateGroupService struct {
 	err error
 }
 
-func (f *failingUpdateGroupService) AdminUpdateAPIKeyGroupID(_ context.Context, _ int64, _ *int64) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+func (f *failingUpdateGroupService) AdminUpdateAPIKey(_ context.Context, _ int64, _ *int64, _ *int) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
 	return nil, f.err
 }

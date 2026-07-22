@@ -40,6 +40,20 @@ type stubConcurrencyCacheForTest struct {
 }
 
 var _ ConcurrencyCache = (*stubConcurrencyCacheForTest)(nil)
+var _ APIKeyConcurrencyCache = (*stubConcurrencyCacheForTest)(nil)
+
+func TestConcurrencyService_GetAPIKeyConcurrencyBatch(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{concurrency: 3}
+	svc := NewConcurrencyService(cache)
+
+	counts, err := svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{4, 8})
+	require.NoError(t, err)
+	require.Equal(t, map[int64]int{4: 3, 8: 3}, counts)
+
+	cache.concurrencyErr = errors.New("read failed")
+	_, err = svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{4})
+	require.ErrorContains(t, err, "read failed")
+}
 
 func (c *stubConcurrencyCacheForTest) AcquireAccountSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
 	return c.acquireResult, c.acquireErr
@@ -72,6 +86,16 @@ func (c *stubConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, apiKe
 }
 func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrency(_ context.Context, _ int64) (int, error) {
 	return c.concurrency, c.concurrencyErr
+}
+func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	if c.concurrencyErr != nil {
+		return nil, c.concurrencyErr
+	}
+	result := make(map[int64]int, len(apiKeyIDs))
+	for _, id := range apiKeyIDs {
+		result[id] = c.concurrency
+	}
+	return result, nil
 }
 func (c *stubConcurrencyCacheForTest) IncrementAccountWaitCount(_ context.Context, _ int64, _ int) (bool, error) {
 	return c.waitAllowed, c.waitErr

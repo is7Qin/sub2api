@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -155,8 +156,20 @@ func (s *apiKeyRepoStubForGroupUpdate) UpdateGroupID(_ context.Context, _ int64,
 	s.updated = &clone
 	return &clone, nil
 }
-func (s *apiKeyRepoStubForGroupUpdate) UpdateConfig(context.Context, int64, int64, APIKeyConfigPatch) (*APIKey, error) {
-	panic("unexpected")
+func (s *apiKeyRepoStubForGroupUpdate) UpdateConfig(_ context.Context, _ int64, _ int64, patch APIKeyConfigPatch) (*APIKey, error) {
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
+	base := s.key
+	if s.updated != nil {
+		base = s.updated
+	}
+	clone := *base
+	if patch.Concurrency != nil {
+		clone.Concurrency = *patch.Concurrency
+	}
+	s.updated = &clone
+	return &clone, nil
 }
 func (s *apiKeyRepoStubForGroupUpdate) ResetRateLimitUsage(context.Context, int64) (*APIKey, error) {
 	if s.updateErr != nil {
@@ -325,6 +338,71 @@ func (s *userSubRepoStubForGroupUpdate) GetActiveByUserIDAndGroupID(_ context.Co
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
+	t.Run("omission preserves value", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		svc := &adminServiceImpl{apiKeyRepo: repo}
+
+		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, 6, got.APIKey.Concurrency)
+		require.Nil(t, repo.updated)
+	})
+
+	for _, concurrency := range []int{12, 0} {
+		concurrency := concurrency
+		t.Run(fmt.Sprintf("sets %d", concurrency), func(t *testing.T) {
+			existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+			repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+			cache := &authCacheInvalidatorStub{}
+			svc := &adminServiceImpl{apiKeyRepo: repo, authCacheInvalidator: cache}
+
+			got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &concurrency)
+			require.NoError(t, err)
+			require.Equal(t, concurrency, got.APIKey.Concurrency)
+			require.Equal(t, concurrency, repo.updated.Concurrency)
+			require.Equal(t, []string{"sk-test"}, cache.keys)
+		})
+	}
+
+	t.Run("rejects negative", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		svc := &adminServiceImpl{apiKeyRepo: repo}
+		negative := -1
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &negative)
+		require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+		require.Nil(t, repo.updated)
+	})
+
+	t.Run("rejects value above database integer range", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		svc := &adminServiceImpl{apiKeyRepo: repo}
+		tooLarge := 2147483648
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &tooLarge)
+		require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+		require.Nil(t, repo.updated)
+	})
+
+	t.Run("combines group and concurrency", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing, group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
+		groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
+		cache := &authCacheInvalidatorStub{}
+		svc := &adminServiceImpl{apiKeyRepo: repo, groupRepo: groupRepo, authCacheInvalidator: cache}
+		concurrency := 8
+
+		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, int64Ptr(10), &concurrency)
+		require.NoError(t, err)
+		require.Equal(t, int64(10), *got.APIKey.GroupID)
+		require.Equal(t, 8, got.APIKey.Concurrency)
+	})
+}
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_KeyNotFound(t *testing.T) {
 	repo := &apiKeyRepoStubForGroupUpdate{getErr: ErrAPIKeyNotFound}

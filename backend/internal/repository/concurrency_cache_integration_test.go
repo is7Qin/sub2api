@@ -146,6 +146,21 @@ func (s *ConcurrencyCacheSuite) TestAPIKeySlot_AcquireReleaseAndIdempotency() {
 	require.Zero(s.T(), cur)
 }
 
+func (s *ConcurrencyCacheSuite) TestAPIKeyConcurrencyBatch() {
+	for _, slot := range []struct {
+		keyID int64
+		reqID string
+	}{{42, "a"}, {42, "b"}, {44, "c"}} {
+		ok, err := s.cache.AcquireAPIKeySlot(s.ctx, slot.keyID, 5, slot.reqID)
+		require.NoError(s.T(), err)
+		require.True(s.T(), ok)
+	}
+
+	counts, err := s.cache.GetAPIKeyConcurrencyBatch(s.ctx, []int64{42, 43, 44})
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), map[int64]int{42: 2, 43: 0, 44: 1}, counts)
+}
+
 func (s *ConcurrencyCacheSuite) TestAPIKeySlot_NamespaceIsolationAndTTL() {
 	const sharedID int64 = 84
 

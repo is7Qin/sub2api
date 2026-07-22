@@ -67,7 +67,7 @@ type AdminService interface {
 	UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error
 
 	// API Key management (admin)
-	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
+	AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int) (*AdminUpdateAPIKeyGroupIDResult, error)
 	AdminResetAPIKeyRateLimitUsage(ctx context.Context, keyID int64) (*APIKey, error)
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
@@ -2335,6 +2335,29 @@ func (s *adminServiceImpl) BatchSetGroupRPMOverrides(ctx context.Context, groupI
 
 func (s *adminServiceImpl) UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
 	return s.groupRepo.UpdateSortOrders(ctx, updates)
+}
+
+// AdminUpdateAPIKey updates the requested admin-managed API key fields.
+// Nil fields are omitted; concurrency zero explicitly disables the key-specific ceiling.
+func (s *adminServiceImpl) AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int) (*AdminUpdateAPIKeyGroupIDResult, error) {
+	if concurrency != nil && (*concurrency < 0 || *concurrency > 2147483647) {
+		return nil, ErrInvalidAPIKeyConcurrency
+	}
+
+	result, err := s.AdminUpdateAPIKeyGroupID(ctx, keyID, groupID)
+	if err != nil || concurrency == nil {
+		return result, err
+	}
+
+	updated, err := s.apiKeyRepo.UpdateConfig(ctx, keyID, result.APIKey.UserID, APIKeyConfigPatch{Concurrency: concurrency})
+	if err != nil {
+		return nil, fmt.Errorf("update api key concurrency: %w", err)
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, updated.Key)
+	}
+	result.APIKey = updated
+	return result, nil
 }
 
 // AdminUpdateAPIKeyGroupID 管理员修改 API Key 分组绑定

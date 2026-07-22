@@ -813,6 +813,7 @@ export default {
     ipBlacklistHint: '每行一个 IP 或 CIDR，这些 IP 将被禁止使用此密钥',
     ipRestrictionEnabled: '已配置 IP 限制',
     concurrencyLabel: '密钥并发上限',
+    concurrencyUsage: '当前并发 / 密钥并发上限',
     concurrencyHint: '0 仅表示不设置此密钥的独立上限；请求仍受用户共享并发上限约束。',
     concurrencyInvalid: '密钥并发数必须是 0 到 2147483647 之间的整数。',
     ccSwitchNotInstalled:

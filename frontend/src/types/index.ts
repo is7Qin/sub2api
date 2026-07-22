@@ -572,6 +572,7 @@ export interface ApiKey {
   ip_whitelist: string[]
   ip_blacklist: string[]
   concurrency: number // Per-key limit (0 = no key-specific ceiling)
+  current_concurrency?: number | null // Live usage; omitted when unavailable
   last_used_at: string | null
   quota: number // Quota limit in USD (0 = unlimited)
   quota_used: number // Used quota amount in USD

@@ -150,6 +150,17 @@
             </div>
           </template>
 
+          <template #cell-concurrency="{ row }">
+            <div
+              v-if="row.concurrency > 0 && row.current_concurrency != null"
+              :data-testid="`key-concurrency-usage-${row.id}`"
+              class="text-sm font-medium tabular-nums text-gray-900 dark:text-white"
+              :title="t('keys.concurrencyUsage')"
+            >
+              {{ row.current_concurrency }} / {{ row.concurrency }}
+            </div>
+          </template>
+
           <template #cell-usage="{ row }">
             <div class="text-sm">
               <div class="flex items-center gap-1.5">
@@ -1163,6 +1174,7 @@ const columns = computed<Column[]>(() => [
   { key: 'name', label: t('common.name'), sortable: true },
   { key: 'key', label: t('keys.apiKey'), sortable: false },
   { key: 'group', label: t('keys.group'), sortable: false },
+  { key: 'concurrency', label: t('keys.concurrencyUsage'), sortable: false },
   { key: 'usage', label: t('keys.usage'), sortable: false },
   { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
   { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },

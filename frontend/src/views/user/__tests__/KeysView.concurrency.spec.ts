@@ -22,7 +22,7 @@ vi.mock('@/stores/onboarding', () => ({ useOnboardingStore: () => ({ isCurrentSt
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<div><slot /></div>' } }))
 vi.mock('@/components/layout/TablePageLayout.vue', () => ({ default: { template: '<div><slot name="actions"/><slot name="table"/></div>' } }))
 vi.mock('@/components/common/DataTable.vue', () => ({
-  default: { props: ['data'], template: '<div><slot name="cell-actions" v-for="row in data" :row="row"/><slot name="empty"/></div>' },
+  default: { props: ['data'], template: '<div><template v-for="row in data"><slot name="cell-concurrency" :row="row"/><slot name="cell-actions" :row="row"/></template><slot name="empty"/></div>' },
 }))
 vi.mock('@/components/common/BaseDialog.vue', () => ({ default: { props: ['show'], template: '<div v-if="show"><slot/><slot name="footer"/></div>' } }))
 vi.mock('@/components/common/Select.vue', () => ({ default: { template: '<div />' } }))
@@ -59,6 +59,21 @@ beforeEach(() => {
 })
 
 describe('KeysView concurrency form', () => {
+  it('shows live usage over configured concurrency for enabled keys', async () => {
+    const wrapper = await mountView([{ ...key, concurrency: 5, current_concurrency: 2 }])
+    expect(wrapper.get('[data-testid="key-concurrency-usage-5"]').text()).toContain('2 / 5')
+  })
+
+  it('hides concurrency usage for keys without a key-specific limit', async () => {
+    const wrapper = await mountView([{ ...key, concurrency: 0, current_concurrency: 2 }])
+    expect(wrapper.find('[data-testid="key-concurrency-usage-5"]').exists()).toBe(false)
+  })
+
+  it('does not report false zero when live usage is unavailable', async () => {
+    const wrapper = await mountView([{ ...key, concurrency: 5, current_concurrency: undefined }])
+    expect(wrapper.find('[data-testid="key-concurrency-usage-5"]').exists()).toBe(false)
+  })
+
   it('defaults create concurrency to zero and explains shared user limit', async () => {
     const wrapper = await mountView()
     await wrapper.find('[data-tour="keys-create-btn"]').trigger('click')

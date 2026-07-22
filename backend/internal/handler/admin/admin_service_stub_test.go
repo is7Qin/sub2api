@@ -664,18 +664,21 @@ func (s *stubAdminService) UpdateGroupSortOrders(ctx context.Context, updates []
 	return nil
 }
 
-func (s *stubAdminService) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+func (s *stubAdminService) AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
 	for i := range s.apiKeys {
 		if s.apiKeys[i].ID == keyID {
-			k := s.apiKeys[i]
 			if groupID != nil {
 				if *groupID == 0 {
-					k.GroupID = nil
+					s.apiKeys[i].GroupID = nil
 				} else {
 					gid := *groupID
-					k.GroupID = &gid
+					s.apiKeys[i].GroupID = &gid
 				}
 			}
+			if concurrency != nil {
+				s.apiKeys[i].Concurrency = *concurrency
+			}
+			k := s.apiKeys[i]
 			return &service.AdminUpdateAPIKeyGroupIDResult{APIKey: &k}, nil
 		}
 	}

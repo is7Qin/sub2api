@@ -105,6 +105,9 @@ func (f *retryCancellationConcurrencyCache) ReleaseAPIKeySlot(context.Context, i
 func (f *retryCancellationConcurrencyCache) GetAPIKeyConcurrency(context.Context, int64) (int, error) {
 	return 0, nil
 }
+func (f *retryCancellationConcurrencyCache) GetAPIKeyConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
+	return map[int64]int{}, nil
+}
 func (f *retryCancellationConcurrencyCache) AcquireUserSlot(context.Context, int64, int, string) (bool, error) {
 	f.userAcquires.Add(1)
 	return true, nil

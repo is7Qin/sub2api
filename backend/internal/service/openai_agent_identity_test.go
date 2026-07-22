@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -162,6 +163,33 @@ func TestEnsureAgentIdentityTaskPersistsAndRedactsCredentials(t *testing.T) {
 	require.NotContains(t, string(mustAgentIdentityJSON(t, redacted)), privateKey)
 }
 
+func TestEnsureAgentIdentityTaskInvalidatesOnlyAfterTaskChanges(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 9002, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
+		"auth_mode": OpenAIAuthModeAgentIdentity, "agent_runtime_id": key.runtimeID, "agent_private_key": privateKey, "task_id": "task-old",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	invalidator := &recordingAgentIdentityWSInvalidator{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"task_id":"task-new"}`)
+	}))
+	defer server.Close()
+	oldBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = server.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldBase })
+
+	require.NoError(t, ensureAgentIdentityTaskForAccount(context.Background(), repo, invalidator, &sync.Mutex{}, account, "task-old"))
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
+	require.NoError(t, ensureAgentIdentityTaskForAccount(context.Background(), repo, invalidator, &sync.Mutex{}, account, "task-old"))
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot(), "stale concurrent recovery must not invalidate twice")
+
+	failingRepo := &agentIdentityCredentialsRepo{account: cloneAgentIdentityTestAccount(account), updateCredentialsErr: errors.New("persist failed")}
+	failingRepo.account.Credentials["task_id"] = "task-failing"
+	invalidator = &recordingAgentIdentityWSInvalidator{}
+	require.Error(t, ensureAgentIdentityTaskForAccount(context.Background(), failingRepo, invalidator, &sync.Mutex{}, failingRepo.account, "task-failing"))
+	require.Empty(t, invalidator.snapshot())
+}
+
 func TestEnsureAgentIdentityTaskSharesLockAcrossServicesForSameAccount(t *testing.T) {
 	key, privateKey := newTestAgentIdentityKey(t)
 	account := &Account{ID: 9001, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
@@ -218,7 +246,8 @@ func TestOpenAIAccountTestRequestRecoversTaskOnceAndRedactsSecondFailure(t *test
 		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
 		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"task_expired","message":"` + privateKey + ` ` + key.runtimeID + ` task-new AgentAssertion secret"}}`))},
 	}}
-	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	invalidator := &recordingAgentIdentityWSInvalidator{}
+	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream, agentIdentityWSInvalidator: invalidator}
 	req := httptest.NewRequest(http.MethodPost, chatgptCodexAPIURL, strings.NewReader(`{"model":"gpt-5"}`))
 	headers, err := service.buildOpenAIAccountTestAuthenticationHeaders(context.Background(), account, "")
 	require.NoError(t, err)
@@ -226,6 +255,7 @@ func TestOpenAIAccountTestRequestRecoversTaskOnceAndRedactsSecondFailure(t *test
 	resp, err := service.doOpenAIAccountTestRequestWithTaskRecovery(context.Background(), account, req, []byte(`{"model":"gpt-5"}`), "")
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 2)
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	for _, secret := range []string{privateKey, key.runtimeID, "task-new", "AgentAssertion secret"} {
@@ -249,13 +279,15 @@ func TestOpenAIResponsesAccountTestRecoversTaskAndSucceeds(t *testing.T) {
 		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
 		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\"}\n\n"))},
 	}}
-	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	invalidator := &recordingAgentIdentityWSInvalidator{}
+	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream, agentIdentityWSInvalidator: invalidator}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
 	err := service.testOpenAIAccountConnection(c, account, "gpt-5.4", "", "")
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 2)
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
 	require.Equal(t, "task-new", decodeAgentIdentityAssertionTaskID(t, upstream.requests[1].Header.Get("Authorization")))
 	require.Contains(t, recorder.Body.String(), `"success":true`)
 }
@@ -275,13 +307,15 @@ func TestOpenAICompactAccountTestSecondFailureIsRedacted(t *testing.T) {
 		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
 		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"task_expired","message":"` + privateKey + ` ` + key.runtimeID + ` task-new AgentAssertion secret"}}`))},
 	}}
-	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	invalidator := &recordingAgentIdentityWSInvalidator{}
+	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream, agentIdentityWSInvalidator: invalidator}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
 	err := service.testOpenAICompactConnection(c, account, "gpt-5.4")
 	require.Error(t, err)
 	require.Len(t, upstream.requests, 2)
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
 	for _, secret := range []string{privateKey, key.runtimeID, "task-new", "AgentAssertion secret"} {
 		require.NotContains(t, recorder.Body.String(), secret)
 		require.NotContains(t, repo.setError, secret)
@@ -356,16 +390,18 @@ func TestOpenAIQuotaAgentIdentityRecoversOnceWithoutTokenProvider(t *testing.T) 
 	target, err := url.Parse(quotaServer.URL)
 	require.NoError(t, err)
 
+	invalidator := &recordingAgentIdentityWSInvalidator{}
 	service := NewOpenAIQuotaService(repo, nil, nil, func(string) (*req.Client, error) {
 		client := req.C()
 		client.GetClient().Transport = rewriteChatGPTTestRoundTripper{target: target, base: quotaServer.Client().Transport}
 		return client, nil
-	})
+	}, invalidator)
 	usage, err := service.QueryUsage(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Equal(t, "account-test", usage.AccountID)
 	require.Equal(t, 2, requestCalls)
 	require.Equal(t, 1, registerCalls)
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
 	require.Len(t, assertions, 2)
 	require.Contains(t, decodeAgentIdentityAssertionTaskID(t, assertions[0]), "task-old")
 	require.Contains(t, decodeAgentIdentityAssertionTaskID(t, assertions[1]), "task-new")
@@ -402,15 +438,17 @@ func TestOpenAIQuotaAgentIdentityDoesNotRecoverTwiceAndRedactsError(t *testing.T
 	target, err := url.Parse(quotaServer.URL)
 	require.NoError(t, err)
 
+	invalidator := &recordingAgentIdentityWSInvalidator{}
 	service := NewOpenAIQuotaService(repo, nil, nil, func(string) (*req.Client, error) {
 		client := req.C()
 		client.GetClient().Transport = rewriteChatGPTTestRoundTripper{target: target, base: quotaServer.Client().Transport}
 		return client, nil
-	})
+	}, invalidator)
 	_, err = service.QueryUsage(context.Background(), account.ID)
 	require.Error(t, err)
 	require.Equal(t, 2, requestCalls)
 	require.Equal(t, 1, registerCalls)
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
 	for _, secret := range []string{privateKey, key.runtimeID, "task-old-secret", "task-new-secret", "AgentAssertion "} {
 		require.NotContains(t, err.Error(), secret)
 	}
@@ -437,10 +475,28 @@ func cloneAgentIdentityTestAccount(account *Account) *Account {
 
 type agentIdentityCredentialsRepo struct {
 	AccountRepository
-	credentials map[string]any
-	account     *Account
-	setError    string
-	mu          sync.Mutex
+	credentials          map[string]any
+	account              *Account
+	setError             string
+	updateCredentialsErr error
+	mu                   sync.Mutex
+}
+
+type recordingAgentIdentityWSInvalidator struct {
+	mu         sync.Mutex
+	accountIDs []int64
+}
+
+func (i *recordingAgentIdentityWSInvalidator) InvalidateAgentIdentityWSConnections(accountID int64) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.accountIDs = append(i.accountIDs, accountID)
+}
+
+func (i *recordingAgentIdentityWSInvalidator) snapshot() []int64 {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]int64(nil), i.accountIDs...)
 }
 
 func (r *agentIdentityCredentialsRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
@@ -450,6 +506,9 @@ func (r *agentIdentityCredentialsRepo) GetByID(_ context.Context, _ int64) (*Acc
 func (r *agentIdentityCredentialsRepo) UpdateCredentials(_ context.Context, _ int64, credentials map[string]any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.updateCredentialsErr != nil {
+		return r.updateCredentialsErr
+	}
 	r.credentials = credentials
 	return nil
 }

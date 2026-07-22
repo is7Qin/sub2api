@@ -328,7 +328,7 @@ func (s *AccountTestService) fetchOpenAIOAuthUpstreamModels(ctx context.Context,
 	}
 	if account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
 		expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
-		if err := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account, expectedTaskID); err != nil {
+		if err := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account, expectedTaskID); err != nil {
 			return nil, newUpstreamModelSyncUpstreamError("Failed to recover Agent Identity task", err)
 		}
 		request, err = buildRequest()

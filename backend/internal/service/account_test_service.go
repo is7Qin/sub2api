@@ -64,15 +64,16 @@ func isOpenAIImageModel(model string) bool {
 
 // AccountTestService handles account testing operations
 type AccountTestService struct {
-	accountRepo               AccountRepository
-	geminiTokenProvider       *GeminiTokenProvider
-	claudeTokenProvider       *ClaudeTokenProvider
-	antigravityGatewayService *AntigravityGatewayService
-	httpUpstream              HTTPUpstream
-	cfg                       *config.Config
-	tlsFPProfileService       *TLSFingerprintProfileService
-	codexFingerprintService   *OpenAICodexFingerprintService
-	agentIdentityTaskMu       sync.Mutex
+	accountRepo                AccountRepository
+	geminiTokenProvider        *GeminiTokenProvider
+	claudeTokenProvider        *ClaudeTokenProvider
+	antigravityGatewayService  *AntigravityGatewayService
+	httpUpstream               HTTPUpstream
+	cfg                        *config.Config
+	tlsFPProfileService        *TLSFingerprintProfileService
+	codexFingerprintService    *OpenAICodexFingerprintService
+	agentIdentityWSInvalidator agentIdentityWSConnectionInvalidator
+	agentIdentityTaskMu        sync.Mutex
 }
 
 // NewAccountTestService creates a new AccountTestService
@@ -85,16 +86,18 @@ func NewAccountTestService(
 	cfg *config.Config,
 	settingService *SettingService,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	agentIdentityWSInvalidator agentIdentityWSConnectionInvalidator,
 ) *AccountTestService {
 	return &AccountTestService{
-		accountRepo:               accountRepo,
-		geminiTokenProvider:       geminiTokenProvider,
-		claudeTokenProvider:       claudeTokenProvider,
-		antigravityGatewayService: antigravityGatewayService,
-		httpUpstream:              httpUpstream,
-		cfg:                       cfg,
-		tlsFPProfileService:       tlsFPProfileService,
-		codexFingerprintService:   NewOpenAICodexFingerprintService(accountRepo, settingService),
+		accountRepo:                accountRepo,
+		geminiTokenProvider:        geminiTokenProvider,
+		claudeTokenProvider:        claudeTokenProvider,
+		antigravityGatewayService:  antigravityGatewayService,
+		httpUpstream:               httpUpstream,
+		cfg:                        cfg,
+		tlsFPProfileService:        tlsFPProfileService,
+		codexFingerprintService:    NewOpenAICodexFingerprintService(accountRepo, settingService),
+		agentIdentityWSInvalidator: agentIdentityWSInvalidator,
 	}
 }
 
@@ -628,7 +631,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	// Set common headers
 	req.Header.Set("Content-Type", "application/json")
 	if account.IsOpenAIAgentIdentity() {
-		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account)
 		if authErr != nil {
 			return authErr
 		}
@@ -805,7 +808,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if account.IsOpenAIAgentIdentity() {
-		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account)
 		if authErr != nil {
 			return authErr
 		}
@@ -1733,7 +1736,7 @@ func (s *AccountTestService) doOpenAIAccountTestRequestWithTaskRecovery(
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	_ = resp.Body.Close()
 	if isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
-		if recoverErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
+		if recoverErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
 			return nil, fmt.Errorf("recover Agent Identity task: %w", recoverErr)
 		}
 		retryReq := req.Clone(ctx)
@@ -1757,7 +1760,7 @@ func (s *AccountTestService) doOpenAIAccountTestRequestWithTaskRecovery(
 
 func (s *AccountTestService) buildOpenAIAccountTestAuthenticationHeaders(ctx context.Context, account *Account, token string) (http.Header, error) {
 	if account != nil && account.IsOpenAIAgentIdentity() {
-		return buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		return buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account)
 	}
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+token)
@@ -1829,7 +1832,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		_ = resp.Body.Close()
 		if isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 			expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
-			if recoverErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
+			if recoverErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
 				return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to recover Agent Identity task: %s", recoverErr.Error()))
 			}
 			retryReq := req.Clone(ctx)

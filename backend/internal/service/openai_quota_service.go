@@ -97,11 +97,12 @@ type OpenAIQuotaResetResult struct {
 // for OpenAI OAuth accounts. It reuses the privacy client factory so all calls
 // flow through the impersonated HTTP client (Cloudflare-friendly TLS fingerprint).
 type OpenAIQuotaService struct {
-	accountRepo          AccountRepository
-	proxyRepo            ProxyRepository
-	tokenProvider        *OpenAITokenProvider
-	privacyClientFactory PrivacyClientFactory
-	agentIdentityTaskMu  sync.Mutex
+	accountRepo                AccountRepository
+	proxyRepo                  ProxyRepository
+	tokenProvider              *OpenAITokenProvider
+	privacyClientFactory       PrivacyClientFactory
+	agentIdentityWSInvalidator agentIdentityWSConnectionInvalidator
+	agentIdentityTaskMu        sync.Mutex
 }
 
 // NewOpenAIQuotaService constructs a quota service. token provider is required —
@@ -112,12 +113,14 @@ func NewOpenAIQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *OpenAITokenProvider,
 	privacyClientFactory PrivacyClientFactory,
+	agentIdentityWSInvalidator agentIdentityWSConnectionInvalidator,
 ) *OpenAIQuotaService {
 	return &OpenAIQuotaService{
-		accountRepo:          accountRepo,
-		proxyRepo:            proxyRepo,
-		tokenProvider:        tokenProvider,
-		privacyClientFactory: privacyClientFactory,
+		accountRepo:                accountRepo,
+		proxyRepo:                  proxyRepo,
+		tokenProvider:              tokenProvider,
+		privacyClientFactory:       privacyClientFactory,
+		agentIdentityWSInvalidator: agentIdentityWSInvalidator,
 	}
 }
 
@@ -150,10 +153,10 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 	resp, err := doRequest(accessToken)
 	if err == nil && account.IsOpenAIAgentIdentity() && !resp.IsSuccessState() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, resp.Bytes()) {
 		expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
-		if recoverErr := ensureAgentIdentityTaskForAccount(callCtx, s.accountRepo, nil, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
+		if recoverErr := ensureAgentIdentityTaskForAccount(callCtx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_AGENT_IDENTITY_RECOVERY_FAILED", "failed to recover agent identity task: %v", recoverErr)
 		}
-		headers, authErr := buildAgentIdentityAuthenticationHeaders(callCtx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(callCtx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account)
 		if authErr != nil {
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_TOKEN_UNAVAILABLE", "failed to rebuild agent identity assertion: %v", authErr)
 		}
@@ -210,10 +213,10 @@ func (s *OpenAIQuotaService) ResetCredit(ctx context.Context, accountID int64) (
 	resp, err := doRequest(accessToken)
 	if err == nil && account.IsOpenAIAgentIdentity() && !resp.IsSuccessState() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, resp.Bytes()) {
 		expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
-		if recoverErr := ensureAgentIdentityTaskForAccount(callCtx, s.accountRepo, nil, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
+		if recoverErr := ensureAgentIdentityTaskForAccount(callCtx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account, expectedTaskID); recoverErr != nil {
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_AGENT_IDENTITY_RECOVERY_FAILED", "failed to recover agent identity task: %v", recoverErr)
 		}
-		headers, authErr := buildAgentIdentityAuthenticationHeaders(callCtx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(callCtx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account)
 		if authErr != nil {
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_TOKEN_UNAVAILABLE", "failed to rebuild agent identity assertion: %v", authErr)
 		}

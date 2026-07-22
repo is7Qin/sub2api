@@ -292,11 +292,13 @@ func TestFetchOpenAIAgentIdentityUpstreamModelsRecoversTask(t *testing.T) {
 		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
 		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[{"slug":"gpt-5.4"},{"slug":"o3"}]}`))},
 	}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	invalidator := &recordingAgentIdentityWSInvalidator{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig(), agentIdentityWSInvalidator: invalidator}
 	models, err := svc.FetchUpstreamSupportedModels(context.Background(), account)
 	require.NoError(t, err)
 	require.Equal(t, []string{"gpt-5.4", "o3"}, models)
 	require.Len(t, upstream.requests, 2)
+	require.Equal(t, []int64{account.ID}, invalidator.snapshot())
 	require.Equal(t, "task-old", decodeAgentIdentityAssertionTaskID(t, upstream.requests[0].Header.Get("Authorization")))
 	require.Equal(t, "task-new", decodeAgentIdentityAssertionTaskID(t, upstream.requests[1].Header.Get("Authorization")))
 	require.Equal(t, openAICodexUpstreamModelsURL, upstream.lastReq.URL.String())

@@ -6,11 +6,16 @@
 import { apiClient } from '../client'
 import type { ApiKey } from '@/types'
 
-export interface UpdateApiKeyGroupResult {
+export interface UpdateApiKeyResult {
   api_key: ApiKey
   auto_granted_group_access: boolean
   granted_group_id?: number
   granted_group_name?: string
+}
+
+export interface AdminUpdateApiKeyRequest {
+  group_id?: number
+  concurrency?: number
 }
 
 /**
@@ -19,14 +24,17 @@ export interface UpdateApiKeyGroupResult {
  * @param groupId - Group ID (0 to unbind, positive to bind, null/undefined to skip)
  * @returns Updated API key with auto-grant info
  */
-export async function updateApiKeyGroup(id: number, groupId: number | null): Promise<UpdateApiKeyGroupResult> {
-  const { data } = await apiClient.put<UpdateApiKeyGroupResult>(`/admin/api-keys/${id}`, {
-    group_id: groupId === null ? 0 : groupId
-  })
+export async function updateApiKey(id: number, updates: AdminUpdateApiKeyRequest): Promise<UpdateApiKeyResult> {
+  const { data } = await apiClient.put<UpdateApiKeyResult>(`/admin/api-keys/${id}`, updates)
   return data
 }
 
+export async function updateApiKeyGroup(id: number, groupId: number | null): Promise<UpdateApiKeyResult> {
+  return updateApiKey(id, { group_id: groupId === null ? 0 : groupId })
+}
+
 export const apiKeysAPI = {
+  updateApiKey,
   updateApiKeyGroup
 }
 

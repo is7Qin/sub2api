@@ -812,6 +812,9 @@ export default {
     ipBlacklistPlaceholder: '1.2.3.4\n5.6.0.0/16',
     ipBlacklistHint: '每行一个 IP 或 CIDR，这些 IP 将被禁止使用此密钥',
     ipRestrictionEnabled: '已配置 IP 限制',
+    concurrencyLabel: '密钥并发上限',
+    concurrencyHint: '0 仅表示不设置此密钥的独立上限；请求仍受用户共享并发上限约束。',
+    concurrencyInvalid: '密钥并发数必须是 0 到 2147483647 之间的整数。',
     ccSwitchNotInstalled:
       'CC-Switch 未安装或协议处理程序未注册。请先安装 CC-Switch 或手动复制 API 密钥。',
     ccsClientSelect: {
@@ -1941,6 +1944,11 @@ export default {
       groupChangedSuccess: '分组修改成功',
       groupChangedWithGrant: '分组修改成功，已自动为用户添加「{group}」分组权限',
       groupChangeFailed: '分组修改失败',
+      apiKeyConcurrency: '密钥并发上限',
+      apiKeyConcurrencyHint: '0 仅表示不设置此密钥的独立上限；请求仍受用户共享并发上限约束。',
+      apiKeyConcurrencyInvalid: '密钥并发数必须是 0 到 2147483647 之间的整数。',
+      apiKeyConcurrencyUpdated: '密钥并发上限更新成功',
+      apiKeyConcurrencyUpdateFailed: '密钥并发上限更新失败',
       noUsersYet: '暂无用户',
       createFirstUser: '创建您的第一个用户以开始使用系统',
       userCreated: '用户创建成功',

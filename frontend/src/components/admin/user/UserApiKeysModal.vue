@@ -17,6 +17,29 @@
               <p class="truncate font-mono text-sm text-gray-500">{{ key.key.substring(0, 20) }}...{{ key.key.substring(key.key.length - 8) }}</p>
             </div>
           </div>
+          <div class="mt-3 flex items-end gap-2">
+            <div class="flex-1">
+              <label class="input-label">{{ t('admin.users.apiKeyConcurrency') }}</label>
+              <input
+                v-model="concurrencyDrafts[key.id]"
+                type="number"
+                min="0"
+                :max="MAX_API_KEY_CONCURRENCY"
+                step="1"
+                class="input"
+                :data-testid="`admin-key-concurrency-${key.id}`"
+              />
+            </div>
+            <button
+              class="btn btn-secondary"
+              :disabled="updatingKeyIds.has(key.id)"
+              :data-testid="`admin-key-concurrency-save-${key.id}`"
+              @click="saveConcurrency(key)"
+            >
+              {{ t('common.save') }}
+            </button>
+          </div>
+          <p class="input-hint">{{ t('admin.users.apiKeyConcurrencyHint') }}</p>
           <div class="mt-3 flex flex-wrap gap-4 text-xs text-gray-500">
             <div class="flex items-center gap-1">
               <span>{{ t('admin.users.group') }}:</span>
@@ -113,7 +136,10 @@ const emit = defineEmits(['close'])
 const { t } = useI18n()
 const appStore = useAppStore()
 
+const MAX_API_KEY_CONCURRENCY = 2147483647
+
 const apiKeys = ref<ApiKey[]>([])
+const concurrencyDrafts = ref<Record<number, string | number>>({})
 const allGroups = ref<AdminGroup[]>([])
 const loading = ref(false)
 const updatingKeyIds = ref(new Set<number>())
@@ -152,6 +178,7 @@ const load = async () => {
   try {
     const res = await adminAPI.users.getUserApiKeys(props.user.id)
     apiKeys.value = res.items || []
+    concurrencyDrafts.value = Object.fromEntries(apiKeys.value.map((key) => [key.id, key.concurrency]))
   } catch (error) {
     console.error('Failed to load API keys:', error)
   } finally {
@@ -192,6 +219,27 @@ const openGroupSelector = (key: ApiKey) => {
 const closeGroupSelector = () => {
   groupSelectorKeyId.value = null
   dropdownPosition.value = null
+}
+
+const saveConcurrency = async (key: ApiKey) => {
+  const concurrency = Number(concurrencyDrafts.value[key.id])
+  if (!Number.isInteger(concurrency) || concurrency < 0 || concurrency > MAX_API_KEY_CONCURRENCY) {
+    appStore.showError(t('admin.users.apiKeyConcurrencyInvalid'))
+    return
+  }
+
+  updatingKeyIds.value.add(key.id)
+  try {
+    const result = await adminAPI.apiKeys.updateApiKey(key.id, { concurrency })
+    const idx = apiKeys.value.findIndex((item) => item.id === key.id)
+    if (idx !== -1) apiKeys.value[idx] = result.api_key
+    concurrencyDrafts.value[key.id] = result.api_key.concurrency
+    appStore.showSuccess(t('admin.users.apiKeyConcurrencyUpdated'))
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.users.apiKeyConcurrencyUpdateFailed'))
+  } finally {
+    updatingKeyIds.value.delete(key.id)
+  }
 }
 
 const changeGroup = async (key: ApiKey, newGroupId: number | null) => {

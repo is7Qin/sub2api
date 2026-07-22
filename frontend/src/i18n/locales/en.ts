@@ -6531,7 +6531,12 @@ export default {
       },
       openaiOAuth429Dynamic: {
         title: 'OpenAI OAuth 429 Dynamic Scheduling',
-        description: 'Treat OpenAI OAuth-like 429s as statistical signals and pause scheduling only when the window ratio crosses the threshold',
+        description: 'Treat OpenAI OAuth-like 429s as statistical signals with a default policy and optional Plan Type overrides',
+        defaultPolicy: 'Default Policy',
+        planTypePolicies: 'Plan Type Policies',
+        planTypePoliciesHint: 'Use an exact Plan Type match when configured; otherwise use the default policy',
+        planType: 'Plan Type',
+        addPlanType: 'Add Plan Type Setting',
         enabled: 'Enable Dynamic Scheduling',
         enabledHint: 'Start counting after the first 429; when 429 ratio and sample thresholds are met, pause the account through the unified rate-limit state',
         windowSeconds: 'Stats Window (seconds)',

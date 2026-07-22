@@ -362,14 +362,25 @@ type OpenAI403CooldownSettings struct {
 	ThresholdPauseSeconds int    `json:"threshold_pause_seconds"`
 }
 
-// OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置 DTO
-type OpenAIOAuth429DynamicSettings struct {
+type OpenAIOAuth429DynamicPlanTypeSettings struct {
+	PlanType       string  `json:"plan_type"`
 	Enabled        bool    `json:"enabled"`
 	WindowSeconds  int     `json:"window_seconds"`
 	MinSamples     int     `json:"min_samples"`
 	Min429         int     `json:"min_429"`
 	RatioThreshold float64 `json:"ratio_threshold"`
 	BlockSeconds   int     `json:"block_seconds"`
+}
+
+// OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置 DTO
+type OpenAIOAuth429DynamicSettings struct {
+	Enabled          bool                                    `json:"enabled"`
+	WindowSeconds    int                                     `json:"window_seconds"`
+	MinSamples       int                                     `json:"min_samples"`
+	Min429           int                                     `json:"min_429"`
+	RatioThreshold   float64                                 `json:"ratio_threshold"`
+	BlockSeconds     int                                     `json:"block_seconds"`
+	PlanTypeSettings []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings"`
 }
 
 // StreamTimeoutSettings 流超时处理配置 DTO

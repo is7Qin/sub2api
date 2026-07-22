@@ -1167,13 +1167,21 @@ export async function updateOpenAI403CooldownSettings(
 
 // ==================== OpenAI OAuth 429 Dynamic Scheduling Settings ====================
 
-export interface OpenAIOAuth429DynamicSettings {
+export interface OpenAIOAuth429DynamicPolicy {
   enabled: boolean;
   window_seconds: number;
   min_samples: number;
   min_429: number;
   ratio_threshold: number;
   block_seconds: number;
+}
+
+export interface OpenAIOAuth429DynamicPlanTypeSettings extends OpenAIOAuth429DynamicPolicy {
+  plan_type: string;
+}
+
+export interface OpenAIOAuth429DynamicSettings extends OpenAIOAuth429DynamicPolicy {
+  plan_type_settings: OpenAIOAuth429DynamicPlanTypeSettings[];
 }
 
 export async function getOpenAIOAuth429DynamicSettings(): Promise<OpenAIOAuth429DynamicSettings> {

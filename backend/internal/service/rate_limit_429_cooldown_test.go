@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -309,6 +310,113 @@ func TestOpenAIOAuth429Dynamic_DisabledSettingsClearExistingStats(t *testing.T) 
 
 	require.False(t, svc.hasOpenAIOAuth429DynamicStats(account.ID))
 	require.Zero(t, accountRepo.rateLimitCalls)
+}
+
+func TestOpenAIOAuth429Dynamic_PolicyForPlanType(t *testing.T) {
+	settings := *DefaultOpenAIOAuth429DynamicSettings()
+	settings.Enabled = true
+	settings.BlockSeconds = 10
+	settings.PlanTypeSettings = []OpenAIOAuth429DynamicPlanTypeSettings{
+		{
+			PlanType: "plus",
+			OpenAIOAuth429DynamicPolicy: OpenAIOAuth429DynamicPolicy{
+				Enabled:        true,
+				WindowSeconds:  60,
+				MinSamples:     2,
+				Min429:         1,
+				RatioThreshold: 0.5,
+				BlockSeconds:   99,
+			},
+		},
+	}
+
+	require.Equal(t, 99, settings.PolicyForPlanType(" PLUS ").BlockSeconds)
+	require.Equal(t, 10, settings.PolicyForPlanType("pro").BlockSeconds)
+	require.Equal(t, 10, settings.PolicyForPlanType("").BlockSeconds)
+}
+
+func TestOpenAIOAuth429Dynamic_PlanTypeOverrideControlsScheduling(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled:        false,
+		WindowSeconds:  300,
+		MinSamples:     20,
+		Min429:         3,
+		RatioThreshold: 0.5,
+		BlockSeconds:   60,
+		PlanTypeSettings: []OpenAIOAuth429DynamicPlanTypeSettings{
+			{
+				PlanType: "plus",
+				OpenAIOAuth429DynamicPolicy: OpenAIOAuth429DynamicPolicy{
+					Enabled:        true,
+					WindowSeconds:  60,
+					MinSamples:     2,
+					Min429:         2,
+					RatioThreshold: 1,
+					BlockSeconds:   12,
+				},
+			},
+		},
+	})
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+	plus := &Account{ID: 52, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"plan_type": "plus"}}
+	pro := &Account{ID: 53, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"plan_type": "pro"}}
+
+	svc.handle429(context.Background(), plus, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	svc.handle429(context.Background(), plus, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	svc.handle429(context.Background(), pro, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+	require.Equal(t, plus.ID, accountRepo.lastRateLimitID)
+}
+
+func TestOpenAIOAuth429Dynamic_PlanTypeChangeResetsExistingWindow(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	policy := OpenAIOAuth429DynamicPolicy{Enabled: true, WindowSeconds: 60, MinSamples: 2, Min429: 2, RatioThreshold: 1, BlockSeconds: 12}
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled: false, WindowSeconds: 300, MinSamples: 20, Min429: 3, RatioThreshold: 0.5, BlockSeconds: 60,
+		PlanTypeSettings: []OpenAIOAuth429DynamicPlanTypeSettings{
+			{PlanType: "plus", OpenAIOAuth429DynamicPolicy: policy},
+			{PlanType: "pro", OpenAIOAuth429DynamicPolicy: policy},
+		},
+	})
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+	account := &Account{ID: 54, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"plan_type": "plus"}}
+
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	account.Credentials["plan_type"] = "pro"
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	require.Zero(t, accountRepo.rateLimitCalls)
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`))
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+}
+
+func TestOpenAIOAuth429Dynamic_RejectsDuplicatePlanTypes(t *testing.T) {
+	policy := OpenAIOAuth429DynamicPolicy{Enabled: true, WindowSeconds: 60, MinSamples: 2, Min429: 1, RatioThreshold: 0.5, BlockSeconds: 12}
+	settings := *DefaultOpenAIOAuth429DynamicSettings()
+	settings.PlanTypeSettings = []OpenAIOAuth429DynamicPlanTypeSettings{
+		{PlanType: "plus", OpenAIOAuth429DynamicPolicy: policy},
+		{PlanType: " PLUS ", OpenAIOAuth429DynamicPolicy: policy},
+	}
+
+	require.EqualError(t, validateOpenAIOAuth429DynamicSettings(&settings), "duplicate plan_type: plus")
+}
+
+func TestOpenAIOAuth429Dynamic_RejectsTooManyPlanTypes(t *testing.T) {
+	policy := OpenAIOAuth429DynamicPolicy{Enabled: true, WindowSeconds: 60, MinSamples: 2, Min429: 1, RatioThreshold: 0.5, BlockSeconds: 12}
+	settings := *DefaultOpenAIOAuth429DynamicSettings()
+	settings.PlanTypeSettings = make([]OpenAIOAuth429DynamicPlanTypeSettings, OpenAIOAuth429DynamicMaxPlanTypeSettings+1)
+	for i := range settings.PlanTypeSettings {
+		settings.PlanTypeSettings[i] = OpenAIOAuth429DynamicPlanTypeSettings{PlanType: fmt.Sprintf("plan-%d", i), OpenAIOAuth429DynamicPolicy: policy}
+	}
+
+	require.EqualError(t, validateOpenAIOAuth429DynamicSettings(&settings), "plan_type_settings must not exceed 100 entries")
 }
 
 func TestOpenAIOAuth429Dynamic_BlockSecondsValidationAndNormalization(t *testing.T) {

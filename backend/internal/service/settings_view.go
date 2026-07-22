@@ -464,7 +464,10 @@ type RateLimit429CooldownSettings struct {
 
 // OpenAIOAuth429DynamicMaxBlockSeconds caps an automatic pause at 30 days.
 // A fixed duration keeps validation and persisted settings deterministic.
-const OpenAIOAuth429DynamicMaxBlockSeconds = 30 * 24 * 60 * 60
+const (
+	OpenAIOAuth429DynamicMaxBlockSeconds     = 30 * 24 * 60 * 60
+	OpenAIOAuth429DynamicMaxPlanTypeSettings = 100
+)
 
 const (
 	OpenAI403ThresholdActionError     = "error"
@@ -483,20 +486,32 @@ type OpenAI403CooldownSettings struct {
 	ThresholdPauseSeconds int    `json:"threshold_pause_seconds"`
 }
 
-// OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置
-type OpenAIOAuth429DynamicSettings struct {
-	// Enabled 是否启用基于429比例的动态调度暂停
-	Enabled bool `json:"enabled"`
-	// WindowSeconds 统计窗口时长（秒）
-	WindowSeconds int `json:"window_seconds"`
-	// MinSamples 触发判断所需的最少样本数
-	MinSamples int `json:"min_samples"`
-	// Min429 触发判断所需的最少429次数
-	Min429 int `json:"min_429"`
-	// RatioThreshold 429比例阈值，取值0-1
+// OpenAIOAuth429DynamicPolicy defines one dynamic scheduling policy.
+type OpenAIOAuth429DynamicPolicy struct {
+	Enabled        bool    `json:"enabled"`
+	WindowSeconds  int     `json:"window_seconds"`
+	MinSamples     int     `json:"min_samples"`
+	Min429         int     `json:"min_429"`
 	RatioThreshold float64 `json:"ratio_threshold"`
-	// BlockSeconds 达阈值后暂停调度时长（秒）
-	BlockSeconds int `json:"block_seconds"`
+	BlockSeconds   int     `json:"block_seconds"`
+}
+
+// OpenAIOAuth429DynamicPlanTypeSettings overrides the default policy for one plan type.
+type OpenAIOAuth429DynamicPlanTypeSettings struct {
+	PlanType string `json:"plan_type"`
+	OpenAIOAuth429DynamicPolicy
+}
+
+// OpenAIOAuth429DynamicSettings stores the default policy and optional plan-type overrides.
+// The default fields remain top-level for backward compatibility with existing persisted JSON and API clients.
+type OpenAIOAuth429DynamicSettings struct {
+	Enabled          bool                                    `json:"enabled"`
+	WindowSeconds    int                                     `json:"window_seconds"`
+	MinSamples       int                                     `json:"min_samples"`
+	Min429           int                                     `json:"min_429"`
+	RatioThreshold   float64                                 `json:"ratio_threshold"`
+	BlockSeconds     int                                     `json:"block_seconds"`
+	PlanTypeSettings []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings,omitempty"`
 }
 
 // DefaultOverloadCooldownSettings 返回默认的过载冷却配置（启用，10分钟）
@@ -530,13 +545,43 @@ func DefaultOpenAI403CooldownSettings() *OpenAI403CooldownSettings {
 // DefaultOpenAIOAuth429DynamicSettings 返回默认的OpenAI OAuth 429动态调度配置。
 func DefaultOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
 	return &OpenAIOAuth429DynamicSettings{
-		Enabled:        false,
-		WindowSeconds:  300,
-		MinSamples:     20,
-		Min429:         3,
-		RatioThreshold: 0.5,
-		BlockSeconds:   60,
+		Enabled:          false,
+		WindowSeconds:    300,
+		MinSamples:       20,
+		Min429:           3,
+		RatioThreshold:   0.5,
+		BlockSeconds:     60,
+		PlanTypeSettings: []OpenAIOAuth429DynamicPlanTypeSettings{},
 	}
+}
+
+func (s *OpenAIOAuth429DynamicSettings) defaultPolicy() *OpenAIOAuth429DynamicPolicy {
+	if s == nil {
+		defaults := DefaultOpenAIOAuth429DynamicSettings()
+		return defaults.defaultPolicy()
+	}
+	return &OpenAIOAuth429DynamicPolicy{
+		Enabled:        s.Enabled,
+		WindowSeconds:  s.WindowSeconds,
+		MinSamples:     s.MinSamples,
+		Min429:         s.Min429,
+		RatioThreshold: s.RatioThreshold,
+		BlockSeconds:   s.BlockSeconds,
+	}
+}
+
+// PolicyForPlanType returns an exact normalized plan-type override or the default policy.
+func (s *OpenAIOAuth429DynamicSettings) PolicyForPlanType(planType string) *OpenAIOAuth429DynamicPolicy {
+	normalized := normalizeOpenAIOAuth429PlanType(planType)
+	if normalized != "" && s != nil {
+		for i := range s.PlanTypeSettings {
+			if normalizeOpenAIOAuth429PlanType(s.PlanTypeSettings[i].PlanType) == normalized {
+				policy := s.PlanTypeSettings[i].OpenAIOAuth429DynamicPolicy
+				return &policy
+			}
+		}
+	}
+	return s.defaultPolicy()
 }
 
 // DefaultBetaPolicySettings 返回默认的 Beta 策略配置

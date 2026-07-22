@@ -3174,13 +3174,24 @@ type UpdateRateLimit429CooldownSettingsRequest struct {
 }
 
 // UpdateOpenAIOAuth429DynamicSettingsRequest 更新OpenAI OAuth 429动态调度配置请求
-type UpdateOpenAIOAuth429DynamicSettingsRequest struct {
+type UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest struct {
+	PlanType       string  `json:"plan_type"`
 	Enabled        bool    `json:"enabled"`
 	WindowSeconds  int     `json:"window_seconds"`
 	MinSamples     int     `json:"min_samples"`
 	Min429         int     `json:"min_429"`
 	RatioThreshold float64 `json:"ratio_threshold"`
 	BlockSeconds   int     `json:"block_seconds"`
+}
+
+type UpdateOpenAIOAuth429DynamicSettingsRequest struct {
+	Enabled          bool                                                 `json:"enabled"`
+	WindowSeconds    int                                                  `json:"window_seconds"`
+	MinSamples       int                                                  `json:"min_samples"`
+	Min429           int                                                  `json:"min_429"`
+	RatioThreshold   float64                                              `json:"ratio_threshold"`
+	BlockSeconds     int                                                  `json:"block_seconds"`
+	PlanTypeSettings []UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest `json:"plan_type_settings"`
 }
 
 // UpdateRateLimit429CooldownSettings 更新429默认回避配置
@@ -3268,14 +3279,7 @@ func (h *SettingHandler) GetOpenAIOAuth429DynamicSettings(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.OpenAIOAuth429DynamicSettings{
-		Enabled:        settings.Enabled,
-		WindowSeconds:  settings.WindowSeconds,
-		MinSamples:     settings.MinSamples,
-		Min429:         settings.Min429,
-		RatioThreshold: settings.RatioThreshold,
-		BlockSeconds:   settings.BlockSeconds,
-	})
+	response.Success(c, openAIOAuth429DynamicSettingsDTO(settings))
 }
 
 // UpdateOpenAIOAuth429DynamicSettings 更新OpenAI OAuth 429动态调度配置
@@ -3288,12 +3292,26 @@ func (h *SettingHandler) UpdateOpenAIOAuth429DynamicSettings(c *gin.Context) {
 	}
 
 	settings := &service.OpenAIOAuth429DynamicSettings{
-		Enabled:        req.Enabled,
-		WindowSeconds:  req.WindowSeconds,
-		MinSamples:     req.MinSamples,
-		Min429:         req.Min429,
-		RatioThreshold: req.RatioThreshold,
-		BlockSeconds:   req.BlockSeconds,
+		Enabled:          req.Enabled,
+		WindowSeconds:    req.WindowSeconds,
+		MinSamples:       req.MinSamples,
+		Min429:           req.Min429,
+		RatioThreshold:   req.RatioThreshold,
+		BlockSeconds:     req.BlockSeconds,
+		PlanTypeSettings: make([]service.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(req.PlanTypeSettings)),
+	}
+	for _, override := range req.PlanTypeSettings {
+		settings.PlanTypeSettings = append(settings.PlanTypeSettings, service.OpenAIOAuth429DynamicPlanTypeSettings{
+			PlanType: override.PlanType,
+			OpenAIOAuth429DynamicPolicy: service.OpenAIOAuth429DynamicPolicy{
+				Enabled:        override.Enabled,
+				WindowSeconds:  override.WindowSeconds,
+				MinSamples:     override.MinSamples,
+				Min429:         override.Min429,
+				RatioThreshold: override.RatioThreshold,
+				BlockSeconds:   override.BlockSeconds,
+			},
+		})
 	}
 	if err := h.settingService.SetOpenAIOAuth429DynamicSettings(c.Request.Context(), settings); err != nil {
 		response.BadRequest(c, err.Error())
@@ -3306,14 +3324,31 @@ func (h *SettingHandler) UpdateOpenAIOAuth429DynamicSettings(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.OpenAIOAuth429DynamicSettings{
-		Enabled:        updatedSettings.Enabled,
-		WindowSeconds:  updatedSettings.WindowSeconds,
-		MinSamples:     updatedSettings.MinSamples,
-		Min429:         updatedSettings.Min429,
-		RatioThreshold: updatedSettings.RatioThreshold,
-		BlockSeconds:   updatedSettings.BlockSeconds,
-	})
+	response.Success(c, openAIOAuth429DynamicSettingsDTO(updatedSettings))
+}
+
+func openAIOAuth429DynamicSettingsDTO(settings *service.OpenAIOAuth429DynamicSettings) dto.OpenAIOAuth429DynamicSettings {
+	result := dto.OpenAIOAuth429DynamicSettings{
+		Enabled:          settings.Enabled,
+		WindowSeconds:    settings.WindowSeconds,
+		MinSamples:       settings.MinSamples,
+		Min429:           settings.Min429,
+		RatioThreshold:   settings.RatioThreshold,
+		BlockSeconds:     settings.BlockSeconds,
+		PlanTypeSettings: make([]dto.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(settings.PlanTypeSettings)),
+	}
+	for _, override := range settings.PlanTypeSettings {
+		result.PlanTypeSettings = append(result.PlanTypeSettings, dto.OpenAIOAuth429DynamicPlanTypeSettings{
+			PlanType:       override.PlanType,
+			Enabled:        override.Enabled,
+			WindowSeconds:  override.WindowSeconds,
+			MinSamples:     override.MinSamples,
+			Min429:         override.Min429,
+			RatioThreshold: override.RatioThreshold,
+			BlockSeconds:   override.BlockSeconds,
+		})
+	}
+	return result
 }
 
 // GetStreamTimeoutSettings 获取流超时处理配置

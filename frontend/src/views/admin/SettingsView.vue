@@ -498,153 +498,51 @@
               </div>
 
               <template v-else>
-                <div class="flex items-center justify-between">
-                  <div>
-                    <label class="font-medium text-gray-900 dark:text-white">{{
-                      t("admin.settings.openaiOAuth429Dynamic.enabled")
-                    }}</label>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      {{ t("admin.settings.openaiOAuth429Dynamic.enabledHint") }}
-                    </p>
-                  </div>
-                  <Toggle
-                    v-model="openaiOAuth429DynamicForm.enabled"
-                    data-testid="openai-oauth-429-dynamic-enabled"
+                <div>
+                  <h3 class="mb-3 text-sm font-semibold text-gray-900 dark:text-white">
+                    {{ t("admin.settings.openaiOAuth429Dynamic.defaultPolicy") }}
+                  </h3>
+                  <OpenAIOAuth429PolicyFields
+                    :policy="openaiOAuth429DynamicForm"
+                    test-id-prefix="openai-oauth-429-dynamic"
                   />
                 </div>
 
-                <div
-                  v-if="openaiOAuth429DynamicForm.enabled"
-                  class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
-                >
-                  <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <div class="space-y-3 border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div class="flex items-center justify-between gap-4">
                     <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.windowSeconds",
-                          )
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.window_seconds"
-                        data-testid="openai-oauth-429-dynamic-window-seconds"
-                        type="number"
-                        min="60"
-                        max="3600"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.windowSecondsHint",
-                          )
-                        }}
+                      <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+                        {{ t("admin.settings.openaiOAuth429Dynamic.planTypePolicies") }}
+                      </h3>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">
+                        {{ t("admin.settings.openaiOAuth429Dynamic.planTypePoliciesHint") }}
                       </p>
                     </div>
+                    <button type="button" class="btn btn-secondary btn-sm" @click="addOpenAIOAuth429PlanTypeSetting">
+                      {{ t("admin.settings.openaiOAuth429Dynamic.addPlanType") }}
+                    </button>
+                  </div>
 
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t("admin.settings.openaiOAuth429Dynamic.minSamples")
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.min_samples"
-                        data-testid="openai-oauth-429-dynamic-min-samples"
-                        type="number"
-                        min="2"
-                        max="10000"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.minSamplesHint",
-                          )
-                        }}
-                      </p>
+                  <div
+                    v-for="(override, index) in openaiOAuth429DynamicForm.plan_type_settings"
+                    :key="index"
+                    class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+                  >
+                    <div class="mb-4 flex items-end justify-between gap-3">
+                      <div class="flex-1">
+                        <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {{ t("admin.settings.openaiOAuth429Dynamic.planType") }}
+                        </label>
+                        <input v-model.trim="override.plan_type" type="text" maxlength="64" class="input w-full max-w-xs" placeholder="plus" />
+                      </div>
+                      <button type="button" class="btn btn-danger btn-sm" @click="removeOpenAIOAuth429PlanTypeSetting(index)">
+                        {{ t("common.delete") }}
+                      </button>
                     </div>
-
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{ t("admin.settings.openaiOAuth429Dynamic.min429") }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.min_429"
-                        data-testid="openai-oauth-429-dynamic-min-429"
-                        type="number"
-                        min="1"
-                        :max="openaiOAuth429DynamicForm.min_samples"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t("admin.settings.openaiOAuth429Dynamic.min429Hint")
-                        }}
-                      </p>
-                    </div>
-
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.ratioThreshold",
-                          )
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.ratio_threshold"
-                        data-testid="openai-oauth-429-dynamic-ratio-threshold"
-                        type="number"
-                        min="0.01"
-                        max="1"
-                        step="0.01"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.ratioThresholdHint",
-                          )
-                        }}
-                      </p>
-                    </div>
-
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.blockSeconds",
-                          )
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.block_seconds"
-                        data-testid="openai-oauth-429-dynamic-block-seconds"
-                        type="number"
-                        min="1"
-                        max="2592000"
-                        class="input w-40"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.blockSecondsHint",
-                          )
-                        }}
-                      </p>
-                    </div>
+                    <OpenAIOAuth429PolicyFields
+                      :policy="override"
+                      :test-id-prefix="`openai-oauth-429-dynamic-plan-${index}`"
+                    />
                   </div>
                 </div>
 
@@ -7062,6 +6960,7 @@ import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vu
 import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
+import OpenAIOAuth429PolicyFields from "@/components/settings/OpenAIOAuth429PolicyFields.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
@@ -7359,6 +7258,7 @@ const openaiOAuth429DynamicForm = reactive<OpenAIOAuth429DynamicSettings>({
   min_429: 3,
   ratio_threshold: 0.5,
   block_seconds: 60,
+  plan_type_settings: [],
 });
 
 // Stream Timeout 状态
@@ -9270,9 +9170,9 @@ function boundedNumber(value: unknown, min: number, max: number, fallback: numbe
   return Math.min(max, Math.max(min, parsed));
 }
 
-function normalizeOpenAIOAuth429DynamicForm(
+function normalizeOpenAIOAuth429Policy(
   raw: Partial<OpenAIOAuth429DynamicSettings>,
-): OpenAIOAuth429DynamicSettings {
+): Omit<OpenAIOAuth429DynamicSettings, "plan_type_settings"> {
   const minSamples = boundedInteger(raw.min_samples, 2, 10000, 20);
   return {
     enabled: Boolean(raw.enabled),
@@ -9282,6 +9182,29 @@ function normalizeOpenAIOAuth429DynamicForm(
     ratio_threshold: boundedNumber(raw.ratio_threshold, 0.01, 1, 0.5),
     block_seconds: boundedInteger(raw.block_seconds, 1, 2592000, 60),
   };
+}
+
+function normalizeOpenAIOAuth429DynamicForm(
+  raw: Partial<OpenAIOAuth429DynamicSettings>,
+): OpenAIOAuth429DynamicSettings {
+  return {
+    ...normalizeOpenAIOAuth429Policy(raw),
+    plan_type_settings: (raw.plan_type_settings || []).map((override) => ({
+      plan_type: override.plan_type.trim().toLowerCase(),
+      ...normalizeOpenAIOAuth429Policy(override),
+    })),
+  };
+}
+
+function addOpenAIOAuth429PlanTypeSetting() {
+  openaiOAuth429DynamicForm.plan_type_settings.push({
+    plan_type: "",
+    ...normalizeOpenAIOAuth429Policy(openaiOAuth429DynamicForm),
+  });
+}
+
+function removeOpenAIOAuth429PlanTypeSetting(index: number) {
+  openaiOAuth429DynamicForm.plan_type_settings.splice(index, 1);
 }
 
 async function saveOpenAIOAuth429DynamicSettings() {

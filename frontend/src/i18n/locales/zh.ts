@@ -6522,7 +6522,12 @@ export default {
       },
       openaiOAuth429Dynamic: {
         title: 'OpenAI OAuth 429 动态调度',
-        description: '将 OpenAI OAuth-like 429 作为统计信号，按窗口内 429 比例决定是否暂停调度',
+        description: '将 OpenAI OAuth-like 429 作为统计信号，支持默认策略和按 Plan Type 覆盖',
+        defaultPolicy: '默认策略',
+        planTypePolicies: 'Plan Type 策略',
+        planTypePoliciesHint: '账号 Plan Type 精确匹配时使用对应策略，否则使用默认策略',
+        planType: 'Plan Type',
+        addPlanType: '新增 Plan Type 设置',
         enabled: '启用动态调度',
         enabledHint: '首个 429 后开始统计 429 与成功/其他错误；达阈值后调用统一限流状态暂停账号',
         windowSeconds: '统计窗口（秒）',

@@ -8,6 +8,7 @@ import (
 
 type openAIOAuth429DynamicWindow struct {
 	startedAt time.Time
+	planType  string
 	total     int
 	count429  int
 	limiting  bool
@@ -22,7 +23,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		return
 	}
 
-	settings, ok := s.getOpenAIOAuth429DynamicSettings(ctx, account.ID)
+	settings, ok := s.getOpenAIOAuth429DynamicSettings(ctx, account)
 	if !ok || !settings.Enabled {
 		// 禁用后清理已开启的窗口，避免成功请求继续命中动态统计热路径。
 		s.ResetOpenAIOAuth429DynamicStats(account.ID)
@@ -30,6 +31,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	}
 
 	now := time.Now()
+	planType := openAIAccountPlanType(account)
 	window := time.Duration(settings.WindowSeconds) * time.Second
 
 	s.openAIOAuth429DynamicMu.Lock()
@@ -43,8 +45,19 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 			s.openAIOAuth429DynamicMu.Unlock()
 			return
 		}
-		stat = &openAIOAuth429DynamicWindow{startedAt: now}
+		stat = &openAIOAuth429DynamicWindow{startedAt: now, planType: planType}
 		s.openAIOAuth429DynamicStat[account.ID] = stat
+	} else if stat.planType != planType {
+		if !is429 {
+			delete(s.openAIOAuth429DynamicStat, account.ID)
+			s.openAIOAuth429DynamicMu.Unlock()
+			return
+		}
+		stat.startedAt = now
+		stat.planType = planType
+		stat.total = 0
+		stat.count429 = 0
+		stat.limiting = false
 	} else if now.Sub(stat.startedAt) > window {
 		if !is429 {
 			delete(s.openAIOAuth429DynamicStat, account.ID)
@@ -123,13 +136,25 @@ func (s *RateLimitService) hasOpenAIOAuth429DynamicStats(accountID int64) bool {
 	return ok
 }
 
-func (s *RateLimitService) getOpenAIOAuth429DynamicSettings(ctx context.Context, accountID int64) (*OpenAIOAuth429DynamicSettings, bool) {
+func (s *RateLimitService) getOpenAIOAuth429DynamicSettings(ctx context.Context, account *Account) (*OpenAIOAuth429DynamicPolicy, bool) {
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
 	if s.settingService != nil {
 		settings, err := s.settingService.GetOpenAIOAuth429DynamicSettings(ctx)
 		if err == nil && settings != nil {
-			return settings, true
+			return settings.PolicyForPlanType(openAIAccountPlanType(account)), true
 		}
 		slog.Warn("openai_oauth_429_dynamic_settings_read_failed", "account_id", accountID, "error", err)
 	}
-	return DefaultOpenAIOAuth429DynamicSettings(), true
+	return DefaultOpenAIOAuth429DynamicSettings().PolicyForPlanType(openAIAccountPlanType(account)), true
+}
+
+func openAIAccountPlanType(account *Account) string {
+	if account == nil || account.Credentials == nil {
+		return ""
+	}
+	planType, _ := account.Credentials["plan_type"].(string)
+	return normalizeOpenAIOAuth429PlanType(planType)
 }

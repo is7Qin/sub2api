@@ -4264,11 +4264,20 @@ func (s *SettingService) SetOpenAIOAuth429DynamicSettings(ctx context.Context, s
 	if settings == nil {
 		return fmt.Errorf("settings cannot be nil")
 	}
-	if err := validateOpenAIOAuth429DynamicSettings(settings); err != nil {
+	if err := validateOpenAIOAuth429DynamicPlanTypeSettings(settings.PlanTypeSettings); err != nil {
+		return err
+	}
+	if err := validateOpenAIOAuth429DynamicPolicy(settings.defaultPolicy()); err != nil {
 		if settings.Enabled {
 			return err
 		}
-		settings = DefaultOpenAIOAuth429DynamicSettings()
+		defaults := DefaultOpenAIOAuth429DynamicSettings()
+		settings.Enabled = defaults.Enabled
+		settings.WindowSeconds = defaults.WindowSeconds
+		settings.MinSamples = defaults.MinSamples
+		settings.Min429 = defaults.Min429
+		settings.RatioThreshold = defaults.RatioThreshold
+		settings.BlockSeconds = defaults.BlockSeconds
 	}
 
 	normalizeOpenAIOAuth429DynamicSettings(settings)
@@ -4338,13 +4347,36 @@ func cloneOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettings)
 		return nil
 	}
 	cloned := *settings
+	cloned.PlanTypeSettings = append([]OpenAIOAuth429DynamicPlanTypeSettings(nil), settings.PlanTypeSettings...)
 	return &cloned
+}
+
+func normalizeOpenAIOAuth429PlanType(planType string) string {
+	return strings.ToLower(strings.TrimSpace(planType))
 }
 
 func normalizeOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettings) {
 	if settings == nil {
 		return
 	}
+	policy := settings.defaultPolicy()
+	normalizeOpenAIOAuth429DynamicPolicy(policy)
+	settings.Enabled = policy.Enabled
+	settings.WindowSeconds = policy.WindowSeconds
+	settings.MinSamples = policy.MinSamples
+	settings.Min429 = policy.Min429
+	settings.RatioThreshold = policy.RatioThreshold
+	settings.BlockSeconds = policy.BlockSeconds
+	for i := range settings.PlanTypeSettings {
+		settings.PlanTypeSettings[i].PlanType = normalizeOpenAIOAuth429PlanType(settings.PlanTypeSettings[i].PlanType)
+		normalizeOpenAIOAuth429DynamicPolicy(&settings.PlanTypeSettings[i].OpenAIOAuth429DynamicPolicy)
+	}
+	sort.Slice(settings.PlanTypeSettings, func(i, j int) bool {
+		return settings.PlanTypeSettings[i].PlanType < settings.PlanTypeSettings[j].PlanType
+	})
+}
+
+func normalizeOpenAIOAuth429DynamicPolicy(settings *OpenAIOAuth429DynamicPolicy) {
 	if settings.WindowSeconds < 60 {
 		settings.WindowSeconds = 60
 	}
@@ -4378,6 +4410,43 @@ func normalizeOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSetti
 }
 
 func validateOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	if err := validateOpenAIOAuth429DynamicPolicy(settings.defaultPolicy()); err != nil {
+		return err
+	}
+	return validateOpenAIOAuth429DynamicPlanTypeSettings(settings.PlanTypeSettings)
+}
+
+func validateOpenAIOAuth429DynamicPlanTypeSettings(settings []OpenAIOAuth429DynamicPlanTypeSettings) error {
+	if len(settings) > OpenAIOAuth429DynamicMaxPlanTypeSettings {
+		return fmt.Errorf("plan_type_settings must not exceed %d entries", OpenAIOAuth429DynamicMaxPlanTypeSettings)
+	}
+	seen := make(map[string]struct{}, len(settings))
+	for i := range settings {
+		planType := normalizeOpenAIOAuth429PlanType(settings[i].PlanType)
+		if planType == "" {
+			return fmt.Errorf("plan_type must not be empty")
+		}
+		if len(planType) > 64 {
+			return fmt.Errorf("plan_type must not exceed 64 characters")
+		}
+		if _, ok := seen[planType]; ok {
+			return fmt.Errorf("duplicate plan_type: %s", planType)
+		}
+		seen[planType] = struct{}{}
+		if err := validateOpenAIOAuth429DynamicPolicy(&settings[i].OpenAIOAuth429DynamicPolicy); err != nil {
+			return fmt.Errorf("plan_type %q: %w", planType, err)
+		}
+	}
+	return nil
+}
+
+func validateOpenAIOAuth429DynamicPolicy(settings *OpenAIOAuth429DynamicPolicy) error {
+	if settings == nil {
+		return fmt.Errorf("policy cannot be nil")
+	}
 	if settings.WindowSeconds < 60 || settings.WindowSeconds > 3600 {
 		return fmt.Errorf("window_seconds must be between 60-3600")
 	}

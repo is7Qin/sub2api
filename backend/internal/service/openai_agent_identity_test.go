@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/curve25519"
@@ -200,6 +201,93 @@ func TestEnsureAgentIdentityTaskSharesLockAcrossServicesForSameAccount(t *testin
 	require.Equal(t, "task-shared", repo.account.GetCredential("task_id"))
 }
 
+func TestOpenAIAccountTestRequestRecoversTaskOnceAndRedactsSecondFailure(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 75, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
+		"auth_mode": OpenAIAuthModeAgentIdentity, "agent_runtime_id": key.runtimeID, "agent_private_key": privateKey, "task_id": "task-old",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"task_id":"task-new"}`)
+	}))
+	defer authServer.Close()
+	oldBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldBase })
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"task_expired","message":"` + privateKey + ` ` + key.runtimeID + ` task-new AgentAssertion secret"}}`))},
+	}}
+	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	req := httptest.NewRequest(http.MethodPost, chatgptCodexAPIURL, strings.NewReader(`{"model":"gpt-5"}`))
+	headers, err := service.buildOpenAIAccountTestAuthenticationHeaders(context.Background(), account, "")
+	require.NoError(t, err)
+	req.Header = headers
+	resp, err := service.doOpenAIAccountTestRequestWithTaskRecovery(context.Background(), account, req, []byte(`{"model":"gpt-5"}`), "")
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 2)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	for _, secret := range []string{privateKey, key.runtimeID, "task-new", "AgentAssertion secret"} {
+		require.NotContains(t, string(body), secret)
+	}
+	require.Contains(t, string(body), "[redacted]")
+}
+
+func TestOpenAIResponsesAccountTestRecoversTaskAndSucceeds(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 74, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Concurrency: 1, Credentials: map[string]any{
+		"auth_mode": OpenAIAuthModeAgentIdentity, "agent_runtime_id": key.runtimeID, "agent_private_key": privateKey, "task_id": "task-old",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"task_id":"task-new"}`) }))
+	defer authServer.Close()
+	oldBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldBase })
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\"}\n\n"))},
+	}}
+	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
+	err := service.testOpenAIAccountConnection(c, account, "gpt-5.4", "", "")
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "task-new", decodeAgentIdentityAssertionTaskID(t, upstream.requests[1].Header.Get("Authorization")))
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestOpenAICompactAccountTestSecondFailureIsRedacted(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 73, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Concurrency: 1, Credentials: map[string]any{
+		"auth_mode": OpenAIAuthModeAgentIdentity, "agent_runtime_id": key.runtimeID, "agent_private_key": privateKey, "task_id": "task-old",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"task_id":"task-new"}`) }))
+	defer authServer.Close()
+	oldBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldBase })
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"task_expired","message":"` + privateKey + ` ` + key.runtimeID + ` task-new AgentAssertion secret"}}`))},
+	}}
+	service := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
+	err := service.testOpenAICompactConnection(c, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 2)
+	for _, secret := range []string{privateKey, key.runtimeID, "task-new", "AgentAssertion secret"} {
+		require.NotContains(t, recorder.Body.String(), secret)
+		require.NotContains(t, repo.setError, secret)
+	}
+}
+
 func TestOpenAIGatewayAgentIdentityDoesNotRequireBearerToken(t *testing.T) {
 	key, privateKey := newTestAgentIdentityKey(t)
 	account := &Account{ID: 76, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
@@ -351,6 +439,7 @@ type agentIdentityCredentialsRepo struct {
 	AccountRepository
 	credentials map[string]any
 	account     *Account
+	setError    string
 	mu          sync.Mutex
 }
 
@@ -362,6 +451,22 @@ func (r *agentIdentityCredentialsRepo) UpdateCredentials(_ context.Context, _ in
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.credentials = credentials
+	return nil
+}
+
+func (r *agentIdentityCredentialsRepo) SetError(_ context.Context, _ int64, message string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setError = message
+	return nil
+}
+
+func (r *agentIdentityCredentialsRepo) UpdateExtra(_ context.Context, _ int64, extra map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.account != nil {
+		r.account.Extra = extra
+	}
 	return nil
 }
 

@@ -270,6 +270,78 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
 }
 
+func TestFetchOpenAIAgentIdentityUpstreamModelsRecoversTask(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 71, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{
+		"auth_mode":          OpenAIAuthModeAgentIdentity,
+		"agent_runtime_id":   key.runtimeID,
+		"agent_private_key":  privateKey,
+		"task_id":            "task-old",
+		"chatgpt_account_id": "chatgpt-acc",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"task_id":"task-new"}`)
+	}))
+	defer authServer.Close()
+	oldAuthBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldAuthBase })
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`))},
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[{"slug":"gpt-5.4"},{"slug":"o3"}]}`))},
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.4", "o3"}, models)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "task-old", decodeAgentIdentityAssertionTaskID(t, upstream.requests[0].Header.Get("Authorization")))
+	require.Equal(t, "task-new", decodeAgentIdentityAssertionTaskID(t, upstream.requests[1].Header.Get("Authorization")))
+	require.Equal(t, openAICodexUpstreamModelsURL, upstream.lastReq.URL.String())
+	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
+}
+
+func TestFetchOpenAIAgentIdentityUpstreamModelsSecondFailureIsRedacted(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 72, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
+		"auth_mode": "agentIdentity", "agent_runtime_id": key.runtimeID, "agent_private_key": privateKey, "task_id": "task-old",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"task_id":"task-new"}`)
+	}))
+	defer authServer.Close()
+	oldAuthBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldAuthBase })
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"task_expired"}}`))},
+		{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"task_expired","message":"` + privateKey + ` ` + key.runtimeID + ` task-new AgentAssertion secret"}}`))},
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	_, err := svc.FetchUpstreamSupportedModels(context.Background(), account)
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 2)
+	for _, secret := range []string{privateKey, key.runtimeID, "task-new", "AgentAssertion secret"} {
+		require.NotContains(t, err.Error(), secret)
+	}
+	require.Contains(t, err.Error(), "[redacted]")
+}
+
+func TestFetchOpenAIAPIKeyUpstreamModelsDoesNotUseCodexManifest(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":"denied"}`))}}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	_, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{ID: 73, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "key", "base_url": "https://openai.example.com",
+	}})
+	require.Error(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://openai.example.com/v1/models", upstream.lastReq.URL.String())
+}
+
 func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {
 	t.Parallel()
 

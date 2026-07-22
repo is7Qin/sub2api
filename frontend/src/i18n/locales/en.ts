@@ -3952,6 +3952,7 @@ export default {
           agentIdentityInputLabel: 'Agent Identity auth.json',
           agentIdentityPlaceholder: 'Paste one Agent Identity auth.json object',
           agentIdentityHint: 'The file must use auth_mode=agentIdentity. Upstream requests are signed dynamically.',
+          agentIdentityImportAndCreate: 'Import Agent Identity & Create Account',
           codexSessionAuth: 'Codex JSON / AT / PAT Batch Input',
           codexSessionDesc: 'Paste Codex JSON, an accessToken, or JSON with personal_access_token. Accounts use the step 1 settings.',
           codexSessionInputLabel: 'Codex JSON, accessToken, or personal_access_token JSON',

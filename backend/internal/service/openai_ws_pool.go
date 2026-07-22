@@ -1504,11 +1504,23 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if p == nil || p.clientDialer == nil {
 		return nil, errors.New("openai ws client dialer is nil")
 	}
-	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	var (
+		conn             openAIWSClientConn
+		status           int
+		handshakeHeaders http.Header
+		responseBody     []byte
+		err              error
+	)
+	if detailed, ok := p.clientDialer.(openAIWSClientDetailedDialer); ok {
+		conn, status, handshakeHeaders, responseBody, err = detailed.DialDetailed(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	} else {
+		conn, status, handshakeHeaders, err = p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	}
 	if err != nil {
 		return nil, &openAIWSDialError{
 			StatusCode:      status,
 			ResponseHeaders: cloneHeader(handshakeHeaders),
+			ResponseBody:    responseBody,
 			Err:             err,
 		}
 	}

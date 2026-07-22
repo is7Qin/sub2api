@@ -9,13 +9,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
@@ -195,6 +198,147 @@ func TestEnsureAgentIdentityTaskSharesLockAcrossServicesForSameAccount(t *testin
 	defer registerMu.Unlock()
 	require.Equal(t, 1, registerCalls)
 	require.Equal(t, "task-shared", repo.account.GetCredential("task_id"))
+}
+
+func TestOpenAIGatewayAgentIdentityDoesNotRequireBearerToken(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 76, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
+		"auth_mode":         OpenAIAuthModeAgentIdentity,
+		"agent_runtime_id":  key.runtimeID,
+		"agent_private_key": privateKey,
+		"task_id":           "task-existing",
+	}}
+	service := &OpenAIGatewayService{}
+	token, authType, err := service.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Empty(t, token)
+	require.Equal(t, "oauth", authType)
+}
+
+func TestAgentIdentityTaskInvalidWSDialErrorRequiresExplicit401Body(t *testing.T) {
+	require.True(t, isAgentIdentityTaskInvalidWSDialError(&openAIWSDialError{
+		StatusCode:   http.StatusUnauthorized,
+		ResponseBody: []byte(`{"error":{"code":"invalid_task_id"}}`),
+	}))
+	require.False(t, isAgentIdentityTaskInvalidWSDialError(&openAIWSDialError{
+		StatusCode:   http.StatusUnauthorized,
+		ResponseBody: []byte(`{"error":{"code":"invalid_token"}}`),
+	}))
+	require.False(t, isAgentIdentityTaskInvalidWSDialError(&openAIWSDialError{
+		StatusCode:   http.StatusForbidden,
+		ResponseBody: []byte(`{"error":{"code":"invalid_task_id"}}`),
+	}))
+}
+
+func TestOpenAIQuotaAgentIdentityRecoversOnceWithoutTokenProvider(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 77, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
+		"auth_mode":          OpenAIAuthModeAgentIdentity,
+		"agent_runtime_id":   key.runtimeID,
+		"agent_private_key":  privateKey,
+		"task_id":            "task-old",
+		"chatgpt_account_id": "account-test",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+
+	registerCalls := 0
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		registerCalls++
+		_, _ = io.WriteString(w, `{"task_id":"task-new"}`)
+	}))
+	defer authServer.Close()
+	oldBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldBase })
+
+	requestCalls := 0
+	var assertions []string
+	quotaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCalls++
+		assertions = append(assertions, r.Header.Get("Authorization"))
+		if requestCalls == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_task_id"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"account_id":"account-test"}`)
+	}))
+	defer quotaServer.Close()
+	target, err := url.Parse(quotaServer.URL)
+	require.NoError(t, err)
+
+	service := NewOpenAIQuotaService(repo, nil, nil, func(string) (*req.Client, error) {
+		client := req.C()
+		client.GetClient().Transport = rewriteChatGPTTestRoundTripper{target: target, base: quotaServer.Client().Transport}
+		return client, nil
+	})
+	usage, err := service.QueryUsage(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, "account-test", usage.AccountID)
+	require.Equal(t, 2, requestCalls)
+	require.Equal(t, 1, registerCalls)
+	require.Len(t, assertions, 2)
+	require.Contains(t, decodeAgentIdentityAssertionTaskID(t, assertions[0]), "task-old")
+	require.Contains(t, decodeAgentIdentityAssertionTaskID(t, assertions[1]), "task-new")
+	require.Equal(t, "task-new", repo.credentials["task_id"])
+}
+
+func TestOpenAIQuotaAgentIdentityDoesNotRecoverTwiceAndRedactsError(t *testing.T) {
+	key, privateKey := newTestAgentIdentityKey(t)
+	account := &Account{ID: 78, Type: AccountTypeOAuth, Platform: PlatformOpenAI, Credentials: map[string]any{
+		"auth_mode":          OpenAIAuthModeAgentIdentity,
+		"agent_runtime_id":   key.runtimeID,
+		"agent_private_key":  privateKey,
+		"task_id":            "task-old-secret",
+		"chatgpt_account_id": "account-test",
+	}}
+	repo := &agentIdentityCredentialsRepo{account: account}
+	registerCalls := 0
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		registerCalls++
+		_, _ = io.WriteString(w, `{"task_id":"task-new-secret"}`)
+	}))
+	defer authServer.Close()
+	oldBase := openAIAgentIdentityAuthAPIBaseURL
+	openAIAgentIdentityAuthAPIBaseURL = authServer.URL
+	t.Cleanup(func() { openAIAgentIdentityAuthAPIBaseURL = oldBase })
+
+	requestCalls := 0
+	quotaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCalls++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintf(w, `{"error":{"code":"task_expired","message":%q}}`, privateKey+" "+key.runtimeID+" task-new-secret "+r.Header.Get("Authorization"))
+	}))
+	defer quotaServer.Close()
+	target, err := url.Parse(quotaServer.URL)
+	require.NoError(t, err)
+
+	service := NewOpenAIQuotaService(repo, nil, nil, func(string) (*req.Client, error) {
+		client := req.C()
+		client.GetClient().Transport = rewriteChatGPTTestRoundTripper{target: target, base: quotaServer.Client().Transport}
+		return client, nil
+	})
+	_, err = service.QueryUsage(context.Background(), account.ID)
+	require.Error(t, err)
+	require.Equal(t, 2, requestCalls)
+	require.Equal(t, 1, registerCalls)
+	for _, secret := range []string{privateKey, key.runtimeID, "task-old-secret", "task-new-secret", "AgentAssertion "} {
+		require.NotContains(t, err.Error(), secret)
+	}
+	require.Contains(t, err.Error(), "[redacted]")
+}
+
+func decodeAgentIdentityAssertionTaskID(t *testing.T, assertion string) string {
+	t.Helper()
+	encoded := strings.TrimPrefix(assertion, "AgentAssertion ")
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	require.NoError(t, err)
+	var envelope struct {
+		TaskID string `json:"task_id"`
+	}
+	require.NoError(t, json.Unmarshal(decoded, &envelope))
+	return envelope.TaskID
 }
 
 func cloneAgentIdentityTestAccount(account *Account) *Account {

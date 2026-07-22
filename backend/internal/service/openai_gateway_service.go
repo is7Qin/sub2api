@@ -3847,6 +3847,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
+	agentIdentityTaskRecoveryTried := false
 	rejectedFieldRetryState := newOpenAIResponsesRejectedFieldRetryState(body)
 	var completedError completedResponseSnapshot
 	for {
@@ -3883,6 +3884,22 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			completedError = snapshotCompletedResponse(resp, respBody)
 
+			if !agentIdentityTaskRecoveryTried && account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+				expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
+				agentIdentityTaskRecoveryTried = true
+				if recoverErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoverErr != nil {
+					return nil, fmt.Errorf("recover agent identity task: %w", recoverErr)
+				}
+				if restored, canceled := completedError.ifRetryCanceled(ctx); canceled {
+					resp = restored
+					respBody = completedError.body
+				} else {
+					continue
+				}
+			}
+			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			completedError = snapshotCompletedResponse(resp, respBody)
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeOpenAIUpstreamDiagnosticText(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)

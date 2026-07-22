@@ -103,6 +103,17 @@
                 t('admin.accounts.oauth.openai.codexSessionAuth')
               }}</span>
             </label>
+            <label v-if="showAgentIdentityImportOption" class="flex cursor-pointer items-center gap-2">
+              <input
+                v-model="inputMethod"
+                type="radio"
+                value="agent_identity"
+                class="text-blue-600 focus:ring-blue-500"
+              />
+              <span class="text-sm text-blue-900 dark:text-blue-200">{{
+                t('admin.accounts.oauth.openai.agentIdentityAuth')
+              }}</span>
+            </label>
           </div>
         </div>
 
@@ -336,7 +347,7 @@
               {{
                 loading
                   ? t('admin.accounts.oauth.openai.validating')
-                  : t('admin.accounts.oauth.openai.codexSessionImportAndCreate')
+                  : t(inputMethod === 'agent_identity' ? 'admin.accounts.oauth.openai.agentIdentityImportAndCreate' : 'admin.accounts.oauth.openai.codexSessionImportAndCreate')
               }}
             </button>
           </div>
@@ -737,6 +748,7 @@ interface Props {
   showAccessTokenOption?: boolean
   showPersonalAccessTokenOption?: boolean
   showCodexSessionImportOption?: boolean
+  showAgentIdentityImportOption?: boolean
   platform?: AccountPlatform // Platform type for different UI/text
   showProjectId?: boolean // New prop to control project ID visibility
 }
@@ -757,6 +769,7 @@ const props = withDefaults(defineProps<Props>(), {
   showAccessTokenOption: false,
   showPersonalAccessTokenOption: false,
   showCodexSessionImportOption: false,
+  showAgentIdentityImportOption: false,
   platform: 'anthropic',
   showProjectId: true
 })
@@ -817,7 +830,7 @@ const oauthState = ref('')
 const projectId = ref('')
 
 // Computed: show method selection when either cookie or refresh token option is enabled
-const showMethodSelection = computed(() => props.showCookieOption || props.showRefreshTokenOption || props.showMobileRefreshTokenOption || props.showSessionTokenOption || props.showAccessTokenOption || props.showPersonalAccessTokenOption || props.showCodexSessionImportOption)
+const showMethodSelection = computed(() => props.showCookieOption || props.showRefreshTokenOption || props.showMobileRefreshTokenOption || props.showSessionTokenOption || props.showAccessTokenOption || props.showPersonalAccessTokenOption || props.showCodexSessionImportOption || props.showAgentIdentityImportOption)
 
 // Clipboard
 const { copied, copyToClipboard } = useClipboard()

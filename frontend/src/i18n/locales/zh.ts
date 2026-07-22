@@ -4005,6 +4005,7 @@ export default {
           agentIdentityInputLabel: 'Agent Identity auth.json',
           agentIdentityPlaceholder: '粘贴一个 Agent Identity auth.json 对象',
           agentIdentityHint: '文件必须使用 auth_mode=agentIdentity；每次上游请求都会动态签名。',
+          agentIdentityImportAndCreate: '导入 Agent Identity 并创建账号',
           codexSessionAuth: 'Codex JSON / AT / PAT 批量输入',
           codexSessionDesc: '粘贴 Codex JSON、accessToken 或带 personal_access_token 的 JSON，按第一步配置创建账号。',
           codexSessionInputLabel: 'Codex JSON、accessToken 或 personal_access_token JSON',

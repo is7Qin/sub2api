@@ -463,8 +463,8 @@ func redactAgentIdentitySensitiveBodyForAccount(ctx context.Context, repo Accoun
 		for end < len(redacted) && !strings.ContainsRune(" \t\r\n\"',}", rune(redacted[end])) {
 			end++
 		}
-		redacted = redacted[:valueStart] + "[redacted]" + redacted[end:]
-		offset = valueStart + len("[redacted]")
+		redacted = redacted[:start] + "[redacted]" + redacted[end:]
+		offset = start + len("[redacted]")
 	}
 	return []byte(redacted)
 }

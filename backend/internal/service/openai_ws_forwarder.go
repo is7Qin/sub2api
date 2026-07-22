@@ -2271,7 +2271,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
 	defer acquireCancel()
 
-	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
+	acquireRequest := openAIWSAcquireRequest{
 		Account:         account,
 		WSURL:           wsURL,
 		Headers:         wsHeaders,
@@ -2283,7 +2283,24 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 			return ""
 		}(),
-	})
+	}
+	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, acquireRequest)
+	if err != nil && account.IsOpenAIAgentIdentity() {
+		var dialErr *openAIWSDialError
+		if errors.As(err, &dialErr) && isAgentIdentityTaskInvalidWSDialError(dialErr) {
+			expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
+			if recoverErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoverErr != nil {
+				return nil, wrapFallback("agent_identity_task_recovery", recoverErr)
+			}
+			refreshedHeaders, refreshErr := s.refreshOpenAIAgentIdentityHeaders(ctx, account, wsHeaders)
+			if refreshErr != nil {
+				return nil, wrapFallback("agent_identity_header_refresh", refreshErr)
+			}
+			acquireRequest.Headers = refreshedHeaders
+			acquireRequest.ForceNewConn = true
+			lease, err = s.getOpenAIWSConnPool().Acquire(acquireCtx, acquireRequest)
+		}
+	}
 	if err != nil {
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
 		logOpenAIWSModeInfo(

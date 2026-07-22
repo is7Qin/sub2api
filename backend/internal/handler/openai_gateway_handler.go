@@ -1634,6 +1634,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return turnSlots.acquireAccount(account.ID, accountMaxConcurrency)
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
+				var failoverErr *service.UpstreamFailoverError
+				if errors.As(turnErr, &failoverErr) {
+					// Failover ends only the account attempt; Key/User still own this logical turn.
+					turnSlots.releaseAccount()
+					return
+				}
 				turnSlots.releaseTurn()
 				if turnErr != nil {
 					if result == nil || result.ImageCount <= 0 {

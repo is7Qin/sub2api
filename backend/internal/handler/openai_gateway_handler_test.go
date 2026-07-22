@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1756,6 +1757,22 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 	accountRepo := &openAIWSFailoverHandlerAccountRepoStub{accounts: accounts}
 	rateLimitSvc := service.NewRateLimitService(accountRepo, nil, cfg, nil, nil)
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	var keyAcquires atomic.Int32
+	var userAcquires atomic.Int32
+	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error) {
+			keyAcquires.Add(1)
+			return true, nil
+		},
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			userAcquires.Add(1)
+			return true, nil
+		},
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+	}
+	concurrencySvc := service.NewConcurrencyService(cache)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
 		nil,
@@ -1766,7 +1783,7 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		nil,
 		cfg,
 		nil,
-		nil,
+		concurrencySvc,
 		service.NewBillingService(cfg, nil),
 		rateLimitSvc,
 		billingCacheSvc,
@@ -1780,22 +1797,11 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		nil,
 	)
 
-	cache := &concurrencyCacheMock{
-		acquireAPIKeySlotFn: func(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error) {
-			return true, nil
-		},
-		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
-			return true, nil
-		},
-		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
-			return true, nil
-		},
-	}
 	h := &OpenAIGatewayHandler{
 		gatewayService:      gatewaySvc,
 		billingCacheService: billingCacheSvc,
 		apiKeyService:       &service.APIKeyService{},
-		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+		concurrencyHelper:   NewConcurrencyHelper(concurrencySvc, SSEPingFormatNone, time.Second),
 		maxAccountSwitches:  3,
 	}
 
@@ -1849,6 +1855,11 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		t.Fatal("等待第二个上游收到重放首帧超时")
 	}
 	require.Equal(t, []int64{int64(9902)}, accountRepo.rateLimitedIDs)
+	require.Equal(t, int32(1), keyAcquires.Load(), "failover must retain the logical turn's key slot")
+	require.Equal(t, int32(1), userAcquires.Load(), "failover must retain the logical turn's user slot")
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
+	require.Equal(t, int32(2), atomic.LoadInt32(&cache.releaseAccountCalled), "each scheduler-acquired account attempt releases once")
 }
 
 func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSUsageLogCase) openAIResponsesWSUsageLogResult {

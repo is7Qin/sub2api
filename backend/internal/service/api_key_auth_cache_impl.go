@@ -90,18 +90,55 @@ func (s *APIKeyService) initAuthCache(cfg *config.Config) {
 	s.authCacheL1 = cache
 }
 
-// StartAuthCacheInvalidationSubscriber starts the Pub/Sub subscriber for L1 cache invalidation.
-// This should be called after the service is fully initialized.
+// StartAuthCacheInvalidationSubscriber supervises the cross-instance L1 invalidation subscription.
 func (s *APIKeyService) StartAuthCacheInvalidationSubscriber(ctx context.Context) {
 	if s.cache == nil || s.authCacheL1 == nil {
 		return
 	}
-	if err := s.cache.SubscribeAuthCacheInvalidation(ctx, func(cacheKey string) {
-		s.authCacheL1.Del(cacheKey)
-	}); err != nil {
-		// Log but don't fail - L1 cache will still work, just without cross-instance invalidation
-		slog.Warn("failed to start auth cache invalidation subscriber", "error", err)
+	s.authInvalidationStart.Do(func() {
+		subscriberCtx, cancel := context.WithCancel(ctx)
+		s.authInvalidationCancel = cancel
+		s.authInvalidationWG.Add(1)
+		go func() {
+			defer s.authInvalidationWG.Done()
+			backoff := time.Second
+			for {
+				err := s.cache.SubscribeAuthCacheInvalidation(subscriberCtx, s.invalidateLocalAuthCache)
+				if subscriberCtx.Err() != nil {
+					return
+				}
+				if err == nil {
+					err = errors.New("auth cache invalidation subscription closed")
+				}
+				slog.Warn("auth cache invalidation subscriber stopped; retrying", "error", err, "retry_in", backoff)
+				timer := time.NewTimer(backoff)
+				select {
+				case <-subscriberCtx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				if backoff < 30*time.Second {
+					backoff *= 2
+					if backoff > 30*time.Second {
+						backoff = 30 * time.Second
+					}
+				}
+			}
+		}()
+	})
+}
+
+func (s *APIKeyService) StopAuthCacheInvalidationSubscriber() {
+	if s == nil {
+		return
 	}
+	s.authInvalidationStop.Do(func() {
+		if s.authInvalidationCancel != nil {
+			s.authInvalidationCancel()
+		}
+		s.authInvalidationWG.Wait()
+	})
 }
 
 func (s *APIKeyService) authCacheKey(key string) string {
@@ -151,10 +188,14 @@ func (s *APIKeyService) setAuthCacheEntry(ctx context.Context, cacheKey string, 
 	_ = s.cache.SetAuthCache(ctx, cacheKey, entry, s.authCfg.jitterTTL(ttl))
 }
 
-func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
-	if s.authCacheL1 != nil {
+func (s *APIKeyService) invalidateLocalAuthCache(cacheKey string) {
+	if s != nil && s.authCacheL1 != nil {
 		s.authCacheL1.Del(cacheKey)
 	}
+}
+
+func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
+	s.invalidateLocalAuthCache(cacheKey)
 	if s.cache == nil {
 		return
 	}

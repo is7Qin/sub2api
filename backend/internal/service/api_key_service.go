@@ -243,6 +243,10 @@ type APIKeyService struct {
 	authCacheL1            *ristretto.Cache
 	authCfg                apiKeyAuthCacheConfig
 	authGroup              singleflight.Group
+	authInvalidationStart  sync.Once
+	authInvalidationStop   sync.Once
+	authInvalidationCancel context.CancelFunc
+	authInvalidationWG     sync.WaitGroup
 	lastUsedTouchL1        sync.Map // keyID -> nextAllowedAt(time.Time)
 	lastUsedTouchSF        singleflight.Group
 }

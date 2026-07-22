@@ -44,14 +44,8 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		return
 	}
 
-	if req.ResetRateLimitUsage != nil && *req.ResetRateLimitUsage {
-		if _, err = h.adminService.AdminResetAPIKeyRateLimitUsage(c.Request.Context(), keyID); err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-	}
-
-	result, err := h.adminService.AdminUpdateAPIKey(c.Request.Context(), keyID, req.GroupID, req.Concurrency)
+	resetRateLimitUsage := req.ResetRateLimitUsage != nil && *req.ResetRateLimitUsage
+	result, err := h.adminService.AdminUpdateAPIKey(c.Request.Context(), keyID, req.GroupID, req.Concurrency, resetRateLimitUsage)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

@@ -370,7 +370,7 @@ func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group 
 
 // Create 创建API Key
 func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
-	if req.Concurrency < 0 {
+	if req.Concurrency < 0 || req.Concurrency > 2147483647 {
 		return nil, ErrInvalidAPIKeyConcurrency
 	}
 
@@ -588,7 +588,7 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 
 // Update 更新API Key
 func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req UpdateAPIKeyRequest) (*APIKey, error) {
-	if req.Concurrency != nil && *req.Concurrency < 0 {
+	if req.Concurrency != nil && (*req.Concurrency < 0 || *req.Concurrency > 2147483647) {
 		return nil, ErrInvalidAPIKeyConcurrency
 	}
 

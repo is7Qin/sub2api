@@ -251,7 +251,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	clientRelease, err := geminiConcurrency.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, authSubject.UserID, authSubject.Concurrency, stream, &streamStarted)
 	if err != nil {
 		reqLog.Warn("gemini.client_slots_acquire_failed", zap.Error(err))
-		googleError(c, http.StatusTooManyRequests, err.Error())
+		geminiConcurrencyErrorResponse(c, err, "client")
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
@@ -486,7 +486,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				if failoverClientGone(c) {
 					return
 				}
-				googleError(c, http.StatusTooManyRequests, err.Error())
+				geminiConcurrencyErrorResponse(c, err, "account")
 				return
 			}
 			if accountWaitCounted {

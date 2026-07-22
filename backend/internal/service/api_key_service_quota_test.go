@@ -263,6 +263,16 @@ func TestAPIKeyService_UpdateRejectsNegativeConcurrency(t *testing.T) {
 	require.Nil(t, repo.patch.Concurrency)
 }
 
+func TestAPIKeyService_UpdateRejectsConcurrencyAboveDatabaseInteger(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	concurrency := int(^uint32(0)>>1) + 1
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{Concurrency: &concurrency})
+	require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+	require.Nil(t, repo.patch.Concurrency)
+}
+
 func TestAPIKeyService_UpdatePreservesIPRulesWhenOmitted(t *testing.T) {
 	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
 		ID:          1,

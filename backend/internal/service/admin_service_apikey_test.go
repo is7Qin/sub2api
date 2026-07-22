@@ -117,6 +117,7 @@ type apiKeyRepoStubForGroupUpdate struct {
 	getErr    error
 	updateErr error
 	updated   *APIKey // captures what was passed to Update
+	lastPatch APIKeyConfigPatch
 	group     *Group
 }
 
@@ -157,6 +158,7 @@ func (s *apiKeyRepoStubForGroupUpdate) UpdateGroupID(_ context.Context, _ int64,
 	return &clone, nil
 }
 func (s *apiKeyRepoStubForGroupUpdate) UpdateConfig(_ context.Context, _ int64, _ int64, patch APIKeyConfigPatch) (*APIKey, error) {
+	s.lastPatch = patch
 	if s.updateErr != nil {
 		return nil, s.updateErr
 	}
@@ -165,6 +167,9 @@ func (s *apiKeyRepoStubForGroupUpdate) UpdateConfig(_ context.Context, _ int64, 
 		base = s.updated
 	}
 	clone := *base
+	if patch.GroupID != nil {
+		clone.GroupID = *patch.GroupID
+	}
 	if patch.Concurrency != nil {
 		clone.Concurrency = *patch.Concurrency
 	}
@@ -345,7 +350,7 @@ func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
 		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
 		svc := &adminServiceImpl{apiKeyRepo: repo}
 
-		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, nil)
+		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, nil, false)
 		require.NoError(t, err)
 		require.Equal(t, 6, got.APIKey.Concurrency)
 		require.Nil(t, repo.updated)
@@ -359,7 +364,7 @@ func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
 			cache := &authCacheInvalidatorStub{}
 			svc := &adminServiceImpl{apiKeyRepo: repo, authCacheInvalidator: cache}
 
-			got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &concurrency)
+			got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &concurrency, false)
 			require.NoError(t, err)
 			require.Equal(t, concurrency, got.APIKey.Concurrency)
 			require.Equal(t, concurrency, repo.updated.Concurrency)
@@ -373,7 +378,7 @@ func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
 		svc := &adminServiceImpl{apiKeyRepo: repo}
 		negative := -1
 
-		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &negative)
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &negative, false)
 		require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
 		require.Nil(t, repo.updated)
 	})
@@ -384,7 +389,7 @@ func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
 		svc := &adminServiceImpl{apiKeyRepo: repo}
 		tooLarge := 2147483648
 
-		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &tooLarge)
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &tooLarge, false)
 		require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
 		require.Nil(t, repo.updated)
 	})
@@ -397,10 +402,27 @@ func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
 		svc := &adminServiceImpl{apiKeyRepo: repo, groupRepo: groupRepo, authCacheInvalidator: cache}
 		concurrency := 8
 
-		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, int64Ptr(10), &concurrency)
+		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, int64Ptr(10), &concurrency, false)
 		require.NoError(t, err)
 		require.Equal(t, int64(10), *got.APIKey.GroupID)
 		require.Equal(t, 8, got.APIKey.Concurrency)
+		require.NotNil(t, repo.lastPatch.GroupID, "combined updates must use one repository patch")
+		require.NotNil(t, repo.lastPatch.Concurrency)
+	})
+
+	t.Run("combined repository failure leaves group unchanged and cache valid", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", GroupID: int64Ptr(4), Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing, updateErr: errors.New("forced patch failure")}
+		groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
+		cache := &authCacheInvalidatorStub{}
+		svc := &adminServiceImpl{apiKeyRepo: repo, groupRepo: groupRepo, authCacheInvalidator: cache}
+		concurrency := 8
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, int64Ptr(10), &concurrency, false)
+		require.ErrorContains(t, err, "forced patch failure")
+		require.Equal(t, int64(4), *repo.key.GroupID)
+		require.Nil(t, repo.updated)
+		require.Empty(t, cache.keys)
 	})
 }
 

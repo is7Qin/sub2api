@@ -67,7 +67,7 @@ type AdminService interface {
 	UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error
 
 	// API Key management (admin)
-	AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int) (*AdminUpdateAPIKeyGroupIDResult, error)
+	AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int, resetRateLimitUsage bool) (*AdminUpdateAPIKeyGroupIDResult, error)
 	AdminResetAPIKeyRateLimitUsage(ctx context.Context, keyID int64) (*APIKey, error)
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
@@ -2339,19 +2339,87 @@ func (s *adminServiceImpl) UpdateGroupSortOrders(ctx context.Context, updates []
 
 // AdminUpdateAPIKey updates the requested admin-managed API key fields.
 // Nil fields are omitted; concurrency zero explicitly disables the key-specific ceiling.
-func (s *adminServiceImpl) AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int) (*AdminUpdateAPIKeyGroupIDResult, error) {
+func (s *adminServiceImpl) AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int, resetRateLimitUsage bool) (*AdminUpdateAPIKeyGroupIDResult, error) {
 	if concurrency != nil && (*concurrency < 0 || *concurrency > 2147483647) {
 		return nil, ErrInvalidAPIKeyConcurrency
 	}
-
-	result, err := s.AdminUpdateAPIKeyGroupID(ctx, keyID, groupID)
-	if err != nil || concurrency == nil {
-		return result, err
+	if concurrency == nil && !resetRateLimitUsage {
+		return s.AdminUpdateAPIKeyGroupID(ctx, keyID, groupID)
 	}
 
-	updated, err := s.apiKeyRepo.UpdateConfig(ctx, keyID, result.APIKey.UserID, APIKeyConfigPatch{Concurrency: concurrency})
+	apiKey, err := s.apiKeyRepo.GetByID(ctx, keyID)
 	if err != nil {
-		return nil, fmt.Errorf("update api key concurrency: %w", err)
+		return nil, err
+	}
+	patch := APIKeyConfigPatch{Concurrency: concurrency, ResetRateLimitUsage: resetRateLimitUsage}
+	var targetGroup *Group
+	if groupID != nil {
+		if *groupID < 0 {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_ID", "group_id must be non-negative")
+		}
+		var target *int64
+		if *groupID > 0 {
+			targetGroup, err = s.groupRepo.GetByID(ctx, *groupID)
+			if err != nil {
+				return nil, err
+			}
+			if targetGroup.Status != StatusActive {
+				return nil, infraerrors.BadRequest("GROUP_NOT_ACTIVE", "target group is not active")
+			}
+			if targetGroup.IsSubscriptionType() {
+				if s.userSubRepo == nil {
+					return nil, infraerrors.InternalServer("SUBSCRIPTION_REPOSITORY_UNAVAILABLE", "subscription repository is not configured")
+				}
+				if _, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, apiKey.UserID, *groupID); err != nil {
+					if errors.Is(err, ErrSubscriptionNotFound) {
+						return nil, infraerrors.BadRequest("SUBSCRIPTION_REQUIRED", "user does not have an active subscription for this group")
+					}
+					return nil, err
+				}
+			}
+			gid := *groupID
+			target = &gid
+		}
+		patch.GroupID = &target
+	}
+
+	result := &AdminUpdateAPIKeyGroupIDResult{}
+	if targetGroup != nil && targetGroup.IsExclusive && !targetGroup.IsSubscriptionType() {
+		if s.entClient == nil {
+			return nil, infraerrors.InternalServer("TRANSACTION_UNAVAILABLE", "atomic API key update requires transaction support")
+		}
+		tx, txErr := s.entClient.Tx(ctx)
+		if txErr != nil {
+			return nil, fmt.Errorf("begin transaction: %w", txErr)
+		}
+		defer func() { _ = tx.Rollback() }()
+		txCtx := dbent.NewTxContext(ctx, tx)
+		if err := s.userRepo.AddGroupToAllowedGroups(txCtx, apiKey.UserID, targetGroup.ID); err != nil {
+			return nil, fmt.Errorf("add group to user allowed groups: %w", err)
+		}
+		updated, err := s.apiKeyRepo.UpdateConfig(txCtx, keyID, apiKey.UserID, patch)
+		if err != nil {
+			return nil, fmt.Errorf("update api key: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit transaction: %w", err)
+		}
+		result.APIKey = updated
+		result.AutoGrantedGroupAccess = true
+		result.GrantedGroupID = &targetGroup.ID
+		result.GrantedGroupName = targetGroup.Name
+		if s.authCacheInvalidator != nil {
+			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, apiKey.UserID)
+		}
+		return result, nil
+	}
+
+	updated, err := s.apiKeyRepo.UpdateConfig(ctx, keyID, apiKey.UserID, patch)
+	if err != nil {
+		return nil, fmt.Errorf("update api key: %w", err)
+	}
+	if targetGroup != nil {
+		updated.Group = targetGroup
 	}
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, updated.Key)

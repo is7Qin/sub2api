@@ -85,6 +85,30 @@ func TestAPIKeyFullProtocolFamiliesReturnUncommitted429(t *testing.T) {
 	}
 }
 
+func TestGeminiConcurrencyErrorResponseSanitizesAdmissionFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantBody   string
+		forbidden  string
+	}{
+		{name: "api key full", err: &ConcurrencyError{SlotType: "api_key"}, wantStatus: http.StatusTooManyRequests, wantBody: "Concurrency limit exceeded for api_key"},
+		{name: "redis failure", err: errors.New("redis tcp 10.0.0.7:6379 auth secret"), wantStatus: http.StatusServiceUnavailable, wantBody: "Service temporarily unavailable", forbidden: "10.0.0.7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, rec := newHelperTestContext(http.MethodPost, "/v1beta/models/gemini:generateContent")
+			geminiConcurrencyErrorResponse(c, tt.err, "client")
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Contains(t, rec.Body.String(), tt.wantBody)
+			if tt.forbidden != "" {
+				require.NotContains(t, rec.Body.String(), tt.forbidden)
+			}
+		})
+	}
+}
+
 func TestConcurrencyErrorResponse(t *testing.T) {
 	tests := []struct {
 		name        string

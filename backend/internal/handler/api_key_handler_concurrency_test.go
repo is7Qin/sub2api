@@ -15,6 +15,7 @@ func TestCreateAPIKeyRequestConcurrencyPropagation(t *testing.T) {
 	}{
 		{name: "omitted defaults to zero", body: `{"name":"key"}`, want: 0},
 		{name: "positive value propagates", body: `{"name":"key","concurrency":7}`, want: 7},
+		{name: "maximum value propagates", body: `{"name":"key","concurrency":2147483647}`, want: 2147483647},
 	}
 
 	for _, tt := range tests {

@@ -405,6 +405,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	// A follow-up response.create cannot begin admission until the preceding
+	// terminal callback has released that turn's slots. The relay directions run
+	// concurrently, so this handoff also prevents a late AfterTurn from releasing
+	// slots already reacquired for the next turn.
+	completedTurnCh := make(chan int, 1)
+	nextClientTurn := 2
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
 		inner: &openAIWSClientFrameConn{conn: clientConn},
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
@@ -415,18 +421,31 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if msgType != coderws.MessageText {
 				return payload, nil, nil
 			}
-			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil && hooks.BeforeRequest != nil {
-				turnNo := int(completedTurns.Load()) + 1
-				if turnNo < 2 {
-					turnNo = 2
+			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+				turnNo := nextClientTurn
+				if hooks != nil && hooks.BeforeRequest != nil {
+					requestModel := usageMeta.requestModelForFrame(payload)
+					if requestModel == "" {
+						requestModel = capturedSessionModel
+					}
+					if err := hooks.BeforeRequest(turnNo, payload, requestModel); err != nil {
+						return payload, nil, err
+					}
 				}
-				requestModel := usageMeta.requestModelForFrame(payload)
-				if requestModel == "" {
-					requestModel = capturedSessionModel
+				if hooks != nil && hooks.BeforeTurn != nil {
+					select {
+					case completed := <-completedTurnCh:
+						if completed+1 != turnNo {
+							return payload, nil, fmt.Errorf("openai ws passthrough turn handoff out of sequence: completed=%d next=%d", completed, turnNo)
+						}
+					case <-ctx.Done():
+						return payload, nil, ctx.Err()
+					}
+					if err := hooks.BeforeTurn(turnNo); err != nil {
+						return payload, nil, err
+					}
 				}
-				if err := hooks.BeforeRequest(turnNo, payload, requestModel); err != nil {
-					return payload, nil, err
-				}
+				nextClientTurn++
 			}
 			// 在评估策略前先刷新 capturedSessionModel：客户端可能通过
 			// session.update 修改 session-level model（Realtime /
@@ -565,6 +584,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				)
 				if hooks != nil && hooks.AfterTurn != nil {
 					hooks.AfterTurn(turnNo, turnResult, nil)
+				}
+				if hooks != nil && hooks.BeforeTurn != nil {
+					select {
+					case completedTurnCh <- turnNo:
+					case <-ctx.Done():
+					}
 				}
 			},
 			BeforeWriteClient: func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error {

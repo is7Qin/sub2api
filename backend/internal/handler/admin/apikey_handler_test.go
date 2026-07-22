@@ -323,6 +323,6 @@ type failingUpdateGroupService struct {
 	err error
 }
 
-func (f *failingUpdateGroupService) AdminUpdateAPIKey(_ context.Context, _ int64, _ *int64, _ *int) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+func (f *failingUpdateGroupService) AdminUpdateAPIKey(_ context.Context, _ int64, _ *int64, _ *int, _ bool) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
 	return nil, f.err
 }

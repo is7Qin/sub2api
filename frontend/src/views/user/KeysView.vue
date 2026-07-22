@@ -1170,21 +1170,28 @@ const appStore = useAppStore()
 const onboardingStore = useOnboardingStore()
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
-const columns = computed<Column[]>(() => [
-  { key: 'name', label: t('common.name'), sortable: true },
-  { key: 'key', label: t('keys.apiKey'), sortable: false },
-  { key: 'group', label: t('keys.group'), sortable: false },
-  { key: 'concurrency', label: t('keys.concurrencyUsage'), sortable: false },
-  { key: 'usage', label: t('keys.usage'), sortable: false },
-  { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
-  { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
-  { key: 'status', label: t('common.status'), sortable: true },
-  { key: 'last_used_at', label: t('keys.lastUsedAt'), sortable: true },
-  { key: 'created_at', label: t('keys.created'), sortable: true },
-  { key: 'actions', label: t('common.actions'), sortable: false }
-])
-
 const apiKeys = ref<ApiKey[]>([])
+
+const columns = computed<Column[]>(() => {
+  const result: Column[] = [
+    { key: 'name', label: t('common.name'), sortable: true },
+    { key: 'key', label: t('keys.apiKey'), sortable: false },
+    { key: 'group', label: t('keys.group'), sortable: false }
+  ]
+  if (apiKeys.value.some((key) => key.concurrency > 0)) {
+    result.push({ key: 'concurrency', label: t('keys.concurrencyUsage'), sortable: false })
+  }
+  result.push(
+    { key: 'usage', label: t('keys.usage'), sortable: false },
+    { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
+    { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
+    { key: 'status', label: t('common.status'), sortable: true },
+    { key: 'last_used_at', label: t('keys.lastUsedAt'), sortable: true },
+    { key: 'created_at', label: t('keys.created'), sortable: true },
+    { key: 'actions', label: t('common.actions'), sortable: false }
+  )
+  return result
+})
 
 // Page-scoped status breakdown (server total lives in pagination.total).
 const activeKeyCount = computed(() => apiKeys.value.filter((k) => k.status === 'active').length)

@@ -22,7 +22,7 @@ vi.mock('@/stores/onboarding', () => ({ useOnboardingStore: () => ({ isCurrentSt
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<div><slot /></div>' } }))
 vi.mock('@/components/layout/TablePageLayout.vue', () => ({ default: { template: '<div><slot name="actions"/><slot name="table"/></div>' } }))
 vi.mock('@/components/common/DataTable.vue', () => ({
-  default: { props: ['data'], template: '<div><template v-for="row in data"><slot name="cell-concurrency" :row="row"/><slot name="cell-actions" :row="row"/></template><slot name="empty"/></div>' },
+  default: { props: ['data', 'columns'], template: '<div><span v-for="column in columns" :data-testid="`table-header-${column.key}`">{{ column.label }}</span><template v-for="row in data"><slot name="cell-concurrency" :row="row"/><slot name="cell-actions" :row="row"/></template><slot name="empty"/></div>' },
 }))
 vi.mock('@/components/common/BaseDialog.vue', () => ({ default: { props: ['show'], template: '<div v-if="show"><slot/><slot name="footer"/></div>' } }))
 vi.mock('@/components/common/Select.vue', () => ({ default: { template: '<div />' } }))
@@ -59,13 +59,19 @@ beforeEach(() => {
 })
 
 describe('KeysView concurrency form', () => {
-  it('shows live usage over configured concurrency for enabled keys', async () => {
-    const wrapper = await mountView([{ ...key, concurrency: 5, current_concurrency: 2 }])
+  it('shows the concurrency column and only enabled key usage in a mixed list', async () => {
+    const wrapper = await mountView([
+      { ...key, id: 5, concurrency: 5, current_concurrency: 2 },
+      { ...key, id: 6, concurrency: 0, current_concurrency: 2 },
+    ])
+    expect(wrapper.get('[data-testid="table-header-concurrency"]').text()).toContain('keys.concurrencyUsage')
     expect(wrapper.get('[data-testid="key-concurrency-usage-5"]').text()).toContain('2 / 5')
+    expect(wrapper.find('[data-testid="key-concurrency-usage-6"]').exists()).toBe(false)
   })
 
-  it('hides concurrency usage for keys without a key-specific limit', async () => {
+  it('hides the concurrency column and usage for an all-zero list', async () => {
     const wrapper = await mountView([{ ...key, concurrency: 0, current_concurrency: 2 }])
+    expect(wrapper.find('[data-testid="table-header-concurrency"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="key-concurrency-usage-5"]').exists()).toBe(false)
   })
 

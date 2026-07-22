@@ -2411,6 +2411,7 @@ func (s *adminServiceImpl) AdminUpdateAPIKey(ctx context.Context, keyID int64, g
 		if s.authCacheInvalidator != nil {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, apiKey.UserID)
 		}
+		s.invalidateAPIKeyRateLimitAfterAdminPatch(ctx, updated, resetRateLimitUsage)
 		return result, nil
 	}
 
@@ -2424,8 +2425,15 @@ func (s *adminServiceImpl) AdminUpdateAPIKey(ctx context.Context, keyID int64, g
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, updated.Key)
 	}
+	s.invalidateAPIKeyRateLimitAfterAdminPatch(ctx, updated, resetRateLimitUsage)
 	result.APIKey = updated
 	return result, nil
+}
+
+func (s *adminServiceImpl) invalidateAPIKeyRateLimitAfterAdminPatch(ctx context.Context, updated *APIKey, reset bool) {
+	if reset && s.billingCacheService != nil {
+		_ = s.billingCacheService.InvalidateAPIKeyRateLimit(ctx, updated.ID)
+	}
 }
 
 // AdminUpdateAPIKeyGroupID 管理员修改 API Key 分组绑定

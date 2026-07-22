@@ -426,6 +426,63 @@ func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
 	})
 }
 
+func TestAdminService_AdminUpdateAPIKeyResetRateLimitCacheInvalidation(t *testing.T) {
+	newBillingCache := func() (*BillingCacheService, *apiKeyRateLimitInvalidationCache) {
+		cache := &apiKeyRateLimitInvalidationCache{}
+		return &BillingCacheService{cache: cache}, cache
+	}
+
+	t.Run("successful combined reset invalidates once", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		billingService, cache := newBillingCache()
+		svc := &adminServiceImpl{apiKeyRepo: repo, billingCacheService: billingService}
+		concurrency := 8
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), existing.ID, nil, &concurrency, true)
+		require.NoError(t, err)
+		require.Equal(t, []int64{existing.ID}, cache.invalidatedKeyIDs)
+	})
+
+	t.Run("successful exclusive transaction reset invalidates once after commit", func(t *testing.T) {
+		existing := &APIKey{ID: 2, UserID: 9, Key: "sk-exclusive", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Exclusive", Status: StatusActive, IsExclusive: true}}
+		userRepo := &userRepoStubForGroupUpdate{}
+		billingService, cache := newBillingCache()
+		svc := &adminServiceImpl{
+			apiKeyRepo: repo, groupRepo: groupRepo, userRepo: userRepo,
+			billingCacheService: billingService, entClient: newAdminServiceAuthIdentityBindingTestClient(t),
+		}
+		concurrency := 8
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), existing.ID, int64Ptr(10), &concurrency, true)
+		require.NoError(t, err)
+		require.Equal(t, []int64{existing.ID}, cache.invalidatedKeyIDs)
+	})
+
+	t.Run("failed patch does not invalidate", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing, updateErr: errors.New("forced patch failure")}
+		billingService, cache := newBillingCache()
+		svc := &adminServiceImpl{apiKeyRepo: repo, billingCacheService: billingService}
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), existing.ID, nil, nil, true)
+		require.ErrorContains(t, err, "forced patch failure")
+		require.Empty(t, cache.invalidatedKeyIDs)
+	})
+}
+
+type apiKeyRateLimitInvalidationCache struct {
+	billingCacheStub
+	invalidatedKeyIDs []int64
+}
+
+func (c *apiKeyRateLimitInvalidationCache) InvalidateAPIKeyRateLimit(_ context.Context, keyID int64) error {
+	c.invalidatedKeyIDs = append(c.invalidatedKeyIDs, keyID)
+	return nil
+}
+
 func TestAdminService_AdminUpdateAPIKeyGroupID_KeyNotFound(t *testing.T) {
 	repo := &apiKeyRepoStubForGroupUpdate{getErr: ErrAPIKeyNotFound}
 	svc := &adminServiceImpl{apiKeyRepo: repo}

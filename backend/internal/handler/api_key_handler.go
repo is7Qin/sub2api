@@ -48,6 +48,32 @@ type CreateAPIKeyRequest struct {
 	OpenAIForcePriorityTier bool `json:"openai_force_priority_tier"`
 }
 
+func (r CreateAPIKeyRequest) toServiceRequest() service.CreateAPIKeyRequest {
+	req := service.CreateAPIKeyRequest{
+		Name:                    r.Name,
+		GroupID:                 r.GroupID,
+		CustomKey:               r.CustomKey,
+		IPWhitelist:             r.IPWhitelist,
+		IPBlacklist:             r.IPBlacklist,
+		Concurrency:             r.Concurrency,
+		ExpiresInDays:           r.ExpiresInDays,
+		OpenAIForcePriorityTier: r.OpenAIForcePriorityTier,
+	}
+	if r.Quota != nil {
+		req.Quota = *r.Quota
+	}
+	if r.RateLimit5h != nil {
+		req.RateLimit5h = *r.RateLimit5h
+	}
+	if r.RateLimit1d != nil {
+		req.RateLimit1d = *r.RateLimit1d
+	}
+	if r.RateLimit7d != nil {
+		req.RateLimit7d = *r.RateLimit7d
+	}
+	return req
+}
+
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
 	Name        string    `json:"name"`
@@ -161,29 +187,7 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		return
 	}
 
-	svcReq := service.CreateAPIKeyRequest{
-		Name:          req.Name,
-		GroupID:       req.GroupID,
-		CustomKey:     req.CustomKey,
-		IPWhitelist:   req.IPWhitelist,
-		IPBlacklist:   req.IPBlacklist,
-		Concurrency:   req.Concurrency,
-		ExpiresInDays: req.ExpiresInDays,
-
-		OpenAIForcePriorityTier: req.OpenAIForcePriorityTier,
-	}
-	if req.Quota != nil {
-		svcReq.Quota = *req.Quota
-	}
-	if req.RateLimit5h != nil {
-		svcReq.RateLimit5h = *req.RateLimit5h
-	}
-	if req.RateLimit1d != nil {
-		svcReq.RateLimit1d = *req.RateLimit1d
-	}
-	if req.RateLimit7d != nil {
-		svcReq.RateLimit7d = *req.RateLimit7d
-	}
+	svcReq := req.toServiceRequest()
 
 	executeUserIdempotentJSON(c, "user.api_keys.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		key, err := h.apiKeyService.Create(ctx, subject.UserID, svcReq)

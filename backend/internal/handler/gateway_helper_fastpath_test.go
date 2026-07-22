@@ -35,6 +35,10 @@ func (m *concurrencyCacheMock) GetAPIKeyConcurrency(context.Context, int64) (int
 	return 0, nil
 }
 
+func (m *concurrencyCacheMock) GetAPIKeyConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
+	return map[int64]int{}, nil
+}
+
 func (m *concurrencyCacheMock) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
 	if m.acquireAccountSlotFn != nil {
 		return m.acquireAccountSlotFn(ctx, accountID, maxConcurrency, requestID)

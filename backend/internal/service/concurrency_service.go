@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"os"
 	"strconv"
 	"sync"
@@ -18,6 +19,17 @@ import (
 
 // ConcurrencyCache 定义并发控制的缓存接口
 // 使用有序集合存储槽位，按时间戳清理过期条目
+type APIKeyConcurrencyCache interface {
+	AcquireAPIKeySlot(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error)
+	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
+	GetAPIKeyConcurrency(ctx context.Context, apiKeyID int64) (int, error)
+}
+
+type ConcurrencyCacheWithAPIKey interface {
+	ConcurrencyCache
+	APIKeyConcurrencyCache
+}
+
 type ConcurrencyCache interface {
 	// 账号槽位管理
 	// 键格式: concurrency:account:{accountID}（有序集合，成员为 requestID）
@@ -196,6 +208,37 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	return &AcquireResult{
 		Acquired:    false,
 		ReleaseFunc: nil,
+	}, nil
+}
+
+// AcquireAPIKeySlot attempts one immediate acquisition for an API key.
+func (s *ConcurrencyService) AcquireAPIKeySlot(ctx context.Context, apiKeyID int64, maxConcurrency int) (*AcquireResult, error) {
+	if maxConcurrency <= 0 {
+		return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
+	}
+
+	cache, ok := s.cache.(APIKeyConcurrencyCache)
+	if !ok {
+		return nil, errors.New("API key concurrency cache is unavailable")
+	}
+	requestID := generateRequestID()
+	acquired, err := cache.AcquireAPIKeySlot(ctx, apiKeyID, maxConcurrency, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return &AcquireResult{Acquired: false}, nil
+	}
+
+	return &AcquireResult{
+		Acquired: true,
+		ReleaseFunc: func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := cache.ReleaseAPIKeySlot(bgCtx, apiKeyID, requestID); err != nil {
+				logger.LegacyPrintf("service.concurrency", "Warning: failed to release API key slot for %d (req=%s): %v", apiKeyID, requestID, err)
+			}
+		},
 	}, nil
 }
 

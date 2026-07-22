@@ -22,7 +22,7 @@ var testSlotTTL = time.Duration(testSlotTTLMinutes) * time.Minute
 
 type ConcurrencyCacheSuite struct {
 	IntegrationRedisSuite
-	cache service.ConcurrencyCache
+	cache service.ConcurrencyCacheWithAPIKey
 }
 
 func TestConcurrencyCacheSuite(t *testing.T) {
@@ -119,6 +119,62 @@ func (s *ConcurrencyCacheSuite) TestAccountSlot_MaxZero() {
 	ok, err := s.cache.AcquireAccountSlot(s.ctx, accountID, 0, reqID)
 	require.NoError(s.T(), err)
 	require.False(s.T(), ok, "expected acquire to fail with max=0")
+}
+
+func (s *ConcurrencyCacheSuite) TestAPIKeySlot_AcquireReleaseAndIdempotency() {
+	apiKeyID := int64(42)
+
+	ok, err := s.cache.AcquireAPIKeySlot(s.ctx, apiKeyID, 1, "req1")
+	require.NoError(s.T(), err)
+	require.True(s.T(), ok)
+
+	ok, err = s.cache.AcquireAPIKeySlot(s.ctx, apiKeyID, 1, "req1")
+	require.NoError(s.T(), err)
+	require.True(s.T(), ok, "duplicate request ID should remain acquired")
+
+	ok, err = s.cache.AcquireAPIKeySlot(s.ctx, apiKeyID, 1, "req2")
+	require.NoError(s.T(), err)
+	require.False(s.T(), ok)
+
+	cur, err := s.cache.GetAPIKeyConcurrency(s.ctx, apiKeyID)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), 1, cur)
+
+	require.NoError(s.T(), s.cache.ReleaseAPIKeySlot(s.ctx, apiKeyID, "req1"))
+	cur, err = s.cache.GetAPIKeyConcurrency(s.ctx, apiKeyID)
+	require.NoError(s.T(), err)
+	require.Zero(s.T(), cur)
+}
+
+func (s *ConcurrencyCacheSuite) TestAPIKeySlot_NamespaceIsolationAndTTL() {
+	const sharedID int64 = 84
+
+	ok, err := s.cache.AcquireAPIKeySlot(s.ctx, sharedID, 1, "key-req")
+	require.NoError(s.T(), err)
+	require.True(s.T(), ok)
+	ok, err = s.cache.AcquireUserSlot(s.ctx, sharedID, 1, "user-req")
+	require.NoError(s.T(), err)
+	require.True(s.T(), ok)
+	ok, err = s.cache.AcquireAccountSlot(s.ctx, sharedID, 1, "account-req")
+	require.NoError(s.T(), err)
+	require.True(s.T(), ok)
+
+	ttl, err := s.rdb.TTL(s.ctx, apiKeySlotKey(sharedID)).Result()
+	require.NoError(s.T(), err)
+	s.AssertTTLWithin(ttl, time.Second, testSlotTTL)
+}
+
+func (s *ConcurrencyCacheSuite) TestAPIKeySlot_ExpiredMemberIsCleanedUp() {
+	apiKeyID := int64(85)
+	key := apiKeySlotKey(apiKeyID)
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, key, redis.Z{Score: float64(time.Now().Add(-testSlotTTL - time.Minute).Unix()), Member: "expired"}).Err())
+
+	ok, err := s.cache.AcquireAPIKeySlot(s.ctx, apiKeyID, 1, "fresh")
+	require.NoError(s.T(), err)
+	require.True(s.T(), ok)
+	cur, err := s.cache.GetAPIKeyConcurrency(s.ctx, apiKeyID)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), 1, cur)
 }
 
 func (s *ConcurrencyCacheSuite) TestUserSlot_AcquireAndRelease() {

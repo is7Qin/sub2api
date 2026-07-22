@@ -1215,12 +1215,13 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	fallbackSessionID string,
 	windowGenerationHints ...string,
 ) (http.Header, openAIWSSessionHeaderResolution, error) {
-	headers := make(http.Header)
-	headers.Set("authorization", "Bearer "+token)
-
 	requestCtx := context.Background()
 	if c != nil && c.Request != nil {
 		requestCtx = c.Request.Context()
+	}
+	headers, err := s.buildOpenAIAuthenticationHeaders(requestCtx, account, token)
+	if err != nil {
+		return nil, openAIWSSessionHeaderResolution{}, err
 	}
 	var fingerprint OpenAICodexFingerprint
 	if account != nil && account.IsOpenAIOAuthLike() {

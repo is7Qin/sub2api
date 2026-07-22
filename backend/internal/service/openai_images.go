@@ -751,7 +751,11 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		return nil, err
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Header.Set("Authorization", "Bearer "+token)
+	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if authErr != nil {
+		return nil, authErr
+	}
+	req.Header.Set("Authorization", authHeaders.Get("Authorization"))
 	for key, values := range c.Request.Header {
 		if !openaiPassthroughAllowedHeaders[strings.ToLower(key)] {
 			continue

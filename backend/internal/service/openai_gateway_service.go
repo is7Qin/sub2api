@@ -427,6 +427,7 @@ type OpenAIGatewayService struct {
 	codexFingerprintService *OpenAICodexFingerprintService
 	userPlatformQuotaRepo   UserPlatformQuotaRepository
 
+	agentIdentityTaskMu           sync.Mutex
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
@@ -3085,6 +3086,9 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
 	switch account.Type {
 	case AccountTypeOAuth, AccountTypeSetupToken:
+		if account.IsOpenAIAgentIdentity() {
+			return "", "oauth", nil
+		}
 		// 使用 TokenProvider 获取缓存的 token；setup-token 无 refresh_token 时会直接读取 access_token。
 		if s.openAITokenProvider != nil {
 			accessToken, err := s.openAITokenProvider.GetAccessToken(ctx, account)
@@ -4459,7 +4463,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIOAuthAdapter(
 		}
 	}
 
-	setHeaderRaw(req.Header, "Authorization", "Bearer "+token)
+	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if authErr != nil {
+		return nil, authErr
+	}
+	setHeaderRaw(req.Header, "Authorization", authHeaders.Get("Authorization"))
 
 	// OAuth adapter 目标是 ChatGPT internal API，需要补齐 Codex/ChatGPT 请求头。
 	if promptCacheKey == "" {

@@ -39,6 +39,7 @@ var (
 type openAIWSDialError struct {
 	StatusCode      int
 	ResponseHeaders http.Header
+	ResponseBody    []byte
 	Err             error
 }
 
@@ -1407,6 +1408,24 @@ func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequ
 		ap.prewarmFails = 0
 		ap.prewarmFailAt = time.Time{}
 		ap.mu.Unlock()
+	}
+}
+
+func (p *openAIWSConnPool) closeAccountConnections(accountID int64) {
+	ap, ok := p.getAccountPool(accountID)
+	if !ok {
+		return
+	}
+	ap.mu.Lock()
+	conns := make([]*openAIWSConn, 0, len(ap.conns))
+	for _, conn := range ap.conns {
+		conns = append(conns, conn)
+	}
+	ap.conns = make(map[string]*openAIWSConn)
+	ap.pinnedConns = make(map[string]int)
+	ap.mu.Unlock()
+	for _, conn := range conns {
+		conn.close()
 	}
 }
 

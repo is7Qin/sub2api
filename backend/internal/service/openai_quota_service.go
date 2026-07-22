@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -99,6 +100,7 @@ type OpenAIQuotaService struct {
 	proxyRepo            ProxyRepository
 	tokenProvider        *OpenAITokenProvider
 	privacyClientFactory PrivacyClientFactory
+	agentIdentityTaskMu  sync.Mutex
 }
 
 // NewOpenAIQuotaService constructs a quota service. token provider is required —
@@ -236,7 +238,16 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 		return "", "", "", false, infraerrors.New(http.StatusBadRequest, "OPENAI_QUOTA_MISSING_ACCOUNT_ID", "chatgpt_account_id is missing; please re-authorize this account")
 	}
 
-	accessToken, err = s.tokenProvider.GetAccessToken(ctx, account)
+	if account.IsOpenAIAgentIdentity() {
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return "", "", "", false, authErr
+		}
+		accessToken = strings.TrimPrefix(headers.Get("Authorization"), "AgentAssertion ")
+		accessToken = "AgentAssertion " + accessToken
+	} else {
+		accessToken, err = s.tokenProvider.GetAccessToken(ctx, account)
+	}
 	if err != nil {
 		return "", "", "", false, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_TOKEN_UNAVAILABLE", "failed to acquire access token: %v", err)
 	}
@@ -265,9 +276,16 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 
 // buildCodexCommonHeaders sets the request headers expected by the chatgpt.com
 // backend so calls succeed past Cloudflare/WASM checks.
+func codexAuthorizationValue(token string) string {
+	if strings.HasPrefix(token, "AgentAssertion ") {
+		return token
+	}
+	return "Bearer " + token
+}
+
 func buildCodexCommonHeaders(accessToken, chatGPTAccountID string, isFedRAMP bool) map[string]string {
 	headers := map[string]string{
-		"authorization":      "Bearer " + accessToken,
+		"authorization":      codexAuthorizationValue(accessToken),
 		"chatgpt-account-id": chatGPTAccountID,
 		"oai-language":       openaiQuotaCodexLanguageTag,
 		"originator":         openaiQuotaCodexOriginator,

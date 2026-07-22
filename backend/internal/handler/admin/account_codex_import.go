@@ -85,6 +85,11 @@ type codexImportAccount struct {
 	UserID              string
 	PlanType            string
 	Organization        string
+	AgentRuntimeID      string
+	AgentPrivateKey     string
+	AgentTaskID         string
+	AgentFedRAMP        bool
+	IsAgentIdentity     bool
 	Credentials         map[string]any
 	Extra               map[string]any
 	TokenExpiresAt      *time.Time
@@ -512,6 +517,41 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 			item.AccessToken = trimmed
 		}
 	case map[string]any:
+		if agentIdentity, ok := firstCodexMap(raw, []string{"agent_identity"}, []string{"agentIdentity"}); ok || strings.EqualFold(firstCodexString(raw, []string{"auth_mode"}, []string{"authMode"}), service.OpenAIAuthModeAgentIdentity) {
+			if !ok {
+				agentIdentity = raw
+			}
+			item.IsAgentIdentity = true
+			item.AgentRuntimeID = firstCodexString(agentIdentity, []string{"agent_runtime_id"}, []string{"agentRuntimeId"})
+			item.AgentPrivateKey = firstCodexString(agentIdentity, []string{"agent_private_key"}, []string{"agentPrivateKey"})
+			item.AgentTaskID = firstCodexString(agentIdentity, []string{"task_id"}, []string{"taskId"})
+			item.AccountID = firstCodexString(agentIdentity, []string{"account_id"}, []string{"accountId"})
+			item.UserID = firstCodexString(agentIdentity, []string{"chatgpt_user_id"}, []string{"chatgptUserId"})
+			item.Email = firstCodexString(agentIdentity, []string{"email"})
+			item.PlanType = firstCodexString(agentIdentity, []string{"plan_type"}, []string{"planType"})
+			item.AgentFedRAMP, _ = firstCodexBool(agentIdentity, []string{"chatgpt_account_is_fedramp"}, []string{"chatgptAccountIsFedramp"})
+			if item.AgentRuntimeID == "" || item.AgentPrivateKey == "" || item.AccountID == "" || item.UserID == "" {
+				return nil, errors.New("agent identity 缺少必要字段")
+			}
+			if err := service.ValidateOpenAIAgentIdentityPrivateKey(item.AgentPrivateKey); err != nil {
+				return nil, errors.New("agent identity private key 格式无效")
+			}
+			item.Credentials["auth_mode"] = service.OpenAIAuthModeAgentIdentity
+			item.Credentials["agent_runtime_id"] = item.AgentRuntimeID
+			item.Credentials["agent_private_key"] = item.AgentPrivateKey
+			item.Credentials["chatgpt_account_id"] = item.AccountID
+			item.Credentials["chatgpt_user_id"] = item.UserID
+			item.Credentials["chatgpt_account_is_fedramp"] = item.AgentFedRAMP
+			setCodexCredentialIfNotEmpty(item.Credentials, "task_id", item.AgentTaskID)
+			setCodexCredentialIfNotEmpty(item.Credentials, "email", item.Email)
+			setCodexCredentialIfNotEmpty(item.Credentials, "plan_type", item.PlanType)
+			if item.AgentTaskID == "" {
+				item.WarningTexts = append(item.WarningTexts, "未包含 task_id，首次请求会使用现有 runtime 注册新 task")
+			}
+			item.IdentityKeys = buildCodexAgentIdentityKeys(item.AccountID, item.UserID)
+			item.Name = buildCodexImportAccountName(item, entry.Index)
+			return item, nil
+		}
 		if handled, err := normalizeHCPAImportAccount(item, raw, now); handled {
 			if err != nil {
 				return nil, err
@@ -934,6 +974,10 @@ func resolveCodexImportExpiry(req CodexSessionImportRequest, item *codexImportAc
 		return nil, nil, nil, nil, errors.New("导入项为空")
 	}
 
+	if item.IsAgentIdentity {
+		return nil, nil, req.AutoPauseOnExpired, nil, nil
+	}
+
 	var requestExpiresAt *time.Time
 	if req.ExpiresAt != nil && *req.ExpiresAt > 0 {
 		t := time.Unix(*req.ExpiresAt, 0).UTC()
@@ -1075,6 +1119,15 @@ func buildCodexIdentityKeys(accountID, userID, email, accessToken string) []stri
 		keys = append(keys, "access:"+codexTokenFingerprint(accessToken))
 	}
 	return keys
+}
+
+func buildCodexAgentIdentityKeys(accountID, userID string) []string {
+	accountID = strings.TrimSpace(accountID)
+	userID = strings.TrimSpace(userID)
+	if accountID == "" || userID == "" {
+		return nil
+	}
+	return []string{"agent_account_user:" + accountID + ":" + userID}
 }
 
 func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refreshToken string) []string {
@@ -1230,6 +1283,17 @@ func looksLikeJSON(content string) bool {
 	default:
 		return false
 	}
+}
+
+func firstCodexMap(obj map[string]any, paths ...[]string) (map[string]any, bool) {
+	for _, path := range paths {
+		if value, ok := codexPathValue(obj, path); ok {
+			if nested, ok := value.(map[string]any); ok {
+				return nested, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func firstCodexString(obj map[string]any, paths ...[]string) string {

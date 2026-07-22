@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -71,6 +72,7 @@ type AccountTestService struct {
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
 	codexFingerprintService   *OpenAICodexFingerprintService
+	agentIdentityTaskMu       sync.Mutex
 }
 
 // NewAccountTestService creates a new AccountTestService
@@ -568,7 +570,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		isOAuth = true
 		// OAuth-like accounts may use either OAuth access_token or Codex PAT bearer.
 		authToken = account.GetOpenAICodexBearerToken()
-		if authToken == "" {
+		if authToken == "" && !account.IsOpenAIAgentIdentity() {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 
@@ -625,7 +627,15 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	// Set common headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	if account.IsOpenAIAgentIdentity() {
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return authErr
+		}
+		req.Header.Set("Authorization", headers.Get("Authorization"))
+	} else {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 
 	// Set OAuth-specific headers for ChatGPT internal API
 	if isOAuth {
@@ -754,7 +764,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	case account.IsOAuth():
 		isOAuth = true
 		authToken = account.GetOpenAICodexBearerToken()
-		if authToken == "" {
+		if authToken == "" && !account.IsOpenAIAgentIdentity() {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 		apiURL = chatgptCodexAPIURL + "/compact"
@@ -794,7 +804,15 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	if account.IsOpenAIAgentIdentity() {
+		headers, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, nil, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return authErr
+		}
+		req.Header.Set("Authorization", headers.Get("Authorization"))
+	} else {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 	req.Header.Set("Originator", codexOfficialOriginator)
 	req.Header.Set("User-Agent", codexCLIUserAgent)
 	req.Header.Set("Version", codexCLIVersion)

@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 15 // v15: API-key concurrency
+const apiKeyAuthSnapshotVersion = 16 // v16: OpenAI group long-context billing policy
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -320,6 +320,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			DefaultMappedModel:              apiKey.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:     apiKey.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                apiKey.Group.ModelsListConfig,
+			OpenAILongContextBillingEnabled: apiKey.Group.OpenAILongContextBillingEnabled,
 			RPMLimit:                        apiKey.Group.RPMLimit,
 		}
 	}
@@ -397,6 +398,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			DefaultMappedModel:              snapshot.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:     snapshot.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                snapshot.Group.ModelsListConfig,
+			OpenAILongContextBillingEnabled: snapshot.Group.OpenAILongContextBillingEnabled,
 			RPMLimit:                        snapshot.Group.RPMLimit,
 		}
 	}

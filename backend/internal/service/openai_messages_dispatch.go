@@ -97,4 +97,5 @@ func sanitizeGroupMessagesDispatchFields(g *Group) {
 	g.AllowMessagesDispatch = false
 	g.DefaultMappedModel = ""
 	g.MessagesDispatchModelConfig = OpenAIMessagesDispatchModelConfig{}
+	g.OpenAILongContextBillingEnabled = false
 }

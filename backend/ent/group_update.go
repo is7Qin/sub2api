@@ -630,6 +630,20 @@ func (_u *GroupUpdate) SetNillableModelsListConfig(v *domain.GroupModelsListConf
 	return _u
 }
 
+// SetOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field.
+func (_u *GroupUpdate) SetOpenaiLongContextBillingEnabled(v bool) *GroupUpdate {
+	_u.mutation.SetOpenaiLongContextBillingEnabled(v)
+	return _u
+}
+
+// SetNillableOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableOpenaiLongContextBillingEnabled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetOpenaiLongContextBillingEnabled(*v)
+	}
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdate) SetRpmLimit(v int) *GroupUpdate {
 	_u.mutation.ResetRpmLimit()
@@ -1128,6 +1142,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.OpenaiLongContextBillingEnabled(); ok {
+		_spec.SetField(group.FieldOpenaiLongContextBillingEnabled, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -2043,6 +2060,20 @@ func (_u *GroupUpdateOne) SetNillableModelsListConfig(v *domain.GroupModelsListC
 	return _u
 }
 
+// SetOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field.
+func (_u *GroupUpdateOne) SetOpenaiLongContextBillingEnabled(v bool) *GroupUpdateOne {
+	_u.mutation.SetOpenaiLongContextBillingEnabled(v)
+	return _u
+}
+
+// SetNillableOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableOpenaiLongContextBillingEnabled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetOpenaiLongContextBillingEnabled(*v)
+	}
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdateOne) SetRpmLimit(v int) *GroupUpdateOne {
 	_u.mutation.ResetRpmLimit()
@@ -2571,6 +2602,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.OpenaiLongContextBillingEnabled(); ok {
+		_spec.SetField(group.FieldOpenaiLongContextBillingEnabled, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)

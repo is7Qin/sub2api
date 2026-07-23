@@ -205,6 +205,11 @@ func DefaultMappedModel(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldDefaultMappedModel, v))
 }
 
+// OpenaiLongContextBillingEnabled applies equality check predicate on the "openai_long_context_billing_enabled" field. It's identical to OpenaiLongContextBillingEnabledEQ.
+func OpenaiLongContextBillingEnabled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldOpenaiLongContextBillingEnabled, v))
+}
+
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
 func RpmLimit(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRpmLimit, v))
@@ -1398,6 +1403,16 @@ func DefaultMappedModelEqualFold(v string) predicate.Group {
 // DefaultMappedModelContainsFold applies the ContainsFold predicate on the "default_mapped_model" field.
 func DefaultMappedModelContainsFold(v string) predicate.Group {
 	return predicate.Group(sql.FieldContainsFold(FieldDefaultMappedModel, v))
+}
+
+// OpenaiLongContextBillingEnabledEQ applies the EQ predicate on the "openai_long_context_billing_enabled" field.
+func OpenaiLongContextBillingEnabledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldOpenaiLongContextBillingEnabled, v))
+}
+
+// OpenaiLongContextBillingEnabledNEQ applies the NEQ predicate on the "openai_long_context_billing_enabled" field.
+func OpenaiLongContextBillingEnabledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldOpenaiLongContextBillingEnabled, v))
 }
 
 // RpmLimitEQ applies the EQ predicate on the "rpm_limit" field.

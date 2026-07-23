@@ -119,8 +119,9 @@ type Group struct {
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
-	RequireOAuthOnly  bool `json:"require_oauth_only"`
-	RequirePrivacySet bool `json:"require_privacy_set"`
+	RequireOAuthOnly                bool `json:"require_oauth_only"`
+	RequirePrivacySet               bool `json:"require_privacy_set"`
+	OpenAILongContextBillingEnabled bool `json:"openai_long_context_billing_enabled"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
 	RPMLimit int `json:"rpm_limit"`

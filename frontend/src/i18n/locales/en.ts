@@ -2383,6 +2383,8 @@ export default {
         title: 'OpenAI Messages Dispatch',
         allowDispatch: 'Allow /v1/messages dispatch',
         allowDispatchHint: 'When enabled, API keys in this OpenAI group can dispatch requests through /v1/messages endpoint',
+        longContextBilling: 'Enable GPT-5.6 long-context billing',
+        longContextBillingHint: 'For GPT-5.6 requests with input context strictly above 272k tokens, bill the entire request at 2× input/cache and 1.5× output rates. Disabled by default.',
         familyMappingTitle: 'Family Default Mapping',
         familyMappingHint: 'Requests that match the Opus, Sonnet, or Haiku families will prefer the target model configured here.',
         opusModel: 'Opus Target Model',

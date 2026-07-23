@@ -1031,6 +1031,55 @@ func TestOpenAIGatewayServiceRecordUsage_PersistsGPT56CacheCreationCost(t *testi
 	require.InDelta(t, usageRepo.lastLog.TotalCost*1.1, usageRepo.lastLog.ActualCost, 1e-12)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_GPT56LongContextUsesGroupPolicy(t *testing.T) {
+	tests := []struct {
+		name         string
+		enabled      bool
+		inputFactor  float64
+		outputFactor float64
+	}{
+		{name: "disabled by default", inputFactor: 1, outputFactor: 1},
+		{name: "enabled for group", enabled: true, inputFactor: 2, outputFactor: 1.5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			subRepo := &openAIRecordUsageSubRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
+			usage := OpenAIUsage{
+				InputTokens:              273001,
+				CacheReadInputTokens:     1000,
+				CacheCreationInputTokens: 1000,
+				OutputTokens:             2000,
+			}
+
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{
+					RequestID: "resp_gpt56_long_context_group_policy",
+					Usage:     usage,
+					Model:     "gpt-5.6-sol",
+					Duration:  time.Second,
+				},
+				APIKey: &APIKey{ID: 1057, Group: &Group{
+					RateMultiplier:                  1,
+					OpenAILongContextBillingEnabled: tt.enabled,
+				}},
+				User:    &User{ID: 2057},
+				Account: &Account{ID: 3057},
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, usageRepo.lastLog)
+			require.InDelta(t, 272001*5e-6*tt.inputFactor, usageRepo.lastLog.InputCost, 1e-12)
+			require.InDelta(t, 1000*6.25e-6*tt.inputFactor, usageRepo.lastLog.CacheCreationCost, 1e-12)
+			require.InDelta(t, 1000*0.5e-6*tt.inputFactor, usageRepo.lastLog.CacheReadCost, 1e-12)
+			require.InDelta(t, 2000*30e-6*tt.outputFactor, usageRepo.lastLog.OutputCost, 1e-12)
+		})
+	}
+}
+
 func TestOpenAIGatewayServiceRecordUsage_ServiceTierPriorityUsesFastPricing(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}

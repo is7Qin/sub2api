@@ -94,6 +94,69 @@ func TestCalculateCost_GPT56CacheCreationPricing(t *testing.T) {
 	}
 }
 
+func TestCalculateCostUnified_GPT56LongContextRequiresGroupOptIn(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{
+		InputTokens:         270001,
+		CacheCreationTokens: 1000,
+		CacheReadTokens:     1000,
+		OutputTokens:        2000,
+	}
+
+	base, err := svc.CalculateCostUnified(CostInput{
+		Model:          "gpt-5.6-sol",
+		Tokens:         tokens,
+		RateMultiplier: 1,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, float64(tokens.InputTokens)*5e-6, base.InputCost, 1e-12)
+	require.InDelta(t, float64(tokens.CacheCreationTokens)*6.25e-6, base.CacheCreationCost, 1e-12)
+	require.InDelta(t, float64(tokens.CacheReadTokens)*0.5e-6, base.CacheReadCost, 1e-12)
+	require.InDelta(t, float64(tokens.OutputTokens)*30e-6, base.OutputCost, 1e-12)
+
+	enabled, err := svc.CalculateCostUnified(CostInput{
+		Model:                           "gpt-5.6-sol",
+		Tokens:                          tokens,
+		RateMultiplier:                  1,
+		OpenAILongContextBillingEnabled: true,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, base.InputCost*2, enabled.InputCost, 1e-12)
+	require.InDelta(t, base.CacheCreationCost*2, enabled.CacheCreationCost, 1e-12)
+	require.InDelta(t, base.CacheReadCost*2, enabled.CacheReadCost, 1e-12)
+	require.InDelta(t, base.OutputCost*1.5, enabled.OutputCost, 1e-12)
+}
+
+func TestCalculateCostUnified_GPT56LongContextThresholdIsExclusive(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 270000, CacheReadTokens: 2000, OutputTokens: 1000}
+
+	cost, err := svc.CalculateCostUnified(CostInput{
+		Model:                           "gpt-5.6-sol",
+		Tokens:                          tokens,
+		RateMultiplier:                  1,
+		OpenAILongContextBillingEnabled: true,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, float64(tokens.InputTokens)*5e-6, cost.InputCost, 1e-12)
+	require.InDelta(t, float64(tokens.CacheReadTokens)*0.5e-6, cost.CacheReadCost, 1e-12)
+	require.InDelta(t, float64(tokens.OutputTokens)*30e-6, cost.OutputCost, 1e-12)
+}
+
+func TestCalculateCostUnified_GPT54LongContextUnaffectedByGPT56GroupPolicy(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 300000, OutputTokens: 1000}
+
+	cost, err := svc.CalculateCostUnified(CostInput{
+		Model:          "gpt-5.4",
+		Tokens:         tokens,
+		RateMultiplier: 1,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, float64(tokens.InputTokens)*2.5e-6*2, cost.InputCost, 1e-12)
+	require.InDelta(t, float64(tokens.OutputTokens)*15e-6*1.5, cost.OutputCost, 1e-12)
+}
+
 func TestCalculateCost_GPT56CacheCreationRequiresReportedTokens(t *testing.T) {
 	svc := newTestBillingService()
 	cost, err := svc.CalculateCost("gpt-5.6-sol", UsageTokens{CacheReadTokens: 3000}, 1)

@@ -481,6 +481,20 @@ func (_c *GroupCreate) SetNillableModelsListConfig(v *domain.GroupModelsListConf
 	return _c
 }
 
+// SetOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field.
+func (_c *GroupCreate) SetOpenaiLongContextBillingEnabled(v bool) *GroupCreate {
+	_c.mutation.SetOpenaiLongContextBillingEnabled(v)
+	return _c
+}
+
+// SetNillableOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableOpenaiLongContextBillingEnabled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetOpenaiLongContextBillingEnabled(*v)
+	}
+	return _c
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_c *GroupCreate) SetRpmLimit(v int) *GroupCreate {
 	_c.mutation.SetRpmLimit(v)
@@ -716,6 +730,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultModelsListConfig
 		_c.mutation.SetModelsListConfig(v)
 	}
+	if _, ok := _c.mutation.OpenaiLongContextBillingEnabled(); !ok {
+		v := group.DefaultOpenaiLongContextBillingEnabled
+		_c.mutation.SetOpenaiLongContextBillingEnabled(v)
+	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		v := group.DefaultRpmLimit
 		_c.mutation.SetRpmLimit(v)
@@ -818,6 +836,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.ModelsListConfig(); !ok {
 		return &ValidationError{Name: "models_list_config", err: errors.New(`ent: missing required field "Group.models_list_config"`)}
+	}
+	if _, ok := _c.mutation.OpenaiLongContextBillingEnabled(); !ok {
+		return &ValidationError{Name: "openai_long_context_billing_enabled", err: errors.New(`ent: missing required field "Group.openai_long_context_billing_enabled"`)}
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		return &ValidationError{Name: "rpm_limit", err: errors.New(`ent: missing required field "Group.rpm_limit"`)}
@@ -984,6 +1005,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
 		_node.ModelsListConfig = value
+	}
+	if value, ok := _c.mutation.OpenaiLongContextBillingEnabled(); ok {
+		_spec.SetField(group.FieldOpenaiLongContextBillingEnabled, field.TypeBool, value)
+		_node.OpenaiLongContextBillingEnabled = value
 	}
 	if value, ok := _c.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -1679,6 +1704,18 @@ func (u *GroupUpsert) UpdateModelsListConfig() *GroupUpsert {
 	return u
 }
 
+// SetOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field.
+func (u *GroupUpsert) SetOpenaiLongContextBillingEnabled(v bool) *GroupUpsert {
+	u.Set(group.FieldOpenaiLongContextBillingEnabled, v)
+	return u
+}
+
+// UpdateOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateOpenaiLongContextBillingEnabled() *GroupUpsert {
+	u.SetExcluded(group.FieldOpenaiLongContextBillingEnabled)
+	return u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (u *GroupUpsert) SetRpmLimit(v int) *GroupUpsert {
 	u.Set(group.FieldRpmLimit, v)
@@ -2362,6 +2399,20 @@ func (u *GroupUpsertOne) SetModelsListConfig(v domain.GroupModelsListConfig) *Gr
 func (u *GroupUpsertOne) UpdateModelsListConfig() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateModelsListConfig()
+	})
+}
+
+// SetOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field.
+func (u *GroupUpsertOne) SetOpenaiLongContextBillingEnabled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetOpenaiLongContextBillingEnabled(v)
+	})
+}
+
+// UpdateOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateOpenaiLongContextBillingEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateOpenaiLongContextBillingEnabled()
 	})
 }
 
@@ -3217,6 +3268,20 @@ func (u *GroupUpsertBulk) SetModelsListConfig(v domain.GroupModelsListConfig) *G
 func (u *GroupUpsertBulk) UpdateModelsListConfig() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateModelsListConfig()
+	})
+}
+
+// SetOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field.
+func (u *GroupUpsertBulk) SetOpenaiLongContextBillingEnabled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetOpenaiLongContextBillingEnabled(v)
+	})
+}
+
+// UpdateOpenaiLongContextBillingEnabled sets the "openai_long_context_billing_enabled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateOpenaiLongContextBillingEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateOpenaiLongContextBillingEnabled()
 	})
 }
 

@@ -629,16 +629,17 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 
 // CostInput 统一计费输入
 type CostInput struct {
-	Ctx            context.Context
-	Model          string
-	GroupID        *int64 // 用于渠道定价查找
-	Tokens         UsageTokens
-	RequestCount   int    // 按次计费时使用
-	SizeTier       string // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
-	RateMultiplier float64
-	ServiceTier    string                // "priority","flex","" 等
-	Resolver       *ModelPricingResolver // 定价解析器
-	Resolved       *ResolvedPricing      // 可选：预解析的定价结果（避免重复 Resolve 调用）
+	Ctx                             context.Context
+	Model                           string
+	GroupID                         *int64 // 用于渠道定价查找
+	Tokens                          UsageTokens
+	RequestCount                    int    // 按次计费时使用
+	SizeTier                        string // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
+	RateMultiplier                  float64
+	ServiceTier                     string                // "priority","flex","" 等
+	Resolver                        *ModelPricingResolver // 定价解析器
+	Resolved                        *ResolvedPricing      // 可选：预解析的定价结果（避免重复 Resolve 调用）
+	OpenAILongContextBillingEnabled bool                  // GPT-5.6 超 272k 长上下文倍率，由 OpenAI 分组显式开启
 }
 
 // CalculateCostUnified 统一计费入口，支持三种计费模式。
@@ -648,8 +649,15 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 		return nil, err
 	}
 	if input.Resolver == nil {
-		// 无 Resolver，回退到旧路径
-		return s.calculateCostInternal(input.Model, input.Tokens, input.RateMultiplier, input.ServiceTier, nil)
+		// 无 Resolver 时仍需保留调用方传入的 GPT-5.6 分组计费策略。
+		return s.calculateCostInternalWithPolicy(
+			input.Model,
+			input.Tokens,
+			input.RateMultiplier,
+			input.ServiceTier,
+			nil,
+			input.OpenAILongContextBillingEnabled,
+		)
 	}
 
 	// 优先使用预解析结果，避免重复 Resolve 调用
@@ -764,8 +772,11 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 
 	pricing = s.applyModelSpecificPricingPolicy(input.Model, pricing)
 
-	// 长上下文定价仅在无区间定价时应用（区间定价已包含上下文分层）
+	// 区间定价已包含上下文分层；GPT-5.6 的整次会话倍率还需由 OpenAI 分组显式开启。
 	applyLongCtx := len(resolved.Intervals) == 0
+	if isOpenAIGPT56Model(input.Model) {
+		applyLongCtx = applyLongCtx && input.OpenAILongContextBillingEnabled
+	}
 
 	return s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
 }
@@ -944,6 +955,10 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 }
 
 func (s *BillingService) calculateCostInternal(model string, tokens UsageTokens, rateMultiplier float64, serviceTier string, channelPricing *ChannelModelPricing) (*CostBreakdown, error) {
+	return s.calculateCostInternalWithPolicy(model, tokens, rateMultiplier, serviceTier, channelPricing, true)
+}
+
+func (s *BillingService) calculateCostInternalWithPolicy(model string, tokens UsageTokens, rateMultiplier float64, serviceTier string, channelPricing *ChannelModelPricing, openAILongContextBillingEnabled bool) (*CostBreakdown, error) {
 	if err := validateUsageTokensForBilling(tokens); err != nil {
 		return nil, err
 	}
@@ -958,8 +973,12 @@ func (s *BillingService) calculateCostInternal(model string, tokens UsageTokens,
 		return nil, err
 	}
 
-	// 旧路径始终检查长上下文定价（无区间定价概念）
-	breakdown, err := s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, true)
+	// 旧路径没有区间定价；GPT-5.6 仍须遵循调用方传入的分组策略。
+	applyLongContext := true
+	if isOpenAIGPT56Model(model) {
+		applyLongContext = openAILongContextBillingEnabled
+	}
+	breakdown, err := s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, applyLongContext)
 	if err != nil {
 		return nil, err
 	}

@@ -8232,17 +8232,19 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	if s.resolver != nil && apiKey.Group != nil {
 		gid := apiKey.Group.ID
 		return s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			Tokens:         tokens,
-			RequestCount:   1,
-			RateMultiplier: multiplier,
-			ServiceTier:    serviceTier,
-			Resolver:       s.resolver,
+			Ctx:                             ctx,
+			Model:                           billingModel,
+			GroupID:                         &gid,
+			Tokens:                          tokens,
+			RequestCount:                    1,
+			RateMultiplier:                  multiplier,
+			ServiceTier:                     serviceTier,
+			Resolver:                        s.resolver,
+			OpenAILongContextBillingEnabled: apiKey.Group.OpenAILongContextBillingEnabled,
 		})
 	}
-	return s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
+	applyLongContext := apiKey != nil && apiKey.Group != nil && apiKey.Group.OpenAILongContextBillingEnabled
+	return s.billingService.calculateCostInternalWithPolicy(billingModel, tokens, multiplier, serviceTier, nil, applyLongContext)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(

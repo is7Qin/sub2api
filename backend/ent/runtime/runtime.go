@@ -890,8 +890,12 @@ func init() {
 	groupDescModelsListConfig := groupFields[30].Descriptor()
 	// group.DefaultModelsListConfig holds the default value on creation for the models_list_config field.
 	group.DefaultModelsListConfig = groupDescModelsListConfig.Default.(domain.GroupModelsListConfig)
+	// groupDescOpenaiLongContextBillingEnabled is the schema descriptor for openai_long_context_billing_enabled field.
+	groupDescOpenaiLongContextBillingEnabled := groupFields[31].Descriptor()
+	// group.DefaultOpenaiLongContextBillingEnabled holds the default value on creation for the openai_long_context_billing_enabled field.
+	group.DefaultOpenaiLongContextBillingEnabled = groupDescOpenaiLongContextBillingEnabled.Default.(bool)
 	// groupDescRpmLimit is the schema descriptor for rpm_limit field.
-	groupDescRpmLimit := groupFields[31].Descriptor()
+	groupDescRpmLimit := groupFields[32].Descriptor()
 	// group.DefaultRpmLimit holds the default value on creation for the rpm_limit field.
 	group.DefaultRpmLimit = groupDescRpmLimit.Default.(int)
 	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()

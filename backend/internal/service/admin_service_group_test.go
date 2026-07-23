@@ -202,6 +202,43 @@ func TestAdminService_CreateGroup_NilImagePricing(t *testing.T) {
 	require.Nil(t, repo.created.ImagePrice4K)
 }
 
+func TestSanitizeGroupMessagesDispatchFields_ClearsOpenAILongContextPolicyOutsideOpenAI(t *testing.T) {
+	group := &Group{
+		Platform:                        PlatformAnthropic,
+		OpenAILongContextBillingEnabled: true,
+	}
+
+	sanitizeGroupMessagesDispatchFields(group)
+
+	require.False(t, group.OpenAILongContextBillingEnabled)
+}
+
+func TestAdminService_CreateAndUpdateGroup_OpenAILongContextBillingPolicy(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	created, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                            "openai-long-context",
+		Platform:                        PlatformOpenAI,
+		RateMultiplier:                  1,
+		OpenAILongContextBillingEnabled: true,
+	})
+	require.NoError(t, err)
+	require.True(t, created.OpenAILongContextBillingEnabled)
+	require.NotNil(t, repo.created)
+	require.True(t, repo.created.OpenAILongContextBillingEnabled)
+
+	repo.getByID = created
+	disabled := false
+	updated, err := svc.UpdateGroup(context.Background(), created.ID, &UpdateGroupInput{
+		OpenAILongContextBillingEnabled: &disabled,
+	})
+	require.NoError(t, err)
+	require.False(t, updated.OpenAILongContextBillingEnabled)
+	require.NotNil(t, repo.updated)
+	require.False(t, repo.updated.OpenAILongContextBillingEnabled)
+}
+
 // TestAdminService_UpdateGroup_WithImagePricing 测试更新分组时 ImagePrice 字段正确更新
 func TestAdminService_UpdateGroup_WithImagePricing(t *testing.T) {
 	existingGroup := &Group{

@@ -2375,6 +2375,8 @@ export default {
         title: 'OpenAI Messages 调度配置',
         allowDispatch: '允许 /v1/messages 调度',
         allowDispatchHint: '启用后，此 OpenAI 分组的 API Key 可以通过 /v1/messages 端点调度请求',
+        longContextBilling: '启用 GPT-5.6 长上下文计费',
+        longContextBillingHint: 'GPT-5.6 请求的输入上下文严格超过 272k tokens 时，整次请求按输入/缓存 2 倍、输出 1.5 倍计费。默认关闭。',
         familyMappingTitle: '系列默认映射',
         familyMappingHint: '当请求命中 Opus、Sonnet、Haiku 系列时，会优先使用这里配置的目标模型。',
         opusModel: 'Opus 映射模型',

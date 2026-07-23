@@ -518,7 +518,12 @@
                         {{ t("admin.settings.openaiOAuth429Dynamic.planTypePoliciesHint") }}
                       </p>
                     </div>
-                    <button type="button" class="btn btn-secondary btn-sm" @click="addOpenAIOAuth429PlanTypeSetting">
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      :disabled="openaiOAuth429DynamicForm.plan_type_settings.length >= 100"
+                      @click="addOpenAIOAuth429PlanTypeSetting"
+                    >
                       {{ t("admin.settings.openaiOAuth429Dynamic.addPlanType") }}
                     </button>
                   </div>
@@ -533,7 +538,20 @@
                         <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                           {{ t("admin.settings.openaiOAuth429Dynamic.planType") }}
                         </label>
-                        <input v-model.trim="override.plan_type" type="text" maxlength="64" class="input w-full max-w-xs" placeholder="plus" />
+                        <input
+                          v-model.trim="override.plan_type"
+                          type="text"
+                          maxlength="64"
+                          class="input w-full max-w-xs"
+                          :class="{ 'border-red-500 focus:border-red-500 focus:ring-red-500': openaiOAuth429PlanTypeError(index) }"
+                          placeholder="plus"
+                        />
+                        <p
+                          v-if="openaiOAuth429PlanTypeError(index)"
+                          class="mt-1 text-xs text-red-600 dark:text-red-400"
+                        >
+                          {{ openaiOAuth429PlanTypeError(index) }}
+                        </p>
                       </div>
                       <button type="button" class="btn btn-danger btn-sm" @click="removeOpenAIOAuth429PlanTypeSetting(index)">
                         {{ t("common.delete") }}
@@ -9197,6 +9215,9 @@ function normalizeOpenAIOAuth429DynamicForm(
 }
 
 function addOpenAIOAuth429PlanTypeSetting() {
+  if (openaiOAuth429DynamicForm.plan_type_settings.length >= 100) {
+    return;
+  }
   openaiOAuth429DynamicForm.plan_type_settings.push({
     plan_type: "",
     ...normalizeOpenAIOAuth429Policy(openaiOAuth429DynamicForm),
@@ -9207,9 +9228,41 @@ function removeOpenAIOAuth429PlanTypeSetting(index: number) {
   openaiOAuth429DynamicForm.plan_type_settings.splice(index, 1);
 }
 
+function openaiOAuth429PlanTypeError(index: number): string {
+  const planType = openaiOAuth429DynamicForm.plan_type_settings[index]?.plan_type
+    .trim()
+    .toLowerCase();
+  if (!planType) {
+    return t("admin.settings.openaiOAuth429Dynamic.planTypeRequired");
+  }
+  const duplicate = openaiOAuth429DynamicForm.plan_type_settings.some(
+    (override, candidateIndex) =>
+      candidateIndex !== index && override.plan_type.trim().toLowerCase() === planType,
+  );
+  return duplicate ? t("admin.settings.openaiOAuth429Dynamic.planTypeDuplicate") : "";
+}
+
+function validateOpenAIOAuth429PlanTypes(): boolean {
+  if (openaiOAuth429DynamicForm.plan_type_settings.length > 100) {
+    appStore.showError(t("admin.settings.openaiOAuth429Dynamic.planTypeLimit"));
+    return false;
+  }
+  for (let index = 0; index < openaiOAuth429DynamicForm.plan_type_settings.length; index += 1) {
+    const error = openaiOAuth429PlanTypeError(index);
+    if (error) {
+      appStore.showError(error);
+      return false;
+    }
+  }
+  return true;
+}
+
 async function saveOpenAIOAuth429DynamicSettings() {
   if (!openaiOAuth429DynamicLoaded.value) {
     appStore.showError(t("admin.settings.openaiOAuth429Dynamic.loadFailed"));
+    return;
+  }
+  if (!validateOpenAIOAuth429PlanTypes()) {
     return;
   }
   openaiOAuth429DynamicSaving.value = true;

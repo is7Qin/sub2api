@@ -9,6 +9,7 @@ import (
 type openAIOAuth429DynamicWindow struct {
 	startedAt time.Time
 	planType  string
+	policy    OpenAIOAuth429DynamicPolicy
 	total     int
 	count429  int
 	limiting  bool
@@ -23,8 +24,8 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		return
 	}
 
-	settings, ok := s.getOpenAIOAuth429DynamicSettings(ctx, account)
-	if !ok || !settings.Enabled {
+	policy, ok := s.getOpenAIOAuth429DynamicSettings(ctx, account)
+	if !ok || !policy.Enabled {
 		// 禁用后清理已开启的窗口，避免成功请求继续命中动态统计热路径。
 		s.ResetOpenAIOAuth429DynamicStats(account.ID)
 		return
@@ -32,7 +33,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 
 	now := time.Now()
 	planType := openAIAccountPlanType(account)
-	window := time.Duration(settings.WindowSeconds) * time.Second
+	window := time.Duration(policy.WindowSeconds) * time.Second
 
 	s.openAIOAuth429DynamicMu.Lock()
 	if s.openAIOAuth429DynamicStat == nil {
@@ -45,9 +46,9 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 			s.openAIOAuth429DynamicMu.Unlock()
 			return
 		}
-		stat = &openAIOAuth429DynamicWindow{startedAt: now, planType: planType}
+		stat = &openAIOAuth429DynamicWindow{startedAt: now, planType: planType, policy: *policy}
 		s.openAIOAuth429DynamicStat[account.ID] = stat
-	} else if stat.planType != planType {
+	} else if stat.planType != planType || stat.policy != *policy {
 		if !is429 {
 			delete(s.openAIOAuth429DynamicStat, account.ID)
 			s.openAIOAuth429DynamicMu.Unlock()
@@ -55,6 +56,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		}
 		stat.startedAt = now
 		stat.planType = planType
+		stat.policy = *policy
 		stat.total = 0
 		stat.count429 = 0
 		stat.limiting = false
@@ -81,7 +83,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	total := stat.total
 	count429 := stat.count429
 	ratio := float64(count429) / float64(total)
-	shouldLimit := total >= settings.MinSamples && count429 >= settings.Min429 && ratio >= settings.RatioThreshold
+	shouldLimit := total >= policy.MinSamples && count429 >= policy.Min429 && ratio >= policy.RatioThreshold
 	if shouldLimit {
 		stat.limiting = true
 	}
@@ -91,7 +93,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		return
 	}
 
-	resetAt := now.Add(time.Duration(settings.BlockSeconds) * time.Second)
+	resetAt := now.Add(time.Duration(policy.BlockSeconds) * time.Second)
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		s.openAIOAuth429DynamicMu.Lock()
 		if current := s.openAIOAuth429DynamicStat[account.ID]; current == stat {
@@ -110,7 +112,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	slog.Info("openai_oauth_429_dynamic_rate_limited",
 		"account_id", account.ID,
 		"reset_at", resetAt,
-		"window_seconds", settings.WindowSeconds,
+		"window_seconds", policy.WindowSeconds,
 		"samples", total,
 		"count_429", count429,
 		"ratio", ratio,
@@ -141,14 +143,15 @@ func (s *RateLimitService) getOpenAIOAuth429DynamicSettings(ctx context.Context,
 	if account != nil {
 		accountID = account.ID
 	}
+	planType := openAIAccountPlanType(account)
 	if s.settingService != nil {
-		settings, err := s.settingService.GetOpenAIOAuth429DynamicSettings(ctx)
-		if err == nil && settings != nil {
-			return settings.PolicyForPlanType(openAIAccountPlanType(account)), true
+		policy, err := s.settingService.GetOpenAIOAuth429DynamicPolicy(ctx, planType)
+		if err == nil {
+			return &policy, true
 		}
 		slog.Warn("openai_oauth_429_dynamic_settings_read_failed", "account_id", accountID, "error", err)
 	}
-	return DefaultOpenAIOAuth429DynamicSettings().PolicyForPlanType(openAIAccountPlanType(account)), true
+	return DefaultOpenAIOAuth429DynamicSettings().PolicyForPlanType(planType), true
 }
 
 func openAIAccountPlanType(account *Account) string {

@@ -143,8 +143,9 @@ type cachedOpenAIQuotaAutoPauseSettings struct {
 }
 
 type cachedOpenAIOAuth429DynamicSettings struct {
-	settings  OpenAIOAuth429DynamicSettings
-	expiresAt int64
+	settings   OpenAIOAuth429DynamicSettings
+	byPlanType map[string]OpenAIOAuth429DynamicPolicy
+	expiresAt  int64
 }
 
 const openAICodexUserAgentCacheTTL = 60 * time.Second
@@ -4259,6 +4260,27 @@ func (s *SettingService) GetOpenAIOAuth429DynamicSettings(ctx context.Context) (
 	return nil, fmt.Errorf("get openai oauth 429 dynamic settings: invalid cached value")
 }
 
+// GetOpenAIOAuth429DynamicPolicy returns the immutable cached runtime policy for one Plan Type.
+func (s *SettingService) GetOpenAIOAuth429DynamicPolicy(ctx context.Context, planType string) (OpenAIOAuth429DynamicPolicy, error) {
+	if s == nil || s.settingRepo == nil {
+		return *DefaultOpenAIOAuth429DynamicSettings().PolicyForPlanType(planType), nil
+	}
+	cached := s.getCachedOpenAIOAuth429DynamicSnapshot(false)
+	if cached == nil {
+		if _, err := s.GetOpenAIOAuth429DynamicSettings(ctx); err != nil {
+			return OpenAIOAuth429DynamicPolicy{}, err
+		}
+		cached = s.getCachedOpenAIOAuth429DynamicSnapshot(false)
+		if cached == nil {
+			return OpenAIOAuth429DynamicPolicy{}, fmt.Errorf("get openai oauth 429 dynamic policy: cache unavailable")
+		}
+	}
+	if policy, ok := cached.byPlanType[normalizeOpenAIOAuth429PlanType(planType)]; ok {
+		return policy, nil
+	}
+	return *cached.settings.defaultPolicy(), nil
+}
+
 // SetOpenAIOAuth429DynamicSettings 设置OpenAI OAuth 429动态调度配置
 func (s *SettingService) SetOpenAIOAuth429DynamicSettings(ctx context.Context, settings *OpenAIOAuth429DynamicSettings) error {
 	if settings == nil {
@@ -4315,15 +4337,26 @@ func (s *SettingService) loadOpenAIOAuth429DynamicSettings(ctx context.Context) 
 }
 
 func (s *SettingService) getCachedOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
-	cached, _ := s.openAIOAuth429DynamicSettingsCache.Load().(*cachedOpenAIOAuth429DynamicSettings)
-	if cached == nil || time.Now().UnixNano() >= cached.expiresAt {
+	cached := s.getCachedOpenAIOAuth429DynamicSnapshot(false)
+	if cached == nil {
 		return nil
 	}
 	return cloneOpenAIOAuth429DynamicSettings(&cached.settings)
 }
 
-func (s *SettingService) getLastOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
+func (s *SettingService) getCachedOpenAIOAuth429DynamicSnapshot(allowExpired bool) *cachedOpenAIOAuth429DynamicSettings {
+	if s == nil {
+		return nil
+	}
 	cached, _ := s.openAIOAuth429DynamicSettingsCache.Load().(*cachedOpenAIOAuth429DynamicSettings)
+	if cached == nil || (!allowExpired && time.Now().UnixNano() >= cached.expiresAt) {
+		return nil
+	}
+	return cached
+}
+
+func (s *SettingService) getLastOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
+	cached := s.getCachedOpenAIOAuth429DynamicSnapshot(true)
 	if cached == nil {
 		return nil
 	}
@@ -4336,9 +4369,14 @@ func (s *SettingService) storeOpenAIOAuth429DynamicSettingsCache(settings *OpenA
 	}
 	cloned := cloneOpenAIOAuth429DynamicSettings(settings)
 	normalizeOpenAIOAuth429DynamicSettings(cloned)
+	byPlanType := make(map[string]OpenAIOAuth429DynamicPolicy, len(cloned.PlanTypeSettings))
+	for i := range cloned.PlanTypeSettings {
+		byPlanType[cloned.PlanTypeSettings[i].PlanType] = cloned.PlanTypeSettings[i].OpenAIOAuth429DynamicPolicy
+	}
 	s.openAIOAuth429DynamicSettingsCache.Store(&cachedOpenAIOAuth429DynamicSettings{
-		settings:  *cloned,
-		expiresAt: time.Now().Add(openAIOAuth429DynamicSettingsCacheTTL).UnixNano(),
+		settings:   *cloned,
+		byPlanType: byPlanType,
+		expiresAt:  time.Now().Add(openAIOAuth429DynamicSettingsCacheTTL).UnixNano(),
 	})
 }
 

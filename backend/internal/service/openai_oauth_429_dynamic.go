@@ -10,12 +10,14 @@ type openAIOAuth429DynamicWindow struct {
 	startedAt time.Time
 	planType  string
 	policy    OpenAIOAuth429DynamicPolicy
+	usage5h   *float64
+	usage7d   *float64
 	total     int
 	count429  int
 	limiting  bool
 }
 
-func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context, account *Account, statusCode int) {
+func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context, account *Account, statusCode int, snapshots ...*OpenAICodexUsageSnapshot) {
 	if s == nil || s.accountRepo == nil || !isOpenAIOAuthAccount(account) {
 		return
 	}
@@ -57,6 +59,8 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		stat.startedAt = now
 		stat.planType = planType
 		stat.policy = *policy
+		stat.usage5h = nil
+		stat.usage7d = nil
 		stat.total = 0
 		stat.count429 = 0
 		stat.limiting = false
@@ -67,6 +71,8 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 			return
 		}
 		stat.startedAt = now
+		stat.usage5h = nil
+		stat.usage7d = nil
 		stat.total = 0
 		stat.count429 = 0
 		stat.limiting = false
@@ -83,7 +89,22 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	total := stat.total
 	count429 := stat.count429
 	ratio := float64(count429) / float64(total)
+	if len(snapshots) > 0 {
+		if limits := snapshots[0].Normalize(); limits != nil {
+			if limits.Used5hPercent != nil {
+				value := *limits.Used5hPercent
+				stat.usage5h = &value
+			}
+			if limits.Used7dPercent != nil {
+				value := *limits.Used7dPercent
+				stat.usage7d = &value
+			}
+		}
+	}
 	shouldLimit := total >= policy.MinSamples && count429 >= policy.Min429 && ratio >= policy.RatioThreshold
+	if shouldLimit && policy.UsageWindowCheckEnabled {
+		shouldLimit = openAIOAuth429UsageWindowReached(stat.usage5h, stat.usage7d, policy)
+	}
 	if shouldLimit {
 		stat.limiting = true
 	}
@@ -117,6 +138,15 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		"count_429", count429,
 		"ratio", ratio,
 	)
+}
+
+func openAIOAuth429UsageWindowReached(used5h, used7d *float64, policy *OpenAIOAuth429DynamicPolicy) bool {
+	if used5h == nil && used7d == nil {
+		// Missing upstream window data must not disable the existing protection.
+		return true
+	}
+	return (used5h != nil && *used5h >= policy.UsageWindow5hThresholdPercent) ||
+		(used7d != nil && *used7d >= policy.UsageWindow7dThresholdPercent)
 }
 
 func (s *RateLimitService) ResetOpenAIOAuth429DynamicStats(accountID int64) {

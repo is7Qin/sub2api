@@ -6543,6 +6543,10 @@ export default {
         ratioThresholdHint: '窗口内 429 / 总样本比例，范围 0.01-1',
         blockSeconds: '暂停时长（秒）',
         blockSecondsHint: '达阈值后暂停调度的时长（1-2592000 秒，最长 30 天）',
+        usageWindowCheckEnabled: '启用用量窗口防线',
+        usageWindowCheckHint: '仅在原有 429 规则触发后生效；已知 5 小时或 7 天窗口达到阈值时才暂停。缺少用量数据时沿用原有逻辑。',
+        usageWindow5hThreshold: '5 小时用量阈值（%）',
+        usageWindow7dThreshold: '7 天用量阈值（%）',
         saved: 'OpenAI OAuth 429 动态调度设置保存成功',
         loadFailed: '加载 OpenAI OAuth 429 动态调度设置失败',
         saveFailed: '保存 OpenAI OAuth 429 动态调度设置失败'

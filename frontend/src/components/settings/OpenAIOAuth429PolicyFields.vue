@@ -34,6 +34,25 @@
         <input v-model.number="policy.block_seconds" :data-testid="`${testIdPrefix}-block-seconds`" type="number" min="1" max="2592000" class="input w-40" />
         <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiOAuth429Dynamic.blockSecondsHint") }}</p>
       </div>
+      <div class="col-span-full border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindowCheckEnabled") }}</label>
+            <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindowCheckHint") }}</p>
+          </div>
+          <Toggle v-model="policy.usage_window_check_enabled" :data-testid="`${testIdPrefix}-usage-window-check-enabled`" />
+        </div>
+        <div v-if="policy.usage_window_check_enabled" class="mt-3 grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindow5hThreshold") }}</label>
+            <input v-model.number="policy.usage_window_5h_threshold_percent" :data-testid="`${testIdPrefix}-usage-window-5h-threshold`" type="number" min="0.01" max="100" step="0.01" class="input w-32" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindow7dThreshold") }}</label>
+            <input v-model.number="policy.usage_window_7d_threshold_percent" :data-testid="`${testIdPrefix}-usage-window-7d-threshold`" type="number" min="0.01" max="100" step="0.01" class="input w-32" />
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>

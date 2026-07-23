@@ -4405,6 +4405,9 @@ func normalizeOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSetti
 	settings.Min429 = policy.Min429
 	settings.RatioThreshold = policy.RatioThreshold
 	settings.BlockSeconds = policy.BlockSeconds
+	settings.UsageWindowCheckEnabled = policy.UsageWindowCheckEnabled
+	settings.UsageWindow5hThresholdPercent = policy.UsageWindow5hThresholdPercent
+	settings.UsageWindow7dThresholdPercent = policy.UsageWindow7dThresholdPercent
 	for i := range settings.PlanTypeSettings {
 		settings.PlanTypeSettings[i].PlanType = normalizeOpenAIOAuth429PlanType(settings.PlanTypeSettings[i].PlanType)
 		normalizeOpenAIOAuth429DynamicPolicy(&settings.PlanTypeSettings[i].OpenAIOAuth429DynamicPolicy)
@@ -4444,6 +4447,18 @@ func normalizeOpenAIOAuth429DynamicPolicy(settings *OpenAIOAuth429DynamicPolicy)
 	}
 	if settings.BlockSeconds > OpenAIOAuth429DynamicMaxBlockSeconds {
 		settings.BlockSeconds = OpenAIOAuth429DynamicMaxBlockSeconds
+	}
+	if settings.UsageWindow5hThresholdPercent <= 0 {
+		settings.UsageWindow5hThresholdPercent = 100
+	}
+	if settings.UsageWindow5hThresholdPercent > 100 {
+		settings.UsageWindow5hThresholdPercent = 100
+	}
+	if settings.UsageWindow7dThresholdPercent <= 0 {
+		settings.UsageWindow7dThresholdPercent = 100
+	}
+	if settings.UsageWindow7dThresholdPercent > 100 {
+		settings.UsageWindow7dThresholdPercent = 100
 	}
 }
 
@@ -4499,6 +4514,14 @@ func validateOpenAIOAuth429DynamicPolicy(settings *OpenAIOAuth429DynamicPolicy) 
 	}
 	if settings.BlockSeconds < 1 || settings.BlockSeconds > OpenAIOAuth429DynamicMaxBlockSeconds {
 		return fmt.Errorf("block_seconds must be between 1-%d", OpenAIOAuth429DynamicMaxBlockSeconds)
+	}
+	if settings.UsageWindowCheckEnabled {
+		if settings.UsageWindow5hThresholdPercent <= 0 || settings.UsageWindow5hThresholdPercent > 100 {
+			return fmt.Errorf("usage_window_5h_threshold_percent must be between 0-100")
+		}
+		if settings.UsageWindow7dThresholdPercent <= 0 || settings.UsageWindow7dThresholdPercent > 100 {
+			return fmt.Errorf("usage_window_7d_threshold_percent must be between 0-100")
+		}
 	}
 	return nil
 }

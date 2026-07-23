@@ -1043,9 +1043,9 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	// 1. OpenAI OAuth-like：429 只作为动态统计信号，达阈值后再统一 SetRateLimited。
 	if account.Platform == PlatformOpenAI {
 		persistOpenAI429PlanType(ctx, s.accountRepo, account, responseBody)
-		s.persistOpenAICodexSnapshot(ctx, account, headers)
+		usageSnapshot := s.persistOpenAICodexSnapshot(ctx, account, headers)
 		if account.IsOpenAIOAuthLike() {
-			s.RecordOpenAIOAuthUpstreamOutcome(ctx, account, http.StatusTooManyRequests)
+			s.RecordOpenAIOAuthUpstreamOutcome(ctx, account, http.StatusTooManyRequests, usageSnapshot)
 			return
 		}
 		if resetAt := s.calculateOpenAI429ResetTime(headers); resetAt != nil {
@@ -1543,31 +1543,32 @@ func pickSooner(a, b *time.Time) *time.Time {
 	}
 }
 
-func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, account *Account, headers http.Header) {
+func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, account *Account, headers http.Header) *OpenAICodexUsageSnapshot {
 	if s == nil || s.accountRepo == nil || account == nil || headers == nil {
-		return
+		return nil
 	}
 	snapshot := ParseCodexRateLimitHeaders(headers)
 	if snapshot == nil {
-		return
+		return nil
 	}
 	updates := buildCodexUsageExtraUpdates(snapshot, time.Now())
 	if len(updates) == 0 {
-		return
+		return snapshot
 	}
 	observedAt, err := runtimeExtraObservedAt(updates, "codex_usage_updated_at")
 	if err != nil {
 		slog.Warn("openai_codex_snapshot_observation_invalid", "account_id", account.ID, "error", err)
-		return
+		return snapshot
 	}
 	updated, err := updateRuntimeExtra(ctx, s.accountRepo, account.ID, updates, "codex_usage_updated_at", observedAt)
 	if err != nil {
 		slog.Warn("openai_codex_snapshot_persist_failed", "account_id", account.ID, "error", err)
-		return
+		return snapshot
 	}
 	if updated {
 		syncCodexFiveHourSessionWindowEnd(ctx, s.accountRepo, account.ID, updates, "rate_limit_headers")
 	}
+	return snapshot
 }
 
 // parseOpenAIRateLimitResetTime 解析 OpenAI 格式的 429 响应，返回重置时间的 Unix 时间戳

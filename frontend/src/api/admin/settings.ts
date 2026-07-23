@@ -1174,6 +1174,9 @@ export interface OpenAIOAuth429DynamicPolicy {
   min_429: number;
   ratio_threshold: number;
   block_seconds: number;
+  usage_window_check_enabled: boolean;
+  usage_window_5h_threshold_percent: number;
+  usage_window_7d_threshold_percent: number;
 }
 
 export interface OpenAIOAuth429DynamicPlanTypeSettings extends OpenAIOAuth429DynamicPolicy {

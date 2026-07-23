@@ -441,6 +441,70 @@ func TestOpenAIOAuth429Dynamic_PlanTypeChangeResetsExistingWindow(t *testing.T) 
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
 }
 
+func TestOpenAIOAuth429Dynamic_UsageWindowDefense(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled:                       true,
+		WindowSeconds:                 60,
+		MinSamples:                    2,
+		Min429:                        2,
+		RatioThreshold:                1,
+		BlockSeconds:                  12,
+		UsageWindowCheckEnabled:       true,
+		UsageWindow5hThresholdPercent: 90,
+		UsageWindow7dThresholdPercent: 95,
+	})
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+	account := &Account{ID: 61, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	// Original thresholds fire, but the usage-window defense still blocks the pause.
+	used5hLow := 10.0
+	window5h := 300
+	lowSnapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:   &used5hLow,
+		PrimaryWindowMinutes: &window5h,
+	}
+	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests, lowSnapshot)
+	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests, lowSnapshot)
+	require.Equal(t, 0, accountRepo.rateLimitCalls)
+
+	// Once a known window reaches the configured threshold, the existing rule can pause.
+	used5hHigh := 90.0
+	highSnapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:   &used5hHigh,
+		PrimaryWindowMinutes: &window5h,
+	}
+	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests, highSnapshot)
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+}
+
+func TestOpenAIOAuth429Dynamic_UsageWindowDefenseMissingDataFallsBack(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled:                       true,
+		WindowSeconds:                 60,
+		MinSamples:                    2,
+		Min429:                        2,
+		RatioThreshold:                1,
+		BlockSeconds:                  12,
+		UsageWindowCheckEnabled:       true,
+		UsageWindow5hThresholdPercent: 90,
+		UsageWindow7dThresholdPercent: 95,
+	})
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+	account := &Account{ID: 62, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests)
+	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests)
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+}
+
 func TestOpenAIOAuth429Dynamic_PolicyChangeResetsExistingWindow(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	settingRepo := newMockSettingRepo()

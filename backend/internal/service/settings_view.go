@@ -488,12 +488,15 @@ type OpenAI403CooldownSettings struct {
 
 // OpenAIOAuth429DynamicPolicy defines one dynamic scheduling policy.
 type OpenAIOAuth429DynamicPolicy struct {
-	Enabled        bool    `json:"enabled"`
-	WindowSeconds  int     `json:"window_seconds"`
-	MinSamples     int     `json:"min_samples"`
-	Min429         int     `json:"min_429"`
-	RatioThreshold float64 `json:"ratio_threshold"`
-	BlockSeconds   int     `json:"block_seconds"`
+	Enabled                       bool    `json:"enabled"`
+	WindowSeconds                 int     `json:"window_seconds"`
+	MinSamples                    int     `json:"min_samples"`
+	Min429                        int     `json:"min_429"`
+	RatioThreshold                float64 `json:"ratio_threshold"`
+	BlockSeconds                  int     `json:"block_seconds"`
+	UsageWindowCheckEnabled       bool    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent float64 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent float64 `json:"usage_window_7d_threshold_percent"`
 }
 
 // OpenAIOAuth429DynamicPlanTypeSettings overrides the default policy for one plan type.
@@ -505,13 +508,16 @@ type OpenAIOAuth429DynamicPlanTypeSettings struct {
 // OpenAIOAuth429DynamicSettings stores the default policy and optional plan-type overrides.
 // The default fields remain top-level for backward compatibility with existing persisted JSON and API clients.
 type OpenAIOAuth429DynamicSettings struct {
-	Enabled          bool                                    `json:"enabled"`
-	WindowSeconds    int                                     `json:"window_seconds"`
-	MinSamples       int                                     `json:"min_samples"`
-	Min429           int                                     `json:"min_429"`
-	RatioThreshold   float64                                 `json:"ratio_threshold"`
-	BlockSeconds     int                                     `json:"block_seconds"`
-	PlanTypeSettings []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings,omitempty"`
+	Enabled                       bool                                    `json:"enabled"`
+	WindowSeconds                 int                                     `json:"window_seconds"`
+	MinSamples                    int                                     `json:"min_samples"`
+	Min429                        int                                     `json:"min_429"`
+	RatioThreshold                float64                                 `json:"ratio_threshold"`
+	BlockSeconds                  int                                     `json:"block_seconds"`
+	UsageWindowCheckEnabled       bool                                    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent float64                                 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent float64                                 `json:"usage_window_7d_threshold_percent"`
+	PlanTypeSettings              []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings,omitempty"`
 }
 
 // DefaultOverloadCooldownSettings 返回默认的过载冷却配置（启用，10分钟）
@@ -545,13 +551,16 @@ func DefaultOpenAI403CooldownSettings() *OpenAI403CooldownSettings {
 // DefaultOpenAIOAuth429DynamicSettings 返回默认的OpenAI OAuth 429动态调度配置。
 func DefaultOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
 	return &OpenAIOAuth429DynamicSettings{
-		Enabled:          false,
-		WindowSeconds:    300,
-		MinSamples:       20,
-		Min429:           3,
-		RatioThreshold:   0.5,
-		BlockSeconds:     60,
-		PlanTypeSettings: []OpenAIOAuth429DynamicPlanTypeSettings{},
+		Enabled:                       false,
+		WindowSeconds:                 300,
+		MinSamples:                    20,
+		Min429:                        3,
+		RatioThreshold:                0.5,
+		BlockSeconds:                  60,
+		UsageWindowCheckEnabled:       false,
+		UsageWindow5hThresholdPercent: 100,
+		UsageWindow7dThresholdPercent: 100,
+		PlanTypeSettings:              []OpenAIOAuth429DynamicPlanTypeSettings{},
 	}
 }
 
@@ -561,12 +570,15 @@ func (s *OpenAIOAuth429DynamicSettings) defaultPolicy() *OpenAIOAuth429DynamicPo
 		return defaults.defaultPolicy()
 	}
 	return &OpenAIOAuth429DynamicPolicy{
-		Enabled:        s.Enabled,
-		WindowSeconds:  s.WindowSeconds,
-		MinSamples:     s.MinSamples,
-		Min429:         s.Min429,
-		RatioThreshold: s.RatioThreshold,
-		BlockSeconds:   s.BlockSeconds,
+		Enabled:                       s.Enabled,
+		WindowSeconds:                 s.WindowSeconds,
+		MinSamples:                    s.MinSamples,
+		Min429:                        s.Min429,
+		RatioThreshold:                s.RatioThreshold,
+		BlockSeconds:                  s.BlockSeconds,
+		UsageWindowCheckEnabled:       s.UsageWindowCheckEnabled,
+		UsageWindow5hThresholdPercent: s.UsageWindow5hThresholdPercent,
+		UsageWindow7dThresholdPercent: s.UsageWindow7dThresholdPercent,
 	}
 }
 

@@ -6552,6 +6552,10 @@ export default {
         ratioThresholdHint: '429 / total samples within the window, range 0.01-1',
         blockSeconds: 'Pause Duration (seconds)',
         blockSecondsHint: 'Scheduling pause duration after threshold hit (1-2592000 seconds, up to 30 days)',
+        usageWindowCheckEnabled: 'Enable usage window defense',
+        usageWindowCheckHint: 'Applied only after the original 429 rule triggers; pause only when a known 5h or 7d usage window reaches its threshold. Missing usage data keeps the original behavior.',
+        usageWindow5hThreshold: '5h usage threshold (%)',
+        usageWindow7dThreshold: '7d usage threshold (%)',
         saved: 'OpenAI OAuth 429 dynamic scheduling settings saved',
         loadFailed: 'Failed to load OpenAI OAuth 429 dynamic scheduling settings',
         saveFailed: 'Failed to save OpenAI OAuth 429 dynamic scheduling settings'

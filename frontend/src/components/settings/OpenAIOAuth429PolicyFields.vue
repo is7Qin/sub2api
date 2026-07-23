@@ -51,6 +51,11 @@
             <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindow7dThreshold") }}</label>
             <input v-model.number="policy.usage_window_7d_threshold_percent" :data-testid="`${testIdPrefix}-usage-window-7d-threshold`" type="number" min="0.01" max="100" step="0.01" class="input w-32" />
           </div>
+          <div class="md:col-span-2">
+            <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindowMissingDataFallbackSeconds") }}</label>
+            <input v-model.number="policy.usage_window_missing_data_fallback_seconds" :data-testid="`${testIdPrefix}-usage-window-missing-data-fallback-seconds`" type="number" min="0" max="31536000" class="input w-40" />
+            <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiOAuth429Dynamic.usageWindowMissingDataFallbackSecondsHint") }}</p>
+          </div>
         </div>
       </div>
     </div>

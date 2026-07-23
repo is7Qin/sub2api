@@ -481,28 +481,51 @@ func TestOpenAIOAuth429Dynamic_UsageWindowDefense(t *testing.T) {
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
 }
 
-func TestOpenAIOAuth429Dynamic_UsageWindowDefenseMissingDataFallsBack(t *testing.T) {
+func TestOpenAIOAuth429Dynamic_UsageWindowDefenseMissingDataWaitsForAccountAge(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	settingRepo := newMockSettingRepo()
 	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
-		Enabled:                       true,
-		WindowSeconds:                 60,
-		MinSamples:                    2,
-		Min429:                        2,
-		RatioThreshold:                1,
-		BlockSeconds:                  12,
-		UsageWindowCheckEnabled:       true,
-		UsageWindow5hThresholdPercent: 90,
-		UsageWindow7dThresholdPercent: 95,
+		Enabled:                               true,
+		WindowSeconds:                         60,
+		MinSamples:                            2,
+		Min429:                                2,
+		RatioThreshold:                        1,
+		BlockSeconds:                          12,
+		UsageWindowCheckEnabled:               true,
+		UsageWindow5hThresholdPercent:         90,
+		UsageWindow7dThresholdPercent:         95,
+		UsageWindowMissingDataFallbackSeconds: 300,
 	})
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
 	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 	svc.SetSettingService(settingSvc)
-	account := &Account{ID: 62, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	account := &Account{ID: 62, Platform: PlatformOpenAI, Type: AccountTypeOAuth, CreatedAt: time.Now()}
 
 	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests)
 	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests)
+	require.Equal(t, 0, accountRepo.rateLimitCalls)
+
+	// Keep the collected evidence; once the account is old enough, another
+	// outcome can use the original rule without rebuilding the sample window.
+	account.CreatedAt = time.Now().Add(-301 * time.Second)
+	svc.RecordOpenAIOAuthUpstreamOutcome(context.Background(), account, http.StatusTooManyRequests)
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
+}
+
+func TestOpenAIOAuth429Dynamic_UsageWindowDefenseMissingDataAccountAgeBoundary(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	policy := &OpenAIOAuth429DynamicPolicy{UsageWindowMissingDataFallbackSeconds: 300}
+
+	require.False(t, openAIOAuth429UsageWindowReached(nil, nil, createdAt, createdAt.Add(300*time.Second), policy))
+	require.True(t, openAIOAuth429UsageWindowReached(nil, nil, createdAt, createdAt.Add(300*time.Second+time.Nanosecond), policy))
+}
+
+func TestOpenAIOAuth429Dynamic_UsageWindowDefenseMissingDataZeroWaitPreservesFallback(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	policy := &OpenAIOAuth429DynamicPolicy{UsageWindowMissingDataFallbackSeconds: 0}
+
+	require.True(t, openAIOAuth429UsageWindowReached(nil, nil, createdAt, createdAt.Add(time.Nanosecond), policy))
+	require.False(t, openAIOAuth429UsageWindowReached(nil, nil, time.Time{}, createdAt, policy))
 }
 
 func TestOpenAIOAuth429Dynamic_PolicyChangeResetsExistingWindow(t *testing.T) {

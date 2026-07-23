@@ -7279,6 +7279,7 @@ const openaiOAuth429DynamicForm = reactive<OpenAIOAuth429DynamicSettings>({
   usage_window_check_enabled: false,
   usage_window_5h_threshold_percent: 100,
   usage_window_7d_threshold_percent: 100,
+  usage_window_missing_data_fallback_seconds: 0,
   plan_type_settings: [],
 });
 
@@ -9205,6 +9206,7 @@ function normalizeOpenAIOAuth429Policy(
     usage_window_check_enabled: Boolean(raw.usage_window_check_enabled),
     usage_window_5h_threshold_percent: boundedNumber(raw.usage_window_5h_threshold_percent, 0.01, 100, 100),
     usage_window_7d_threshold_percent: boundedNumber(raw.usage_window_7d_threshold_percent, 0.01, 100, 100),
+    usage_window_missing_data_fallback_seconds: boundedInteger(raw.usage_window_missing_data_fallback_seconds, 0, 31536000, 0),
   };
 }
 

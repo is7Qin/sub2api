@@ -103,7 +103,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	}
 	shouldLimit := total >= policy.MinSamples && count429 >= policy.Min429 && ratio >= policy.RatioThreshold
 	if shouldLimit && policy.UsageWindowCheckEnabled {
-		shouldLimit = openAIOAuth429UsageWindowReached(stat.usage5h, stat.usage7d, policy)
+		shouldLimit = openAIOAuth429UsageWindowReached(stat.usage5h, stat.usage7d, account.CreatedAt, now, policy)
 	}
 	if shouldLimit {
 		stat.limiting = true
@@ -140,10 +140,14 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	)
 }
 
-func openAIOAuth429UsageWindowReached(used5h, used7d *float64, policy *OpenAIOAuth429DynamicPolicy) bool {
+func openAIOAuth429UsageWindowReached(used5h, used7d *float64, createdAt, now time.Time, policy *OpenAIOAuth429DynamicPolicy) bool {
 	if used5h == nil && used7d == nil {
-		// Missing upstream window data must not disable the existing protection.
-		return true
+		// Give newly created accounts time to obtain upstream usage data before
+		// missing data falls back to the original dynamic 429 behavior.
+		if createdAt.IsZero() {
+			return false
+		}
+		return now.After(createdAt.Add(time.Duration(policy.UsageWindowMissingDataFallbackSeconds) * time.Second))
 	}
 	return (used5h != nil && *used5h >= policy.UsageWindow5hThresholdPercent) ||
 		(used7d != nil && *used7d >= policy.UsageWindow7dThresholdPercent)

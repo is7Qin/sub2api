@@ -3175,29 +3175,31 @@ type UpdateRateLimit429CooldownSettingsRequest struct {
 
 // UpdateOpenAIOAuth429DynamicSettingsRequest 更新OpenAI OAuth 429动态调度配置请求
 type UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest struct {
-	PlanType                      string  `json:"plan_type"`
-	Enabled                       bool    `json:"enabled"`
-	WindowSeconds                 int     `json:"window_seconds"`
-	MinSamples                    int     `json:"min_samples"`
-	Min429                        int     `json:"min_429"`
-	RatioThreshold                float64 `json:"ratio_threshold"`
-	BlockSeconds                  int     `json:"block_seconds"`
-	UsageWindowCheckEnabled       bool    `json:"usage_window_check_enabled"`
-	UsageWindow5hThresholdPercent float64 `json:"usage_window_5h_threshold_percent"`
-	UsageWindow7dThresholdPercent float64 `json:"usage_window_7d_threshold_percent"`
+	PlanType                              string  `json:"plan_type"`
+	Enabled                               bool    `json:"enabled"`
+	WindowSeconds                         int     `json:"window_seconds"`
+	MinSamples                            int     `json:"min_samples"`
+	Min429                                int     `json:"min_429"`
+	RatioThreshold                        float64 `json:"ratio_threshold"`
+	BlockSeconds                          int     `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64 `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int     `json:"usage_window_missing_data_fallback_seconds"`
 }
 
 type UpdateOpenAIOAuth429DynamicSettingsRequest struct {
-	Enabled                       bool                                                 `json:"enabled"`
-	WindowSeconds                 int                                                  `json:"window_seconds"`
-	MinSamples                    int                                                  `json:"min_samples"`
-	Min429                        int                                                  `json:"min_429"`
-	RatioThreshold                float64                                              `json:"ratio_threshold"`
-	BlockSeconds                  int                                                  `json:"block_seconds"`
-	UsageWindowCheckEnabled       bool                                                 `json:"usage_window_check_enabled"`
-	UsageWindow5hThresholdPercent float64                                              `json:"usage_window_5h_threshold_percent"`
-	UsageWindow7dThresholdPercent float64                                              `json:"usage_window_7d_threshold_percent"`
-	PlanTypeSettings              []UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest `json:"plan_type_settings"`
+	Enabled                               bool                                                 `json:"enabled"`
+	WindowSeconds                         int                                                  `json:"window_seconds"`
+	MinSamples                            int                                                  `json:"min_samples"`
+	Min429                                int                                                  `json:"min_429"`
+	RatioThreshold                        float64                                              `json:"ratio_threshold"`
+	BlockSeconds                          int                                                  `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool                                                 `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64                                              `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64                                              `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int                                                  `json:"usage_window_missing_data_fallback_seconds"`
+	PlanTypeSettings                      []UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest `json:"plan_type_settings"`
 }
 
 // UpdateRateLimit429CooldownSettings 更新429默认回避配置
@@ -3298,30 +3300,32 @@ func (h *SettingHandler) UpdateOpenAIOAuth429DynamicSettings(c *gin.Context) {
 	}
 
 	settings := &service.OpenAIOAuth429DynamicSettings{
-		Enabled:                       req.Enabled,
-		WindowSeconds:                 req.WindowSeconds,
-		MinSamples:                    req.MinSamples,
-		Min429:                        req.Min429,
-		RatioThreshold:                req.RatioThreshold,
-		BlockSeconds:                  req.BlockSeconds,
-		UsageWindowCheckEnabled:       req.UsageWindowCheckEnabled,
-		UsageWindow5hThresholdPercent: req.UsageWindow5hThresholdPercent,
-		UsageWindow7dThresholdPercent: req.UsageWindow7dThresholdPercent,
-		PlanTypeSettings:              make([]service.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(req.PlanTypeSettings)),
+		Enabled:                               req.Enabled,
+		WindowSeconds:                         req.WindowSeconds,
+		MinSamples:                            req.MinSamples,
+		Min429:                                req.Min429,
+		RatioThreshold:                        req.RatioThreshold,
+		BlockSeconds:                          req.BlockSeconds,
+		UsageWindowCheckEnabled:               req.UsageWindowCheckEnabled,
+		UsageWindow5hThresholdPercent:         req.UsageWindow5hThresholdPercent,
+		UsageWindow7dThresholdPercent:         req.UsageWindow7dThresholdPercent,
+		UsageWindowMissingDataFallbackSeconds: req.UsageWindowMissingDataFallbackSeconds,
+		PlanTypeSettings:                      make([]service.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(req.PlanTypeSettings)),
 	}
 	for _, override := range req.PlanTypeSettings {
 		settings.PlanTypeSettings = append(settings.PlanTypeSettings, service.OpenAIOAuth429DynamicPlanTypeSettings{
 			PlanType: override.PlanType,
 			OpenAIOAuth429DynamicPolicy: service.OpenAIOAuth429DynamicPolicy{
-				Enabled:                       override.Enabled,
-				WindowSeconds:                 override.WindowSeconds,
-				MinSamples:                    override.MinSamples,
-				Min429:                        override.Min429,
-				RatioThreshold:                override.RatioThreshold,
-				BlockSeconds:                  override.BlockSeconds,
-				UsageWindowCheckEnabled:       override.UsageWindowCheckEnabled,
-				UsageWindow5hThresholdPercent: override.UsageWindow5hThresholdPercent,
-				UsageWindow7dThresholdPercent: override.UsageWindow7dThresholdPercent,
+				Enabled:                               override.Enabled,
+				WindowSeconds:                         override.WindowSeconds,
+				MinSamples:                            override.MinSamples,
+				Min429:                                override.Min429,
+				RatioThreshold:                        override.RatioThreshold,
+				BlockSeconds:                          override.BlockSeconds,
+				UsageWindowCheckEnabled:               override.UsageWindowCheckEnabled,
+				UsageWindow5hThresholdPercent:         override.UsageWindow5hThresholdPercent,
+				UsageWindow7dThresholdPercent:         override.UsageWindow7dThresholdPercent,
+				UsageWindowMissingDataFallbackSeconds: override.UsageWindowMissingDataFallbackSeconds,
 			},
 		})
 	}
@@ -3341,29 +3345,31 @@ func (h *SettingHandler) UpdateOpenAIOAuth429DynamicSettings(c *gin.Context) {
 
 func openAIOAuth429DynamicSettingsDTO(settings *service.OpenAIOAuth429DynamicSettings) dto.OpenAIOAuth429DynamicSettings {
 	result := dto.OpenAIOAuth429DynamicSettings{
-		Enabled:                       settings.Enabled,
-		WindowSeconds:                 settings.WindowSeconds,
-		MinSamples:                    settings.MinSamples,
-		Min429:                        settings.Min429,
-		RatioThreshold:                settings.RatioThreshold,
-		BlockSeconds:                  settings.BlockSeconds,
-		UsageWindowCheckEnabled:       settings.UsageWindowCheckEnabled,
-		UsageWindow5hThresholdPercent: settings.UsageWindow5hThresholdPercent,
-		UsageWindow7dThresholdPercent: settings.UsageWindow7dThresholdPercent,
-		PlanTypeSettings:              make([]dto.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(settings.PlanTypeSettings)),
+		Enabled:                               settings.Enabled,
+		WindowSeconds:                         settings.WindowSeconds,
+		MinSamples:                            settings.MinSamples,
+		Min429:                                settings.Min429,
+		RatioThreshold:                        settings.RatioThreshold,
+		BlockSeconds:                          settings.BlockSeconds,
+		UsageWindowCheckEnabled:               settings.UsageWindowCheckEnabled,
+		UsageWindow5hThresholdPercent:         settings.UsageWindow5hThresholdPercent,
+		UsageWindow7dThresholdPercent:         settings.UsageWindow7dThresholdPercent,
+		UsageWindowMissingDataFallbackSeconds: settings.UsageWindowMissingDataFallbackSeconds,
+		PlanTypeSettings:                      make([]dto.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(settings.PlanTypeSettings)),
 	}
 	for _, override := range settings.PlanTypeSettings {
 		result.PlanTypeSettings = append(result.PlanTypeSettings, dto.OpenAIOAuth429DynamicPlanTypeSettings{
-			PlanType:                      override.PlanType,
-			Enabled:                       override.Enabled,
-			WindowSeconds:                 override.WindowSeconds,
-			MinSamples:                    override.MinSamples,
-			Min429:                        override.Min429,
-			RatioThreshold:                override.RatioThreshold,
-			BlockSeconds:                  override.BlockSeconds,
-			UsageWindowCheckEnabled:       override.UsageWindowCheckEnabled,
-			UsageWindow5hThresholdPercent: override.UsageWindow5hThresholdPercent,
-			UsageWindow7dThresholdPercent: override.UsageWindow7dThresholdPercent,
+			PlanType:                              override.PlanType,
+			Enabled:                               override.Enabled,
+			WindowSeconds:                         override.WindowSeconds,
+			MinSamples:                            override.MinSamples,
+			Min429:                                override.Min429,
+			RatioThreshold:                        override.RatioThreshold,
+			BlockSeconds:                          override.BlockSeconds,
+			UsageWindowCheckEnabled:               override.UsageWindowCheckEnabled,
+			UsageWindow5hThresholdPercent:         override.UsageWindow5hThresholdPercent,
+			UsageWindow7dThresholdPercent:         override.UsageWindow7dThresholdPercent,
+			UsageWindowMissingDataFallbackSeconds: override.UsageWindowMissingDataFallbackSeconds,
 		})
 	}
 	return result

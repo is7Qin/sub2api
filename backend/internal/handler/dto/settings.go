@@ -363,30 +363,32 @@ type OpenAI403CooldownSettings struct {
 }
 
 type OpenAIOAuth429DynamicPlanTypeSettings struct {
-	PlanType                      string  `json:"plan_type"`
-	Enabled                       bool    `json:"enabled"`
-	WindowSeconds                 int     `json:"window_seconds"`
-	MinSamples                    int     `json:"min_samples"`
-	Min429                        int     `json:"min_429"`
-	RatioThreshold                float64 `json:"ratio_threshold"`
-	BlockSeconds                  int     `json:"block_seconds"`
-	UsageWindowCheckEnabled       bool    `json:"usage_window_check_enabled"`
-	UsageWindow5hThresholdPercent float64 `json:"usage_window_5h_threshold_percent"`
-	UsageWindow7dThresholdPercent float64 `json:"usage_window_7d_threshold_percent"`
+	PlanType                              string  `json:"plan_type"`
+	Enabled                               bool    `json:"enabled"`
+	WindowSeconds                         int     `json:"window_seconds"`
+	MinSamples                            int     `json:"min_samples"`
+	Min429                                int     `json:"min_429"`
+	RatioThreshold                        float64 `json:"ratio_threshold"`
+	BlockSeconds                          int     `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64 `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int     `json:"usage_window_missing_data_fallback_seconds"`
 }
 
 // OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置 DTO
 type OpenAIOAuth429DynamicSettings struct {
-	Enabled                       bool                                    `json:"enabled"`
-	WindowSeconds                 int                                     `json:"window_seconds"`
-	MinSamples                    int                                     `json:"min_samples"`
-	Min429                        int                                     `json:"min_429"`
-	RatioThreshold                float64                                 `json:"ratio_threshold"`
-	BlockSeconds                  int                                     `json:"block_seconds"`
-	UsageWindowCheckEnabled       bool                                    `json:"usage_window_check_enabled"`
-	UsageWindow5hThresholdPercent float64                                 `json:"usage_window_5h_threshold_percent"`
-	UsageWindow7dThresholdPercent float64                                 `json:"usage_window_7d_threshold_percent"`
-	PlanTypeSettings              []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings"`
+	Enabled                               bool                                    `json:"enabled"`
+	WindowSeconds                         int                                     `json:"window_seconds"`
+	MinSamples                            int                                     `json:"min_samples"`
+	Min429                                int                                     `json:"min_429"`
+	RatioThreshold                        float64                                 `json:"ratio_threshold"`
+	BlockSeconds                          int                                     `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool                                    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64                                 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64                                 `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int                                     `json:"usage_window_missing_data_fallback_seconds"`
+	PlanTypeSettings                      []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings"`
 }
 
 // StreamTimeoutSettings 流超时处理配置 DTO

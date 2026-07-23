@@ -6553,9 +6553,11 @@ export default {
         blockSeconds: 'Pause Duration (seconds)',
         blockSecondsHint: 'Scheduling pause duration after threshold hit (1-2592000 seconds, up to 30 days)',
         usageWindowCheckEnabled: 'Enable usage window defense',
-        usageWindowCheckHint: 'Applied only after the original 429 rule triggers; pause only when a known 5h or 7d usage window reaches its threshold. Missing usage data keeps the original behavior.',
+        usageWindowCheckHint: 'Applied only after the original 429 rule triggers; pause when a known 5h or 7d window reaches its threshold. If both are missing, the account must also be older than the wait below.',
         usageWindow5hThreshold: '5h usage threshold (%)',
         usageWindow7dThreshold: '7d usage threshold (%)',
+        usageWindowMissingDataFallbackSeconds: 'Missing usage fallback wait (seconds)',
+        usageWindowMissingDataFallbackSecondsHint: 'Use the original 429 pause behavior only when both usage windows are still missing after this account age. 0 allows fallback immediately after creation.',
         saved: 'OpenAI OAuth 429 dynamic scheduling settings saved',
         loadFailed: 'Failed to load OpenAI OAuth 429 dynamic scheduling settings',
         saveFailed: 'Failed to save OpenAI OAuth 429 dynamic scheduling settings'

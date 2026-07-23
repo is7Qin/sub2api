@@ -26,6 +26,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 )
 
 // sseDataPrefix matches SSE data lines with optional whitespace after colon.
@@ -903,11 +904,28 @@ func (s *AccountTestService) markOpenAIAccountTestPermanentError(ctx context.Con
 	switch statusCode {
 	case http.StatusUnauthorized:
 		_ = s.accountRepo.SetError(ctx, account.ID, openAIAccountTestAuthErrorMessage(statusCode, body))
+	case http.StatusPaymentRequired:
+		if account.IsOpenAIOAuthLike() && isOpenAIDeactivatedWorkspaceError(body) {
+			_ = s.accountRepo.SetError(ctx, account.ID, openAIAccountTestWorkspaceErrorMessage(statusCode, body))
+		}
 	case http.StatusForbidden:
 		if isOpenAIPersonalAccessTokenOwner403(account, extractUpstreamErrorMessage(body), body) {
 			_ = s.accountRepo.SetError(ctx, account.ID, openAIAccountTestForbiddenErrorMessage(statusCode, body))
 		}
 	}
+}
+
+func isOpenAIDeactivatedWorkspaceError(body []byte) bool {
+	for _, path := range []string{"code", "detail.code", "error.code"} {
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, path).String()), "deactivated_workspace") {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIAccountTestWorkspaceErrorMessage(statusCode int, body []byte) string {
+	return fmt.Sprintf("Workspace deactivated (%d): %s", statusCode, openAIAccountTestSanitizedUpstreamError(statusCode, body))
 }
 
 func openAIAccountTestAuthErrorMessage(statusCode int, body []byte) string {

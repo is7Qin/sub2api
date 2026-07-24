@@ -284,17 +284,49 @@ func TestBackupService_S3ConfigKeepExistingSecret(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// 再更新时不提供 secret，应保留原值
+	rawBefore, err := repo.GetValue(context.Background(), settingKeyBackupS3Config)
+	require.NoError(t, err)
+	var storedBefore BackupS3Config
+	require.NoError(t, json.Unmarshal([]byte(rawBefore), &storedBefore))
+
+	// 再更新时不提供 secret，应原样保留已有密文
 	_, err = svc.UpdateS3Config(context.Background(), BackupS3Config{
 		Bucket:      "my-bucket",
 		AccessKeyID: "AKID-NEW",
 	})
 	require.NoError(t, err)
 
+	rawAfter, err := repo.GetValue(context.Background(), settingKeyBackupS3Config)
+	require.NoError(t, err)
+	var storedAfter BackupS3Config
+	require.NoError(t, json.Unmarshal([]byte(rawAfter), &storedAfter))
+	require.Equal(t, storedBefore.SecretAccessKey, storedAfter.SecretAccessKey)
+
 	internal, err := svc.loadS3Config(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "original-secret", internal.SecretAccessKey)
 	require.Equal(t, "AKID-NEW", internal.AccessKeyID)
+}
+
+func TestBackupService_UpdateS3ConfigPreservesExistingCiphertextWithEphemeralKey(t *testing.T) {
+	repo := newMockSettingRepo()
+	seedS3Config(t, repo)
+	svc := newTestBackupServiceWithEphemeralKey(repo)
+
+	_, err := svc.UpdateS3Config(context.Background(), BackupS3Config{
+		Bucket:      "new-bucket",
+		AccessKeyID: "AKID-NEW",
+		Prefix:      "new-prefix",
+	})
+	require.NoError(t, err)
+
+	raw, err := repo.GetValue(context.Background(), settingKeyBackupS3Config)
+	require.NoError(t, err)
+	var stored BackupS3Config
+	require.NoError(t, json.Unmarshal([]byte(raw), &stored))
+	require.Equal(t, "ENC:secret123", stored.SecretAccessKey)
+	require.Equal(t, "new-bucket", stored.Bucket)
+	require.Equal(t, "AKID-NEW", stored.AccessKeyID)
 }
 
 func TestBackupService_UpdateS3ConfigRejectsEphemeralEncryptionKey(t *testing.T) {

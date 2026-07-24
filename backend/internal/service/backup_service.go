@@ -259,9 +259,13 @@ func (s *BackupService) GetS3Config(ctx context.Context) (*BackupS3Config, error
 }
 
 func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) (*BackupS3Config, error) {
-	// 如果没提供 secret，保留原有值
+	// If the secret is omitted, preserve the stored ciphertext instead of
+	// decrypting and accidentally persisting plaintext during a partial update.
 	if cfg.SecretAccessKey == "" {
-		old, _ := s.loadS3Config(ctx)
+		old, err := s.loadRawS3Config(ctx)
+		if err != nil {
+			return nil, err
+		}
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
@@ -970,14 +974,25 @@ func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID strin
 
 // ─── 内部方法 ───
 
-func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, error) {
+func (s *BackupService) loadRawS3Config(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
-	if err != nil || raw == "" {
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
 		return nil, nil //nolint:nilnil // no config is a valid state
 	}
 	var cfg BackupS3Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return nil, ErrBackupS3ConfigCorrupt
+	}
+	return &cfg, nil
+}
+
+func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, error) {
+	cfg, err := s.loadRawS3Config(ctx)
+	if err != nil || cfg == nil {
+		return cfg, err
 	}
 	// 解密 SecretAccessKey
 	if cfg.SecretAccessKey != "" {
@@ -989,7 +1004,7 @@ func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, erro
 			cfg.SecretAccessKey = decrypted
 		}
 	}
-	return &cfg, nil
+	return cfg, nil
 }
 
 func (s *BackupService) getOrCreateStore(ctx context.Context, cfg *BackupS3Config) (BackupObjectStore, error) {

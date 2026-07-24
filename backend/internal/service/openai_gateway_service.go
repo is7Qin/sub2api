@@ -5303,7 +5303,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if trimmedData == "[DONE]" {
 				sawDone = true
 			}
-			if acceptTerminalState && (openAIStreamEventIsTerminal(trimmedData) || openAIResponseStreamEventTypeIsTerminal(eventType)) {
+			if acceptTerminalState && openAIStreamEventIsTerminalWithType(trimmedData, eventType) {
 				sawTerminalEvent = true
 			}
 			imageCounter.AddSSEData(dataBytes)
@@ -6219,7 +6219,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				suppressTerminalFrame = true
 				return
 			}
-			if acceptTerminalState && (openAIStreamEventIsTerminal(data) || openAIResponseStreamEventTypeIsTerminal(eventType)) {
+			if acceptTerminalState && openAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
 			}
 			forceFlushFailedEvent := false

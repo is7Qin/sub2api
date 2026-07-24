@@ -19,11 +19,21 @@ type nonJSONTempUnschedAccountRepo struct {
 	AccountRepository
 	tempUnschedCalls int
 	tempReason       string
+	modelRateLimits  []modelNotFoundRateLimitCall
 }
 
 func (r *nonJSONTempUnschedAccountRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, reason string) error {
 	r.tempUnschedCalls++
 	r.tempReason = reason
+	return nil
+}
+
+func (r *nonJSONTempUnschedAccountRepo) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	call := modelNotFoundRateLimitCall{accountID: id, scope: scope, resetAt: resetAt}
+	if len(reason) > 0 {
+		call.reason = reason[0]
+	}
+	r.modelRateLimits = append(r.modelRateLimits, call)
 	return nil
 }
 
@@ -171,7 +181,9 @@ func TestHandleNonStreamingResponse_NonJSON2xxMatchesTempUnschedulableRule(t *te
 	require.True(t, errors.As(err, &failoverErr))
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.Equal(t, body, failoverErr.ResponseBody)
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Contains(t, repo.tempReason, `"status_code":502`)
-	require.Contains(t, repo.tempReason, `"matched_keyword":"upstream request failed"`)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Len(t, repo.modelRateLimits, 1)
+	require.Equal(t, "claude-sonnet-4-6", repo.modelRateLimits[0].scope)
+	require.Contains(t, repo.modelRateLimits[0].reason, `"status_code":502`)
+	require.Contains(t, repo.modelRateLimits[0].reason, `"matched_keyword":"upstream request failed"`)
 }

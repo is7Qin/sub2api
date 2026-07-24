@@ -50,6 +50,14 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		s.rateLimitService.RecordOpenAIOAuthUpstreamOutcome(stateCtx, account, statusCode)
 		return true
 	}
+	modelKey := firstRequestedModel(requestedModel)
+	if modelKey != "" && statusCode != http.StatusUnauthorized &&
+		s.rateLimitService.HandleTempUnschedulable(stateCtx, account, statusCode, responseBody, modelKey) {
+		if statusCode != http.StatusTooManyRequests {
+			s.rateLimitService.RecordOpenAIOAuthUpstreamOutcome(stateCtx, account, statusCode)
+		}
+		return true
+	}
 	shouldDisable := s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
 	if statusCode != http.StatusTooManyRequests {
 		s.rateLimitService.RecordOpenAIOAuthUpstreamOutcome(stateCtx, account, statusCode)

@@ -188,7 +188,19 @@ func openAIStreamEventIsTerminal(data string) bool {
 	if trimmed == "[DONE]" {
 		return true
 	}
-	switch gjson.Get(trimmed, "type").String() {
+	return openAIStreamEventIsTerminalWithType(trimmed, gjson.Get(trimmed, "type").String())
+}
+
+// openAIStreamEventIsTerminalWithType reuses an event type already extracted on the SSE hot path.
+func openAIStreamEventIsTerminalWithType(data, eventType string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return false
+	}
+	if trimmed == "[DONE]" {
+		return true
+	}
+	switch eventType {
 	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
 		return true
 	default:

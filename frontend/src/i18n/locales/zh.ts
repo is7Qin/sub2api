@@ -291,6 +291,8 @@ export default {
     inactive: '禁用',
     more: '更多',
     close: '关闭',
+    toggleMenu: '切换菜单',
+    userMenu: '用户菜单',
     enabled: '已启用',
     disabled: '已禁用',
     total: '总计',

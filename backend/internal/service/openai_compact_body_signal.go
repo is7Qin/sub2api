@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"path"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -9,7 +10,17 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-type openAICompactBodySignalContextKey struct{}
+const openAIRemoteCompactionSemanticOutcomeKey = "openai_remote_compaction_semantic_outcome"
+
+type (
+	openAIRemoteCompactionContextKey      struct{}
+	OpenAIRemoteCompactionSemanticOutcome string
+)
+
+const (
+	OpenAIRemoteCompactionSemanticOutcomeSucceeded OpenAIRemoteCompactionSemanticOutcome = "succeeded"
+	OpenAIRemoteCompactionSemanticOutcomeFailed    OpenAIRemoteCompactionSemanticOutcome = "failed"
+)
 
 func HasOpenAICompactionTriggerInInput(body []byte) bool {
 	if len(body) == 0 {
@@ -34,12 +45,18 @@ func isBareOpenAIResponsesPath(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
 	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
-	return strings.HasSuffix(normalizedPath, "/responses")
+	normalizedPath := path.Clean(strings.TrimSpace(c.Request.URL.Path))
+	switch normalizedPath {
+	case "/v1/responses", "/responses", "/backend-api/codex/responses":
+		return true
+	default:
+		return false
+	}
 }
 
-// PromoteOpenAICompactBodySignal marks an official Codex body signal before
-// scheduling. Account type remains a terminal adapter decision after selection.
+// PromoteOpenAICompactBodySignal is retained for compatibility. It marks an
+// official Codex compaction trigger for telemetry without promoting the request
+// to the legacy /responses/compact endpoint.
 func PromoteOpenAICompactBodySignal(c *gin.Context, body []byte, forceCodexCLI bool) bool {
 	if c == nil || c.Request == nil || !isBareOpenAIResponsesPath(c) || !HasOpenAICompactionTriggerInInput(body) {
 		return false
@@ -47,22 +64,55 @@ func PromoteOpenAICompactBodySignal(c *gin.Context, body []byte, forceCodexCLI b
 	if !forceCodexCLI && !openai.IsCodexOfficialClientByHeadersStrict(c.GetHeader("User-Agent"), c.GetHeader("originator")) {
 		return false
 	}
-	c.Request.URL.Path = strings.TrimRight(c.Request.URL.Path, "/") + "/compact"
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), openAICompactBodySignalContextKey{}, true))
-	if stream := gjson.GetBytes(body, "stream"); stream.Type == gjson.True {
-		c.Set(openAICompactClientStreamKey, true)
-	}
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), openAIRemoteCompactionContextKey{}, true))
 	return true
 }
 
-func isOpenAICompactBodySignalRequest(c *gin.Context) bool {
+func isOpenAIRemoteCompactionRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
-	promoted, _ := c.Request.Context().Value(openAICompactBodySignalContextKey{}).(bool)
-	return promoted
+	marked, _ := c.Request.Context().Value(openAIRemoteCompactionContextKey{}).(bool)
+	return marked
 }
 
+func IsOpenAIRemoteCompactionRequest(c *gin.Context) bool {
+	return isOpenAIRemoteCompactionRequest(c)
+}
+
+// SetOpenAIRemoteCompactionSemanticOutcome annotates only marked V2 requests;
+// ordinary Responses and legacy compact requests retain their existing handling.
+func SetOpenAIRemoteCompactionSemanticOutcome(c *gin.Context, outcome OpenAIRemoteCompactionSemanticOutcome) {
+	if !IsOpenAIRemoteCompactionRequest(c) || (outcome != OpenAIRemoteCompactionSemanticOutcomeSucceeded && outcome != OpenAIRemoteCompactionSemanticOutcomeFailed) {
+		return
+	}
+	c.Set(openAIRemoteCompactionSemanticOutcomeKey, outcome)
+}
+
+func setOpenAIRemoteCompactionNonStreamingOutcome(c *gin.Context, body []byte) {
+	status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "status").String()))
+	switch status {
+	case "failed", "incomplete", "cancelled", "canceled":
+		SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
+	default:
+		SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeSucceeded)
+	}
+}
+
+func GetOpenAIRemoteCompactionSemanticOutcome(c *gin.Context) (OpenAIRemoteCompactionSemanticOutcome, bool) {
+	if c == nil {
+		return "", false
+	}
+	value, ok := c.Get(openAIRemoteCompactionSemanticOutcomeKey)
+	if !ok {
+		return "", false
+	}
+	outcome, ok := value.(OpenAIRemoteCompactionSemanticOutcome)
+	return outcome, ok && (outcome == OpenAIRemoteCompactionSemanticOutcomeSucceeded || outcome == OpenAIRemoteCompactionSemanticOutcomeFailed)
+}
+
+// IsOpenAICompactBodySignalRequest is retained for compatibility; the marker
+// denotes Remote Compaction V2, not legacy compact.
 func IsOpenAICompactBodySignalRequest(c *gin.Context) bool {
-	return isOpenAICompactBodySignalRequest(c)
+	return isOpenAIRemoteCompactionRequest(c)
 }

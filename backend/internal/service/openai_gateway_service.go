@@ -5405,12 +5405,16 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if suppressLine {
 				continue
 			}
-			if eventType == "response.completed" || eventType == "response.done" {
+			if acceptTerminalState && (eventType == "response.completed" || eventType == "response.done") {
+				SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeSucceeded)
 				if normalizedData, normalized := normalizeCompletedImageGenerationStatusForEvent(dataBytes, eventType); normalized {
 					dataBytes = normalizedData
 					trimmedData = strings.TrimSpace(string(normalizedData))
 					line = "data: " + string(normalizedData)
 				}
+			}
+			if acceptTerminalState && openAIResponseStreamTerminalIsFailure(eventType) {
+				SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 			}
 			if acceptTerminalState && eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
@@ -5485,6 +5489,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 	flushPendingOutput()
 	if err := documentScanner.Err(); err != nil {
+		if !sawTerminalEvent {
+			SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
+		}
 		if sawTerminalEvent && !sawFailedEvent {
 			return resultWithUsage(), nil
 		}
@@ -5525,6 +5532,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return resultWithUsage(), streamRequestErr
 		}
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+	}
+	if !sawTerminalEvent {
+		SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
 		logger.FromContext(ctx).With(
@@ -5594,6 +5604,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
+	setOpenAIRemoteCompactionNonStreamingOutcome(c, body)
 	return &openaiNonStreamingResultPassthrough{
 		OpenAIUsage:      usage,
 		usage:            usage,
@@ -5670,6 +5681,9 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
+	}
+	if ok {
+		setOpenAIRemoteCompactionNonStreamingOutcome(c, body)
 	}
 
 	return &openaiNonStreamingResultPassthrough{
@@ -6267,6 +6281,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 	finalizeStream := func() (*openaiStreamingResult, error) {
 		if !sawTerminalEvent {
+			SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 			if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 				return resultWithUsage(), s.newOpenAIStreamFailoverError(
 					c,
@@ -6302,6 +6317,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	handleScanErr := func(scanErr error) (*openaiStreamingResult, error, bool) {
 		if scanErr == nil {
 			return nil, nil, false
+		}
+		if !sawTerminalEvent {
+			SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 		}
 		if sawTerminalEvent && !sawFailedEvent {
 			logger.LegacyPrintf("service.openai_gateway", "Upstream scan ended after terminal event: %v", scanErr)
@@ -6369,6 +6387,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				sawTerminalEvent = true
 			}
 			forceFlushFailedEvent := false
+			if acceptTerminalState && openAIResponseStreamTerminalIsFailure(eventType) {
+				SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
+			}
 			if acceptTerminalState && eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				s.parseSSEUsageBytesForEvent(dataBytes, usage, eventType)
@@ -6420,7 +6441,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = "data: " + data
 				eventType = classifyOpenAIResponseSSEEvent(dataBytes, currentEventType)
 			}
-			if eventType == "response.completed" || eventType == "response.done" {
+			if acceptTerminalState && (eventType == "response.completed" || eventType == "response.done") {
+				SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeSucceeded)
 				if normalizedData, normalized := normalizeCompletedImageGenerationStatusForEvent(dataBytes, eventType); normalized {
 					dataBytes = normalizedData
 					data = string(normalizedData)
@@ -6573,6 +6595,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
+			SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 			if clientDisconnected {
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete after timeout")
 			}
@@ -7024,6 +7047,15 @@ func openAIResponseStreamEventTypeIsTerminal(eventType string) bool {
 	}
 }
 
+func openAIResponseStreamTerminalIsFailure(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+		return true
+	default:
+		return false
+	}
+}
+
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
@@ -7171,6 +7203,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
+	setOpenAIRemoteCompactionNonStreamingOutcome(c, body)
 
 	return &openaiNonStreamingResult{
 		OpenAIUsage:      usage,
@@ -7269,6 +7302,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
+	}
+	if ok {
+		setOpenAIRemoteCompactionNonStreamingOutcome(c, body)
 	}
 
 	return &openaiNonStreamingResult{

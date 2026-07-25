@@ -321,7 +321,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
-	requireCompact := isOpenAIRemoteCompactPath(c)
+	requireCompact := isOpenAILegacyCompactPath(c)
 	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
 	requiredImageCapability := service.OpenAIImagesCapability("")
 	if imageIntent {
@@ -620,7 +620,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 }
 
-func isOpenAIRemoteCompactPath(c *gin.Context) bool {
+func isOpenAILegacyCompactPath(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
 	}
@@ -628,8 +628,43 @@ func isOpenAIRemoteCompactPath(c *gin.Context) bool {
 	return strings.HasSuffix(normalizedPath, "/responses/compact")
 }
 
+// isOpenAIRemoteCompactPath is retained for tests and legacy callers.
+func isOpenAIRemoteCompactPath(c *gin.Context) bool {
+	return isOpenAILegacyCompactPath(c)
+}
+
+type openAIRemoteCompactLogMetadata struct {
+	operation string
+	protocol  string
+	signal    string
+}
+
+func openAIRemoteCompactLogMetadataForRequest(c *gin.Context) (openAIRemoteCompactLogMetadata, bool) {
+	marked := service.IsOpenAIRemoteCompactionRequest(c)
+	// Operation cannot come from the endpoint alone: V2 deliberately stays on /responses.
+	if isOpenAILegacyCompactPath(c) {
+		metadata := openAIRemoteCompactLogMetadata{
+			operation: "remote_compaction_legacy",
+			protocol:  "legacy",
+		}
+		if marked {
+			metadata.signal = "compaction_trigger"
+		}
+		return metadata, true
+	}
+	if marked {
+		return openAIRemoteCompactLogMetadata{
+			operation: "remote_compaction_v2",
+			protocol:  "v2",
+			signal:    "compaction_trigger",
+		}, true
+	}
+	return openAIRemoteCompactLogMetadata{}, false
+}
+
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
-	if !isOpenAIRemoteCompactPath(c) {
+	compactMetadata, ok := openAIRemoteCompactLogMetadataForRequest(c)
+	if !ok {
 		return
 	}
 
@@ -651,7 +686,10 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 	}
 
 	outcome := "failed"
-	if status >= 200 && status < 300 {
+	if semanticOutcome, exists := service.GetOpenAIRemoteCompactionSemanticOutcome(c); exists {
+		outcome = string(semanticOutcome)
+	} else if compactMetadata.protocol == "legacy" && status >= 200 && status < 300 {
+		// V2 requires a completed semantic outcome; only explicit legacy compact falls back to HTTP status.
 		outcome = "succeeded"
 	}
 	latencyMs := time.Since(startedAt).Milliseconds()
@@ -663,10 +701,15 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 		zap.String("component", "handler.openai_gateway.responses"),
 		zap.Bool("remote_compact", true),
 		zap.String("compact_outcome", outcome),
+		zap.String("compact_operation", compactMetadata.operation),
+		zap.String("compact_protocol", compactMetadata.protocol),
 		zap.Int("status_code", status),
 		zap.Int64("latency_ms", latencyMs),
 		zap.String("path", path),
 		zap.Bool("force_codex_cli", h != nil && h.cfg != nil && h.cfg.Gateway.ForceCodexCLI),
+	}
+	if compactMetadata.signal != "" {
+		fields = append(fields, zap.String("compact_signal", compactMetadata.signal))
 	}
 
 	if c != nil {

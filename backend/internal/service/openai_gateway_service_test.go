@@ -197,6 +197,14 @@ type errReadCloser struct {
 func (r errReadCloser) Read([]byte) (int, error) { return 0, r.err }
 func (r errReadCloser) Close() error             { return nil }
 
+func markRemoteCompactionV2Request(t *testing.T, c *gin.Context, ctx context.Context) {
+	t.Helper()
+	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.136.0")
+	require.True(t, PromoteOpenAICompactBodySignal(c, body, false))
+}
+
 type failingGinWriter struct {
 	gin.ResponseWriter
 	failAfter int
@@ -1378,7 +1386,7 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	markRemoteCompactionV2Request(t, c, context.Background())
 
 	pr, pw := io.Pipe()
 	resp := &http.Response{
@@ -1398,6 +1406,9 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "stream_timeout") {
 		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {
@@ -1415,7 +1426,7 @@ func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErr
 	c, _ := gin.CreateTestContext(rec)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	markRemoteCompactionV2Request(t, c, ctx)
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -1430,6 +1441,9 @@ func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErr
 	if strings.Contains(rec.Body.String(), "event: error") || strings.Contains(rec.Body.String(), "stream_read_error") {
 		t.Fatalf("expected no injected SSE error event, got %q", rec.Body.String())
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingReadErrorBeforeOutputReturnsFailover(t *testing.T) {
@@ -1819,6 +1833,102 @@ func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamingRemoteCompactionClientDisconnectThenCompletedSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	markRemoteCompactionV2Request(t, c, context.Background())
+	c.Writer = &failingGinWriter{ResponseWriter: c.Writer, failAfter: 0}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n\n")),
+		Header: http.Header{},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+
+	require.NoError(t, err)
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeSucceeded, outcome)
+}
+
+func TestOpenAIStreamingPassthroughRemoteCompactionClientDisconnectThenCompletedSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	markRemoteCompactionV2Request(t, c, context.Background())
+	c.Writer = &failingGinWriter{ResponseWriter: c.Writer, failAfter: 0}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n\n")),
+		Header: http.Header{},
+	}
+
+	_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
+
+	require.NoError(t, err)
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeSucceeded, outcome)
+}
+
+func TestOpenAIStreamingRemoteCompactionTerminalOutcomes(t *testing.T) {
+	testOpenAIStreamingRemoteCompactionTerminalOutcomes(t, "adapter", func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response) error {
+		_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+		return err
+	})
+}
+
+func TestOpenAIStreamingPassthroughRemoteCompactionTerminalOutcomes(t *testing.T) {
+	testOpenAIStreamingRemoteCompactionTerminalOutcomes(t, "passthrough", func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response) error {
+		_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
+		return err
+	})
+}
+
+func testOpenAIStreamingRemoteCompactionTerminalOutcomes(
+	t *testing.T,
+	implementation string,
+	forward func(*OpenAIGatewayService, *gin.Context, *http.Response) error,
+) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		eventType   string
+		wantOutcome OpenAIRemoteCompactionSemanticOutcome
+	}{
+		{name: "incomplete fails", eventType: "response.incomplete", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "cancelled fails", eventType: "response.cancelled", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "canceled fails", eventType: "response.canceled", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "failed fails", eventType: "response.failed", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "completed succeeds", eventType: "response.completed", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeSucceeded},
+		{name: "done succeeds", eventType: "response.done", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeSucceeded},
+	}
+	for _, tt := range tests {
+		t.Run(implementation+"/"+tt.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			markRemoteCompactionV2Request(t, c, context.Background())
+			payload := fmt.Sprintf("event: %s\ndata: {\"type\":%q,\"response\":{\"id\":\"resp_terminal\"}}\n\n", tt.eventType, tt.eventType)
+			resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: http.Header{}}
+
+			_ = forward(svc, c, resp)
+			outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+			require.True(t, ok)
+			require.Equal(t, tt.wantOutcome, outcome)
+		})
+	}
+}
+
 func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1832,7 +1942,7 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	markRemoteCompactionV2Request(t, c, context.Background())
 
 	pr, pw := io.Pipe()
 	resp := &http.Response{
@@ -1851,6 +1961,9 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "missing terminal event") {
 		t.Fatalf("expected missing terminal event error, got %v", err)
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t *testing.T) {
@@ -1864,7 +1977,7 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	markRemoteCompactionV2Request(t, c, context.Background())
 
 	pr, pw := io.Pipe()
 	resp := &http.Response{
@@ -1883,6 +1996,9 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 	if err == nil || !strings.Contains(err.Error(), "missing terminal event") {
 		t.Fatalf("expected missing terminal event error, got %v", err)
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *testing.T) {
@@ -3087,6 +3203,85 @@ func TestExtractCodexFinalResponse_SampleReplay(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, string(finalResp), `"id":"resp_1"`)
 	require.Contains(t, string(finalResp), `"input_tokens":11`)
+}
+
+func TestOpenAINonStreamingRemoteCompactionRecordsSuccessfulOutcome(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		passthrough bool
+		contentType string
+		body        string
+		want        OpenAIRemoteCompactionSemanticOutcome
+	}{
+		{
+			name:        "adapter JSON",
+			contentType: "application/json",
+			body:        `{"id":"resp_adapter_json","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+		{
+			name:        "adapter JSON incomplete",
+			contentType: "application/json",
+			body:        `{"id":"resp_adapter_incomplete","object":"response","status":"incomplete","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeFailed,
+		},
+		{
+			name:        "adapter SSE converted to JSON",
+			contentType: "text/event-stream",
+			body:        `data: {"type":"response.completed","response":{"id":"resp_adapter_sse","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+		{
+			name:        "passthrough JSON",
+			passthrough: true,
+			contentType: "application/json",
+			body:        `{"id":"resp_passthrough_json","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+		{
+			name:        "passthrough JSON failed",
+			passthrough: true,
+			contentType: "application/json",
+			body:        `{"id":"resp_passthrough_failed","object":"response","status":"failed","error":{"message":"compaction failed"},"output":[],"usage":{"input_tokens":1,"output_tokens":0}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeFailed,
+		},
+		{
+			name:        "passthrough SSE converted to JSON",
+			passthrough: true,
+			contentType: "text/event-stream",
+			body:        `data: {"type":"response.done","response":{"id":"resp_passthrough_sse","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.136.0")
+			require.True(t, PromoteOpenAICompactBodySignal(c, []byte(`{"input":[{"type":"compaction_trigger"}]}`), false))
+
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{tt.contentType}},
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}
+			if tt.passthrough {
+				_, err := svc.handleNonStreamingResponsePassthrough(c.Request.Context(), resp, c, "gpt-5.5", "gpt-5.5")
+				require.NoError(t, err)
+			} else {
+				_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.5", "gpt-5.5")
+				require.NoError(t, err)
+			}
+
+			outcome, exists := GetOpenAIRemoteCompactionSemanticOutcome(c)
+			require.True(t, exists)
+			require.Equal(t, tt.want, outcome)
+		})
+	}
 }
 
 func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {

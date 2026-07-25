@@ -31,13 +31,15 @@ func TestBuildOpenAICompactSSEPayload_PreservesItemsAndSanitizesCodexFields(t *t
 	require.NotContains(t, response, "usage")
 }
 
-func TestOpenAIGatewayService_OAuthBodySignalStreamBridgesUnaryJSONToSSE(t *testing.T) {
+func TestOpenAIGatewayService_OAuthRemoteCompactionKeepsNativeSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.136.0")
-	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_compact","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))}}
+	nativeSSE := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":7,\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_compact\",\"output\":[{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(nativeSSE))}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
 	account := &Account{ID: 79, Name: "oauth-codex", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{"access_token": "oauth-token"}}
 	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`)
@@ -45,9 +47,7 @@ func TestOpenAIGatewayService_OAuthBodySignalStreamBridgesUnaryJSONToSSE(t *test
 	_, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
-	require.Contains(t, rec.Body.String(), "event: response.output_item.done")
-	require.Contains(t, rec.Body.String(), `"encrypted_content":"opaque"`)
-	require.Contains(t, rec.Body.String(), "event: response.completed")
+	require.Equal(t, nativeSSE, rec.Body.String())
 }
 
 func TestOpenAICompactKeepalive_AdjustedSizeIgnoresHeartbeatAndSerializesWrites(t *testing.T) {

@@ -405,6 +405,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	var requestFailure atomic.Pointer[OpenAIUpstreamRequestError]
 	// A follow-up response.create cannot begin admission until the preceding
 	// terminal callback has released that turn's slots. The relay directions run
 	// concurrently, so this handoff also prevents a late AfterTurn from releasing
@@ -582,8 +583,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					turnResult.Usage.OutputTokens,
 					turnResult.Usage.CacheReadInputTokens,
 				)
+				turnErr := error(nil)
+				if turn.TerminalEventType == "response.failed" {
+					if requestErr := newOpenAIUpstreamRequestError(turn.TerminalPayload, turn.RequestID); requestErr != nil {
+						requestErr.observeTerminal(turnResult.Usage, turn.FirstTokenMs != nil)
+						requestFailure.Store(requestErr)
+						turnErr = requestErr
+					}
+				}
 				if hooks != nil && hooks.AfterTurn != nil {
-					hooks.AfterTurn(turnNo, turnResult, nil)
+					hooks.AfterTurn(turnNo, turnResult, turnErr)
 				}
 				if hooks != nil && hooks.BeforeTurn != nil {
 					select {
@@ -591,6 +600,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					case <-ctx.Done():
 					}
 				}
+			},
+			TransformWriteClient: func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error) {
+				if msgType != coderws.MessageText || eventType != "response.failed" {
+					return payload, nil
+				}
+				if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(payload, eventType); changed {
+					return sanitized, nil
+				}
+				return payload, nil
 			},
 			BeforeWriteClient: func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error {
 				if msgType != coderws.MessageText || wroteDownstream {
@@ -654,6 +672,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	turnCount := int(completedTurns.Load())
+	// A trusted terminal request failure owns the turn even if relaying its
+	// terminal frame subsequently failed downstream. Its callback already ran.
+	if requestErr := requestFailure.Load(); requestErr != nil {
+		return requestErr
+	}
 	if relayExit == nil {
 		logOpenAIWSV2Passthrough(
 			"relay_completed account_id=%d request_id=%s terminal_event=%s duration_ms=%d c2u_frames=%d u2c_frames=%d dropped_frames=%d turns=%d",
@@ -669,6 +692,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		// 正常路径按 terminal 事件逐 turn 已回调；仅在零 turn 场景兜底回调一次。
 		if turnCount == 0 && hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(1, result, nil)
+		}
+		if requestErr := requestFailure.Load(); requestErr != nil {
+			return requestErr
 		}
 		return nil
 	}

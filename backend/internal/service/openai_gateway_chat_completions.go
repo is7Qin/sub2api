@@ -479,6 +479,15 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		if len(payload) == 0 {
 			payload, _ = json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		}
+		if requestErr := newOpenAIUpstreamRequestError(payload, requestID); requestErr != nil {
+			requestErr.attachUsage(usage)
+			writeChatCompletionsRequestError(c, false, requestErr)
+			return &OpenAIForwardResult{
+				RequestID: requestID, ResponseID: finalResponse.ID, Usage: usage,
+				Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
+				Stream: false, Duration: time.Since(startTime),
+			}, requestErr
+		}
 		return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, openAICompatFailedResponseMessage(finalResponse))
 	}
 
@@ -553,6 +562,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError
+	var streamRequestErr *OpenAIUpstreamRequestError
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -616,6 +626,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" {
 			payloadBytes := []byte(payload)
+			if requestErr := newOpenAIUpstreamRequestError(payloadBytes, requestID); requestErr != nil {
+				requestErr.observeTerminal(usage, clientOutputStarted)
+				streamRequestErr = requestErr
+				return true
+			}
 			message := extractOpenAISSEErrorMessage(payloadBytes)
 			streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message)
 			return true
@@ -670,6 +685,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	finalizeStream := func() (*OpenAIForwardResult, error) {
+		if streamRequestErr != nil {
+			writeChatCompletionsRequestError(c, true, streamRequestErr)
+			return resultWithUsage(), streamRequestErr
+		}
 		if streamFailoverErr != nil {
 			if c == nil || c.Writer == nil || !c.Writer.Written() {
 				return nil, streamFailoverErr
@@ -922,6 +941,22 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			c.Writer.Flush()
 		}
 	}
+}
+
+func writeChatCompletionsRequestError(c *gin.Context, stream bool, err *OpenAIUpstreamRequestError) {
+	if c == nil || c.Writer == nil || err == nil {
+		return
+	}
+	MarkResponseCommitted(c)
+	if !stream {
+		c.Data(err.StatusCode, "application/json; charset=utf-8", err.ChatErrorBody())
+		return
+	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\ndata: [DONE]\n\n", err.ChatErrorBody())
+	c.Writer.Flush()
 }
 
 // writeChatCompletionsError writes an error response in OpenAI Chat Completions format.

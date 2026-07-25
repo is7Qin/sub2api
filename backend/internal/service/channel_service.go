@@ -100,6 +100,14 @@ type ChannelMappingResult struct {
 	BillingModelSource string // 计费模型来源（"requested" / "upstream" / "channel_mapped"）
 }
 
+// EffectiveModel returns the model used for upstream capability routing.
+func (r ChannelMappingResult) EffectiveModel(requestedModel string) string {
+	if r.Mapped && strings.TrimSpace(r.MappedModel) != "" {
+		return strings.TrimSpace(r.MappedModel)
+	}
+	return requestedModel
+}
+
 // BuildModelMappingChain 根据映射结果和上游实际模型构建映射链描述。
 // reqModel: 客户端请求的原始模型名。
 // upstreamModel: 上游实际使用的模型名（ForwardResult.UpstreamModel）。

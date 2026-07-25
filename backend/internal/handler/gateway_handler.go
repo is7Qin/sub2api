@@ -167,6 +167,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	routingModel := channelMapping.EffectiveModel(reqModel)
 
 	// 设置 max_tokens=1 + haiku 探测请求标识到 context 中
 	// 必须在 SetClaudeCodeClientContext 之前设置，因为 ClaudeCodeValidator 需要读取此标识进行绕过判断
@@ -298,7 +299,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 		for {
 			selection, err, clientGone := selectFailoverAccount(c, func() (*service.AccountSelectionResult, error) {
-				return h.gatewayService.SelectAccountWithLoadAwareness(service.WithPublicModelSupportMiss404(c.Request.Context()), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
+				return h.gatewayService.SelectAccountWithLoadAwareness(service.WithPublicModelSupportMiss404(c.Request.Context()), apiKey.GroupID, sessionKey, routingModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
 			})
 			if clientGone {
 				return
@@ -448,6 +449,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					}
 				},
 			)
+			// Apply the channel model only at this forwarding attempt; attribution retains reqModel.
+			forwardBody := body
+			if channelMapping.Mapped {
+				forwardBody = h.gatewayService.ReplaceModelInBody(body, routingModel)
+			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity && account.Type == service.AccountTypeOAuth {
@@ -455,15 +461,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					requestCtx,
 					c,
 					account,
-					reqModel,
+					routingModel,
 					"generateContent",
 					reqStream,
-					body,
+					forwardBody,
 					hasBoundSession,
 					service.WithForwardGeminiSession(derefGroupID(apiKey.GroupID), sessionKey),
 				)
 			} else {
-				result, err = h.geminiCompatService.Forward(requestCtx, c, account, body)
+				result, err = h.geminiCompatService.Forward(requestCtx, c, account, forwardBody)
 			}
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
@@ -618,7 +624,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
 			selection, err, clientGone := selectFailoverAccount(c, func() (*service.AccountSelectionResult, error) {
-				return h.gatewayService.SelectAccountWithLoadAwareness(service.WithPublicModelSupportMiss404(c.Request.Context()), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+				return h.gatewayService.SelectAccountWithLoadAwareness(service.WithPublicModelSupportMiss404(c.Request.Context()), currentAPIKey.GroupID, sessionKey, routingModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
 			})
 			if clientGone {
 				return

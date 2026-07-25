@@ -46,6 +46,13 @@ func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedM
 	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
 }
 
+func resolveOpenAIMessagesRoutingModel(channelMapping service.ChannelMappingResult, requestedRoutingModel, preferredMappedModel string) string {
+	if preferredMappedModel = strings.TrimSpace(preferredMappedModel); preferredMappedModel != "" {
+		return preferredMappedModel
+	}
+	return channelMapping.EffectiveModel(requestedRoutingModel)
+}
+
 // openAIProxyLogFields identifies the proxy actually available to the transport.
 // ProxyID alone can be stale while the relation is unloaded and the request goes direct.
 func openAIProxyLogFields(account *service.Account) []zap.Field {
@@ -258,7 +265,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, body)
+	// 解析渠道级模型映射
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	routingModel := channelMapping.EffectiveModel(reqModel)
+	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+
+	imageIntent := service.IsImageGenerationIntent("/v1/responses", routingModel, forwardBody)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
@@ -272,10 +284,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		logicalReleases.Add(imageReleaseFunc)
 	}
-
-	// 解析渠道级模型映射
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
-	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
 	if !h.validateFunctionCallOutputRequest(c, body, reqLog) {
@@ -315,8 +323,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	requireCompact := isOpenAIRemoteCompactPath(c)
 	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
-	if service.IsOpenAICompactBodySignalRequest(c) {
-		requiredCapability = service.OpenAIEndpointCapabilityOAuthCompactBodySignal
+	requiredImageCapability := service.OpenAIImagesCapability("")
+	if imageIntent {
+		requiredImageCapability = service.OpenAIImagesCapabilityBasic
 	}
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -326,21 +335,25 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	selectionCtx := service.WithPublicModelSupportMiss404(c.Request.Context())
+	if imageIntent {
+		selectionCtx = service.WithOpenAIImageGenerationIntent(selectionCtx)
+	}
 	for {
 		if failoverClientGone(c) {
 			return
 		}
-		// Select account supporting the requested model
+		// Select account supporting the routed model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilities(
 			selectionCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
-			reqModel,
+			routingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			requiredCapability,
+			requiredImageCapability,
 			requireCompact,
 		)
 		if err != nil {
@@ -447,6 +460,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		forwardFailedAfterOutput := false
+		requestScopedFailure := false
+		requestFailureOutputStarted := false
+		if err != nil {
+			var requestErr *service.OpenAIUpstreamRequestError
+			if errors.As(err, &requestErr) {
+				requestScopedFailure = true
+				requestFailureOutputStarted = requestErr.OutputStarted
+				if !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+					c.Data(requestErr.StatusCode, "application/json; charset=utf-8", requestErr.ChatErrorBody())
+				}
+				err = nil
+			}
+		}
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.forward_partial_error_with_image_result",
@@ -536,12 +562,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 		}
 		if result != nil {
-			if account.Type == service.AccountTypeOAuth {
+			if !requestScopedFailure && account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, !forwardFailedAfterOutput, result.FirstTokenMs, account)
-		} else {
+			if !requestScopedFailure {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, !forwardFailedAfterOutput, result.FirstTokenMs, account)
+			}
+		} else if !requestScopedFailure {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil, account)
+		}
+		if requestScopedFailure && !requestFailureOutputStarted {
+			return
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -556,19 +587,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
-				Account:            account,
-				Subscription:       subscription,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIP,
-				RequestPayloadHash: requestPayloadHash,
-				APIKeyService:      h.apiKeyService,
-				QuotaPlatform:      quotaPlatform,
-				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+				Result:                result,
+				APIKey:                apiKey,
+				User:                  apiKey.User,
+				Account:               account,
+				Subscription:          subscription,
+				InboundEndpoint:       inboundEndpoint,
+				UpstreamEndpoint:      upstreamEndpoint,
+				UserAgent:             userAgent,
+				IPAddress:             clientIP,
+				RequestPayloadHash:    requestPayloadHash,
+				APIKeyService:         h.apiKeyService,
+				QuotaPlatform:         quotaPlatform,
+				PreserveAccountHealth: requestScopedFailure,
+				ChannelUsageFields:    channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
@@ -748,6 +780,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMappingMsg, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	routingModel = resolveOpenAIMessagesRoutingModel(channelMappingMsg, routingModel, preferredMappedModel)
 	mappedBodyForMessages := newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
@@ -910,6 +943,19 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		forwardFailedAfterOutput := false
+		requestScopedFailure := false
+		requestFailureOutputStarted := false
+		if err != nil {
+			var requestErr *service.OpenAIUpstreamRequestError
+			if errors.As(err, &requestErr) {
+				requestScopedFailure = true
+				requestFailureOutputStarted = requestErr.OutputStarted
+				if !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+					h.anthropicErrorResponse(c, requestErr.StatusCode, requestErr.AnthropicErrorType(), requestErr.Message)
+				}
+				err = nil
+			}
+		}
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai_messages.forward_partial_error_with_image_result",
@@ -1018,9 +1064,14 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}
 		}
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, !forwardFailedAfterOutput, result.FirstTokenMs, account)
-		} else {
+			if !requestScopedFailure {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, !forwardFailedAfterOutput, result.FirstTokenMs, account)
+			}
+		} else if !requestScopedFailure {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil, account)
+		}
+		if requestScopedFailure && !requestFailureOutputStarted {
+			return
 		}
 
 		userAgent := c.GetHeader("User-Agent")
@@ -1033,19 +1084,20 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
-				Account:            account,
-				Subscription:       subscription,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIP,
-				RequestPayloadHash: requestPayloadHash,
-				APIKeyService:      h.apiKeyService,
-				QuotaPlatform:      quotaPlatform,
-				ChannelUsageFields: channelMappingMsg.ToUsageFields(reqModel, result.UpstreamModel),
+				Result:                result,
+				APIKey:                apiKey,
+				User:                  apiKey.User,
+				Account:               account,
+				Subscription:          subscription,
+				InboundEndpoint:       inboundEndpoint,
+				UpstreamEndpoint:      upstreamEndpoint,
+				UserAgent:             userAgent,
+				IPAddress:             clientIP,
+				RequestPayloadHash:    requestPayloadHash,
+				APIKeyService:         h.apiKeyService,
+				QuotaPlatform:         quotaPlatform,
+				PreserveAccountHealth: requestScopedFailure,
+				ChannelUsageFields:    channelMappingMsg.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.messages"),
@@ -1474,13 +1526,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	// 解析渠道级模型映射
+	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
+	routingModel := channelMappingWS.EffectiveModel(reqModel)
+	mappedFirstMessage := openAIModelMappedBody(firstMessage, channelMappingWS.Mapped, channelMappingWS.MappedModel, h.gatewayService.ReplaceModelInBody)
+	imageIntent := service.IsImageGenerationIntent("/v1/responses", routingModel, mappedFirstMessage)
+	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
-
-	// 解析渠道级模型映射
-	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
 
 	turnSlots := newOpenAIWSTurnSlots(
 		h.concurrencyHelper,
@@ -1518,18 +1572,25 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
+	selectionCtx := ctx
+	requiredImageCapability := service.OpenAIImagesCapability("")
+	if imageIntent {
+		selectionCtx = service.WithOpenAIImageGenerationIntent(selectionCtx)
+		requiredImageCapability = service.OpenAIImagesCapabilityBasic
+	}
 
 	for {
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			ctx,
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilities(
+			selectionCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
-			reqModel,
+			routingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportResponsesWebsocketV2,
 			service.OpenAIEndpointCapabilityChatCompletions,
+			requiredImageCapability,
 			false,
 		)
 		if err != nil {
@@ -1641,7 +1702,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return
 				}
 				turnSlots.releaseTurn()
-				if turnErr != nil {
+				var requestErr *service.OpenAIUpstreamRequestError
+				if errors.As(turnErr, &requestErr) && !requestErr.OutputStarted {
+					return
+				}
+				if turnErr != nil && requestErr == nil {
 					if result == nil || result.ImageCount <= 0 {
 						return
 					}
@@ -1654,29 +1719,32 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if result == nil {
 					return
 				}
-				if account.Type == service.AccountTypeOAuth {
+				if requestErr == nil && account.Type == service.AccountTypeOAuth {
 					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, account)
+				if requestErr == nil {
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, account)
+				}
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 				setOpsUpstreamEndpoint(c, upstreamEndpoint)
 				quotaPlatform := service.QuotaPlatform(ctx, apiKey)
 				h.submitOpenAIUsageRecordTask(ctx, result, func(taskCtx context.Context) {
 					if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
-						Result:             result,
-						APIKey:             apiKey,
-						User:               apiKey.User,
-						Account:            account,
-						Subscription:       subscription,
-						InboundEndpoint:    inboundEndpoint,
-						UpstreamEndpoint:   upstreamEndpoint,
-						UserAgent:          userAgent,
-						IPAddress:          clientIP,
-						RequestPayloadHash: requestPayloadHash,
-						APIKeyService:      h.apiKeyService,
-						QuotaPlatform:      quotaPlatform,
-						ChannelUsageFields: channelMappingWS.ToUsageFields(reqModel, result.UpstreamModel),
+						Result:                result,
+						APIKey:                apiKey,
+						User:                  apiKey.User,
+						Account:               account,
+						Subscription:          subscription,
+						InboundEndpoint:       inboundEndpoint,
+						UpstreamEndpoint:      upstreamEndpoint,
+						UserAgent:             userAgent,
+						IPAddress:             clientIP,
+						RequestPayloadHash:    requestPayloadHash,
+						APIKeyService:         h.apiKeyService,
+						QuotaPlatform:         quotaPlatform,
+						PreserveAccountHealth: requestErr != nil,
+						ChannelUsageFields:    channelMappingWS.ToUsageFields(reqModel, result.UpstreamModel),
 					}); err != nil {
 						reqLog.Error("openai.websocket_record_usage_failed",
 							zap.Int64("account_id", account.ID),
@@ -1689,15 +1757,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		// 应用渠道模型映射到 WebSocket 首条消息
-		wsFirstMessage := firstMessage
-		if channelMappingWS.Mapped {
-			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
-		}
+		wsFirstMessage := mappedFirstMessage
 
 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
 		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
 
 		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+			var requestErr *service.OpenAIUpstreamRequestError
+			if errors.As(err, &requestErr) {
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)

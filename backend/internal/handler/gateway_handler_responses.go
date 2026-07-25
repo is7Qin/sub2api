@@ -85,12 +85,17 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 	requestCtx := c.Request.Context()
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, body) {
-		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
-	}
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, reqModel)
+	routingModel := channelMapping.EffectiveModel(reqModel)
+	routingBody := body
+	if channelMapping.Mapped {
+		routingBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+	}
+	if service.IsImageGenerationIntent("/v1/responses", routingModel, routingBody) {
+		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+	}
 
 	// Claude Code only restriction:
 	// /v1/responses is never a Claude Code endpoint.
@@ -161,7 +166,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	selectionCtx := service.WithPublicModelSupportMiss404(requestCtx)
 	for {
 		selection, err, clientGone := selectFailoverAccount(c, func() (*service.AccountSelectionResult, error) {
-			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, routingModel, fs.FailedAccountIDs, "", int64(0))
 		})
 		if clientGone {
 			return
@@ -238,10 +243,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 		// 5. Forward request
 		writerSizeBeforeForward := c.Writer.Size()
-		forwardBody := body
-		if channelMapping.Mapped {
-			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
-		}
+		forwardBody := routingBody
 		attemptCtx := withHTTPAttemptReleaseAuthority(
 			requestCtx,
 			logicalReleases,

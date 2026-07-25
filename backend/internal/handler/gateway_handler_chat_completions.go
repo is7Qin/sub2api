@@ -87,6 +87,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	routingModel := channelMapping.EffectiveModel(reqModel)
 
 	// Claude Code only restriction
 	if apiKey.Group != nil && apiKey.Group.ClaudeCodeOnly {
@@ -165,7 +166,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	selectionCtx := service.WithPublicModelSupportMiss404(c.Request.Context())
 	for {
 		selection, err, clientGone := selectFailoverAccount(c, func() (*service.AccountSelectionResult, error) {
-			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, selectionSessionHash, routingModel, fs.FailedAccountIDs, "", int64(0))
 		})
 		if clientGone {
 			return

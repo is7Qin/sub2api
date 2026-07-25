@@ -1114,6 +1114,95 @@ func TestOpenAIGatewayService_Forward_WSv2_ResponseDoneUsageParsed(t *testing.T)
 	require.Equal(t, 4, result.Usage.ImageOutputTokens)
 }
 
+func TestOpenAIGatewayService_Forward_WSv2_ContextFailedRelaysSanitizedTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "unit-test-agent/1.0")
+
+	cfg := newOpenAIWSV2TestConfig()
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	captureConn := &openAIWSCaptureConn{events: [][]byte{[]byte(openAIContextFailedTerminalPayload)}}
+	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     &httpUpstreamRecorder{},
+		cache:            &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+		openaiWSPool:     pool,
+	}
+	account := &Account{
+		ID: 33, Name: "openai-ws-context", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra:       map[string]any{"responses_websockets_v2_enabled": true},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":true,"input":[{"type":"input_text","text":"large"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 37, result.Usage.InputTokens)
+	require.NotNil(t, requestErr.Usage)
+	require.Equal(t, 37, requestErr.Usage.InputTokens)
+	require.Contains(t, rec.Body.String(), `"type":"response.failed"`)
+	require.Contains(t, rec.Body.String(), `"code":"context_length_exceeded"`)
+	require.NotContains(t, rec.Body.String(), "sk-private")
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+}
+
+func TestOpenAIGatewayService_Forward_WSv2_ContextFailedAfterOutputRetainsPartialOutputDisposition(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	cfg := newOpenAIWSV2TestConfig()
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	captureConn := &openAIWSCaptureConn{events: [][]byte{
+		[]byte(`{"type":"response.output_text.delta","response_id":"resp_context_partial","delta":"partial"}`),
+		[]byte(openAIContextFailedTerminalPayload),
+	}}
+	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+
+	svc := &OpenAIGatewayService{
+		cfg: cfg, httpUpstream: &httpUpstreamRecorder{}, cache: &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector(), openaiWSPool: pool,
+	}
+	account := &Account{
+		ID: 34, Name: "openai-ws-context-partial", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra:       map[string]any{"responses_websockets_v2_enabled": true},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":true,"input":[{"type":"input_text","text":"large"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.True(t, requestErr.OutputStarted)
+	require.NotNil(t, requestErr.Usage)
+	require.NotNil(t, result)
+	require.Equal(t, 37, result.Usage.InputTokens)
+	require.Contains(t, rec.Body.String(), `"delta":"partial"`)
+	require.Contains(t, rec.Body.String(), `"code":"context_length_exceeded"`)
+}
+
 func TestOpenAIGatewayService_Forward_WSv1_Unsupported(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

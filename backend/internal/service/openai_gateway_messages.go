@@ -480,6 +480,15 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		if strings.TrimSpace(rawMessage) == "" {
 			rawMessage = "OpenAI messages response failed"
 		}
+		if requestErr := newOpenAIUpstreamRequestError(payload, requestID); requestErr != nil {
+			requestErr.attachUsage(usage)
+			writeAnthropicError(c, requestErr.StatusCode, requestErr.AnthropicErrorType(), requestErr.Message)
+			return &OpenAIForwardResult{
+				RequestID: requestID, ResponseID: finalResponse.ID, Usage: usage,
+				Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
+				Stream: false, Duration: time.Since(startTime),
+			}, requestErr
+		}
 		if openAIStreamFailedEventShouldFailover(payload, rawMessage) {
 			message := boundOpenAIMessagesErrorMessage(rawMessage)
 			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message)
@@ -905,6 +914,17 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			usage = copyOpenAIUsageFromResponsesUsage(failedResponse.Usage)
 		}
 		if eventType == "response.failed" || isBareErrorEvent {
+			if requestErr := newOpenAIUpstreamRequestError(payloadBytes, requestID); requestErr != nil {
+				requestErr.observeTerminal(usage, clientOutputStarted || OpenAICompatAnthropicClientOutputStarted(c))
+				streamErr = requestErr
+				if !clientDisconnected {
+					writeStreamHeaders()
+					if err := writeAnthropicStreamError(c, requestErr.AnthropicErrorType(), requestErr.Message); err != nil {
+						clientDisconnected = true
+					}
+				}
+				return true
+			}
 			rawMessage := extractOpenAIMessagesRawSSEErrorMessage(payloadBytes)
 			if strings.TrimSpace(rawMessage) == "" {
 				rawMessage = "OpenAI messages stream response failed"

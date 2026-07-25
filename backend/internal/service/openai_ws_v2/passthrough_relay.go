@@ -47,6 +47,7 @@ type RelayTurnResult struct {
 	Usage             Usage
 	RequestID         string
 	TerminalEventType string
+	TerminalPayload   []byte
 	Duration          time.Duration
 	FirstTokenMs      *int
 }
@@ -67,6 +68,7 @@ type RelayOptions struct {
 	OnUsageParseFailure             func(eventType string, usageRaw string)
 	OnTurnComplete                  func(turn RelayTurnResult)
 	BeforeWriteClient               func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
+	TransformWriteClient            func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error)
 	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn) (coderws.MessageType, []byte, error)
 	OnTrace                         func(event RelayTraceEvent)
 	Now                             func() time.Time
@@ -103,6 +105,7 @@ type observedUpstreamEvent struct {
 	terminal   bool
 	eventType  string
 	responseID string
+	payload    []byte
 	usage      Usage
 	duration   time.Duration
 	firstToken *int
@@ -228,6 +231,7 @@ func Relay(
 		options.OnUsageParseFailure,
 		options.OnTurnComplete,
 		options.BeforeWriteClient,
+		options.TransformWriteClient,
 		func() {
 			if options.StartClientAfterFirstDownstream {
 				startClientReader()
@@ -424,6 +428,7 @@ func runUpstreamToClient(
 	onUsageParseFailure func(eventType string, usageRaw string),
 	onTurnComplete func(turn RelayTurnResult),
 	beforeWriteClient func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error,
+	transformWriteClient func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error),
 	afterWriteClient func(),
 	dropDownstreamWrites *atomic.Bool,
 	forwardedFrames *atomic.Int64,
@@ -502,6 +507,18 @@ func runUpstreamToClient(
 		}
 		if (msgType == coderws.MessageText && observedEvent.eventType == "response.failed") || msgType == coderws.MessageBinary {
 			payload, _ = sanitizeResponseFailedMessageForClient(payload)
+		}
+		if transformWriteClient != nil {
+			transformed, transformErr := transformWriteClient(msgType, payload, observedEvent.eventType)
+			if transformErr != nil {
+				exitCh <- relayExitSignal{
+					stage:           "upstream_message",
+					err:             transformErr,
+					wroteDownstream: wroteDownstream,
+				}
+				return
+			}
+			payload = transformed
 		}
 		if err := writeClient(msgType, payload); err != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
@@ -658,6 +675,7 @@ func observeUpstreamMessage(
 		return observed
 	}
 	observed.terminal = true
+	observed.payload = append([]byte(nil), message...)
 	state.terminalEventType = eventType
 	if responseID != "" {
 		state.lastResponseID = responseID
@@ -681,22 +699,26 @@ func emitTurnComplete(
 	if onTurnComplete == nil || !observed.terminal {
 		return
 	}
-	responseID := strings.TrimSpace(observed.responseID)
-	if responseID == "" {
+	if observed.eventType != "response.failed" && strings.TrimSpace(observed.responseID) == "" {
 		return
 	}
+	onTurnComplete(relayTurnResult(state, observed))
+}
+
+func relayTurnResult(state *relayState, observed observedUpstreamEvent) RelayTurnResult {
 	requestModel := ""
 	if state != nil {
 		requestModel = state.requestModel
 	}
-	onTurnComplete(RelayTurnResult{
+	return RelayTurnResult{
 		RequestModel:      requestModel,
 		Usage:             observed.usage,
-		RequestID:         responseID,
+		RequestID:         strings.TrimSpace(observed.responseID),
 		TerminalEventType: observed.eventType,
+		TerminalPayload:   append([]byte(nil), observed.payload...),
 		Duration:          observed.duration,
 		FirstTokenMs:      openAIWSRelayCloneIntPtr(observed.firstToken),
-	})
+	}
 }
 
 func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now time.Time) *relayTurnTiming {

@@ -11,6 +11,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestChannelMappingResultEffectiveModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		mapping   ChannelMappingResult
+		requested string
+		want      string
+	}{
+		{name: "unmapped", mapping: ChannelMappingResult{MappedModel: "requested"}, requested: "requested", want: "requested"},
+		{name: "mapped", mapping: ChannelMappingResult{Mapped: true, MappedModel: "wire-model"}, requested: "alias", want: "wire-model"},
+		{name: "empty mapped model falls back", mapping: ChannelMappingResult{Mapped: true}, requested: "alias", want: "alias"},
+		{name: "blank mapped model falls back", mapping: ChannelMappingResult{Mapped: true, MappedModel: "  "}, requested: "alias", want: "alias"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.mapping.EffectiveModel(tt.requested))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mock: ChannelRepository
 // ---------------------------------------------------------------------------

@@ -2455,6 +2455,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	flushedBufferedEventCount := 0
 	firstEventType := ""
 	lastEventType := ""
+	var requestErr *OpenAIUpstreamRequestError
 
 	var flusher http.Flusher
 	if reqStream {
@@ -2589,6 +2590,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if eventType == "" {
 			continue
 		}
+		if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(message, eventType); changed {
+			if usageValue := gjson.GetBytes(message, "response.usage"); usageValue.Exists() && usageValue.IsObject() {
+				if withUsage, err := sjson.SetRawBytes(sanitized, "response.usage", []byte(usageValue.Raw)); err == nil {
+					sanitized = withUsage
+				}
+			}
+			message = sanitized
+			eventType, eventResponseID, responseField = parseOpenAIWSEventEnvelope(message)
+		}
 		eventCount++
 		if firstEventType == "" {
 			firstEventType = eventType
@@ -2637,6 +2647,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		if openAIWSEventShouldParseUsage(eventType) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
+		}
+		if eventType == "response.failed" {
+			requestErr = newOpenAIUpstreamRequestError(message, responseID)
+			if requestErr != nil {
+				requestErr.observeTerminal(*usage, firstTokenMs != nil)
+			}
 		}
 		imageCounter.AddSSEData(message)
 
@@ -2818,7 +2834,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		ResponseHeaders:  lease.HandshakeHeaders(),
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
-	}, nil
+	}, requestErr
 }
 
 func stripCodexSparkImageGenerationToolFromRawPayload(payload []byte, model string, account *Account) ([]byte, bool, error) {
@@ -3601,6 +3617,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 
 			eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
+			if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(upstreamMessage, eventType); changed {
+				if usageValue := gjson.GetBytes(upstreamMessage, "response.usage"); usageValue.Exists() && usageValue.IsObject() {
+					if withUsage, err := sjson.SetRawBytes(sanitized, "response.usage", []byte(usageValue.Raw)); err == nil {
+						sanitized = withUsage
+					}
+				}
+				upstreamMessage = sanitized
+				eventType, eventResponseID, _ = parseOpenAIWSEventEnvelope(upstreamMessage)
+			}
 			if responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}
@@ -3728,6 +3753,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 			}
 			if isTerminalEvent {
+				var requestErr *OpenAIUpstreamRequestError
+				if eventType == "response.failed" {
+					requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+					if requestErr != nil {
+						requestErr.observeTerminal(usage, firstTokenMs != nil)
+					}
+				}
 				// 客户端已断连时，上游连接的 session 状态不可信，标记 broken 避免回池复用。
 				if clientDisconnected {
 					lease.MarkBroken()
@@ -3778,6 +3810,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					result.ImageInputSize = imageInputSize
 					result.ImageOutputSizes = imageCounter.Sizes()
 					result.BillingModel = imageBillingModel
+				}
+				if requestErr != nil {
+					return result, requestErr
 				}
 				return result, nil
 			}
@@ -4279,6 +4314,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize)
 		if relayErr != nil {
+			var requestErr *OpenAIUpstreamRequestError
+			if errors.As(relayErr, &requestErr) {
+				lastTurnClean = true
+				if hooks != nil && hooks.AfterTurn != nil {
+					hooks.AfterTurn(turn, result, requestErr)
+				}
+				return requestErr
+			}
 			lastTurnClean = false
 			if recoverIngressPrevResponseNotFound(relayErr, turn, connID) {
 				continue

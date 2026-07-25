@@ -2074,6 +2074,40 @@ func testStringPtr(v string) *string {
 	return &v
 }
 
+func TestOpenAIHandleStreamingAwareErrorWithCode_EmitsStableClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	(&OpenAIGatewayHandler{}).handleStreamingAwareErrorWithCode(
+		c,
+		http.StatusBadGateway,
+		"upstream_error",
+		service.OpenAIUpstreamHTTP2StreamErrorCode,
+		"Upstream HTTP/2 stream failed",
+		true,
+	)
+
+	body := w.Body.String()
+	require.Contains(t, body, "event: error\n")
+	require.Contains(t, body, `"type":"upstream_error"`)
+	require.Contains(t, body, `"code":"upstream_http2_stream_error"`)
+	require.NotContains(t, body, "stream ID")
+}
+
+func TestEnsureOpenAIStreamReadErrorResponse_IgnoresGenericErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	wrote := (&OpenAIGatewayHandler{}).ensureOpenAIStreamReadErrorResponse(c, errors.New("generic failure"), false)
+
+	require.False(t, wrote)
+	require.Empty(t, w.Body.String())
+}
+
 func TestOpenAIForwardErrorAlreadyCommunicated(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

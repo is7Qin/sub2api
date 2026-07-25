@@ -2043,8 +2043,19 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 	}
 }
 
-// handleStreamingAwareError handles errors that may occur after streaming has started
+// handleStreamingAwareError handles errors that may occur after streaming has started.
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
+	c *gin.Context,
+	status int,
+	errType string,
+	code string,
+	message string,
+	streamStarted bool,
+) {
 	if streamStarted {
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
 		// response.completed/failed/incomplete/cancelled 集合。
@@ -2055,11 +2066,15 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 				return
 			}
 		}
-		// Stream already started, send error as SSE event then close
+		// Stream already started, send error as SSE event then close.
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
 			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
-			errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
+			errorObject := `{"type":` + strconv.Quote(errType)
+			if code != "" {
+				errorObject += `,"code":` + strconv.Quote(code)
+			}
+			errorEvent := "event: error\ndata: " + `{"error":` + errorObject + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
@@ -2068,8 +2083,32 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 		return
 	}
 
-	// Normal case: return JSON response with proper status code
-	h.errorResponse(c, status, errType, message)
+	if code == "" {
+		h.errorResponse(c, status, errType, message)
+		return
+	}
+	c.JSON(status, gin.H{"error": gin.H{
+		"type":    errType,
+		"code":    code,
+		"message": message,
+	}})
+}
+
+func (h *OpenAIGatewayHandler) ensureOpenAIStreamReadErrorResponse(c *gin.Context, err error, streamStarted bool) bool {
+	code, message, ok := service.OpenAIUpstreamStreamReadErrorDetails(err)
+	if !ok || c == nil || c.Writer == nil || service.IsResponseCommitted(c) {
+		return false
+	}
+	if c.Writer.Written() {
+		streamStarted = true
+	}
+	service.SetOpsUpstreamError(c, http.StatusBadGateway, message, code)
+	if streamStarted {
+		h.handleStreamingAwareErrorWithCode(c, http.StatusBadGateway, "upstream_error", code, message, true)
+		return true
+	}
+	h.handleStreamingAwareErrorWithCode(c, http.StatusBadGateway, "upstream_error", code, message, false)
+	return true
 }
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。

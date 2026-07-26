@@ -218,7 +218,19 @@ type usageLogInsertPrepared struct {
 	requestID      string
 	rateMultiplier float64
 	requestType    int16
+	accountID      int64
 	args           []any
+}
+
+func (p usageLogInsertPrepared) validate() error {
+	if p.accountID <= 0 || len(p.args) <= 2 {
+		return service.ErrUsageLogAccountRequired
+	}
+	accountID, ok := p.args[2].(int64)
+	if !ok || accountID != p.accountID || accountID <= 0 {
+		return service.ErrUsageLogAccountRequired
+	}
+	return nil
 }
 
 type usageLogBatchState struct {
@@ -283,8 +295,8 @@ func (r *usageLogRepository) getPerformanceStats(ctx context.Context, userID int
 }
 
 func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) (bool, error) {
-	if log == nil {
-		return false, nil
+	if err := log.ValidateForCreate(); err != nil {
+		return false, err
 	}
 
 	if tx := dbent.TxFromContext(ctx); tx != nil {
@@ -299,8 +311,8 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 }
 
 func (r *usageLogRepository) CreateBestEffort(ctx context.Context, log *service.UsageLog) error {
-	if log == nil {
-		return nil
+	if err := log.ValidateForCreate(); err != nil {
+		return err
 	}
 
 	if tx := dbent.TxFromContext(ctx); tx != nil {
@@ -318,8 +330,12 @@ func (r *usageLogRepository) CreateBestEffort(ctx context.Context, log *service.
 		return err
 	}
 
+	prepared, err := prepareUsageLogInsert(log)
+	if err != nil {
+		return err
+	}
 	req := usageLogBestEffortRequest{
-		prepared: prepareUsageLogInsert(log),
+		prepared: prepared,
 		apiKeyID: log.APIKeyID,
 		resultCh: make(chan error, 1),
 	}
@@ -346,7 +362,10 @@ func (r *usageLogRepository) CreateBestEffort(ctx context.Context, log *service.
 }
 
 func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor, log *service.UsageLog) (bool, error) {
-	prepared := prepareUsageLogInsert(log)
+	prepared, err := prepareUsageLogInsert(log)
+	if err != nil {
+		return false, err
+	}
 	if sqlq == nil {
 		sqlq = r.sql
 	}
@@ -443,9 +462,13 @@ func (r *usageLogRepository) createBatched(ctx context.Context, log *service.Usa
 		return r.createSingle(ctx, r.sql, log)
 	}
 
+	prepared, err := prepareUsageLogInsert(log)
+	if err != nil {
+		return false, err
+	}
 	req := usageLogCreateRequest{
 		log:      log,
-		prepared: prepareUsageLogInsert(log),
+		prepared: prepared,
 		shared:   &usageLogCreateShared{},
 		resultCh: make(chan usageLogCreateResult, 1),
 	}
@@ -724,7 +747,15 @@ func (r *usageLogRepository) flushBestEffortBatch(db *sql.DB, batch []usageLogBe
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	query, args := buildUsageLogBestEffortInsertQuery(preparedList)
+	query, args, err := buildUsageLogBestEffortInsertQuery(preparedList)
+	if err != nil {
+		for _, group := range groupOrder {
+			for _, req := range group.reqs {
+				sendUsageLogBestEffortResult(req.resultCh, err)
+			}
+		}
+		return
+	}
 	if _, err := db.ExecContext(ctx, query, args...); err != nil {
 		logger.LegacyPrintf("repository.usage_log", "best-effort batch insert failed: %v", err)
 		for _, group := range groupOrder {
@@ -774,7 +805,10 @@ func (r *usageLogRepository) batchInsertUsageLogs(db *sql.DB, keys []string, pre
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	query, args := buildUsageLogBatchInsertQuery(keys, preparedByKey)
+	query, args, err := buildUsageLogBatchInsertQuery(keys, preparedByKey)
+	if err != nil {
+		return nil, nil, false, err
+	}
 	var payload []byte
 	if err := db.QueryRowContext(ctx, query, args...).Scan(&payload); err != nil {
 		return nil, nil, true, err
@@ -799,7 +833,12 @@ func (r *usageLogRepository) batchInsertUsageLogs(db *sql.DB, keys []string, pre
 	return insertedMap, stateMap, false, nil
 }
 
-func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usageLogInsertPrepared) (string, []any) {
+func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usageLogInsertPrepared) (string, []any, error) {
+	for _, key := range keys {
+		if err := preparedByKey[key].validate(); err != nil {
+			return "", nil, err
+		}
+	}
 	var query strings.Builder
 	_, _ = query.WriteString(`
 		WITH input (
@@ -1022,10 +1061,15 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 		)
 		FROM resolved
 	`)
-	return query.String(), args
+	return query.String(), args, nil
 }
 
-func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (string, []any) {
+func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (string, []any, error) {
+	for _, prepared := range preparedList {
+		if err := prepared.validate(); err != nil {
+			return "", nil, err
+		}
+	}
 	var query strings.Builder
 	_, _ = query.WriteString(`
 		WITH input (
@@ -1213,10 +1257,13 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`)
 
-	return query.String(), args
+	return query.String(), args, nil
 }
 
 func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared usageLogInsertPrepared) error {
+	if err := prepared.validate(); err != nil {
+		return err
+	}
 	_, err := sqlq.ExecContext(ctx, `
 		INSERT INTO usage_logs (
 			user_id,
@@ -1282,7 +1329,11 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 	return err
 }
 
-func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
+func prepareUsageLogInsert(log *service.UsageLog) (usageLogInsertPrepared, error) {
+	if err := log.ValidateForCreate(); err != nil {
+		return usageLogInsertPrepared{}, err
+	}
+	accountID := *log.AccountID
 	createdAt := log.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()
@@ -1330,10 +1381,11 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 		requestID:      requestID,
 		rateMultiplier: rateMultiplier,
 		requestType:    requestType,
+		accountID:      accountID,
 		args: []any{
 			log.UserID,
 			log.APIKeyID,
-			log.AccountID,
+			accountID,
 			requestIDArg,
 			log.Model,
 			nullString(&requestedModel),
@@ -1382,7 +1434,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			log.AccountStatsCost, // account_stats_cost
 			createdAt,
 		},
-	}
+	}, nil
 }
 
 func usageLogBatchKey(requestID string, apiKeyID int64) string {
@@ -4090,9 +4142,9 @@ func (r *usageLogRepository) hydrateUsageLogAssociations(ctx context.Context, lo
 		if key, ok := apiKeys[logs[i].APIKeyID]; ok {
 			logs[i].APIKey = key
 		}
-		if acc, ok := accounts[logs[i].AccountID]; ok {
-			logs[i].Account = acc
-		}
+	}
+	hydrateUsageLogAccounts(logs, accounts)
+	for i := range logs {
 		if logs[i].GroupID != nil {
 			if group, ok := groups[*logs[i].GroupID]; ok {
 				logs[i].Group = group
@@ -4127,7 +4179,9 @@ func collectUsageLogIDs(logs []service.UsageLog) usageLogIDs {
 	for i := range logs {
 		userIDs[logs[i].UserID] = struct{}{}
 		apiKeyIDs[logs[i].APIKeyID] = struct{}{}
-		accountIDs[logs[i].AccountID] = struct{}{}
+		if logs[i].AccountID != nil && *logs[i].AccountID > 0 {
+			accountIDs[*logs[i].AccountID] = struct{}{}
+		}
 		if logs[i].GroupID != nil {
 			groupIDs[*logs[i].GroupID] = struct{}{}
 		}
@@ -4142,6 +4196,17 @@ func collectUsageLogIDs(logs []service.UsageLog) usageLogIDs {
 		accountIDs:      setToSlice(accountIDs),
 		groupIDs:        setToSlice(groupIDs),
 		subscriptionIDs: setToSlice(subscriptionIDs),
+	}
+}
+
+func hydrateUsageLogAccounts(logs []service.UsageLog, accounts map[int64]*service.Account) {
+	for i := range logs {
+		if logs[i].AccountID == nil || *logs[i].AccountID <= 0 {
+			continue
+		}
+		if account, ok := accounts[*logs[i].AccountID]; ok {
+			logs[i].Account = account
+		}
 	}
 }
 
@@ -4226,7 +4291,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		id                    int64
 		userID                int64
 		apiKeyID              int64
-		accountID             int64
+		accountID             sql.NullInt64
 		requestID             sql.NullString
 		model                 string
 		requestedModel        sql.NullString
@@ -4336,7 +4401,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		ID:                    id,
 		UserID:                userID,
 		APIKeyID:              apiKeyID,
-		AccountID:             accountID,
+		AccountID:             nullInt64Ptr(accountID),
 		Model:                 model,
 		RequestedModel:        coalesceTrimmedString(requestedModel, model),
 		InputTokens:           inputTokens,
@@ -4564,6 +4629,14 @@ func nullInt(v *int) sql.NullInt64 {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: int64(*v), Valid: true}
+}
+
+func nullInt64Ptr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	out := v.Int64
+	return &out
 }
 
 func nullFloat64Ptr(v sql.NullFloat64) *float64 {

@@ -103,7 +103,7 @@ func TestUsageBillingRepositoryApply_PersistsUsageLogAtomically(t *testing.T) {
 	usageLog := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    requestID,
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -152,17 +152,19 @@ func TestUsageBillingRepositoryApply_UsageLogFailureRollsBackBilling(t *testing.
 		Key:    "sk-usage-billing-log-rollback-" + uuid.NewString(),
 		Name:   "billing-log-rollback",
 	})
+	account := mustCreateAccount(t, client, &service.Account{Name: "usage-billing-log-rollback-account-" + uuid.NewString()})
 	requestID := uuid.NewString()
 
 	_, err := repo.Apply(ctx, &service.UsageBillingCommand{
 		RequestID:   requestID,
 		APIKeyID:    apiKey.ID,
 		UserID:      user.ID,
+		AccountID:   account.ID,
 		BalanceCost: 1.25,
 		UsageLog: &service.UsageLog{
 			UserID:    user.ID,
 			APIKeyID:  apiKey.ID,
-			AccountID: -1,
+			AccountID: usageLogAccountIDPointer(-1),
 			RequestID: requestID,
 			Model:     "claude-3",
 		},
@@ -205,13 +207,14 @@ func TestUsageBillingRepositoryApply_DeduplicatesSubscriptionBilling(t *testing.
 		UserID:  user.ID,
 		GroupID: group.ID,
 	})
+	account := mustCreateAccount(t, client, &service.Account{Name: "usage-billing-sub-account-" + uuid.NewString()})
 
 	requestID := uuid.NewString()
 	cmd := &service.UsageBillingCommand{
 		RequestID:        requestID,
 		APIKeyID:         apiKey.ID,
 		UserID:           user.ID,
-		AccountID:        0,
+		AccountID:        account.ID,
 		SubscriptionID:   &subscription.ID,
 		SubscriptionCost: 2.5,
 	}
@@ -244,12 +247,14 @@ func TestUsageBillingRepositoryApply_RequestFingerprintConflict(t *testing.T) {
 		Key:    "sk-usage-billing-conflict-" + uuid.NewString(),
 		Name:   "billing-conflict",
 	})
+	account := mustCreateAccount(t, client, &service.Account{Name: "usage-billing-conflict-account-" + uuid.NewString()})
 
 	requestID := uuid.NewString()
 	_, err := repo.Apply(ctx, &service.UsageBillingCommand{
 		RequestID:   requestID,
 		APIKeyID:    apiKey.ID,
 		UserID:      user.ID,
+		AccountID:   account.ID,
 		BalanceCost: 1.25,
 	})
 	require.NoError(t, err)
@@ -258,6 +263,7 @@ func TestUsageBillingRepositoryApply_RequestFingerprintConflict(t *testing.T) {
 		RequestID:   requestID,
 		APIKeyID:    apiKey.ID,
 		UserID:      user.ID,
+		AccountID:   account.ID,
 		BalanceCost: 2.50,
 	})
 	require.ErrorIs(t, err, service.ErrUsageBillingRequestConflict)
@@ -437,12 +443,14 @@ func TestUsageBillingRepositoryApply_DeduplicatesAgainstArchivedKey(t *testing.T
 		Key:    "sk-usage-billing-archive-" + uuid.NewString(),
 		Name:   "billing-archive",
 	})
+	account := mustCreateAccount(t, client, &service.Account{Name: "usage-billing-archive-account-" + uuid.NewString()})
 
 	requestID := uuid.NewString()
 	cmd := &service.UsageBillingCommand{
 		RequestID:   requestID,
 		APIKeyID:    apiKey.ID,
 		UserID:      user.ID,
+		AccountID:   account.ID,
 		BalanceCost: 1.25,
 	}
 

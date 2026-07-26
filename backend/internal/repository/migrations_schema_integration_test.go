@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
 
@@ -121,6 +122,308 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "user_allowed_groups", "created_at", "timestamp with time zone", 0, false)
 }
 
+func TestMigrationsRunner_UsageLogAccountRelationship(t *testing.T) {
+	tx := testTx(t)
+	content, err := migrations.FS.ReadFile("169_preserve_usage_logs_on_account_delete.sql")
+	require.NoError(t, err)
+	_, err = tx.ExecContext(context.Background(), string(content))
+	require.NoError(t, err)
+
+	requireColumn(t, tx, "usage_logs", "account_id", "bigint", 0, true)
+	requireColumn(t, tx, "usage_logs", "user_id", "bigint", 0, false)
+	requireColumn(t, tx, "usage_logs", "api_key_id", "bigint", 0, false)
+	requireForeignKeyOnDelete(t, tx, "usage_logs", "account_id", "accounts", "SET NULL")
+	requireForeignKeyOnDelete(t, tx, "usage_logs", "user_id", "users", "CASCADE")
+	requireForeignKeyOnDelete(t, tx, "usage_logs", "api_key_id", "api_keys", "CASCADE")
+	requireSingleUsageLogAccountForeignKey(t, tx, "usage_logs_account_id_fkey", true)
+}
+
+func TestMigrationUsageLogAccount_NoncanonicalNameAndRerun(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	content, err := migrations.FS.ReadFile("169_preserve_usage_logs_on_account_delete.sql")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, `
+ALTER TABLE public.usage_logs DROP CONSTRAINT usage_logs_account_id_fkey;
+ALTER TABLE public.usage_logs
+    ADD CONSTRAINT historical_custom_account_fk
+    FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE
+`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "replace noncanonical account FK")
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "migration SQL must be rerunnable")
+
+	requireSingleUsageLogAccountForeignKey(t, tx, "usage_logs_account_id_fkey", true)
+	requireForeignKeyOnDelete(t, tx, "usage_logs", "user_id", "users", "CASCADE")
+	requireForeignKeyOnDelete(t, tx, "usage_logs", "api_key_id", "api_keys", "CASCADE")
+}
+
+func TestMigrationUsageLogAccount_OrdinaryInheritance(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	content, err := migrations.FS.ReadFile("169_preserve_usage_logs_on_account_delete.sql")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, `
+ALTER TABLE public.usage_logs RENAME TO usage_logs_before_inheritance_test;
+CREATE TABLE public.usage_logs (
+    id BIGINT NOT NULL,
+    account_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE public.usage_logs_inheritance_test () INHERITS (public.usage_logs);
+ALTER TABLE public.usage_logs
+    ADD CONSTRAINT root_custom_account_fk
+    FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+ALTER TABLE public.usage_logs_inheritance_test
+    ADD CONSTRAINT child_custom_account_fk
+    FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "apply migration to ordinary INHERITS layout")
+	assertSingleForeignKeyOnDelete(t, tx, "usage_logs", "account_id", "accounts", "usage_logs_account_id_fkey", "SET NULL", true)
+	assertSingleForeignKeyOnDelete(t, tx, "usage_logs_inheritance_test", "account_id", "accounts", "usage_logs_account_id_fkey", "SET NULL", true)
+	assertStandaloneForeignKey(t, tx, "usage_logs_inheritance_test", "usage_logs_account_id_fkey")
+
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "ordinary INHERITS migration must be rerunnable")
+	assertSingleForeignKeyOnDelete(t, tx, "usage_logs", "account_id", "accounts", "usage_logs_account_id_fkey", "SET NULL", true)
+	assertSingleForeignKeyOnDelete(t, tx, "usage_logs_inheritance_test", "account_id", "accounts", "usage_logs_account_id_fkey", "SET NULL", true)
+	assertStandaloneForeignKey(t, tx, "usage_logs_inheritance_test", "usage_logs_account_id_fkey")
+
+	var accountID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `
+INSERT INTO public.accounts (name, platform, type, credentials, extra, concurrency, priority, status, schedulable)
+VALUES ('inheritance-retention', 'anthropic', 'oauth', '{}', '{}', 1, 1, 'active', TRUE)
+RETURNING id
+`).Scan(&accountID))
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO public.usage_logs_inheritance_test (id, account_id, created_at)
+VALUES (1, $1, '2026-07-26')
+`, accountID)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, "DELETE FROM public.accounts WHERE id = $1", accountID)
+	require.NoError(t, err)
+
+	var retainedAccountID sql.NullInt64
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT account_id FROM ONLY public.usage_logs_inheritance_test WHERE id = 1").Scan(&retainedAccountID))
+	require.False(t, retainedAccountID.Valid, "ordinary inherited child row must survive with NULL account_id")
+}
+
+func assertStandaloneForeignKey(t *testing.T, tx *sql.Tx, table, constraint string) {
+	t.Helper()
+
+	var parentOID int64
+	err := tx.QueryRowContext(context.Background(), `
+SELECT c.conparentid
+FROM pg_constraint c
+JOIN pg_class tbl ON tbl.oid = c.conrelid
+JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+WHERE ns.nspname = 'public' AND tbl.relname = $1 AND c.conname = $2
+`, table, constraint).Scan(&parentOID)
+	require.NoError(t, err)
+	require.Zero(t, parentOID, "ordinary inheritance descendants need their own FK, not a partition clone")
+}
+
+func TestMigrationUsageLogAccount_PartitionedLayout(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	content, err := migrations.FS.ReadFile("169_preserve_usage_logs_on_account_delete.sql")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, `
+ALTER TABLE public.usage_logs RENAME TO usage_logs_before_partition_test;
+CREATE TABLE public.usage_logs (
+    id BIGINT NOT NULL,
+    account_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+) PARTITION BY RANGE (created_at);
+CREATE TABLE public.usage_logs_partition_test
+    PARTITION OF public.usage_logs
+    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+ALTER TABLE public.usage_logs
+    ADD CONSTRAINT partition_custom_account_fk
+    FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "apply migration to a partitioned usage_logs parent")
+
+	for _, table := range []string{"usage_logs", "usage_logs_partition_test"} {
+		var nullable string
+		require.NoError(t, tx.QueryRowContext(ctx, `
+SELECT is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'account_id'
+`, table).Scan(&nullable))
+		require.Equal(t, "YES", nullable, "%s.account_id must be nullable", table)
+		requireForeignKeyOnDelete(t, tx, table, "account_id", "accounts", "SET NULL")
+	}
+	requireSingleUsageLogAccountForeignKey(t, tx, "usage_logs_account_id_fkey", true)
+
+	var accountID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `
+INSERT INTO public.accounts (name, platform, type, credentials, extra, concurrency, priority, status, schedulable)
+VALUES ('partition-retention', 'anthropic', 'oauth', '{}', '{}', 1, 1, 'active', TRUE)
+RETURNING id
+`).Scan(&accountID))
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO public.usage_logs (id, account_id, created_at)
+VALUES (1, $1, '2026-07-26')
+`, accountID)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, "DELETE FROM public.accounts WHERE id = $1", accountID)
+	require.NoError(t, err)
+
+	var retainedAccountID sql.NullInt64
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT account_id FROM public.usage_logs WHERE id = 1").Scan(&retainedAccountID))
+	require.False(t, retainedAccountID.Valid, "partition row must survive account deletion with NULL account_id")
+}
+
+func TestMigrationUsageLogAccount_PartitionStandaloneForeignKey(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	content, err := migrations.FS.ReadFile("169_preserve_usage_logs_on_account_delete.sql")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, `
+ALTER TABLE public.usage_logs RENAME TO usage_logs_before_partition_standalone_test;
+CREATE TABLE public.usage_logs (
+    id BIGINT NOT NULL,
+    account_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+) PARTITION BY RANGE (created_at);
+CREATE TABLE public.usage_logs_partition_standalone_test
+    PARTITION OF public.usage_logs
+    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+ALTER TABLE public.usage_logs
+    ADD CONSTRAINT usage_logs_account_id_fkey
+    FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.usage_logs_partition_standalone_test
+    ADD CONSTRAINT legacy_partition_account_fk
+    FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "remove standalone exact account FK from partition")
+	assertPartitionHasOnlyInheritedAccountForeignKey(t, tx, "usage_logs_partition_standalone_test")
+
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err, "partition standalone cleanup must be rerunnable")
+	assertPartitionHasOnlyInheritedAccountForeignKey(t, tx, "usage_logs_partition_standalone_test")
+
+	var accountID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `
+INSERT INTO public.accounts (name, platform, type, credentials, extra, concurrency, priority, status, schedulable)
+VALUES ('partition-standalone-retention', 'anthropic', 'oauth', '{}', '{}', 1, 1, 'active', TRUE)
+RETURNING id
+`).Scan(&accountID))
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO public.usage_logs (id, account_id, created_at)
+VALUES (1, $1, '2026-07-26')
+`, accountID)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, "DELETE FROM public.accounts WHERE id = $1", accountID)
+	require.NoError(t, err)
+
+	var retainedAccountID sql.NullInt64
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT account_id FROM public.usage_logs WHERE id = 1").Scan(&retainedAccountID))
+	require.False(t, retainedAccountID.Valid, "partition row must survive after standalone CASCADE FK cleanup")
+}
+
+func assertPartitionHasOnlyInheritedAccountForeignKey(t *testing.T, tx *sql.Tx, table string) {
+	t.Helper()
+
+	var count, standaloneCount int
+	var names, actions string
+	var validated, inherited bool
+	err := tx.QueryRowContext(context.Background(), `
+SELECT
+    COUNT(*),
+    COUNT(*) FILTER (WHERE c.conparentid = 0),
+    COALESCE(array_to_string(array_agg(c.conname ORDER BY c.conname), ','), ''),
+    COALESCE(array_to_string(array_agg(DISTINCT CASE c.confdeltype
+        WHEN 'a' THEN 'NO ACTION'
+        WHEN 'r' THEN 'RESTRICT'
+        WHEN 'c' THEN 'CASCADE'
+        WHEN 'n' THEN 'SET NULL'
+        WHEN 'd' THEN 'SET DEFAULT'
+    END), ','), ''),
+    COALESCE(BOOL_AND(c.convalidated), FALSE),
+    COALESCE(BOOL_AND(c.conparentid <> 0), FALSE)
+FROM pg_constraint c
+JOIN pg_class tbl ON tbl.oid = c.conrelid
+JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+JOIN pg_class ref_tbl ON ref_tbl.oid = c.confrelid
+JOIN pg_attribute src ON src.attrelid = tbl.oid AND src.attname = 'account_id'
+JOIN pg_attribute ref ON ref.attrelid = ref_tbl.oid AND ref.attname = 'id'
+WHERE ns.nspname = 'public'
+  AND tbl.relname = $1
+  AND c.contype = 'f'
+  AND c.conkey = ARRAY[src.attnum]::smallint[]
+  AND c.confkey = ARRAY[ref.attnum]::smallint[]
+  AND ref_tbl.relname = 'accounts'
+`, table).Scan(&count, &standaloneCount, &names, &actions, &validated, &inherited)
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "expected exactly one inherited account FK; names=%q actions=%q", names, actions)
+	require.Zero(t, standaloneCount, "partition must not retain an exact standalone account FK")
+	require.Equal(t, "usage_logs_account_id_fkey", names)
+	require.Equal(t, "SET NULL", actions)
+	require.True(t, validated)
+	require.True(t, inherited)
+}
+
+func requireSingleUsageLogAccountForeignKey(t *testing.T, tx *sql.Tx, expectedName string, expectedValidated bool) {
+	t.Helper()
+	assertSingleForeignKeyOnDelete(t, tx, "usage_logs", "account_id", "accounts", expectedName, "SET NULL", expectedValidated)
+}
+
+func assertSingleForeignKeyOnDelete(t *testing.T, tx *sql.Tx, table, column, refTable, expectedName, expectedAction string, expectedValidated bool) {
+	t.Helper()
+
+	var name, actions string
+	var validated bool
+	var count int
+	err := tx.QueryRowContext(context.Background(), `
+SELECT
+    COALESCE(MIN(c.conname), ''),
+    COALESCE(array_to_string(array_agg(DISTINCT CASE c.confdeltype
+        WHEN 'a' THEN 'NO ACTION'
+        WHEN 'r' THEN 'RESTRICT'
+        WHEN 'c' THEN 'CASCADE'
+        WHEN 'n' THEN 'SET NULL'
+        WHEN 'd' THEN 'SET DEFAULT'
+    END), ','), ''),
+    COALESCE(BOOL_AND(c.convalidated), FALSE),
+    COUNT(*)
+FROM pg_constraint c
+JOIN pg_class tbl ON tbl.oid = c.conrelid
+JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+JOIN pg_class ref_tbl ON ref_tbl.oid = c.confrelid
+JOIN pg_attribute src ON src.attrelid = tbl.oid AND src.attname = $2
+JOIN pg_attribute ref ON ref.attrelid = ref_tbl.oid AND ref.attname = 'id'
+WHERE ns.nspname = 'public'
+  AND tbl.relname = $1
+  AND c.contype = 'f'
+  AND c.conkey = ARRAY[src.attnum]::smallint[]
+  AND c.confkey = ARRAY[ref.attnum]::smallint[]
+  AND ref_tbl.relname = $3
+`, table, column, refTable).Scan(&name, &actions, &validated, &count)
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "expected exactly one FK for %s.%s -> %s.id; complete actions=%q", table, column, refTable, actions)
+	require.Equal(t, expectedName, name)
+	require.Equal(t, expectedAction, actions)
+	require.Equal(t, expectedValidated, validated)
+}
+
 func TestMigrationsRunner_AuthIdentityAndPaymentSchemaStayAligned(t *testing.T) {
 	tx := testTx(t)
 
@@ -215,29 +518,34 @@ WHERE ns.nspname = 'public'
 func requireForeignKeyOnDelete(t *testing.T, tx *sql.Tx, table, column, refTable, expected string) {
 	t.Helper()
 
-	var actual string
+	var actions string
+	var count int
 	err := tx.QueryRowContext(context.Background(), `
-SELECT CASE c.confdeltype
-	WHEN 'a' THEN 'NO ACTION'
-	WHEN 'r' THEN 'RESTRICT'
-	WHEN 'c' THEN 'CASCADE'
-	WHEN 'n' THEN 'SET NULL'
-	WHEN 'd' THEN 'SET DEFAULT'
-END
+SELECT
+    COALESCE(array_to_string(array_agg(DISTINCT CASE c.confdeltype
+        WHEN 'a' THEN 'NO ACTION'
+        WHEN 'r' THEN 'RESTRICT'
+        WHEN 'c' THEN 'CASCADE'
+        WHEN 'n' THEN 'SET NULL'
+        WHEN 'd' THEN 'SET DEFAULT'
+    END), ','), ''),
+    COUNT(*)
 FROM pg_constraint c
 JOIN pg_class tbl ON tbl.oid = c.conrelid
 JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
 JOIN pg_class ref_tbl ON ref_tbl.oid = c.confrelid
-JOIN pg_attribute attr ON attr.attrelid = tbl.oid AND attr.attnum = ANY(c.conkey)
+JOIN pg_attribute src ON src.attrelid = tbl.oid AND src.attname = $2
+JOIN pg_attribute ref ON ref.attrelid = ref_tbl.oid AND ref.attname = 'id'
 WHERE ns.nspname = 'public'
   AND c.contype = 'f'
   AND tbl.relname = $1
-  AND attr.attname = $2
+  AND c.conkey = ARRAY[src.attnum]::smallint[]
+  AND c.confkey = ARRAY[ref.attnum]::smallint[]
   AND ref_tbl.relname = $3
-LIMIT 1
-`, table, column, refTable).Scan(&actual)
-	require.NoError(t, err, "query foreign key action for %s.%s -> %s", table, column, refTable)
-	require.Equal(t, expected, actual, "unexpected ON DELETE action for %s.%s -> %s", table, column, refTable)
+`, table, column, refTable).Scan(&actions, &count)
+	require.NoError(t, err, "query foreign key actions for %s.%s -> %s", table, column, refTable)
+	require.Equal(t, 1, count, "expected exactly one FK for %s.%s -> %s.id; complete actions=%q", table, column, refTable, actions)
+	require.Equal(t, expected, actions, "unexpected complete ON DELETE action set for %s.%s -> %s", table, column, refTable)
 }
 
 func requireConstraintDefinitionContains(t *testing.T, tx *sql.Tx, table, constraint string, fragments ...string) {

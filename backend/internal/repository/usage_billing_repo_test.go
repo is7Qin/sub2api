@@ -82,6 +82,7 @@ func TestUsageBillingRepositoryApply_GuardedBalanceDeductionSucceeds(t *testing.
 	repo := &usageBillingRepository{db: db}
 	cmd := &service.UsageBillingCommand{
 		RequestID:           "req-sufficient-balance",
+		AccountID:           1,
 		APIKeyID:            10,
 		UserID:              20,
 		BalanceCost:         1.25,
@@ -113,6 +114,7 @@ func TestUsageBillingRepositoryApply_GuardedBalanceMissFallbackRecordsDebt(t *te
 	repo := &usageBillingRepository{db: db}
 	cmd := &service.UsageBillingCommand{
 		RequestID:   "req-overdraft-balance",
+		AccountID:   1,
 		APIKeyID:    10,
 		UserID:      20,
 		BalanceCost: 1.25,
@@ -141,6 +143,7 @@ func TestUsageBillingRepositoryApply_MissingUserRollsBack(t *testing.T) {
 	repo := &usageBillingRepository{db: db}
 	cmd := &service.UsageBillingCommand{
 		RequestID:        "req-missing-user",
+		AccountID:        1,
 		APIKeyID:         10,
 		UserID:           404,
 		SubscriptionID:   ptrInt64(30),
@@ -169,6 +172,7 @@ func TestUsageBillingRepositoryApply_DuplicateRequestIDSkipsEffects(t *testing.T
 	repo := &usageBillingRepository{db: db}
 	cmd := &service.UsageBillingCommand{
 		RequestID:           "req-duplicate",
+		AccountID:           1,
 		APIKeyID:            10,
 		UserID:              20,
 		BalanceCost:         1.25,
@@ -179,7 +183,7 @@ func TestUsageBillingRepositoryApply_DuplicateRequestIDSkipsEffects(t *testing.T
 
 	mock.ExpectBegin()
 	expectUsageBillingClaimDuplicate(mock, cmd)
-	mock.ExpectRollback()
+	mock.ExpectCommit()
 
 	result, err := repo.Apply(context.Background(), cmd)
 	require.NoError(t, err)
@@ -195,6 +199,7 @@ func TestUsageBillingRepositoryApply_FailureAfterDeductionRollsBack(t *testing.T
 	repo := &usageBillingRepository{db: db}
 	cmd := &service.UsageBillingCommand{
 		RequestID:       "req-deduct-then-fail",
+		AccountID:       1,
 		APIKeyID:        10,
 		UserID:          20,
 		BalanceCost:     1.25,

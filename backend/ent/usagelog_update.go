@@ -74,6 +74,12 @@ func (_u *UsageLogUpdate) SetNillableAccountID(v *int64) *UsageLogUpdate {
 	return _u
 }
 
+// ClearAccountID clears the value of the "account_id" field.
+func (_u *UsageLogUpdate) ClearAccountID() *UsageLogUpdate {
+	_u.mutation.ClearAccountID()
+	return _u
+}
+
 // SetRequestID sets the "request_id" field.
 func (_u *UsageLogUpdate) SetRequestID(v string) *UsageLogUpdate {
 	_u.mutation.SetRequestID(v)
@@ -985,9 +991,6 @@ func (_u *UsageLogUpdate) check() error {
 	if _u.mutation.APIKeyCleared() && len(_u.mutation.APIKeyIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UsageLog.api_key"`)
 	}
-	if _u.mutation.AccountCleared() && len(_u.mutation.AccountIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UsageLog.account"`)
-	}
 	return nil
 }
 
@@ -1417,6 +1420,12 @@ func (_u *UsageLogUpdateOne) SetNillableAccountID(v *int64) *UsageLogUpdateOne {
 	if v != nil {
 		_u.SetAccountID(*v)
 	}
+	return _u
+}
+
+// ClearAccountID clears the value of the "account_id" field.
+func (_u *UsageLogUpdateOne) ClearAccountID() *UsageLogUpdateOne {
+	_u.mutation.ClearAccountID()
 	return _u
 }
 
@@ -2343,9 +2352,6 @@ func (_u *UsageLogUpdateOne) check() error {
 	}
 	if _u.mutation.APIKeyCleared() && len(_u.mutation.APIKeyIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UsageLog.api_key"`)
-	}
-	if _u.mutation.AccountCleared() && len(_u.mutation.AccountIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UsageLog.account"`)
 	}
 	return nil
 }

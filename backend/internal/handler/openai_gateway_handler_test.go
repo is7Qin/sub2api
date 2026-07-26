@@ -1869,7 +1869,8 @@ func TestOpenAIMessages_PreOutputPolicyFailureRecordsUsage(t *testing.T) {
 	select {
 	case log := <-usageRepo.created:
 		require.Equal(t, int64(1703), log.UserID)
-		require.Equal(t, int64(9904), log.AccountID)
+		require.NotNil(t, log.AccountID)
+		require.Equal(t, int64(9904), *log.AccountID)
 		require.Equal(t, 5, log.InputTokens)
 		require.Equal(t, 0, log.OutputTokens)
 		require.True(t, log.Stream)
@@ -2126,7 +2127,8 @@ func TestOpenAIResponses_PostOutputResponseFailedRecordsUsage(t *testing.T) {
 	select {
 	case log := <-usageRepo.created:
 		require.Equal(t, int64(1704), log.UserID)
-		require.Equal(t, int64(9905), log.AccountID)
+		require.NotNil(t, log.AccountID)
+		require.Equal(t, int64(9905), *log.AccountID)
 		require.Equal(t, 4, log.InputTokens)
 		require.Equal(t, 0, log.OutputTokens)
 		require.Equal(t, 3, log.CacheReadTokens)

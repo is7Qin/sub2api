@@ -207,6 +207,40 @@ func TestUsageLogFromService_PreservesHistoricalMissingImageSize(t *testing.T) {
 	require.NotContains(t, string(body), `"image_size":"2K"`)
 }
 
+func TestUsageLogFromServiceAccountIDNullableJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		accountID *int64
+		wantJSON  string
+	}{
+		{name: "present", accountID: i64Ptr(123), wantJSON: `"account_id":123`},
+		{name: "missing", accountID: nil, wantJSON: `"account_id":null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &service.UsageLog{
+				ID:        1,
+				UserID:    2,
+				APIKeyID:  3,
+				AccountID: tc.accountID,
+				RequestID: "req-account-id",
+				Model:     "gpt-5",
+			}
+
+			mapped := UsageLogFromService(log)
+			require.Equal(t, tc.accountID, mapped.AccountID)
+			body, err := json.Marshal(mapped)
+			require.NoError(t, err)
+			require.Contains(t, string(body), tc.wantJSON)
+			require.Contains(t, string(body), `"user_id":2`)
+			require.Contains(t, string(body), `"api_key_id":3`)
+		})
+	}
+}
+
+func i64Ptr(value int64) *int64 {
+	return &value
+}
+
 func f64Ptr(value float64) *float64 {
 	return &value
 }

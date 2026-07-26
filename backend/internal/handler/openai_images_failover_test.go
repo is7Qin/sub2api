@@ -567,7 +567,8 @@ func TestOpenAIGatewayHandlerImages_IncompleteFailoverBillsOnlyFinalSuccess(t *t
 	calls, lastLog := usageRepo.snapshot()
 	require.Equal(t, 1, calls)
 	require.NotNil(t, lastLog)
-	require.Equal(t, int64(12), lastLog.AccountID)
+	require.NotNil(t, lastLog.AccountID)
+	require.Equal(t, int64(12), *lastLog.AccountID)
 	require.Equal(t, 1, lastLog.ImageCount)
 	require.Equal(t, "req_img_success", lastLog.RequestID)
 }

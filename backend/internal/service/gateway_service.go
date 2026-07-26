@@ -9142,6 +9142,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 		postUsageBilling(ctx, p, deps)
 		return false, nil
 	}
+	if err := cmd.Validate(); err != nil {
+		return false, err
+	}
 
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
@@ -9809,7 +9812,7 @@ func (s *GatewayService) buildRecordUsageLog(
 	usageLog := &UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
-		AccountID:             account.ID,
+		AccountID:             &account.ID,
 		RequestID:             requestID,
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,

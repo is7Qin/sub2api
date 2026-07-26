@@ -23,6 +23,9 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 	if cmd == nil {
 		return &service.UsageBillingApplyResult{}, nil
 	}
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
 	if r == nil || r.db == nil {
 		return nil, errors.New("usage billing repository db is nil")
 	}
@@ -54,7 +57,11 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 		}
 	}
 	if cmd.UsageLog != nil {
-		if err := execUsageLogInsertNoResult(ctx, tx, prepareUsageLogInsert(cmd.UsageLog)); err != nil {
+		prepared, err := prepareUsageLogInsert(cmd.UsageLog)
+		if err != nil {
+			return nil, err
+		}
+		if err := execUsageLogInsertNoResult(ctx, tx, prepared); err != nil {
 			return nil, err
 		}
 		result.UsageLogPersisted = true

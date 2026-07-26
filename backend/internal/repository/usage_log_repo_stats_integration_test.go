@@ -27,7 +27,7 @@ func TestUsageLog_GetStatsWithFilters_AggregatesAndEndpoints(t *testing.T) {
 	upstreamEndpoint := "/v1/responses"
 	for i := 0; i < 3; i++ {
 		_, err := repo.Create(ctx, &service.UsageLog{
-			UserID: user.ID, APIKeyID: apiKey.ID, AccountID: account.ID,
+			UserID: user.ID, APIKeyID: apiKey.ID, AccountID: usageLogAccountIDPointer(account.ID),
 			Model: "claude-3", InputTokens: 2, OutputTokens: 3,
 			CacheCreationTokens: 4, CacheReadTokens: 5,
 			TotalCost: 0.5, ActualCost: 0.4, CreatedAt: now,

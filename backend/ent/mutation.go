@@ -35061,7 +35061,7 @@ func (m *UsageLogMutation) AccountID() (r int64, exists bool) {
 // OldAccountID returns the old "account_id" field's value of the UsageLog entity.
 // If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
 // An error is returned if the mutation operation is not UpdateOne, or the database query fails.
-func (m *UsageLogMutation) OldAccountID(ctx context.Context) (v int64, err error) {
+func (m *UsageLogMutation) OldAccountID(ctx context.Context) (v *int64, err error) {
 	if !m.op.Is(OpUpdateOne) {
 		return v, errors.New("OldAccountID is only allowed on UpdateOne operations")
 	}
@@ -35075,9 +35075,22 @@ func (m *UsageLogMutation) OldAccountID(ctx context.Context) (v int64, err error
 	return oldValue.AccountID, nil
 }
 
+// ClearAccountID clears the value of the "account_id" field.
+func (m *UsageLogMutation) ClearAccountID() {
+	m.account = nil
+	m.clearedFields[usagelog.FieldAccountID] = struct{}{}
+}
+
+// AccountIDCleared returns if the "account_id" field was cleared in this mutation.
+func (m *UsageLogMutation) AccountIDCleared() bool {
+	_, ok := m.clearedFields[usagelog.FieldAccountID]
+	return ok
+}
+
 // ResetAccountID resets all changes to the "account_id" field.
 func (m *UsageLogMutation) ResetAccountID() {
 	m.account = nil
+	delete(m.clearedFields, usagelog.FieldAccountID)
 }
 
 // SetRequestID sets the "request_id" field.
@@ -37128,7 +37141,7 @@ func (m *UsageLogMutation) ClearAccount() {
 
 // AccountCleared reports if the "account" edge to the Account entity was cleared.
 func (m *UsageLogMutation) AccountCleared() bool {
-	return m.clearedaccount
+	return m.AccountIDCleared() || m.clearedaccount
 }
 
 // AccountIDs returns the "account" edge IDs in the mutation.
@@ -38097,6 +38110,9 @@ func (m *UsageLogMutation) AddField(name string, value ent.Value) error {
 // mutation.
 func (m *UsageLogMutation) ClearedFields() []string {
 	var fields []string
+	if m.FieldCleared(usagelog.FieldAccountID) {
+		fields = append(fields, usagelog.FieldAccountID)
+	}
 	if m.FieldCleared(usagelog.FieldRequestedModel) {
 		fields = append(fields, usagelog.FieldRequestedModel)
 	}
@@ -38165,6 +38181,9 @@ func (m *UsageLogMutation) FieldCleared(name string) bool {
 // error if the field is not defined in the schema.
 func (m *UsageLogMutation) ClearField(name string) error {
 	switch name {
+	case usagelog.FieldAccountID:
+		m.ClearAccountID()
+		return nil
 	case usagelog.FieldRequestedModel:
 		m.ClearRequestedModel()
 		return nil

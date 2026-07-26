@@ -54,6 +54,22 @@ func (c *UsageBillingCommand) Normalize() {
 	}
 }
 
+func (c *UsageBillingCommand) Validate() error {
+	if c == nil || c.AccountID <= 0 {
+		return ErrUsageLogAccountRequired
+	}
+	if c.UsageLog == nil {
+		return nil
+	}
+	if err := c.UsageLog.ValidateForCreate(); err != nil {
+		return err
+	}
+	if *c.UsageLog.AccountID != c.AccountID {
+		return ErrUsageLogAccountRequired
+	}
+	return nil
+}
+
 func buildUsageBillingFingerprint(c *UsageBillingCommand) string {
 	if c == nil {
 		return ""

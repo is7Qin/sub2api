@@ -976,6 +976,9 @@ func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID strin
 
 func (s *BackupService) loadRawS3Config(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
+	if errors.Is(err, ErrSettingNotFound) {
+		return nil, nil //nolint:nilnil // missing setting means S3 has not been configured yet
+	}
 	if err != nil {
 		return nil, err
 	}

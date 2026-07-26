@@ -21,8 +21,9 @@ import (
 // ─── Mocks ───
 
 type mockSettingRepo struct {
-	mu   sync.Mutex
-	data map[string]string
+	mu          sync.Mutex
+	data        map[string]string
+	getValueErr error
 }
 
 func newMockSettingRepo() *mockSettingRepo {
@@ -42,9 +43,12 @@ func (m *mockSettingRepo) Get(_ context.Context, key string) (*Setting, error) {
 func (m *mockSettingRepo) GetValue(_ context.Context, key string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.getValueErr != nil {
+		return "", m.getValueErr
+	}
 	v, ok := m.data[key]
 	if !ok {
-		return "", nil
+		return "", ErrSettingNotFound
 	}
 	return v, nil
 }
@@ -240,6 +244,25 @@ func seedS3Config(t *testing.T, repo *mockSettingRepo) {
 }
 
 // ─── Tests ───
+
+func TestBackupService_GetS3Config_MissingSettingReturnsEmptyConfig(t *testing.T) {
+	repo := newMockSettingRepo()
+	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
+
+	cfg, err := svc.GetS3Config(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, &BackupS3Config{}, cfg)
+}
+
+func TestBackupService_GetS3Config_RepositoryErrorIsReturned(t *testing.T) {
+	repo := newMockSettingRepo()
+	repo.getValueErr = context.DeadlineExceeded
+	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
+
+	cfg, err := svc.GetS3Config(context.Background())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Nil(t, cfg)
+}
 
 func TestBackupService_S3ConfigEncryption(t *testing.T) {
 	repo := newMockSettingRepo()

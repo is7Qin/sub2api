@@ -11,7 +11,7 @@ import (
 // enables Anthropic platform groups to accept OpenAI Responses API requests
 // by converting them to the native /v1/messages format before forwarding upstream.
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
-	system, messages, err := convertResponsesInputToAnthropic(req.Input)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +100,17 @@ func mapResponsesEffortToAnthropic(effort string) string {
 // convertResponsesInputToAnthropic extracts system prompt and messages from
 // a Responses API input array. Returns the system as raw JSON (for Anthropic's
 // polymorphic system field) and a list of Anthropic messages.
-func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage, []AnthropicMessage, error) {
+func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage) (json.RawMessage, []AnthropicMessage, error) {
+	var directives []string
+	if strings.TrimSpace(instructions) != "" {
+		directives = append(directives, instructions)
+	}
+
 	// Try as plain string input.
 	var inputStr string
 	if err := json.Unmarshal(inputRaw, &inputStr); err == nil {
 		content, _ := json.Marshal(inputStr)
-		return nil, []AnthropicMessage{{Role: "user", Content: content}}, nil
+		return marshalAnthropicSystemDirectives(directives), []AnthropicMessage{{Role: "user", Content: content}}, nil
 	}
 
 	var items []ResponsesInputItem
@@ -113,16 +118,14 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 		return nil, nil, fmt.Errorf("parse responses input: %w", err)
 	}
 
-	var system json.RawMessage
 	var messages []AnthropicMessage
 
 	for itemIndex, item := range items {
 		switch {
-		case item.Role == "system":
-			// System prompt → Anthropic system field
+		case item.Role == "system" || item.Role == "developer":
 			text := extractTextFromContent(item.Content)
-			if text != "" {
-				system, _ = json.Marshal(text)
+			if strings.TrimSpace(text) != "" {
+				directives = append(directives, text)
 			}
 
 		case item.Type == "function_call":
@@ -201,7 +204,19 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 	messages = normalizeAnthropicToolPairing(messages)
 	messages = mergeConsecutiveMessages(messages)
 
-	return system, messages, nil
+	return marshalAnthropicSystemDirectives(directives), messages, nil
+}
+
+func marshalAnthropicSystemDirectives(directives []string) json.RawMessage {
+	if len(directives) == 0 {
+		return nil
+	}
+	blocks := make([]AnthropicContentBlock, 0, len(directives))
+	for _, directive := range directives {
+		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: directive})
+	}
+	raw, _ := json.Marshal(blocks)
+	return raw
 }
 
 // functionCallArgumentsObject validates the Responses string field before it

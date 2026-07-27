@@ -1357,6 +1357,165 @@ func ensureClaudeOAuthMetadataUserID(body []byte, userID string) ([]byte, bool) 
 	return setJSONRawBytes(body, "metadata", raw)
 }
 
+func normalizeOpenAIFunctionToolChoiceForAnthropic(body []byte) ([]byte, bool) {
+	choice := gjson.GetBytes(body, "tool_choice")
+	choiceType := choice.Get("type")
+	if !choice.IsObject() || choiceType.Type != gjson.String || choiceType.String() != "function" {
+		return body, false
+	}
+	flat := choice.Get("name")
+	function := choice.Get("function")
+	nested := choice.Get("function.name")
+	if (flat.Exists() && flat.Type != gjson.String) ||
+		(function.Exists() && !function.IsObject()) ||
+		(nested.Exists() && nested.Type != gjson.String) {
+		return body, false
+	}
+	flatName := ""
+	nestedName := ""
+	if flat.Type == gjson.String {
+		flatName = flat.String()
+	}
+	if nested.Type == gjson.String {
+		nestedName = nested.String()
+	}
+	if flatName != "" && nestedName != "" && flatName != nestedName {
+		return body, false
+	}
+	name := flatName
+	if name == "" {
+		name = nestedName
+	}
+	if name == "" {
+		return body, false
+	}
+
+	out, err := sjson.SetBytes(body, "tool_choice.type", "tool")
+	if err != nil {
+		return body, false
+	}
+	out, err = sjson.SetBytes(out, "tool_choice.name", name)
+	if err != nil {
+		return body, false
+	}
+	out, err = sjson.DeleteBytes(out, "tool_choice.function")
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
+func anthropicSystemContentBlocks(system gjson.Result) [][]byte {
+	if system.Type == gjson.String {
+		block, err := marshalAnthropicSystemTextBlock(system.String(), false)
+		if err == nil {
+			return [][]byte{block}
+		}
+		return nil
+	}
+	if !system.IsArray() {
+		return nil
+	}
+	blocks := make([][]byte, 0, len(system.Array()))
+	system.ForEach(func(_, block gjson.Result) bool {
+		blocks = append(blocks, []byte(block.Raw))
+		return true
+	})
+	return blocks
+}
+
+func anthropicMessageContentBlocks(content gjson.Result) ([][]byte, bool) {
+	if content.Type == gjson.String {
+		block, err := marshalAnthropicSystemTextBlock(content.String(), false)
+		if err != nil {
+			return nil, false
+		}
+		return [][]byte{block}, true
+	}
+	if !content.IsArray() {
+		return nil, false
+	}
+	blocks := make([][]byte, 0, len(content.Array()))
+	content.ForEach(func(_, block gjson.Result) bool {
+		blocks = append(blocks, []byte(block.Raw))
+		return true
+	})
+	return blocks, true
+}
+
+func liftInitialAnthropicSystemMessages(body []byte) ([]byte, bool) {
+	if !gjson.ValidBytes(body) {
+		return body, false
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body, false
+	}
+
+	blocks := anthropicSystemContentBlocks(gjson.GetBytes(body, "system"))
+	var deleteIndices []int
+	index := 0
+	messages.ForEach(func(_, message gjson.Result) bool {
+		role := message.Get("role")
+		if role.Type != gjson.String || role.String() != "system" {
+			return false
+		}
+		if message.Get("output_config").Exists() {
+			index++
+			return true
+		}
+		contentBlocks, ok := anthropicMessageContentBlocks(message.Get("content"))
+		if ok && len(contentBlocks) > 0 {
+			blocks = append(blocks, contentBlocks...)
+			deleteIndices = append(deleteIndices, index)
+		}
+		index++
+		return true
+	})
+	if len(deleteIndices) == 0 {
+		return body, false
+	}
+
+	original := body
+	out := body
+	if len(blocks) > 0 {
+		var ok bool
+		out, ok = setJSONRawBytes(out, "system", buildJSONArrayRaw(blocks))
+		if !ok {
+			return original, false
+		}
+	}
+	for i := len(deleteIndices) - 1; i >= 0; i-- {
+		next, err := sjson.DeleteBytes(out, fmt.Sprintf("messages.%d", deleteIndices[i]))
+		if err != nil {
+			return original, false
+		}
+		out = next
+	}
+	return out, true
+}
+
+func normalizeNativeAnthropicOAuthRequestBody(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	out := body
+	if next, changed := normalizeOpenAIFunctionToolChoiceForAnthropic(out); changed {
+		out = next
+	}
+	if next, changed := liftInitialAnthropicSystemMessages(out); changed {
+		out = next
+	}
+	return out
+}
+
+func normalizeNativeAnthropicRequestForAccount(account *Account, body []byte) []byte {
+	if account == nil || account.Platform != PlatformAnthropic || !account.IsOAuth() {
+		return body
+	}
+	return normalizeNativeAnthropicOAuthRequestBody(body)
+}
+
 func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAuthNormalizeOptions) ([]byte, string) {
 	if len(body) == 0 {
 		return body, modelID
@@ -1548,6 +1707,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	}
 
 	body, _ = normalizeClaudeOAuthRequestBody(body, model, normalizeOpts)
+	body = normalizeNativeAnthropicRequestForAccount(account, body)
 
 	// Phase D+E+F: messages cache 策略 + 工具名混淆 + tools[-1] 断点
 	// 对齐 Parrot transform_request 里剩余的字段级改写。顺序有语义约束：
@@ -4816,6 +4976,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// 对于非 Claude Code 的第三方客户端（opencode 等），仍然走完整 mimicry。
 	isClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
+	if !shouldMimicClaudeCode {
+		if err := replaceBody(normalizeNativeAnthropicRequestForAccount(account, body)); err != nil {
+			return nil, err
+		}
+	}
 
 	if shouldMimicClaudeCode {
 		// 与 Parrot 对齐：OAuth 账号无条件重写 system（即使客户端已发了 Claude Code
@@ -4852,6 +5017,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		var normalizedBody []byte
 		normalizedBody, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+		normalizedBody = normalizeNativeAnthropicRequestForAccount(account, normalizedBody)
 		if err := replaceBody(normalizedBody); err != nil {
 			return nil, err
 		}

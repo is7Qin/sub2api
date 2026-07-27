@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-critical test-admin-cli test-datamanagementd secret-scan
+.PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical test-admin-cli test-compose test-docker-deploy test-deploy-references test-install-contract secret-scan
 
 FRONTEND_CRITICAL_VITEST := \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
@@ -21,10 +21,6 @@ build-backend:
 build-frontend:
 	@pnpm --dir frontend run build
 
-# 编译 datamanagementd（宿主机数据管理进程）
-build-datamanagementd:
-	@cd datamanagement && go build -o datamanagementd ./cmd/datamanagementd
-
 # 运行测试（后端 + 前端 + admin CLI）
 test: test-backend test-frontend test-admin-cli
 
@@ -44,8 +40,20 @@ test-admin-cli:
 	@node --check skills/sub2api-admin/scripts/sub2api-admin.js
 	@node --test skills/sub2api-admin/sub2api-admin.auth.test.js
 
-test-datamanagementd:
-	@cd datamanagement && go test ./...
+test-compose:
+	@$(MAKE) test-deploy-references
+	@sh deploy/test-compose-config.sh
+	@$(MAKE) test-docker-deploy
+	@$(MAKE) test-install-contract
+
+test-docker-deploy:
+	@sh deploy/test-docker-deploy.sh
+
+test-deploy-references:
+	@sh deploy/test-deploy-references.sh
+
+test-install-contract:
+	@bash deploy/test-install-contract.sh
 
 secret-scan:
 	@python3 tools/secret_scan.py

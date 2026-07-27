@@ -1,171 +1,199 @@
-#!/bin/bash
-# =============================================================================
-# Sub2API Docker Deployment Preparation Script
-# =============================================================================
-# This script prepares deployment files for Sub2API:
-#   - Downloads docker-compose.local.yml and .env.example
-#   - Generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
-#   - Creates necessary data directories
-#
-# After running this script, you can start services with:
-#   docker-compose up -d
-# =============================================================================
+#!/bin/sh
+# Prepare a new canonical Sub2API Docker Compose deployment.
+set -eu
+# Caller-enabled xtrace can disclose command-substitution results. Disable it
+# before validating tools or generating secrets, and never restore it.
+set +x
+umask 077
 
-set -e
+DEFAULT_DESTINATION=sub2api-deploy
+DEFAULT_REF=main
+DESTINATION=${SUB2API_DEPLOY_DIR:-$DEFAULT_DESTINATION}
+REF=${SUB2API_REF:-$DEFAULT_REF}
+RAW_BASE_URL=${SUB2API_RAW_BASE_URL:-https://raw.githubusercontent.com/is7Qin/sub2api}
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+usage() {
+  cat <<'EOF'
+Usage: docker-deploy.sh [--destination DIR] [--ref GIT_REF]
 
-# GitHub raw content base URL
-GITHUB_RAW_URL="https://raw.githubusercontent.com/is7Qin/sub2api/main/deploy"
+Prepare a new deployment directory with compose.yaml, .env.example, and a
+secret-bearing .env. For no-clobber publication with rollback, the destination
+must not already exist, including as a symlink.
 
-# Print colored message
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+Options:
+  --destination DIR  Target directory (default: sub2api-deploy)
+  --ref GIT_REF      Repository branch or release tag (default: main)
+  -h, --help         Show this help
+
+Environment equivalents:
+  SUB2API_DEPLOY_DIR, SUB2API_REF, SUB2API_RAW_BASE_URL
+EOF
 }
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+fail() {
+  printf 'ERROR: %s\n' "$1" >&2
+  exit 1
 }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --destination)
+      [ "$#" -ge 2 ] || fail "--destination requires a directory"
+      DESTINATION=$2
+      shift 2
+      ;;
+    --destination=*) DESTINATION=${1#*=}; shift ;;
+    --ref)
+      [ "$#" -ge 2 ] || fail "--ref requires a repository ref"
+      REF=$2
+      shift 2
+      ;;
+    --ref=*) REF=${1#*=}; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$DESTINATION" ] || fail "destination must not be empty"
+[ -n "$REF" ] || fail "repository ref must not be empty"
+
+command -v openssl >/dev/null 2>&1 || fail "openssl is required"
+command -v awk >/dev/null 2>&1 || fail "awk is required"
+command -v docker >/dev/null 2>&1 || fail "Docker with the Compose v2 plugin is required"
+if ! docker compose version >/dev/null 2>&1; then
+  fail "Docker Compose v2 is required; install the docker compose plugin first"
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  download() {
+    curl --fail --silent --show-error --location "$1" --output "$2"
+  }
+elif command -v wget >/dev/null 2>&1; then
+  download() {
+    wget --quiet "$1" --output-document="$2"
+  }
+else
+  fail "curl or wget is required"
+fi
+
+PARENT=${DESTINATION%/*}
+NAME=${DESTINATION##*/}
+if [ "$PARENT" = "$DESTINATION" ]; then
+  PARENT=.
+fi
+[ -n "$NAME" ] && [ "$NAME" != . ] && [ "$NAME" != .. ] || fail "destination must name a new directory"
+[ -d "$PARENT" ] || fail "destination parent does not exist or is not a directory: $PARENT"
+# Resolve the selected parent physically once. The resulting path is the trust
+# boundary for staging, publication, and cleanup; caller symlink retargets no
+# longer redirect those operations.
+PARENT=$(CDPATH= cd -- "$PARENT" && pwd -P)
+DESTINATION="$PARENT/$NAME"
+[ ! -e "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || fail "destination already exists; choose a new path: $DESTINATION"
+
+STAGING=
+DESTINATION_CREATED=false
+cleanup() {
+  if [ "$DESTINATION_CREATED" = true ] && [ -n "$STAGING" ] && \
+     [ -e "$STAGING/.bootstrap-owner" ] && [ -e "$DESTINATION/.bootstrap-owner" ] && \
+     [ "$STAGING/.bootstrap-owner" -ef "$DESTINATION/.bootstrap-owner" ]; then
+    # Remove only links to files from our private staging directory. A foreign
+    # collision is never unlinked, and its presence makes the final rmdir fail.
+    for name in compose.yaml .env.example .env; do
+      if [ -e "$DESTINATION/$name" ] && [ "$STAGING/$name" -ef "$DESTINATION/$name" ]; then
+        rm -f -- "$DESTINATION/$name"
+      fi
+    done
+    rm -f -- "$DESTINATION/.bootstrap-owner"
+    rmdir -- "$DESTINATION" 2>/dev/null || true
+  fi
+  [ -z "$STAGING" ] || rm -rf -- "$STAGING"
 }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+# Stage beside the final path so portable hard-link publication stays on one
+# filesystem and never needs an overwrite-capable copy or move.
+STAGING=$(mktemp -d "$PARENT/.${NAME}.bootstrap.XXXXXX")
+SOURCE_BASE="${RAW_BASE_URL%/}/${REF}/deploy"
 
-# Generate random secret
-generate_secret() {
-    openssl rand -hex 32
-}
+download "$SOURCE_BASE/compose.yaml" "$STAGING/compose.yaml"
+download "$SOURCE_BASE/.env.example" "$STAGING/.env.example"
+[ -s "$STAGING/compose.yaml" ] || fail "downloaded compose.yaml is empty"
+[ -s "$STAGING/.env.example" ] || fail "downloaded .env.example is empty"
 
-# Check if command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
+SECRETS="$STAGING/.generated-secrets"
+: >"$SECRETS"
+for secret_name in DATABASE_PASSWORD JWT_SECRET TOTP_ENCRYPTION_KEY; do
+  # Builtin output adds only non-secret syntax; OpenSSL writes generated bytes
+  # straight to the private file, so no inherited export attribute can leak them.
+  printf '%s=' "$secret_name" >>"$SECRETS"
+  openssl rand -hex 32 >>"$SECRETS" || fail "openssl failed to generate $secret_name"
+done
 
-# Main installation function
-main() {
-    echo ""
-    echo "=========================================="
-    echo "  Sub2API Deployment Preparation"
-    echo "=========================================="
-    echo ""
+# The transformer reads keys and secret bytes from private files. Its argv and
+# environment contain no generated values. It validates generated bytes and
+# pairwise uniqueness, preserves every template byte except exactly three
+# values, and rejects missing or duplicate active assignments.
+awk '
+  BEGIN {
+    expected["DATABASE_PASSWORD"] = 1
+    expected["JWT_SECRET"] = 1
+    expected["TOTP_ENCRYPTION_KEY"] = 1
+  }
+  NR == FNR {
+    separator = index($0, "=")
+    key = substr($0, 1, separator - 1)
+    value = substr($0, separator + 1)
+    if (!(key in expected) || key in secret || value in used_value || length(value) != 64 || value ~ /[^0-9a-f]/) exit 2
+    secret[key] = value
+    used_value[value] = 1
+    next
+  }
+  {
+    line = $0
+    for (key in secret) {
+      prefix = key "="
+      if (index(line, prefix) == 1) {
+        count[key]++
+        line = prefix secret[key]
+        break
+      }
+    }
+    print line
+  }
+  END {
+    for (key in expected) {
+      if (!(key in secret) || count[key] != 1) exit 2
+    }
+  }
+' "$SECRETS" "$STAGING/.env.example" >"$STAGING/.env" || fail "generated secrets must be valid and distinct, and .env.example must contain each generated key exactly once"
+rm -f -- "$SECRETS"
+chmod 600 "$STAGING/.env" 2>/dev/null || true
 
-    # Check if openssl is available
-    if ! command_exists openssl; then
-        print_error "openssl is not installed. Please install openssl first."
-        exit 1
-    fi
+# mkdir is the atomic no-clobber claim for the final name. There is no prior
+# ownership assumption: cleanup acts only after this exact mkdir succeeds.
+mkdir -- "$DESTINATION" || fail "could not claim destination; it may have appeared"
+DESTINATION_CREATED=true
+: >"$STAGING/.bootstrap-owner"
+ln "$STAGING/.bootstrap-owner" "$DESTINATION/.bootstrap-owner" || fail "could not establish destination ownership"
 
-    # Check if deployment already exists
-    if [ -f "docker-compose.yml" ] && [ -f ".env" ]; then
-        print_warning "Deployment files already exist in current directory."
-        read -p "Overwrite existing files? (y/N): " -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Cancelled."
-            exit 0
-        fi
-    fi
+# POSIX link(2) fails when a destination entry already exists, including a
+# dangling symlink. Recheck the ownership inode before and after every link so a
+# renamed/replaced destination path is rejected rather than populated.
+for name in compose.yaml .env.example .env; do
+  [ "$STAGING/.bootstrap-owner" -ef "$DESTINATION/.bootstrap-owner" ] || fail "destination was replaced during publication"
+  ln "$STAGING/$name" "$DESTINATION/$name" || fail "publication collision for $name"
+  [ "$STAGING/.bootstrap-owner" -ef "$DESTINATION/.bootstrap-owner" ] || fail "destination was replaced during publication"
+done
+chmod 600 "$DESTINATION/.env" 2>/dev/null || true
+[ "$STAGING/.bootstrap-owner" -ef "$DESTINATION/.bootstrap-owner" ] || fail "destination was replaced during publication"
+rm -f -- "$DESTINATION/.bootstrap-owner"
+DESTINATION_CREATED=false
+rm -rf -- "$STAGING"
+STAGING=
+trap - EXIT HUP INT TERM
 
-    # Download docker-compose.local.yml and save as docker-compose.yml
-    print_info "Downloading docker-compose.yml..."
-    if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o docker-compose.yml
-    elif command_exists wget; then
-        wget -q "${GITHUB_RAW_URL}/docker-compose.local.yml" -O docker-compose.yml
-    else
-        print_error "Neither curl nor wget is installed. Please install one of them."
-        exit 1
-    fi
-    print_success "Downloaded docker-compose.yml"
-
-    # Download .env.example
-    print_info "Downloading .env.example..."
-    if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/.env.example" -o .env.example
-    else
-        wget -q "${GITHUB_RAW_URL}/.env.example" -O .env.example
-    fi
-    print_success "Downloaded .env.example"
-
-    # Generate .env file with auto-generated secrets
-    print_info "Generating secure secrets..."
-    echo ""
-
-    # Generate secrets
-    JWT_SECRET=$(generate_secret)
-    TOTP_ENCRYPTION_KEY=$(generate_secret)
-    POSTGRES_PASSWORD=$(generate_secret)
-
-    # Create .env from .env.example
-    cp .env.example .env
-
-    # Update .env with generated secrets (cross-platform compatible)
-    if sed --version >/dev/null 2>&1; then
-        # GNU sed (Linux)
-        sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" .env
-        sed -i "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}/" .env
-        sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" .env
-    else
-        # BSD sed (macOS)
-        sed -i '' "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" .env
-        sed -i '' "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}/" .env
-        sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PASSWORD}/" .env
-    fi
-
-    # Create data directories
-    print_info "Creating data directories..."
-    mkdir -p data postgres_data redis_data
-    print_success "Created data directories"
-
-    # Set secure permissions for .env file (readable/writable only by owner)
-    chmod 600 .env
-    echo ""
-
-    # Display completion message
-    echo "=========================================="
-    echo "  Preparation Complete!"
-    echo "=========================================="
-    echo ""
-    echo "Generated secure credentials:"
-    echo "  POSTGRES_PASSWORD:     ${POSTGRES_PASSWORD}"
-    echo "  JWT_SECRET:            ${JWT_SECRET}"
-    echo "  TOTP_ENCRYPTION_KEY:   ${TOTP_ENCRYPTION_KEY}"
-    echo ""
-    print_warning "These credentials have been saved to .env file."
-    print_warning "Please keep them secure and do not share publicly!"
-    echo ""
-    echo "Directory structure:"
-    echo "  docker-compose.yml        - Docker Compose configuration"
-    echo "  .env                      - Environment variables (generated secrets)"
-    echo "  .env.example              - Example template (for reference)"
-    echo "  data/                     - Application data (will be created on first run)"
-    echo "  postgres_data/            - PostgreSQL data"
-    echo "  redis_data/               - Redis data"
-    echo ""
-    echo "Next steps:"
-    echo "  1. (Optional) Edit .env to customize configuration"
-    echo "  2. Start services:"
-    echo "     docker-compose up -d"
-    echo ""
-    echo "  3. View logs:"
-    echo "     docker-compose logs -f sub2api"
-    echo ""
-    echo "  4. Access Web UI:"
-    echo "     http://localhost:8080"
-    echo ""
-    print_info "If admin password is not set in .env, it will be auto-generated."
-    print_info "Check logs for the generated admin password on first startup."
-    echo ""
-}
-
-# Run main function
-main "$@"
+printf '\nPrepared a new Sub2API deployment in:\n  %s\n\n' "$DESTINATION"
+printf 'Generated DATABASE_PASSWORD, JWT_SECRET, and TOTP_ENCRYPTION_KEY in .env.\n'
+printf 'The secret values were not printed. Keep .env private and review other settings.\n\n'
+printf 'Start the deployment with:\n  cd "%s"\n  docker compose up -d\n' "$DESTINATION"

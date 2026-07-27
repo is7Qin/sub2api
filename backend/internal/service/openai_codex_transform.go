@@ -209,6 +209,15 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		}
 	}
 
+	// Normalize ordinary messages before former system messages are converted to
+	// developer, so retained non-lossless system content remains unchanged.
+	if input, ok := reqBody["input"].([]any); ok {
+		if normalizedInput, modified := normalizeCodexMessageContentText(input); modified {
+			reqBody["input"] = normalizedInput
+			result.Modified = true
+		}
+	}
+
 	// Codex OAuth does not accept role:"system". JSON object mode requires its
 	// guidance in input; other requests retain the established instructions form.
 	if extractSystemMessagesFromInput(reqBody, isJSONObjMode(reqBody)) {
@@ -230,10 +239,6 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	// 续链场景保留 item_reference 与 id，避免 call_id 上下文丢失。
 	if input, ok := reqBody["input"].([]any); ok {
 		if normalizedInput, modified := normalizeCodexToolRoleMessages(input); modified {
-			input = normalizedInput
-			result.Modified = true
-		}
-		if normalizedInput, modified := normalizeCodexMessageContentText(input); modified {
 			input = normalizedInput
 			result.Modified = true
 		}
@@ -384,7 +389,10 @@ func normalizeCodexToolRoleMessages(input []any) ([]any, bool) {
 			}
 			fallback["role"] = "user"
 			delete(fallback, "tool_call_id")
-			normalized = append(normalized, fallback)
+			// Only the no-ID fallback becomes an ordinary message; normalize it here
+			// without touching valid-ID tool content or retained developer messages.
+			normalizedFallback, _ := normalizeCodexMessageContentText([]any{fallback})
+			normalized = append(normalized, normalizedFallback[0])
 			modified = true
 			continue
 		}
@@ -424,6 +432,12 @@ func normalizeCodexMessageContentText(input []any) ([]any, bool) {
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok || strings.TrimSpace(firstNonEmptyString(m["type"])) != "message" {
+			normalized = append(normalized, item)
+			continue
+		}
+		// Exact system content must be classified before coercion, while tool content
+		// follows the tool-role converter's established trimmed-role recognition.
+		if isExactCodexSystemRole(m) || strings.TrimSpace(firstNonEmptyString(m["role"])) == "tool" {
 			normalized = append(normalized, item)
 			continue
 		}
@@ -1100,9 +1114,15 @@ func extractTextFromContent(content any) string {
 	}
 }
 
+func isExactCodexSystemRole(message map[string]any) bool {
+	role, ok := message["role"].(string)
+	return ok && role == "system"
+}
+
 // extractSystemMessagesFromInput removes OAuth-unsupported system roles. JSON
 // object mode keeps them in place as developer messages because upstream
-// validates JSON guidance in input. Other modes move their text to instructions.
+// validates JSON guidance in input. Other modes move only losslessly text-only
+// content to instructions and keep all other content intact as developer input.
 func extractSystemMessagesFromInput(reqBody map[string]any, preserveInInput bool) bool {
 	input, ok := reqBody["input"].([]any)
 	if !ok || len(input) == 0 {
@@ -1112,23 +1132,28 @@ func extractSystemMessagesFromInput(reqBody map[string]any, preserveInInput bool
 	var systemTexts []string
 	remaining := make([]any, 0, len(input))
 	modified := false
+	promotionBlocked := preserveInInput
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
 			remaining = append(remaining, item)
 			continue
 		}
-		if role, _ := m["role"].(string); role != "system" {
+		if !isExactCodexSystemRole(m) {
 			remaining = append(remaining, item)
 			continue
 		}
 		modified = true
-		if preserveInInput {
+		text, lossless := extractLosslessTextFromContent(m["content"])
+		// Promotion is a leading prefix only: once a system message must remain in
+		// input, retaining all later system messages preserves their effective order.
+		if promotionBlocked || !lossless {
+			promotionBlocked = true
 			m["role"] = "developer"
 			remaining = append(remaining, item)
 			continue
 		}
-		if text := extractTextFromContent(m["content"]); text != "" {
+		if text != "" {
 			systemTexts = append(systemTexts, text)
 		}
 	}
@@ -1147,6 +1172,33 @@ func extractSystemMessagesFromInput(reqBody map[string]any, preserveInInput bool
 		}
 	}
 	return true
+}
+
+func extractLosslessTextFromContent(content any) (string, bool) {
+	switch v := content.(type) {
+	case string:
+		return v, true
+	case []any:
+		var text strings.Builder
+		for _, part := range v {
+			m, ok := part.(map[string]any)
+			if !ok || len(m) != 2 {
+				return "", false
+			}
+			typeName, ok := m["type"].(string)
+			if !ok || (typeName != "text" && typeName != "input_text" && typeName != "output_text") {
+				return "", false
+			}
+			partText, ok := m["text"].(string)
+			if !ok {
+				return "", false
+			}
+			text.WriteString(partText)
+		}
+		return text.String(), true
+	default:
+		return "", false
+	}
 }
 
 func isJSONObjMode(reqBody map[string]any) bool {

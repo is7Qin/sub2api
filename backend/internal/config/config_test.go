@@ -16,6 +16,9 @@ import (
 func resetViperWithJWTSecret(t *testing.T) {
 	t.Helper()
 	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
 }
 
@@ -114,7 +117,6 @@ func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {
 
 func TestLoadExplicitEmptyForwardedClientIPHeadersFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
-	viper.Set("security.forwarded_client_ip_headers", []string{"X-Yaml-IP"})
 	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", "")
 
 	cfg, err := Load()
@@ -124,7 +126,7 @@ func TestLoadExplicitEmptyForwardedClientIPHeadersFromEnvironment(t *testing.T) 
 
 func TestLoadRejectsInvalidForwardedClientIPHeader(t *testing.T) {
 	resetViperWithJWTSecret(t)
-	viper.Set("security.forwarded_client_ip_headers", []string{"X Invalid"})
+	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", "X Invalid")
 
 	_, err := Load()
 	require.ErrorContains(t, err, "security.forwarded_client_ip_headers")
@@ -141,9 +143,11 @@ func TestValidateRejectsInvalidForwardedClientIPHeader(t *testing.T) {
 }
 
 func TestLoadTrustedProxiesPresenceAndEnvironmentLists(t *testing.T) {
-	t.Run("explicit empty via viper", func(t *testing.T) {
+	t.Run("explicit empty via yaml", func(t *testing.T) {
 		resetViperWithJWTSecret(t)
-		viper.Set("server.trusted_proxies", []string{})
+		configFile := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(configFile, []byte("server:\n  trusted_proxies: []\n"), 0o600))
+		t.Setenv("CONFIG_FILE", configFile)
 		cfg, err := Load()
 		require.NoError(t, err)
 		require.Empty(t, cfg.Server.TrustedProxies)
@@ -191,8 +195,110 @@ func TestLoadTrustedProxiesPresenceFromYAML(t *testing.T) {
 	}
 }
 
+func TestLoadUsesExplicitConfigFileAndEnvironmentOverridesFields(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configFile := filepath.Join(t.TempDir(), "nonstandard-name.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.10\n  port: 8181\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	t.Setenv("SERVER_HOST", "192.0.2.11")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.11", cfg.Server.Host)
+	require.Equal(t, 8181, cfg.Server.Port)
+}
+
+func TestConfigFileTakesPrecedenceOverDataDir(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("server:\n  host: 192.0.2.20\n"), 0o600))
+	configFile := filepath.Join(t.TempDir(), "explicit.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.30\n"), 0o600))
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("CONFIG_FILE", configFile)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.30", cfg.Server.Host)
+}
+
+func TestLoadReturnsErrorForMissingConfigFile(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing.yaml"))
+
+	_, err := Load()
+	require.ErrorContains(t, err, "read config error")
+}
+
+func TestBlankConfigFileFallsBackToSearchPaths(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("server:\n  host: 192.0.2.35\n"), 0o600))
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("CONFIG_FILE", "  \t ")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.35", cfg.Server.Host)
+}
+
+func TestRepeatedLoadDoesNotReusePreviousExplicitConfigFile(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	explicitFile := filepath.Join(t.TempDir(), "first.yaml")
+	require.NoError(t, os.WriteFile(explicitFile, []byte("server:\n  host: 192.0.2.50\n"), 0o600))
+	t.Setenv("CONFIG_FILE", explicitFile)
+
+	first, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.50", first.Server.Host)
+
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("server:\n  host: 192.0.2.51\n"), 0o600))
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", dataDir)
+
+	second, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.51", second.Server.Host)
+}
+
+func TestRepeatedLoadSwitchesExplicitConfigFiles(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	firstFile := filepath.Join(t.TempDir(), "first.yaml")
+	secondFile := filepath.Join(t.TempDir(), "second.yaml")
+	require.NoError(t, os.WriteFile(firstFile, []byte("server:\n  port: 8181\n"), 0o600))
+	require.NoError(t, os.WriteFile(secondFile, []byte("server:\n  port: 8282\n"), 0o600))
+
+	t.Setenv("CONFIG_FILE", firstFile)
+	first, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 8181, first.Server.Port)
+
+	t.Setenv("CONFIG_FILE", secondFile)
+	second, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 8282, second.Server.Port)
+}
+
+func TestLoadForBootstrapUsesExplicitConfigFile(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("JWT_SECRET", "")
+	configFile := filepath.Join(t.TempDir(), "bootstrap.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  port: 8282\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	t.Setenv("DATA_DIR", "")
+
+	cfg, err := LoadForBootstrap()
+	require.NoError(t, err)
+	require.Equal(t, 8282, cfg.Server.Port)
+}
+
 func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
 	t.Setenv("JWT_SECRET", "")
 
 	cfg, err := LoadForBootstrap()
@@ -978,6 +1084,8 @@ func TestNormalizeStringSlice(t *testing.T) {
 }
 
 func TestGetServerAddressFromEnv(t *testing.T) {
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
 	t.Setenv("SERVER_HOST", "127.0.0.1")
 	t.Setenv("SERVER_PORT", "9090")
 
@@ -985,6 +1093,36 @@ func TestGetServerAddressFromEnv(t *testing.T) {
 	if address != "127.0.0.1:9090" {
 		t.Fatalf("GetServerAddress() = %q", address)
 	}
+}
+
+func TestLoadUsesRelativeExplicitConfigFile(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	workingDir := t.TempDir()
+	configFile := filepath.Join(workingDir, "relative.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  port: 9393\n"), 0o600))
+	oldWorkingDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workingDir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldWorkingDir)) })
+	t.Setenv("CONFIG_FILE", "relative.yaml")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 9393, cfg.Server.Port)
+}
+
+func TestGetServerAddressUsesExplicitConfigFileAndEnvOverride(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "setup.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.40\n  port: 9191\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	t.Setenv("DATA_DIR", "")
+	t.Setenv("SERVER_HOST", "")
+	t.Setenv("SERVER_PORT", "")
+
+	require.Equal(t, "192.0.2.40:9191", GetServerAddress())
+
+	t.Setenv("SERVER_PORT", "9292")
+	require.Equal(t, "192.0.2.40:9292", GetServerAddress())
 }
 
 func TestValidateAbsoluteHTTPURL(t *testing.T) {

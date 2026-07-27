@@ -5575,7 +5575,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	usage := &OpenAIUsage{}
 	usageParsed := false
 	if len(body) > 0 {
-		if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+		if parsedUsage, ok := extractOpenAIResponsesUsageFromJSONBytes(body); ok {
 			*usage = parsedUsage
 			usageParsed = true
 		}
@@ -5624,7 +5624,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 
 	usage := &OpenAIUsage{}
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if parsedUsage, parsed := extractOpenAIResponsesUsageFromJSONBytes(finalResponse); parsed {
 			*usage = parsedUsage
 		}
 		// When the terminal event has an empty output array, reconstruct
@@ -6990,7 +6990,7 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesForEvent(data []byte, usage *Op
 		return
 	}
 
-	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+	if parsedUsage, ok := extractOpenAIResponsesUsageFromJSONBytes(data); ok {
 		*usage = parsedUsage
 	}
 }
@@ -7064,6 +7064,46 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		return usage, true
 	}
 	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"))
+}
+
+func extractOpenAIResponsesUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+	usage, ok := extractOpenAIUsageFromJSONBytes(body)
+	if !ok {
+		return OpenAIUsage{}, false
+	}
+	imageGen := gjson.GetBytes(body, "tool_usage.image_gen")
+	if !gjson.GetBytes(body, "usage").IsObject() {
+		imageGen = gjson.GetBytes(body, "response.tool_usage.image_gen")
+	}
+	mergeHostedImageGenerationUsage(imageGen, &usage)
+	return usage, true
+}
+
+func mergeHostedImageGenerationUsage(imageGen gjson.Result, usage *OpenAIUsage) {
+	if usage == nil || !imageGen.Exists() || !imageGen.IsObject() {
+		return
+	}
+	if usage.ImageInputTokens == 0 {
+		if tokens, ok := positiveJSONInt(imageGen.Get("input_tokens_details.image_tokens")); ok {
+			usage.ImageInputTokens = tokens
+		}
+	}
+	if usage.ImageOutputTokens == 0 {
+		if tokens, ok := positiveJSONInt(imageGen.Get("output_tokens_details.image_tokens")); ok {
+			usage.ImageOutputTokens = tokens
+		}
+	}
+}
+
+func positiveJSONInt(value gjson.Result) (int, bool) {
+	if !value.Exists() || value.Type != gjson.Number {
+		return 0, false
+	}
+	tokens, err := strconv.ParseUint(value.Raw, 10, strconv.IntSize)
+	if err != nil || tokens == 0 {
+		return 0, false
+	}
+	return int(tokens), true
 }
 
 func extractOpenAIResponseIDFromJSONBytes(body []byte) string {
@@ -7176,7 +7216,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
 	}
 
-	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
+	usageValue, usageOK := extractOpenAIResponsesUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
 			return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
@@ -7244,7 +7284,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 
 	usage := &OpenAIUsage{}
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if parsedUsage, parsed := extractOpenAIResponsesUsageFromJSONBytes(finalResponse); parsed {
 			*usage = parsedUsage
 		}
 		// When the terminal event has an empty output array, reconstruct

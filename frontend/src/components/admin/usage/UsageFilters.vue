@@ -208,6 +208,7 @@ const userKeyword = ref('')
 const userResults = ref<SimpleUser[]>([])
 const showUserDropdown = ref(false)
 let userSearchTimeout: ReturnType<typeof setTimeout> | null = null
+let userSearchRevision = 0
 
 const apiKeyKeyword = ref('')
 const apiKeyResults = ref<SimpleApiKey[]>([])
@@ -252,6 +253,7 @@ const billingModeOptions = ref<SelectOption[]>([
 const emitChange = () => emit('change')
 
 const debounceUserSearch = () => {
+  userSearchRevision += 1
   if (userSearchTimeout) clearTimeout(userSearchTimeout)
   userSearchTimeout = setTimeout(async () => {
     if (!userKeyword.value) {
@@ -434,6 +436,16 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  userSearchRevision += 1
   document.removeEventListener('click', onDocumentClick)
 })
+
+const setUserKeyword = (keyword: string) => {
+  userKeyword.value = keyword
+  showUserDropdown.value = false
+}
+
+const getUserSearchRevision = () => userSearchRevision
+
+defineExpose({ getUserSearchRevision, setUserKeyword })
 </script>

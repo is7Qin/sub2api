@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import UsageView from '../UsageView.vue'
 
-const { list, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs } = vi.hoisted(() => {
+const { list, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery } = vi.hoisted(() => {
   vi.stubGlobal('localStorage', {
     getItem: vi.fn(() => null),
     setItem: vi.fn(),
@@ -17,6 +19,7 @@ const { list, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs } =
     getById: vi.fn(),
     getModelStats: vi.fn(),
     listErrorLogs: vi.fn(),
+    routeQuery: {} as Record<string, string>,
   }
 })
 
@@ -83,14 +86,31 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-vi.mock('vue-router', () => ({
-  useRoute: () => ({
-    query: {}
-  })
-}))
+vi.mock('vue-router', async () => {
+  const { reactive } = await vi.importActual<typeof import('vue')>('vue')
+  const query = reactive(routeQuery)
+  return {
+    useRoute: () => ({ query })
+  }
+})
+
+enableAutoUnmount(afterEach)
 
 const AppLayoutStub = { template: '<div><slot /></div>' }
-const UsageFiltersStub = { template: '<div><slot name="after-reset" /></div>' }
+const UsageFiltersStub = defineComponent({
+  setup(_, { expose }) {
+    const userKeyword = ref('')
+    let userSearchRevision = 0
+    const setUserKeyword = (keyword: string) => { userKeyword.value = keyword }
+    expose({
+      getUserSearchRevision: () => userSearchRevision,
+      setUserKeyword,
+      simulateUserInput: (keyword: string) => { userSearchRevision += 1; setUserKeyword(keyword) },
+    })
+    return { userKeyword }
+  },
+  template: '<div><span data-test="user-filter-label">{{ userKeyword }}</span><slot name="after-reset" /></div>',
+})
 const UsageTableStub = {
   emits: ['userClick'],
   template: '<div data-test="usage-table"><button class="user-click" @click="$emit(\'userClick\', 2)">user</button></div>',
@@ -115,6 +135,88 @@ const GroupDistributionChartStub = {
     </div>
   `,
 }
+
+const mountRouteFilteredUsageView = () => mount(UsageView, {
+  global: { stubs: {
+    AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
+    UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: true,
+    UserBalanceHistoryModal: true, AuditLogModal: true, Pagination: true, Select: true,
+    DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+    ModelDistributionChart: true, GroupDistributionChart: true, EndpointDistributionChart: true,
+  } },
+})
+
+describe('admin UsageView route user label', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
+    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    getStats.mockReset().mockResolvedValue({ total_requests: 0, total_input_tokens: 0, total_output_tokens: 0, total_cache_tokens: 0, total_tokens: 0, total_cost: 0, total_actual_cost: 0, average_duration_ms: 0 })
+    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], models: [], groups: [] })
+    getModelStats.mockReset().mockResolvedValue({ models: [] })
+    getById.mockReset()
+  })
+
+  afterEach(() => {
+    Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
+    vi.useRealTimers()
+  })
+
+  it('loads active or deleted routed user labels while applying the filter immediately', async () => {
+    routeQuery.user_id = '42'
+    getById.mockResolvedValue({ id: 42, email: 'deleted-user@test.com', deleted: true })
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    expect(getById).toHaveBeenCalledWith(42, true)
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ user_id: 42 }), expect.anything())
+    expect(wrapper.find('[data-test="user-filter-label"]').text()).toBe('deleted-user@test.com')
+  })
+
+  it('keeps numeric ID on lookup failure', async () => {
+    routeQuery.user_id = '42'
+    getById.mockRejectedValue(new Error('missing'))
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    expect(wrapper.find('[data-test="user-filter-label"]').text()).toBe('42')
+    expect((wrapper.vm as any).filters.user_id).toBe(42)
+  })
+
+  it('does not overwrite newer manual input', async () => {
+    routeQuery.user_id = '42'
+    let resolveLookup!: (value: { id: number; email: string }) => void
+    getById.mockReturnValue(new Promise((resolve) => { resolveLookup = resolve }))
+    const wrapper = mountRouteFilteredUsageView()
+    await wrapper.vm.$nextTick()
+    ;(wrapper.findComponent(UsageFiltersStub).vm as any).simulateUserInput('new-search@test.com')
+    resolveLookup({ id: 42, email: 'stale@test.com' })
+    await flushPromises()
+    expect(wrapper.find('[data-test="user-filter-label"]').text()).toBe('new-search@test.com')
+  })
+
+  it('reacts to route user changes and discards the older lookup', async () => {
+    routeQuery.user_id = '42'
+    let resolveFirst!: (value: { id: number; email: string }) => void
+    getById.mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
+    getById.mockResolvedValueOnce({ id: 84, email: 'new-route@test.com' })
+    const wrapper = mountRouteFilteredUsageView()
+    await wrapper.vm.$nextTick()
+
+    ;(useRoute().query as Record<string, string>).user_id = '84'
+    await flushPromises()
+    resolveFirst({ id: 42, email: 'stale-route@test.com' })
+    await flushPromises()
+
+    expect(getById).toHaveBeenNthCalledWith(2, 84, true)
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ user_id: 84 }), expect.anything())
+    expect(wrapper.find('[data-test="user-filter-label"]').text()).toBe('new-route@test.com')
+  })
+
+  it('does not query without a route user ID', async () => {
+    mountRouteFilteredUsageView()
+    await flushPromises()
+    expect(getById).not.toHaveBeenCalled()
+  })
+})
 
 describe('admin UsageView distribution metric toggles', () => {
   beforeEach(() => {

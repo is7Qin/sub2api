@@ -693,6 +693,107 @@ func TestGetChannelModelPricing_CaseInsensitive(t *testing.T) {
 	require.Equal(t, int64(100), result.ID)
 }
 
+func TestGetChannelModelPricing_ClaudeAlias(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 100, Platform: "anthropic", Models: []string{"claude-opus-4.8"}, InputPrice: testPtrFloat64(15e-6)},
+			{ID: 200, Platform: "anthropic", Models: []string{"claude-sonnet-4-6"}, InputPrice: testPtrFloat64(3e-6)},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: "anthropic"})
+	svc := newTestChannelService(repo)
+
+	require.Equal(t, int64(100), svc.GetChannelModelPricing(context.Background(), 10, "claude-opus-4-8").ID)
+	require.Equal(t, int64(200), svc.GetChannelModelPricing(context.Background(), 10, "claude-sonnet-4.6").ID)
+}
+
+func TestGetChannelModelPricing_ClaudeAliasDoesNotRewriteNonRevisionSuffix(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 100, Platform: "anthropic", Models: []string{"claude-sonnet.latest"}, InputPrice: testPtrFloat64(3e-6)},
+			{ID: 200, Platform: "anthropic", Models: []string{"claude-sonnet-4.20250514"}, InputPrice: testPtrFloat64(4e-6)},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: "anthropic"})
+	svc := newTestChannelService(repo)
+
+	require.Nil(t, svc.GetChannelModelPricing(context.Background(), 10, "claude-sonnet-latest"))
+	require.Nil(t, svc.GetChannelModelPricing(context.Background(), 10, "claude-sonnet-4-20250514"))
+}
+
+func TestGetChannelModelPricing_ExactSpellingWins(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 100, Platform: "anthropic", Models: []string{"claude-opus-4.8"}, InputPrice: testPtrFloat64(15e-6)},
+			{ID: 200, Platform: "anthropic", Models: []string{"claude-opus-4-8"}, InputPrice: testPtrFloat64(10e-6)},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: "anthropic"})
+	svc := newTestChannelService(repo)
+
+	require.Equal(t, int64(100), svc.GetChannelModelPricing(context.Background(), 10, "claude-opus-4.8").ID)
+	require.Equal(t, int64(200), svc.GetChannelModelPricing(context.Background(), 10, "claude-opus-4-8").ID)
+}
+
+func TestGetChannelModelPricing_AliasExactBeatsOriginalWildcard(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 100, Platform: "anthropic", Models: []string{"claude-*"}, InputPrice: testPtrFloat64(15e-6)},
+			{ID: 200, Platform: "anthropic", Models: []string{"claude-opus-4.8"}, InputPrice: testPtrFloat64(10e-6)},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: "anthropic"})
+	svc := newTestChannelService(repo)
+
+	require.Equal(t, int64(200), svc.GetChannelModelPricing(context.Background(), 10, "claude-opus-4-8").ID)
+}
+
+func TestGetChannelModelPricing_WildcardAlias(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 100, Platform: "anthropic", Models: []string{"claude-opus-4.*"}, InputPrice: testPtrFloat64(15e-6)},
+			{ID: 200, Platform: "anthropic", Models: []string{"claude-sonnet-4-*"}, InputPrice: testPtrFloat64(3e-6)},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: "anthropic"})
+	svc := newTestChannelService(repo)
+
+	require.Equal(t, int64(100), svc.GetChannelModelPricing(context.Background(), 10, "claude-opus-4-8").ID)
+	require.Equal(t, int64(200), svc.GetChannelModelPricing(context.Background(), 10, "claude-sonnet-4.6").ID)
+}
+
+func TestGetChannelModelPricing_AliasKeepsPlatformIsolation(t *testing.T) {
+	ch := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10, 20},
+		ModelPricing: []ChannelModelPricing{
+			{ID: 100, Platform: "anthropic", Models: []string{"claude-opus-4.8"}, InputPrice: testPtrFloat64(15e-6)},
+			{ID: 200, Platform: "openai", Models: []string{"gpt-5.1"}, InputPrice: testPtrFloat64(2e-6)},
+		},
+	}
+	repo := makeStandardRepo(ch, map[int64]string{10: "anthropic", 20: "openai"})
+	svc := newTestChannelService(repo)
+
+	require.Nil(t, svc.GetChannelModelPricing(context.Background(), 20, "claude-opus-4-8"))
+	require.Nil(t, svc.GetChannelModelPricing(context.Background(), 20, "gpt-5-1"))
+}
+
 func TestGetChannelModelPricing_WildcardMatch(t *testing.T) {
 	ch := Channel{
 		ID:       1,

@@ -6760,6 +6760,7 @@ export default {
     errorPassthrough: {
       title: 'Error Passthrough Rules',
       description: 'Configure how upstream errors are returned to clients',
+      globalScope: 'Global rules apply across all OpenAI accounts.',
       createRule: 'Create Rule',
       editRule: 'Edit Rule',
       deleteRule: 'Delete Rule',

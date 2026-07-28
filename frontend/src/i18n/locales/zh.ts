@@ -6751,6 +6751,7 @@ export default {
     errorPassthrough: {
       title: '错误透传规则',
       description: '配置上游错误如何返回给客户端',
+      globalScope: '适用于所有 OpenAI 账户的全局规则。',
       createRule: '创建规则',
       editRule: '编辑规则',
       deleteRule: '删除规则',

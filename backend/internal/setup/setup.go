@@ -93,6 +93,7 @@ type DatabaseConfig struct {
 type RedisConfig struct {
 	Host      string `json:"host" yaml:"host"`
 	Port      int    `json:"port" yaml:"port"`
+	Username  string `json:"username,omitempty" yaml:"username"`
 	Password  string `json:"password" yaml:"password"`
 	DB        int    `json:"db" yaml:"db"`
 	EnableTLS bool   `json:"enable_tls" yaml:"enable_tls"`
@@ -245,22 +246,29 @@ func TestDatabaseConnection(cfg *DatabaseConfig) error {
 	return nil
 }
 
-// TestRedisConnection tests the Redis connection
-func TestRedisConnection(cfg *RedisConfig) error {
+func buildSetupRedisOptions(cfg *RedisConfig) *redis.Options {
 	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Username: cfg.Username,
 		Password: cfg.Password,
 		DB:       cfg.DB,
 	}
-
 	if cfg.EnableTLS {
 		opts.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			ServerName: cfg.Host,
 		}
 	}
+	return opts
+}
 
-	rdb := redis.NewClient(opts)
+// TestRedisConnection tests the Redis connection
+func TestRedisConnection(cfg *RedisConfig) error {
+	if err := validateRedisUsername(cfg.Username); err != nil {
+		return err
+	}
+
+	rdb := redis.NewClient(buildSetupRedisOptions(cfg))
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.LegacyPrintf("setup", "failed to close redis client: %v", err)
@@ -497,7 +505,12 @@ func writeConfigFile(cfg *SetupConfig) error {
 		return err
 	}
 
-	return os.WriteFile(GetConfigFilePath(), data, 0600)
+	configPath := GetConfigFilePath()
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		return err
+	}
+	// WriteFile preserves permissions for an existing file; enforce the credential-safe mode.
+	return os.Chmod(configPath, 0o600)
 }
 
 func generateSecret(length int) (string, error) {
@@ -536,20 +549,13 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 	return defaultValue
 }
 
-// AutoSetupFromEnv performs automatic setup using environment variables
-// This is designed for Docker deployment where all config is passed via env vars
-func AutoSetupFromEnv() error {
-	logger.LegacyPrintf("setup", "%s", "Auto setup enabled, configuring from environment variables...")
-	logger.LegacyPrintf("setup", "Data directory: %s", GetDataDir())
-
-	// Get timezone from TZ or TIMEZONE env var (TZ is standard for Docker)
+func setupConfigFromEnv() *SetupConfig {
 	tz := getEnvOrDefault("TZ", "")
 	if tz == "" {
 		tz = getEnvOrDefault("TIMEZONE", "Asia/Shanghai")
 	}
 
-	// Build config from environment variables
-	cfg := &SetupConfig{
+	return &SetupConfig{
 		Database: DatabaseConfig{
 			Host:     getEnvOrDefault("DATABASE_HOST", "localhost"),
 			Port:     getEnvIntOrDefault("DATABASE_PORT", 5432),
@@ -561,7 +567,8 @@ func AutoSetupFromEnv() error {
 		Redis: RedisConfig{
 			Host:      getEnvOrDefault("REDIS_HOST", "localhost"),
 			Port:      getEnvIntOrDefault("REDIS_PORT", 6379),
-			Password:  getEnvOrDefault("REDIS_PASSWORD", ""),
+			Username:  os.Getenv("REDIS_USERNAME"),
+			Password:  os.Getenv("REDIS_PASSWORD"),
 			DB:        getEnvIntOrDefault("REDIS_DB", 0),
 			EnableTLS: getEnvOrDefault("REDIS_ENABLE_TLS", "false") == "true",
 		},
@@ -580,6 +587,15 @@ func AutoSetupFromEnv() error {
 		},
 		Timezone: tz,
 	}
+}
+
+// AutoSetupFromEnv performs automatic setup using environment variables
+// This is designed for Docker deployment where all config is passed via env vars
+func AutoSetupFromEnv() error {
+	logger.LegacyPrintf("setup", "%s", "Auto setup enabled, configuring from environment variables...")
+	logger.LegacyPrintf("setup", "Data directory: %s", GetDataDir())
+
+	cfg := setupConfigFromEnv()
 
 	// Generate JWT secret if not provided
 	if cfg.JWT.Secret == "" {

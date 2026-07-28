@@ -22,6 +22,76 @@ func resetViperWithJWTSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
 }
 
+func TestLoadRedisUsernameCompatibilityAndPreservation(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		env      *string
+		expected string
+	}{
+		{name: "omitted", yaml: "redis:\n  password: password-only\n"},
+		{name: "explicit empty", yaml: "redis:\n  username: \"\"\n"},
+		{name: "yaml preserves special characters", yaml: "redis:\n  username: \" acl:user/@% \"\n", expected: " acl:user/@% "},
+		{name: "explicit empty environment overrides yaml", yaml: "redis:\n  username: yaml-user\n", env: stringPtr("")},
+		{name: "environment preserves special characters", env: stringPtr(" env:user/@% "), expected: " env:user/@% "},
+		{name: "environment overrides yaml", yaml: "redis:\n  username: yaml-user\n", env: stringPtr(" env:user/@% "), expected: " env:user/@% "},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			unsetEnvForTest(t, "REDIS_USERNAME")
+			if tc.yaml != "" {
+				configFile := filepath.Join(t.TempDir(), "config.yaml")
+				require.NoError(t, os.WriteFile(configFile, []byte(tc.yaml), 0o600))
+				t.Setenv("CONFIG_FILE", configFile)
+			}
+			if tc.env != nil {
+				t.Setenv("REDIS_USERNAME", *tc.env)
+			}
+
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, cfg.Redis.Username)
+		})
+	}
+}
+
+func TestValidateRedisUsernameUTF8ByteLimitWithoutCredentialLeak(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Redis.Username = strings.Repeat("é", 64)
+	require.NoError(t, cfg.Validate())
+
+	const password = "password-must-not-leak/@%"
+	username := strings.Repeat("a", 127) + "é"
+	cfg.Redis.Username = username
+	cfg.Redis.Password = password
+	err = cfg.Validate()
+	require.ErrorContains(t, err, "redis.username must be at most 128 bytes")
+	require.NotContains(t, err.Error(), username)
+	require.NotContains(t, err.Error(), password)
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	value, ok := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if ok {
+			require.NoError(t, os.Setenv(key, value))
+			return
+		}
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
+
 func TestLoadForwardedClientIPDefaultsSecurely(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

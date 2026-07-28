@@ -110,6 +110,8 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 
 When using Docker Compose with `AUTO_SETUP=true`:
 
+Redis ACL usernames are optional. Leave `REDIS_USERNAME` empty for the default user used by the bundled Redis service. Set it only when connecting to an externally managed Redis named ACL user; the bundled Redis ACL configuration is unchanged.
+
 1. On first run, the system automatically:
    - Connects to PostgreSQL and Redis
    - Applies database migrations (SQL files in `backend/migrations/*.sql`) and records them in `schema_migrations`

@@ -1205,6 +1205,7 @@ func (d *DatabaseConfig) DSNWithTimezone(tz string) string {
 type RedisConfig struct {
 	Host     string `mapstructure:"host"`
 	Port     int    `mapstructure:"port"`
+	Username string `mapstructure:"username"`
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
 	// 连接池与超时配置（性能优化：可配置化连接池参数）
@@ -1439,6 +1440,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 
 	trustedProxiesEnv, trustedProxiesEnvConfigured := os.LookupEnv("SERVER_TRUSTED_PROXIES")
 	forwardedClientIPHeadersEnv, forwardedClientIPHeadersEnvConfigured := os.LookupEnv("SECURITY_FORWARDED_CLIENT_IP_HEADERS")
+	redisUsernameEnv, redisUsernameEnvConfigured := os.LookupEnv("REDIS_USERNAME")
 	trustedProxiesConfigured := viper.InConfig("server.trusted_proxies") ||
 		viper.IsSet("server.trusted_proxies") || trustedProxiesEnvConfigured
 
@@ -1451,6 +1453,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 	if forwardedClientIPHeadersEnvConfigured {
 		cfg.Security.ForwardedClientIPHeaders = normalizeStringSlice(strings.Split(forwardedClientIPHeadersEnv, ","))
+	}
+	if redisUsernameEnvConfigured {
+		cfg.Redis.Username = redisUsernameEnv
 	}
 	cfg.Server.TrustedProxiesConfigured = trustedProxiesConfigured
 
@@ -1771,6 +1776,7 @@ func setDefaults() {
 	// Redis
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
+	viper.SetDefault("redis.username", "")
 	viper.SetDefault("redis.password", "")
 	viper.SetDefault("redis.db", 0)
 	viper.SetDefault("redis.dial_timeout_seconds", 5)
@@ -2350,6 +2356,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Database.ConnMaxIdleTimeMinutes < 0 {
 		return fmt.Errorf("database.conn_max_idle_time_minutes must be non-negative")
+	}
+	if len(c.Redis.Username) > 128 {
+		return fmt.Errorf("redis.username must be at most 128 bytes")
 	}
 	if c.Redis.DialTimeoutSeconds <= 0 {
 		return fmt.Errorf("redis.dial_timeout_seconds must be positive")

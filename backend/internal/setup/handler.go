@@ -89,6 +89,13 @@ func validateEmail(email string) bool {
 	return err == nil && len(email) <= 254
 }
 
+func validateRedisUsername(username string) error {
+	if len(username) > 128 {
+		return fmt.Errorf("Redis username must be at most 128 bytes")
+	}
+	return nil
+}
+
 // validatePassword checks password strength
 func validatePassword(password string) error {
 	if len(password) < 8 {
@@ -178,6 +185,7 @@ func testDatabase(c *gin.Context) {
 type TestRedisRequest struct {
 	Host      string `json:"host" binding:"required"`
 	Port      int    `json:"port" binding:"required"`
+	Username  string `json:"username,omitempty"`
 	Password  string `json:"password"`
 	DB        int    `json:"db"`
 	EnableTLS bool   `json:"enable_tls"`
@@ -204,10 +212,15 @@ func testRedis(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "Invalid Redis database number (0-15)")
 		return
 	}
+	if err := validateRedisUsername(req.Username); err != nil {
+		response.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	cfg := &RedisConfig{
 		Host:      req.Host,
 		Port:      req.Port,
+		Username:  req.Username,
 		Password:  req.Password,
 		DB:        req.DB,
 		EnableTLS: req.EnableTLS,
@@ -283,6 +296,10 @@ func install(c *gin.Context) {
 	}
 	if req.Redis.DB < 0 || req.Redis.DB > 15 {
 		response.Error(c, http.StatusBadRequest, "Invalid Redis database number")
+		return
+	}
+	if err := validateRedisUsername(req.Redis.Username); err != nil {
+		response.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 
 const (
 	openAIAccountStateUpdateTimeout       = 5 * time.Second
+	openAITokenCacheInvalidationTimeout   = 250 * time.Millisecond
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormThreshold          = 20
@@ -15,11 +16,19 @@ const (
 )
 
 func openAIAccountStateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return openAIBoundedDetachedContext(ctx, openAIAccountStateUpdateTimeout)
+}
+
+func openAITokenCacheInvalidationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return openAIBoundedDetachedContext(ctx, openAITokenCacheInvalidationTimeout)
+}
+
+func openAIBoundedDetachedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	base := context.Background()
 	if ctx != nil {
 		base = context.WithoutCancel(ctx)
 	}
-	return context.WithTimeout(base, openAIAccountStateUpdateTimeout)
+	return context.WithTimeout(base, timeout)
 }
 
 func isOpenAIOAuthAccount(account *Account) bool {

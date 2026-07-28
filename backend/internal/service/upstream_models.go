@@ -289,12 +289,14 @@ func (s *AccountTestService) fetchOpenAIOAuthUpstreamModels(ctx context.Context,
 	if s.httpUpstream == nil {
 		return nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
+	usedPersonalAccessToken := false
 	buildRequest := func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICodexUpstreamModelsURL, nil)
 		if err != nil {
 			return nil, err
 		}
 		authToken := account.GetOpenAICodexBearerToken()
+		usedPersonalAccessToken = !account.IsOpenAIAgentIdentity() && authToken != "" && authToken == strings.TrimSpace(account.GetOpenAIPersonalAccessToken())
 		headers, err := s.buildOpenAIAccountTestAuthenticationHeaders(ctx, account, authToken)
 		if err != nil {
 			return nil, err
@@ -344,15 +346,21 @@ func (s *AccountTestService) fetchOpenAIOAuthUpstreamModels(ctx context.Context,
 			return nil, readErr
 		}
 	}
+	// Agent Identity 401s can be task-scoped and belong exclusively to the
+	// bounded task recovery above. Only ordinary OAuth bearer failures are
+	// authoritative enough to enter shared account-state handling.
+	if resp.StatusCode == http.StatusUnauthorized && account.IsOpenAIOAuthLike() && !account.IsOpenAIAgentIdentity() && s.rateLimitService != nil {
+		stateCtx, cancel := openAIAccountStateContext(ctx)
+		defer cancel()
+		s.rateLimitService.HandleOpenAICodexBearerError(stateCtx, account, resp.StatusCode, resp.Header, body, usedPersonalAccessToken)
+	}
 	body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		message := strings.TrimSpace(string(body))
-		if message == "" {
-			message = resp.Status
-		}
+		// Keep upstream response bodies out of returned errors. Shared state handling
+		// receives the bounded raw body above; callers only need the status code.
 		return nil, newUpstreamModelSyncUpstreamError(
 			fmt.Sprintf("Upstream model list request failed with HTTP %d", resp.StatusCode),
-			fmt.Errorf("upstream model list returned HTTP %d: %s", resp.StatusCode, message),
+			fmt.Errorf("upstream model list returned HTTP %d", resp.StatusCode),
 		)
 	}
 	models, err := extractCodexUpstreamModelIDs(body)

@@ -184,6 +184,20 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	// Existing generic callers do not expose their selected bearer, so retain the
+	// established PAT policy there. Codex model sync uses the explicit method below.
+	usesConfiguredPAT := account != nil && account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIPersonalAccessToken()) != ""
+	return s.handleUpstreamError(ctx, account, statusCode, headers, responseBody, usesConfiguredPAT, requestedModel...)
+}
+
+// HandleOpenAICodexBearerError preserves the actual bearer selected for a Codex
+// request. A configured PAT must not affect classification when another bearer
+// was sent.
+func (s *RateLimitService) HandleOpenAICodexBearerError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, usedPersonalAccessToken bool) (shouldDisable bool) {
+	return s.handleUpstreamError(ctx, account, statusCode, headers, responseBody, usedPersonalAccessToken)
+}
+
+func (s *RateLimitService) handleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, usedPersonalAccessToken bool, requestedModel ...string) (shouldDisable bool) {
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
 	// Pool mode skips default account penalties, but explicit temporary rules still apply.
@@ -232,7 +246,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
 	if account.Platform == PlatformOpenAI {
-		upstreamMsg = sanitizeOpenAIUpstreamDiagnosticText(upstreamMsg)
+		upstreamMsg = sanitizeOpenAIAccountDiagnosticText(account, upstreamMsg)
 	} else {
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	}
@@ -260,6 +274,18 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
+		// Agent Identity 401s are task-scoped and remain owned by their bounded
+		// recovery caller rather than ordinary OAuth account classification.
+		if account.Platform == PlatformOpenAI && account.IsOpenAIAgentIdentity() {
+			break
+		}
+		// Codex requests preferentially use a PAT. Any 401 from that actual bearer
+		// must be verified independently before provider response text can disable
+		// the account; the response may be model/session-specific.
+		if account.Platform == PlatformOpenAI && usedPersonalAccessToken {
+			shouldDisable = s.handleOpenAIPersonalAccessToken401(ctx, account, upstreamMsg)
+			break
+		}
 		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
 		openai401Code := extractUpstreamErrorCode(responseBody)
 		if account.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
@@ -267,27 +293,44 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			if upstreamMsg != "" {
 				msg = "Token revoked (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, account, msg)
+			if account.IsOpenAIOAuthLike() {
+				s.handleOpenAIOAuthLike401(ctx, account, msg, true)
+			} else {
+				s.handleAuthError(ctx, account, msg)
+			}
 			shouldDisable = true
 			break
 		}
 		// OpenAI PAT 的 401 先用 whoami 复核；只有 whoami 也 401/403 才永久禁用。
-		if account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIPersonalAccessToken()) != "" {
-			shouldDisable = s.handleOpenAIPersonalAccessToken401(ctx, account, upstreamMsg)
-			break
-		}
 		// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
 		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" {
 			msg := "Unauthorized (401): account authentication failed permanently"
 			if upstreamMsg != "" {
 				msg = "Unauthorized (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, account, msg)
+			if account.IsOpenAIOAuthLike() {
+				s.handleOpenAIOAuthLike401(ctx, account, msg, true)
+			} else {
+				s.handleAuthError(ctx, account, msg)
+			}
 			shouldDisable = true
 			break
 		}
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
 		// Antigravity 除外：其 401 由 applyErrorPolicy 的 temp_unschedulable_rules 自行控制。
+		if account.Platform == PlatformOpenAI && account.IsOpenAIOAuthLike() && !account.IsOpenAIAgentIdentity() {
+			msg := "Authentication failed (401): invalid or expired credentials"
+			permanent := account.Type == AccountTypeSetupToken || strings.TrimSpace(account.GetCredential("refresh_token")) == ""
+			if permanent {
+				msg = "Authentication failed (401): refresh_token missing, cannot recover"
+			}
+			if upstreamMsg != "" {
+				msg = "OAuth 401: " + upstreamMsg
+			}
+			s.handleOpenAIOAuthLike401(ctx, account, msg, permanent)
+			shouldDisable = true
+			break
+		}
 		if account.Type == AccountTypeOAuth && account.Platform != PlatformAntigravity {
 			if account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIPersonalAccessToken()) != "" {
 				shouldDisable = s.handleOpenAIPersonalAccessToken401(ctx, account, upstreamMsg)
@@ -835,6 +878,31 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		return
 	}
 	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+}
+
+// handleOpenAIOAuthLike401 keeps durable account state independent from best-effort
+// bearer-cache eviction. Setup tokens are non-refreshable and therefore permanent.
+func (s *RateLimitService) handleOpenAIOAuthLike401(ctx context.Context, account *Account, msg string, permanent bool) {
+	if !permanent && account.Type == AccountTypeOAuth && strings.TrimSpace(account.GetCredential("refresh_token")) != "" {
+		cooldownMinutes := s.cfg.RateLimit.OAuth401CooldownMinutes
+		if cooldownMinutes <= 0 {
+			cooldownMinutes = 10
+		}
+		until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+		s.notifyAccountSchedulingBlocked(account, until, "oauth_401")
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+			slog.Warn("oauth_401_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		}
+	} else {
+		s.handleAuthError(ctx, account, msg)
+	}
+	if s.tokenCacheInvalidator != nil {
+		invalidateCtx, cancel := openAITokenCacheInvalidationContext(ctx)
+		defer cancel()
+		if err := s.tokenCacheInvalidator.InvalidateToken(invalidateCtx, account); err != nil {
+			slog.Warn("oauth_401_invalidate_cache_failed", "account_id", account.ID, "error", err)
+		}
+	}
 }
 
 func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody []byte, fallback string) string {

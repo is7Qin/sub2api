@@ -66,6 +66,7 @@ func isOpenAIImageModel(model string) bool {
 // AccountTestService handles account testing operations
 type AccountTestService struct {
 	accountRepo                AccountRepository
+	rateLimitService           *RateLimitService
 	geminiTokenProvider        *GeminiTokenProvider
 	claudeTokenProvider        *ClaudeTokenProvider
 	antigravityGatewayService  *AntigravityGatewayService
@@ -80,6 +81,7 @@ type AccountTestService struct {
 // NewAccountTestService creates a new AccountTestService
 func NewAccountTestService(
 	accountRepo AccountRepository,
+	rateLimitService *RateLimitService,
 	geminiTokenProvider *GeminiTokenProvider,
 	claudeTokenProvider *ClaudeTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
@@ -91,6 +93,7 @@ func NewAccountTestService(
 ) *AccountTestService {
 	return &AccountTestService{
 		accountRepo:                accountRepo,
+		rateLimitService:           rateLimitService,
 		geminiTokenProvider:        geminiTokenProvider,
 		claudeTokenProvider:        claudeTokenProvider,
 		antigravityGatewayService:  antigravityGatewayService,

@@ -25,12 +25,18 @@ type rateLimitAccountRepoStub struct {
 }
 
 func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, errorMsg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.setErrorCalls++
 	r.lastErrorMsg = errorMsg
 	return nil
 }
 
 func (r *rateLimitAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.tempCalls++
 	r.lastTempReason = reason
 	r.lastTempUntil = until
@@ -46,6 +52,16 @@ func (r *rateLimitAccountRepoStub) UpdateCredentials(ctx context.Context, id int
 type tokenCacheInvalidatorRecorder struct {
 	accounts []*Account
 	err      error
+}
+
+type blockingTokenCacheInvalidator struct {
+	calls int
+}
+
+func (r *blockingTokenCacheInvalidator) InvalidateToken(ctx context.Context, _ *Account) error {
+	r.calls++
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 type openAIPATWhoamiVerifierStub struct {
@@ -170,6 +186,35 @@ func TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError(t *testin
 	require.Equal(t, 1, repo.tempCalls)
 	require.Equal(t, 0, repo.updateCredentialsCalls)
 	require.Len(t, invalidator.accounts, 1)
+}
+
+func TestRateLimitService_HandleUpstreamError_OAuth401PersistsStateBeforeBlockingInvalidation(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		credentials     map[string]any
+		wantSetError    int
+		wantTempUnsched int
+	}{
+		{name: "refreshable", credentials: map[string]any{"refresh_token": "rt"}, wantTempUnsched: 1},
+		{name: "missing_refresh", credentials: map[string]any{"access_token": "at"}, wantSetError: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &rateLimitAccountRepoStub{}
+			invalidator := &blockingTokenCacheInvalidator{}
+			service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			service.SetTokenCacheInvalidator(invalidator)
+			account := &Account{ID: 104, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: tt.credentials}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+
+			shouldDisable := service.HandleUpstreamError(ctx, account, http.StatusUnauthorized, http.Header{}, []byte("unauthorized"))
+
+			require.True(t, shouldDisable)
+			require.Equal(t, tt.wantSetError, repo.setErrorCalls)
+			require.Equal(t, tt.wantTempUnsched, repo.tempCalls)
+			require.Equal(t, 1, invalidator.calls)
+		})
+	}
 }
 
 func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {

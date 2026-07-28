@@ -160,7 +160,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAccountHandler,
 	admin.NewAnnouncementHandler,
 	admin.NewDataManagementHandler,
-	admin.NewBackupHandler,
+	admin.NewBackupHandler, // Backup S3 updates verify fresh TOTP through TotpService
 	admin.NewOAuthHandler,
 	admin.NewOpenAIOAuthHandler,
 	admin.NewGeminiOAuthHandler,

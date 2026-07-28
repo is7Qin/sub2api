@@ -453,6 +453,163 @@ func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 	require.Equal(t, 5, result.Usage.OutputTokens)
 }
 
+func TestRelay_OnTurnComplete_DuplicateTerminalForResponseEmitsOnce(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_duplicate_terminal","usage":{"input_tokens":2,"output_tokens":1}}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_duplicate_terminal","usage":{"input_tokens":2,"output_tokens":1}}}`)},
+	}, true)
+
+	var turns []RelayTurnResult
+	_, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		OnTurnComplete: func(turn RelayTurnResult) {
+			turns = append(turns, turn)
+		},
+	})
+
+	require.Nil(t, relayExit)
+	require.Len(t, turns, 1, "a response terminal event must release its turn exactly once")
+	require.Equal(t, "resp_duplicate_terminal", turns[0].RequestID)
+}
+
+func TestRelay_DirectClientFramesKeepIdleWatchdogAliveUntilTheyStop(t *testing.T) {
+	// The watchdog has a one-second minimum polling interval, so this bounded
+	// test leaves enough margin for a full post-activity poll.
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn(nil, false)
+	defer clientConn.Close()
+
+	go func() {
+		for range 12 {
+			clientConn.readCh <- passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"session.update"}`)}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+
+	startedAt := time.Now()
+	_, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		IdleTimeout: 500 * time.Millisecond,
+		ReadClientFrame: func(ctx context.Context, conn FrameConn, markActivity func()) (coderws.MessageType, []byte, error) {
+			for {
+				msgType, payload, err := conn.ReadFrame(ctx)
+				if err != nil {
+					return msgType, payload, err
+				}
+				if err := upstreamConn.WriteFrame(ctx, msgType, payload); err != nil {
+					return msgType, payload, err
+				}
+				markActivity()
+			}
+		},
+	})
+
+	require.NotNil(t, relayExit)
+	require.Equal(t, "idle_timeout", relayExit.Stage)
+	require.GreaterOrEqual(t, time.Since(startedAt), 1500*time.Millisecond, "valid direct client frames must defer the watchdog until the frames stop")
+	require.Len(t, upstreamConn.Writes(), 13, "first response.create plus every direct client frame must reach upstream")
+}
+
+func TestRelay_DuplicateTerminalDoesNotDoubleCountOrBlockOtherResponse(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_terminal_a","usage":{"input_tokens":2,"output_tokens":1}}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.failed","response":{"id":"resp_terminal_a","usage":{"input_tokens":20,"output_tokens":10}}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_terminal_b","usage":{"input_tokens":3,"output_tokens":4}}}`)},
+	}, true)
+
+	var turns []RelayTurnResult
+	result, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		OnTurnComplete: func(turn RelayTurnResult) {
+			turns = append(turns, turn)
+		},
+	})
+
+	require.Nil(t, relayExit)
+	require.Equal(t, Usage{InputTokens: 5, OutputTokens: 5}, result.Usage)
+	require.Len(t, turns, 2)
+	require.Equal(t, "resp_terminal_a", turns[0].RequestID)
+	require.Equal(t, "response.completed", turns[0].TerminalEventType)
+	require.Equal(t, "resp_terminal_b", turns[1].RequestID)
+	require.Equal(t, "response.completed", turns[1].TerminalEventType)
+}
+
+func TestRelay_LaterTurnFirstSemanticOutputUsesOwnTiming(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.output_text.delta","response_id":"resp_later_1","delta":"first"}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_later_1","usage":{"input_tokens":1,"output_tokens":1}}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_later_2"}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.output_text.delta","response_id":"resp_later_2","delta":"second"}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_later_2","usage":{"input_tokens":1,"output_tokens":1}}}`)},
+	}, true)
+
+	base := time.Unix(0, 0)
+	var ticks atomic.Int64
+	nowFn := func() time.Time {
+		return base.Add(time.Duration(ticks.Add(1)) * 10 * time.Millisecond)
+	}
+	var turns []RelayTurnResult
+	_, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		Now: nowFn,
+		OnTurnComplete: func(turn RelayTurnResult) {
+			turns = append(turns, turn)
+		},
+	})
+
+	require.Nil(t, relayExit)
+	require.Len(t, turns, 2)
+	require.NotNil(t, turns[0].FirstTokenMs)
+	require.NotNil(t, turns[1].FirstTokenMs)
+	require.Greater(t, *turns[1].FirstTokenMs, 0, "later turn must start timing from its own first semantic output")
+	require.Less(t, *turns[1].FirstTokenMs, int(turns[1].Duration.Milliseconds()))
+}
+
+func TestRelay_OverlappingResponsesDoNotStealFirstTokenTiming(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_overlap_a"}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_overlap_b"}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.output_text.delta","response_id":"resp_overlap_a","delta":"A"}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.output_text.delta","response_id":"resp_overlap_b","delta":"B"}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_overlap_b","usage":{"input_tokens":2,"output_tokens":1}}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.failed","response":{"id":"resp_overlap_a","usage":{"input_tokens":3,"output_tokens":2}}}`)},
+	}, true)
+
+	base := time.Unix(0, 0)
+	var ticks atomic.Int64
+	nowFn := func() time.Time {
+		return base.Add(time.Duration(ticks.Add(1)) * 10 * time.Millisecond)
+	}
+	var turns []RelayTurnResult
+	_, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		Now: nowFn,
+		OnTurnComplete: func(turn RelayTurnResult) {
+			turns = append(turns, turn)
+		},
+	})
+
+	require.Nil(t, relayExit)
+	require.Len(t, turns, 2)
+	require.Equal(t, "resp_overlap_b", turns[0].RequestID)
+	require.Equal(t, "response.completed", turns[0].TerminalEventType)
+	require.Equal(t, Usage{InputTokens: 2, OutputTokens: 1}, turns[0].Usage)
+	require.NotNil(t, turns[0].FirstTokenMs)
+	require.Equal(t, 60, *turns[0].FirstTokenMs, "B first-token timing must come from B's own semantic output")
+	require.Equal(t, "resp_overlap_a", turns[1].RequestID)
+	require.Equal(t, "response.failed", turns[1].TerminalEventType)
+	require.Equal(t, Usage{InputTokens: 3, OutputTokens: 2}, turns[1].Usage)
+	require.NotNil(t, turns[1].FirstTokenMs)
+	require.Equal(t, 60, *turns[1].FirstTokenMs, "A terminal result must retain A's own first-token timing")
+}
+
 func TestRelay_ResponseFailedTextSanitizesClientPayloadAndKeepsUsage(t *testing.T) {
 	t.Parallel()
 

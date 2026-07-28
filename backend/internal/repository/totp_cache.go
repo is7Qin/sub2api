@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	totpSetupKeyPrefix    = "totp:setup:"
-	totpLoginKeyPrefix    = "totp:login:"
-	totpAttemptsKeyPrefix = "totp:attempts:"
-	totpAttemptsTTL       = 15 * time.Minute
+	totpSetupKeyPrefix        = "totp:setup:"
+	totpLoginKeyPrefix        = "totp:login:"
+	totpAttemptsKeyPrefix     = "totp:attempts:"
+	totpBackupS3StepKeyPrefix = "totp:backup-s3-step:"
+	totpAttemptsTTL           = 15 * time.Minute
 )
 
 // TotpCache implements service.TotpCache using Redis
@@ -146,4 +147,15 @@ func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, e
 func (c *TotpCache) ClearVerifyAttempts(ctx context.Context, userID int64) error {
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
+}
+
+// UseBackupS3TotpStep atomically records a TOTP time step for the Backup S3
+// endpoint. Redis SET NX prevents a valid code from being replayed in its step.
+func (c *TotpCache) UseBackupS3TotpStep(ctx context.Context, userID, step int64, ttl time.Duration) (bool, error) {
+	key := fmt.Sprintf("%s%d:%d", totpBackupS3StepKeyPrefix, userID, step)
+	set, err := c.rdb.SetNX(ctx, key, "1", ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("consume backup S3 TOTP step: %w", err)
+	}
+	return !set, nil
 }

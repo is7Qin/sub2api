@@ -69,7 +69,7 @@ type RelayOptions struct {
 	OnTurnComplete                  func(turn RelayTurnResult)
 	BeforeWriteClient               func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
 	TransformWriteClient            func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error)
-	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn) (coderws.MessageType, []byte, error)
+	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn, markActivity func()) (coderws.MessageType, []byte, error)
 	OnTrace                         func(event RelayTraceEvent)
 	Now                             func() time.Time
 }
@@ -91,7 +91,10 @@ type relayState struct {
 	terminalEventType string
 	firstTokenMs      *int
 	turnTimingByID    map[string]*relayTurnTiming
-	activeTurn        *relayTurnTiming
+	// Kept for the full connection: a replay can arrive after its turn timing
+	// is released, so removing IDs with active-turn state would re-enable billing.
+	completedResponseIDs map[string]struct{}
+	activeTurn           *relayTurnTiming
 }
 
 type relayExitSignal struct {
@@ -375,7 +378,7 @@ func Relay(
 func runClientToUpstream(
 	ctx context.Context,
 	clientConn FrameConn,
-	readClientFrame func(context.Context, FrameConn) (coderws.MessageType, []byte, error),
+	readClientFrame func(context.Context, FrameConn, func()) (coderws.MessageType, []byte, error),
 	writeUpstream func(msgType coderws.MessageType, payload []byte) error,
 	markActivity func(),
 	forwardedFrames *atomic.Int64,
@@ -383,12 +386,12 @@ func runClientToUpstream(
 	exitCh chan<- relayExitSignal,
 ) {
 	if readClientFrame == nil {
-		readClientFrame = func(ctx context.Context, conn FrameConn) (coderws.MessageType, []byte, error) {
+		readClientFrame = func(ctx context.Context, conn FrameConn, _ func()) (coderws.MessageType, []byte, error) {
 			return conn.ReadFrame(ctx)
 		}
 	}
 	for {
-		msgType, payload, err := readClientFrame(ctx, clientConn)
+		msgType, payload, err := readClientFrame(ctx, clientConn, markActivity)
 		if err != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:     "read_client_failed",
@@ -399,7 +402,6 @@ func runClientToUpstream(
 			exitCh <- relayExitSignal{stage: "read_client", err: err, graceful: isDisconnectError(err)}
 			return
 		}
-		markActivity()
 		if err := writeUpstream(msgType, payload); err != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:        "write_upstream_failed",
@@ -643,13 +645,20 @@ func observeUpstreamMessage(
 		responseID = strings.TrimSpace(values[3].String())
 	}
 	now := nowFn()
+	// An upstream may replay a terminal frame while closing. Ignore duplicate
+	// bookkeeping so it cannot double-charge or release a later turn's slots.
+	if isTerminalEvent(eventType) && responseID != "" && !openAIWSRelayMarkResponseCompleted(state, responseID) {
+		return observedUpstreamEvent{eventType: eventType, responseID: responseID}
+	}
 
 	if state.firstTokenMs == nil && isTokenEvent(eventType) {
 		ms := int(now.Sub(startAt).Milliseconds())
 		if ms >= 0 {
 			state.firstTokenMs = &ms
 		}
-		if state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
+		// Identified events exclusively time their own response. Only ID-less
+		// semantic output may fall back to the active turn.
+		if responseID == "" && state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
 			tms := int(now.Sub(state.activeTurn.startAt).Milliseconds())
 			if tms >= 0 {
 				state.activeTurn.firstTokenMs = &tms
@@ -736,6 +745,20 @@ func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now 
 		return timing
 	}
 	return timing
+}
+
+func openAIWSRelayMarkResponseCompleted(state *relayState, responseID string) bool {
+	if state == nil || responseID == "" {
+		return true
+	}
+	if state.completedResponseIDs == nil {
+		state.completedResponseIDs = make(map[string]struct{}, 8)
+	}
+	if _, exists := state.completedResponseIDs[responseID]; exists {
+		return false
+	}
+	state.completedResponseIDs[responseID] = struct{}{}
+	return true
 }
 
 func openAIWSRelayDeleteTurnTiming(state *relayState, responseID string) (relayTurnTiming, bool) {

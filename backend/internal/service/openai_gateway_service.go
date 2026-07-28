@@ -3390,12 +3390,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	if reqBody != nil {
-		imageIntent = IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody)
-	} else {
-		imageIntent = IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
-	}
-	imageIntent = imageIntent || IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, nil) || isOpenAIImageGenerationModel(upstreamModel)
+	imageIntent = classifyOpenAIForwardImageIntent(reqModel, upstreamModel, body, reqBody)
 	if imageIntent && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": ImageGenerationPermissionMessage()}})

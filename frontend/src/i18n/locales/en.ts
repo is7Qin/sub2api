@@ -1547,7 +1547,9 @@ export default {
         testConnection: 'Test Connection',
         testSuccess: 'S3 connection test successful',
         testFailed: 'S3 connection test failed',
-        saved: 'S3 configuration saved'
+        saved: 'S3 configuration saved',
+        totpTitle: 'Verify before saving S3 configuration',
+        totpHint: 'Enter a current six-digit authenticator code. Every S3 configuration update requires verification.'
       },
       schedule: {
         title: 'Scheduled Backup',
@@ -6239,6 +6241,8 @@ export default {
         selectProviderKey: 'Select Provider Type',
         providerConfig: 'Credentials',
         paymentGuideTrigger: 'View payment guide',
+        showSensitiveValue: 'Show sensitive value',
+        hideSensitiveValue: 'Hide sensitive value',
         guideOpenLabel: 'Enable: ',
         guideCallLabel: 'Call: ',
         guideFallbackLabel: 'Fallback: ',

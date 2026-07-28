@@ -71,6 +71,11 @@ export default defineConfig(({ mode }) => {
          */
         manualChunks(id: string) {
           if (id.includes('node_modules')) {
+            // Preserve the dynamic Stripe loader boundary outside the eager misc vendor chunk.
+            if (id.includes('/@stripe/stripe-js/')) {
+              return 'vendor-stripe'
+            }
+
             // Vue 核心库
             if (
               id.includes('/vue/') ||

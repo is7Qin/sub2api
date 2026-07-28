@@ -61,6 +61,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		t.Parallel()
 
 		exitCh := make(chan relayExitSignal, 1)
+		var activityMarks atomic.Int32
 		runClientToUpstream(
 			context.Background(),
 			newPassthroughTestFrameConn([]passthroughTestFrame{
@@ -68,7 +69,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			nil,
 			func(_ coderws.MessageType, _ []byte) error { return errors.New("boom") },
-			func() {},
+			func() { activityMarks.Add(1) },
 			nil,
 			nil,
 			exitCh,
@@ -76,6 +77,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		sig := <-exitCh
 		require.Equal(t, "write_upstream", sig.stage)
 		require.False(t, sig.graceful)
+		require.Zero(t, activityMarks.Load(), "an undelivered client frame must not refresh idle activity")
 	})
 
 	t.Run("forwarded counter and trace callback", func(t *testing.T) {

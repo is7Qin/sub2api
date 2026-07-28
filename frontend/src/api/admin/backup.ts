@@ -10,6 +10,10 @@ export interface BackupS3Config {
   force_path_style: boolean
 }
 
+export interface UpdateBackupS3Config extends BackupS3Config {
+  totp_code: string
+}
+
 export interface BackupScheduleConfig {
   enabled: boolean
   cron_expr: string
@@ -50,7 +54,7 @@ export async function getS3Config(): Promise<BackupS3Config> {
   return data
 }
 
-export async function updateS3Config(config: BackupS3Config): Promise<BackupS3Config> {
+export async function updateS3Config(config: UpdateBackupS3Config): Promise<BackupS3Config> {
   const { data } = await apiClient.put<BackupS3Config>('/admin/backups/s3-config', config)
   return data
 }

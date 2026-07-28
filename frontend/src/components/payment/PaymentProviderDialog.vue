@@ -142,6 +142,9 @@
               />
               <button
                 type="button"
+                :aria-label="t(visibleFields[field.key]
+                  ? 'admin.settings.payment.hideSensitiveValue'
+                  : 'admin.settings.payment.showSensitiveValue')"
                 @click="visibleFields[field.key] = !visibleFields[field.key]"
                 class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
               >

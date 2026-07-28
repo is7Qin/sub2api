@@ -7,6 +7,99 @@ REPOSITORY_ROOT=$(CDPATH= cd -- "$DEPLOY_DIR/.." && pwd)
 # to locate <root>/Dockerfile; deploy inputs always come from DEPLOY_DIR.
 DOCKERFILE_SOURCE_ROOT=${TASK3_DOCKERFILE_SOURCE_ROOT:-$REPOSITORY_ROOT}
 SOURCE_DOCKERFILE="$DOCKERFILE_SOURCE_ROOT/Dockerfile"
+
+run_static_postgres_tuning_contract() {
+  PYTHON=
+  for candidate in python3 python; do
+    if "$candidate" -c 'import pathlib' >/dev/null 2>&1; then
+      PYTHON=$candidate
+      break
+    fi
+  done
+  if [ -z "$PYTHON" ]; then
+    printf 'FAIL: python3 or python is required for the static PostgreSQL tuning contract\n' >&2
+    exit 1
+  fi
+
+  "$PYTHON" - \
+    "$DEPLOY_DIR/compose.yaml" \
+    "$DEPLOY_DIR/.env.example" \
+    "$DEPLOY_DIR/compose.bind.yaml" \
+    "$DEPLOY_DIR/compose.dev.yaml" \
+    "$DEPLOY_DIR/compose.external.yaml" <<'PY'
+import pathlib
+import sys
+
+compose = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+env_example = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+variants = {
+    pathlib.Path(path).name: pathlib.Path(path).read_text(encoding="utf-8")
+    for path in sys.argv[3:]
+}
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+settings = {
+    "POSTGRES_MAX_CONNECTIONS": "max_connections",
+    "POSTGRES_SHARED_BUFFERS": "shared_buffers",
+    "POSTGRES_EFFECTIVE_CACHE_SIZE": "effective_cache_size",
+    "POSTGRES_MAINTENANCE_WORK_MEM": "maintenance_work_mem",
+}
+
+require("entrypoint:" in compose, "PostgreSQL tuning must preserve initialization through an entrypoint wrapper")
+require('exec /usr/local/bin/docker-entrypoint.sh "$$@"' in compose, "wrapper must delegate to the image entrypoint")
+require('command: ["postgres"]' in compose, "PostgreSQL must retain the image's default server command")
+for environment_name, setting_name in settings.items():
+    require(
+        f"{environment_name}: ${{{environment_name}:-}}" in compose,
+        f"{environment_name} must default to blank rather than pinning a PostgreSQL value",
+    )
+    require(
+        f'if [ -n "$${{{environment_name}}}" ]; then' in compose,
+        f"{environment_name} must apply only when nonblank",
+    )
+    require(
+        f'set -- "$$@" -c "{setting_name}=$${{{environment_name}}}"' in compose,
+        f"{environment_name} must map to the fixed {setting_name} parameter",
+    )
+    require(
+        f"# {environment_name}=" in env_example,
+        f"{environment_name} must be documented as an opt-in setting",
+    )
+    require(
+        f"\n{environment_name}=" not in env_example,
+        f"{environment_name} must not be enabled by default in .env.example",
+    )
+
+require(
+    "postgres_data:/var/lib/postgresql/data" in compose
+    and "PGDATA: /var/lib/postgresql/data" in compose,
+    "PostgreSQL tuning must not change the existing data path",
+)
+require("image: postgres:18-alpine" in compose, "PostgreSQL tuning must not change the major version")
+require(
+    "postgres:" not in variants["compose.external.yaml"],
+    "external infrastructure variant must not add managed PostgreSQL",
+)
+for variant_name in ("compose.bind.yaml", "compose.dev.yaml"):
+    require(
+        "entrypoint:" not in variants[variant_name] and "command:" not in variants[variant_name],
+        f"{variant_name} must inherit the canonical PostgreSQL tuning wrapper",
+    )
+
+print("PASS: static PostgreSQL Compose tuning contract")
+PY
+}
+
+if [ "${1-}" = "--static-postgres-tuning" ]; then
+  run_static_postgres_tuning_contract
+  exit 0
+fi
+
 TMP_DIR=$(mktemp -d)
 FIXTURE_ROOT="$TMP_DIR/repository"
 FIXTURE_DEPLOY="$FIXTURE_ROOT/deploy"
@@ -200,6 +293,13 @@ done
 
 compose_config --format json > "$TMP_DIR/config-redis-blank.json"
 compose_config --format json --no-env-resolution > "$TMP_DIR/config-unresolved.json"
+clean_env env \
+  POSTGRES_MAX_CONNECTIONS=240 \
+  POSTGRES_SHARED_BUFFERS=512MB \
+  POSTGRES_EFFECTIVE_CACHE_SIZE=1536MB \
+  POSTGRES_MAINTENANCE_WORK_MEM=96MB \
+  docker compose --project-directory "$FIXTURE_DEPLOY" -f "$FIXTURE_DEPLOY/compose.yaml" \
+  config --format json > "$TMP_DIR/config-postgres-tuned.json"
 
 compose_files_config "$TMP_DIR/config-prod-bind.json" \
   -f "$FIXTURE_DEPLOY/compose.yaml" -f "$FIXTURE_DEPLOY/compose.bind.yaml"
@@ -274,7 +374,7 @@ fi
   "$TMP_DIR/config-dev-bind.json" "$TMP_DIR/config-dev-bind-redis-auth.json" \
   "$TMP_DIR/config-external-redis-blank.json" "$TMP_DIR/config-external-redis-auth.json" \
   "$TMP_DIR/config-external-shell-overrides.json" "$TMP_DIR/config-external-unresolved.json" \
-  "$FIXTURE_ROOT" <<'PY'
+  "$TMP_DIR/config-postgres-tuned.json" "$FIXTURE_ROOT" <<'PY'
 import json
 import os
 import sys
@@ -307,7 +407,9 @@ with open(sys.argv[13], encoding="utf-8") as handle:
     external_shell_overrides = json.load(handle)
 with open(sys.argv[14], encoding="utf-8") as handle:
     external_unresolved = json.load(handle)
-fixture_root = os.path.normcase(os.path.realpath(sys.argv[15]))
+with open(sys.argv[15], encoding="utf-8") as handle:
+    postgres_tuned = json.load(handle)
+fixture_root = os.path.normcase(os.path.realpath(sys.argv[16]))
 
 services = config["services"]
 sub2api = services["sub2api"]
@@ -443,6 +545,46 @@ require(
     "database password mapping must match",
 )
 require(postgres_env.get("POSTGRES_DB") == app_env.get("DATABASE_DBNAME"), "database name mapping must match")
+
+postgres_tuning = {
+    "POSTGRES_MAX_CONNECTIONS": ("max_connections", "240"),
+    "POSTGRES_SHARED_BUFFERS": ("shared_buffers", "512MB"),
+    "POSTGRES_EFFECTIVE_CACHE_SIZE": ("effective_cache_size", "1536MB"),
+    "POSTGRES_MAINTENANCE_WORK_MEM": ("maintenance_work_mem", "96MB"),
+}
+postgres_command = postgres.get("command", [])
+postgres_entrypoint = postgres.get("entrypoint", [])
+require(postgres_command == ["postgres"], "default PostgreSQL command must remain postgres without pinned tuning")
+require(len(postgres_entrypoint) == 4, "PostgreSQL tuning wrapper must have a fixed entrypoint shape")
+postgres_entrypoint_source = postgres_entrypoint[2]
+require(
+    'exec /usr/local/bin/docker-entrypoint.sh "$$@"' in postgres_entrypoint_source,
+    "PostgreSQL wrapper must preserve image initialization",
+)
+for environment_name, (setting_name, expected_value) in postgres_tuning.items():
+    require(postgres_env.get(environment_name) == "", f"blank {environment_name} must remain blank")
+    require(
+        f'-c "{setting_name}=$${{{environment_name}}}"' in postgres_entrypoint_source,
+        f"PostgreSQL wrapper must map only {environment_name} to {setting_name}",
+    )
+
+postgres_tuned_service = postgres_tuned["services"]["postgres"]
+require(
+    postgres_tuned_service.get("command") == postgres_command
+    and postgres_tuned_service.get("entrypoint") == postgres_entrypoint,
+    "explicit PostgreSQL tuning must stay in environment values, not generated shell source",
+)
+postgres_tuned_env = postgres_tuned_service.get("environment", {})
+for environment_name, (_, expected_value) in postgres_tuning.items():
+    require(
+        postgres_tuned_env.get(environment_name) == expected_value,
+        f"explicit {environment_name} must render unchanged",
+    )
+
+for rendered in (prod_bind, dev_named, dev_bind):
+    variant_postgres = rendered["services"]["postgres"]
+    require(variant_postgres.get("command") == postgres_command, "variants must retain PostgreSQL command")
+    require(variant_postgres.get("entrypoint") == postgres_entrypoint, "variants must retain PostgreSQL tuning wrapper")
 
 require_named_mount("sub2api", "sub2api_data", "/app/data")
 require_named_mount("postgres", "postgres_data", "/var/lib/postgresql/data")

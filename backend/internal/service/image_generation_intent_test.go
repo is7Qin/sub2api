@@ -108,6 +108,15 @@ func TestOpenAIRequestBodyMayContainAdditionalImageTooling(t *testing.T) {
 	))
 }
 
+func TestClassifyOpenAIForwardImageIntentSelectsCurrentRequestRepresentation(t *testing.T) {
+	rawImageBody := []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation"}]}`)
+	textOnlyMap := map[string]any{"model": "gpt-5.5", "input": "write code"}
+
+	require.True(t, classifyOpenAIForwardImageIntent("gpt-5.5", "gpt-5.5", rawImageBody, nil))
+	require.False(t, classifyOpenAIForwardImageIntent("gpt-5.5", "gpt-5.5", rawImageBody, textOnlyMap))
+	require.True(t, classifyOpenAIForwardImageIntent("gpt-5.5", "gpt-image-2", nil, textOnlyMap))
+}
+
 func TestIsImageGenerationIntentMapDetectsCodexImageGenNamespace(t *testing.T) {
 	tests := []struct {
 		name    string

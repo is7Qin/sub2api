@@ -3362,6 +3362,10 @@ func (s *oauthPendingFlowTotpCacheStub) ClearVerifyAttempts(_ context.Context, u
 	return nil
 }
 
+func (s *oauthPendingFlowTotpCacheStub) UseBackupS3TotpStep(_ context.Context, _, _ int64, _ time.Duration) (bool, error) {
+	return false, nil
+}
+
 type oauthPendingFlowTotpEncryptorStub struct{}
 
 func (oauthPendingFlowTotpEncryptorStub) Encrypt(plaintext string) (string, error) {

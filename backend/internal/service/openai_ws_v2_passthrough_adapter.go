@@ -517,7 +517,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 	upstreamFirstMessageSent = true
 
-	readNextClientFrame := func(readCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
+	readNextClientFrame := func(readCtx context.Context, conn openaiwsv2.FrameConn, markActivity func()) (coderws.MessageType, []byte, error) {
 		for {
 			msgType, payload, readErr := conn.ReadFrame(readCtx)
 			if readErr != nil {
@@ -528,6 +528,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			}
 			if writeErr := upstreamFrameConn.WriteFrame(readCtx, msgType, payload); writeErr != nil {
 				return msgType, payload, writeErr
+			}
+			if markActivity != nil {
+				markActivity()
 			}
 		}
 	}

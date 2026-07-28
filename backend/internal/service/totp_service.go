@@ -41,6 +41,9 @@ type TotpCache interface {
 	IncrementVerifyAttempts(ctx context.Context, userID int64) (int, error)
 	GetVerifyAttempts(ctx context.Context, userID int64) (int, error)
 	ClearVerifyAttempts(ctx context.Context, userID int64) error
+
+	// Endpoint-scoped replay prevention
+	UseBackupS3TotpStep(ctx context.Context, userID, step int64, ttl time.Duration) (bool, error)
 }
 
 // SecretEncryptor defines encryption operations for TOTP secrets
@@ -235,14 +238,9 @@ func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode,
 		return ErrTotpInvalidCode
 	}
 
-	setupSecretPrefix := "N/A"
-	if len(session.Secret) >= 4 {
-		setupSecretPrefix = session.Secret[:4]
-	}
 	slog.Debug("totp_complete_setup_before_encrypt",
 		"user_id", userID,
-		"secret_len", len(session.Secret),
-		"secret_prefix", setupSecretPrefix)
+		"secret_len", len(session.Secret))
 
 	// Encrypt the secret
 	encryptedSecret, err := s.encryptor.Encrypt(session.Secret)
@@ -261,16 +259,11 @@ func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode,
 			"user_id", userID,
 			"error", decErr)
 	} else {
-		decryptedPrefix := "N/A"
-		if len(decrypted) >= 4 {
-			decryptedPrefix = decrypted[:4]
-		}
 		slog.Debug("totp_complete_setup_verified",
 			"user_id", userID,
 			"original_len", len(session.Secret),
 			"decrypted_len", len(decrypted),
-			"match", session.Secret == decrypted,
-			"decrypted_prefix", decryptedPrefix)
+			"match", session.Secret == decrypted)
 	}
 
 	// Update user with encrypted TOTP secret
@@ -371,14 +364,9 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		return infraerrors.InternalServer("TOTP_VERIFY_ERROR", "failed to verify totp code")
 	}
 
-	secretPrefix := "N/A"
-	if len(secret) >= 4 {
-		secretPrefix = secret[:4]
-	}
 	slog.Debug("totp_verify_decrypted",
 		"user_id", userID,
-		"secret_len", len(secret),
-		"secret_prefix", secretPrefix)
+		"secret_len", len(secret))
 
 	// Verify the code
 	valid := totp.Validate(code, secret)
@@ -386,7 +374,6 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		"user_id", userID,
 		"valid", valid,
 		"secret_len", len(secret),
-		"secret_prefix", secretPrefix,
 		"server_time", time.Now().UTC().Format(time.RFC3339))
 
 	if !valid {
@@ -399,6 +386,75 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 	_ = s.cache.ClearVerifyAttempts(ctx, userID)
 
 	return nil
+}
+
+// VerifyBackupS3Update verifies a code at the moment a Backup S3 update is
+// requested. It deliberately creates no reusable grant: each sensitive update
+// requires a fresh TOTP code and keeps the proof scoped to this endpoint.
+func (s *TotpService) VerifyBackupS3Update(ctx context.Context, userID int64, code string) error {
+	step, err := s.verifyCodeAndGetStep(ctx, userID, code)
+	if err != nil {
+		return err
+	}
+
+	// Consume the matched step, including when clock-skew validation accepted an
+	// adjacent step, so the same valid code cannot replay an S3 update.
+	used, err := s.cache.UseBackupS3TotpStep(ctx, userID, step, 90*time.Second)
+	if err != nil {
+		return backupS3StepUpUnavailable()
+	}
+	if used {
+		return infraerrors.BadRequest("BACKUP_S3_TOTP_REPLAYED", "TOTP code has already been used for a backup S3 update; wait for a new code")
+	}
+	return nil
+}
+
+func (s *TotpService) verifyCodeAndGetStep(ctx context.Context, userID int64, code string) (int64, error) {
+	attempts, err := s.cache.GetVerifyAttempts(ctx, userID)
+	if err != nil {
+		return 0, backupS3StepUpUnavailable()
+	}
+	if attempts >= maxTotpAttempts {
+		return 0, ErrTotpTooManyAttempts
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return 0, infraerrors.InternalServer("TOTP_VERIFY_ERROR", "failed to verify totp code")
+	}
+	if !user.TotpEnabled || user.TotpSecretEncrypted == nil {
+		return 0, ErrTotpNotSetup
+	}
+
+	secret, err := s.encryptor.Decrypt(*user.TotpSecretEncrypted)
+	if err != nil {
+		return 0, infraerrors.InternalServer("TOTP_VERIFY_ERROR", "failed to verify totp code")
+	}
+
+	now := time.Now().UTC()
+	currentStep := now.Unix() / 30
+	for _, offset := range []int64{0, 1, -1} {
+		candidateTime := time.Unix((currentStep+offset)*30, 0).UTC()
+		candidateCode, generateErr := totp.GenerateCode(secret, candidateTime)
+		if generateErr != nil {
+			return 0, infraerrors.InternalServer("TOTP_VERIFY_ERROR", "failed to verify totp code")
+		}
+		if subtle.ConstantTimeCompare([]byte(candidateCode), []byte(code)) == 1 {
+			if err := s.cache.ClearVerifyAttempts(ctx, userID); err != nil {
+				return 0, backupS3StepUpUnavailable()
+			}
+			return currentStep + offset, nil
+		}
+	}
+
+	if _, err := s.cache.IncrementVerifyAttempts(ctx, userID); err != nil {
+		return 0, backupS3StepUpUnavailable()
+	}
+	return 0, ErrTotpInvalidCode
+}
+
+func backupS3StepUpUnavailable() error {
+	return infraerrors.ServiceUnavailable("BACKUP_S3_STEP_UP_UNAVAILABLE", "TOTP verification service unavailable")
 }
 
 // CreateLoginSession creates a temporary login session for 2FA

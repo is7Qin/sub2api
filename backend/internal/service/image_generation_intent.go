@@ -66,6 +66,14 @@ func IsImageGenerationIntentMap(endpoint string, requestedModel string, reqBody 
 	return openAIAnyToolChoiceSelectsImageGeneration(reqBody["tool_choice"])
 }
 
+// classifyOpenAIForwardImageIntent preserves Forward's raw view until an earlier mutation requires a map.
+func classifyOpenAIForwardImageIntent(requestedModel string, upstreamModel string, body []byte, reqBody map[string]any) bool {
+	if reqBody != nil {
+		return IsImageGenerationIntentMap(openAIResponsesEndpoint, requestedModel, reqBody) || isOpenAIImageGenerationModel(upstreamModel)
+	}
+	return IsImageGenerationIntent(openAIResponsesEndpoint, requestedModel, body) || isOpenAIImageGenerationModel(upstreamModel)
+}
+
 // IsImageGenerationEndpoint identifies dedicated generated-image endpoints.
 func IsImageGenerationEndpoint(endpoint string) bool {
 	switch normalizeImageGenerationEndpoint(endpoint) {

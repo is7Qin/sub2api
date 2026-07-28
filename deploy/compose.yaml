@@ -45,7 +45,33 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-sub2api}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
       POSTGRES_DB: ${DATABASE_DBNAME:-sub2api}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-}
+      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${POSTGRES_EFFECTIVE_CACHE_SIZE:-}
+      POSTGRES_MAINTENANCE_WORK_MEM: ${POSTGRES_MAINTENANCE_WORK_MEM:-}
       TZ: ${TZ:-Asia/Shanghai}
+    # Build argv from a fixed allowlist so tuning values cannot inject commands.
+    # Blank variables add no -c options, preserving the postgres:18 defaults.
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        set -- "$$@"
+        if [ -n "$${POSTGRES_MAX_CONNECTIONS}" ]; then
+          set -- "$$@" -c "max_connections=$${POSTGRES_MAX_CONNECTIONS}"
+        fi
+        if [ -n "$${POSTGRES_SHARED_BUFFERS}" ]; then
+          set -- "$$@" -c "shared_buffers=$${POSTGRES_SHARED_BUFFERS}"
+        fi
+        if [ -n "$${POSTGRES_EFFECTIVE_CACHE_SIZE}" ]; then
+          set -- "$$@" -c "effective_cache_size=$${POSTGRES_EFFECTIVE_CACHE_SIZE}"
+        fi
+        if [ -n "$${POSTGRES_MAINTENANCE_WORK_MEM}" ]; then
+          set -- "$$@" -c "maintenance_work_mem=$${POSTGRES_MAINTENANCE_WORK_MEM}"
+        fi
+        exec /usr/local/bin/docker-entrypoint.sh "$$@"
+      - --
+    command: ["postgres"]
     healthcheck:
       test:
         - CMD-SHELL

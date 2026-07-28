@@ -1541,7 +1541,9 @@ export default {
         testConnection: '测试连接',
         testSuccess: 'S3 连接测试成功',
         testFailed: 'S3 连接测试失败',
-        saved: 'S3 配置已保存'
+        saved: 'S3 配置已保存',
+        totpTitle: '保存 S3 配置前验证',
+        totpHint: '请输入当前六位身份验证器验证码。每次更新 S3 配置都需要验证。'
       },
       schedule: {
         title: '定时备份',
@@ -6231,6 +6233,8 @@ export default {
         selectProviderKey: '选择服务商类型',
         providerConfig: '凭证配置',
         paymentGuideTrigger: '查看支付方式说明',
+        showSensitiveValue: '显示敏感值',
+        hideSensitiveValue: '隐藏敏感值',
         guideOpenLabel: '开通：',
         guideCallLabel: '调用：',
         guideFallbackLabel: '降级：',

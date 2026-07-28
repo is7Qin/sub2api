@@ -1,21 +1,30 @@
 package admin
 
 import (
+	"context"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
-type BackupHandler struct {
-	backupService *service.BackupService
-	userService   *service.UserService
+type backupS3StepUpVerifier interface {
+	VerifyBackupS3Update(ctx context.Context, userID int64, code string) error
 }
 
-func NewBackupHandler(backupService *service.BackupService, userService *service.UserService) *BackupHandler {
+type BackupHandler struct {
+	backupService  *service.BackupService
+	userService    *service.UserService
+	stepUpVerifier backupS3StepUpVerifier
+}
+
+func NewBackupHandler(backupService *service.BackupService, userService *service.UserService, stepUpVerifier backupS3StepUpVerifier) *BackupHandler {
 	return &BackupHandler{
-		backupService: backupService,
-		userService:   userService,
+		backupService:  backupService,
+		userService:    userService,
+		stepUpVerifier: stepUpVerifier,
 	}
 }
 
@@ -30,13 +39,49 @@ func (h *BackupHandler) GetS3Config(c *gin.Context) {
 	response.Success(c, cfg)
 }
 
+type UpdateS3ConfigRequest struct {
+	service.BackupS3Config
+	TotpCode string `json:"totp_code"`
+}
+
 func (h *BackupHandler) UpdateS3Config(c *gin.Context) {
-	var req service.BackupS3Config
+	var req UpdateS3ConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	cfg, err := h.backupService.UpdateS3Config(c.Request.Context(), req)
+
+	if c.GetString("auth_method") == "admin_api_key" {
+		response.ErrorFrom(c, infraerrors.Forbidden(
+			"BACKUP_S3_STEP_UP_ADMIN_API_KEY_FORBIDDEN",
+			"backup S3 configuration updates require a TOTP-verified admin session and cannot use an admin API key",
+		))
+		return
+	}
+
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "unauthorized")
+		return
+	}
+	if req.TotpCode == "" {
+		response.ErrorFrom(c, infraerrors.Forbidden(
+			"BACKUP_S3_STEP_UP_REQUIRED",
+			"recent TOTP verification is required to update backup S3 configuration",
+		))
+		return
+	}
+	if h.stepUpVerifier == nil {
+		response.ErrorFrom(c, infraerrors.ServiceUnavailable("BACKUP_S3_STEP_UP_UNAVAILABLE", "TOTP verification service unavailable"))
+		return
+	}
+	// Verify per update so a captured code cannot authorize a later S3 change.
+	if err := h.stepUpVerifier.VerifyBackupS3Update(c.Request.Context(), subject.UserID, req.TotpCode); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	cfg, err := h.backupService.UpdateS3Config(c.Request.Context(), req.BackupS3Config)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

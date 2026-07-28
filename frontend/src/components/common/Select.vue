@@ -178,6 +178,8 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const optionsListRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<'bottom' | 'top'>('bottom')
 const triggerRect = ref<DOMRect | null>(null)
+const dropdownViewportPadding = 8
+const dropdownMinimumWidth = 200
 
 // i18n placeholders
 const placeholderText = computed(() => props.placeholder ?? t('common.selectOption'))
@@ -194,10 +196,21 @@ const dropdownStyle = computed(() => {
   if (!triggerRect.value) return {}
 
   const rect = triggerRect.value
+  const viewportWidth = Math.max(0, window.innerWidth)
+  const effectivePadding = Math.min(dropdownViewportPadding, viewportWidth / 2)
+  const usableWidth = Math.max(1, viewportWidth - effectivePadding * 2)
+  const minimumWidth = Math.min(Math.max(dropdownMinimumWidth, rect.width), usableWidth)
+  // Shift the preferred trigger alignment before shrinking, including fully offscreen triggers.
+  const left = Math.min(
+    Math.max(effectivePadding, rect.left),
+    Math.max(effectivePadding, viewportWidth - effectivePadding - minimumWidth)
+  )
+  const availableWidth = Math.max(1, viewportWidth - effectivePadding - left)
   const style: Record<string, string> = {
     position: 'fixed',
-    left: `${rect.left}px`,
-    minWidth: `${rect.width}px`,
+    left: `${left}px`,
+    minWidth: `${minimumWidth}px`,
+    maxWidth: `${availableWidth}px`,
     zIndex: '100000020'
   }
 
@@ -354,13 +367,13 @@ watch(isOpen, (open) => {
     if (isSearchable.value) {
       nextTick(() => searchInputRef.value?.focus())
     }
-    // Add scroll listener to update position
-    window.addEventListener('scroll', updateTriggerRect, { capture: true, passive: true })
+    // Captured scroll and resize keep teleported geometry aligned with nested scrollers.
+    window.addEventListener('scroll', calculateDropdownPosition, { capture: true, passive: true })
     window.addEventListener('resize', calculateDropdownPosition)
   } else {
     searchQuery.value = ''
     focusedIndex.value = -1
-    window.removeEventListener('scroll', updateTriggerRect, { capture: true })
+    window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
   }
 })
@@ -448,7 +461,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
-  window.removeEventListener('scroll', updateTriggerRect, { capture: true })
+  window.removeEventListener('scroll', calculateDropdownPosition, { capture: true })
   window.removeEventListener('resize', calculateDropdownPosition)
 })
 </script>

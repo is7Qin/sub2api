@@ -5,10 +5,56 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPricingSchedulerBlankRemoteURLDoesNotStart(t *testing.T) {
+	for _, remoteURL := range []string{"", "  \t  "} {
+		svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{RemoteURL: remoteURL}}, nil)
+		svc.startUpdateScheduler()
+
+		done := make(chan struct{})
+		go func() {
+			svc.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("blank remote URL must not start scheduler")
+		}
+		svc.Stop()
+	}
+}
+
+func TestPricingSchedulerNilConfigDoesNotStart(t *testing.T) {
+	svc := NewPricingService(nil, nil)
+	svc.startUpdateScheduler()
+	svc.Stop()
+}
+
+func TestPricingSchedulerBlankRemoteURLStopIsIdempotent(t *testing.T) {
+	svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{RemoteURL: " "}}, nil)
+	svc.startUpdateScheduler()
+	require.NotPanics(t, svc.Stop)
+	require.NotPanics(t, svc.Stop)
+}
+
+func TestPricingNonEmptyInvalidRemoteURLStillReturnsValidationError(t *testing.T) {
+	svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{
+		RemoteURL: "://invalid",
+		DataDir:   t.TempDir(),
+	}}, nil)
+
+	err := svc.ForceUpdate()
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid pricing url")
+}
 
 func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	svc := &PricingService{}

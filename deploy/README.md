@@ -89,7 +89,7 @@ These development commands require Compose v2.24.4+ for `!override`.
 
 ### External PostgreSQL and Redis
 
-`compose.external.yaml` runs only Sub2API. Set external `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_DBNAME`, `REDIS_HOST`, `REDIS_PORT`, and optional `REDIS_PASSWORD` in `.env`, then run:
+`compose.external.yaml` runs only Sub2API. Set external `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_DBNAME`, `REDIS_HOST`, `REDIS_PORT`, and optional `REDIS_PASSWORD` in `.env`. Leave `REDIS_USERNAME` empty to authenticate as the Redis default user; set it only for an externally managed named ACL user. Then run:
 
 ```bash
 docker compose -f compose.external.yaml up -d

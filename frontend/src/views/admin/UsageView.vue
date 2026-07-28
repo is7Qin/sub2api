@@ -64,7 +64,7 @@
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
       </div>
-      <UsageFilters v-model="filters" :start-date="startDate" :end-date="endDate" :exporting="exporting" :model-options="modelNameOptions" @change="applyFilters" @refresh="refreshData" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel">
+      <UsageFilters ref="usageFiltersRef" v-model="filters" :start-date="startDate" :end-date="endDate" :exporting="exporting" :model-options="modelNameOptions" @change="applyFilters" @refresh="refreshData" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel">
         <template #after-reset>
           <div class="relative" ref="columnDropdownRef">
             <button
@@ -254,6 +254,8 @@ const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
 const defaultRange = getLast24HoursRangeDates()
 const startDate = ref(defaultRange.start); const endDate = ref(defaultRange.end)
 const filters = ref<AdminUsageQueryParams>({ user_id: undefined, model: undefined, group_id: undefined, request_type: undefined, billing_type: null, start_date: startDate.value, end_date: endDate.value })
+const usageFiltersRef = ref<{ getUserSearchRevision?: () => number; setUserKeyword?: (keyword: string) => void } | null>(null)
+let routeUserLookupRevision = 0
 const pagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
 const sortState = reactive({
   sort_by: 'created_at',
@@ -291,6 +293,35 @@ const applyRouteQueryFilters = () => {
     end_date: endDate.value
   }
   granularity.value = getGranularityForRange(startDate.value, endDate.value)
+}
+
+const loadRouteUserFilterLabel = async () => {
+  const requestedUserId = filters.value.user_id
+  if (!requestedUserId) return
+  const lookupRevision = ++routeUserLookupRevision
+  const searchRevision = usageFiltersRef.value?.getUserSearchRevision?.()
+  const isCurrent = () => (
+    lookupRevision === routeUserLookupRevision
+    && filters.value.user_id === requestedUserId
+    && usageFiltersRef.value?.getUserSearchRevision?.() === searchRevision
+  )
+
+  try {
+    const user = await adminAPI.users.getById(requestedUserId, true)
+    if (isCurrent()) usageFiltersRef.value?.setUserKeyword?.(user.email || String(requestedUserId))
+  } catch {
+    if (isCurrent()) usageFiltersRef.value?.setUserKeyword?.(String(requestedUserId))
+  }
+}
+
+const applyRouteUserFilter = () => {
+  const userId = getNumericQueryValue(route.query.user_id)
+  if (filters.value.user_id === userId) return
+  routeUserLookupRevision += 1
+  filters.value = { ...filters.value, user_id: userId }
+  pagination.page = 1
+  void loadRouteUserFilterLabel()
+  applyFilters()
 }
 
 const onDateRangeChange = (range: { startDate: string; endDate: string; preset: string | null }) => {
@@ -677,6 +708,7 @@ const handleColumnClickOutside = (event: MouseEvent) => {
 
 onMounted(() => {
   applyRouteQueryFilters()
+  void loadRouteUserFilterLabel()
   loadLogs()
   loadStats()
   loadModelStats(modelDistributionSource.value, true)
@@ -686,11 +718,13 @@ onMounted(() => {
   loadSavedColumns()
   document.addEventListener('click', handleColumnClickOutside)
 })
-onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
+onUnmounted(() => { routeUserLookupRevision += 1; abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
 
 watch(modelDistributionSource, (source) => {
   void loadModelStats(source)
 })
+
+watch(() => route.query.user_id, applyRouteUserFilter)
 
 defineExpose({ requestedModelStats, refreshData })
 </script>

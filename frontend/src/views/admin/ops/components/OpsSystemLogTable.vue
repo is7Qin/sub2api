@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { opsAPI, type OpsRuntimeLogConfig, type OpsSystemLog, type OpsSystemLogSinkHealth } from '@/api/admin/ops'
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
+import { extractApiErrorCode } from '@/utils/apiError'
 
 const appStore = useAppStore()
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   platformFilter?: string
@@ -301,9 +304,17 @@ const cleanupCurrentFilter = async () => {
     appStore.showSuccess(`清理完成，删除 ${res.deleted || 0} 条日志`)
     page.value = 1
     await Promise.all([fetchLogs(), fetchHealth()])
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[OpsSystemLogTable] Failed to cleanup logs', err)
-    appStore.showError(err?.response?.data?.detail || '清理系统日志失败')
+    // Cleanup errors are allowlisted so internal backend details never reach the toast.
+    const legacyReason = typeof err === 'object' && err !== null
+      ? (err as { response?: { data?: { reason?: unknown } } }).response?.data?.reason
+      : undefined
+    const errorCode = typeof legacyReason === 'string' ? legacyReason : extractApiErrorCode(err)
+    const messageKey = errorCode === 'OPS_SYSTEM_LOG_CLEANUP_FILTER_REQUIRED'
+      ? 'admin.ops.systemLogs.cleanupFilterRequired'
+      : 'admin.ops.systemLogs.cleanupFailed'
+    appStore.showError(t(messageKey))
   }
 }
 

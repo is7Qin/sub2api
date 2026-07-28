@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -20,6 +22,28 @@ func TestProvideServiceBuildInfo(t *testing.T) {
 	out := provideServiceBuildInfo(in)
 	require.Equal(t, in.Version, out.Version)
 	require.Equal(t, in.BuildType, out.BuildType)
+}
+
+type failingShutdownServer struct {
+	called bool
+}
+
+func (s *failingShutdownServer) Shutdown(context.Context) error {
+	s.called = true
+	return errors.New("shutdown failed")
+}
+
+func TestShutdownErrorReturnsSoDeferredCleanupRuns(t *testing.T) {
+	server := &failingShutdownServer{}
+	cleaned := false
+
+	func() {
+		defer func() { cleaned = true }()
+		shutdownServer(context.Background(), server)
+	}()
+
+	require.True(t, server.called)
+	require.True(t, cleaned, "shutdown errors must return normally so application cleanup can run")
 }
 
 func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {

@@ -211,6 +211,9 @@ export default {
       description: 'Connect to your Redis server',
       host: 'Host',
       port: 'Port',
+      username: 'Username (optional)',
+      usernamePlaceholder: 'Redis ACL username',
+      usernameHint: 'Leave empty to use the Redis default user.',
       password: 'Password (optional)',
       database: 'Database',
       passwordPlaceholder: 'Password',
@@ -4820,6 +4823,7 @@ export default {
       failedToLoad: 'Failed to load promo codes',
       failedToCreate: 'Failed to create promo code',
       failedToUpdate: 'Failed to update promo code',
+      invalidExpiresAt: 'Enter a valid expiration date and time.',
       failedToDelete: 'Failed to delete promo code',
       failedToLoadUsages: 'Failed to load usage records'
     },
@@ -4904,6 +4908,10 @@ export default {
     ops: {
       title: 'Ops Monitoring',
       description: 'Operational monitoring and troubleshooting',
+      systemLogs: {
+        cleanupFailed: 'Failed to clean up system logs.',
+        cleanupFilterRequired: 'Add at least one specific filter before cleaning up system logs.'
+      },
       // Dashboard
       systemHealth: 'System Health',
       overview: 'Overview',

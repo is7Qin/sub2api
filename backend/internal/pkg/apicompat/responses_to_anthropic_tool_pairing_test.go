@@ -58,7 +58,7 @@ func hasToolResult(blocks []AnthropicContentBlock, toolUseID string) bool {
 
 func convertAnthropic(t *testing.T, input string) []AnthropicMessage {
 	t.Helper()
-	_, messages, err := convertResponsesInputToAnthropic(json.RawMessage(input))
+	_, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input))
 	require.NoError(t, err)
 	assertAnthropicPairing(t, messages)
 	return messages
@@ -178,7 +178,7 @@ func TestResponsesInputToAnthropic_RejectsMalformedFunctionArguments(t *testing.
 			}})
 			require.NoError(t, err)
 
-			_, _, err = convertResponsesInputToAnthropic(input)
+			_, _, err = convertResponsesInputToAnthropic("", input)
 			require.ErrorContains(t, err, `responses input item 0 function_call "call_bad" arguments: must be a valid JSON object:`)
 		})
 	}

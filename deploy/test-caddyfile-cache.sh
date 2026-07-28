@@ -130,6 +130,125 @@ reject_cache_control_override() {
 	' "$1"
 }
 
+validate_sse_compression_policy() {
+	awk '
+	function trim(value) {
+		sub(/^[[:space:]]+/, "", value)
+		sub(/[[:space:]]+$/, "", value)
+		return value
+	}
+	function brace_count(value, token,    copy, count) {
+		copy = value
+		while ((position = index(copy, token)) > 0) {
+			count++
+			copy = substr(copy, position + 1)
+		}
+		return count
+	}
+	BEGIN {
+		required["text/css*"] = 1
+		required["text/csv*"] = 1
+		required["text/html*"] = 1
+		required["text/javascript*"] = 1
+		required["text/markdown*"] = 1
+		required["text/plain*"] = 1
+		required["text/xml*"] = 1
+		required["application/json*"] = 1
+		required["application/javascript*"] = 1
+		required["application/xml*"] = 1
+		required["application/rss+xml*"] = 1
+		required["image/svg+xml*"] = 1
+	}
+	{
+		line = $0
+		sub(/[[:space:]]*#.*/, "", line)
+		line = trim(line)
+		if (line == "") next
+
+		split(line, fields, /[[:space:]]+/)
+		if (fields[1] == "flush_interval") invalid = 1
+		if (fields[1] == "encode") {
+			encode_count++
+			if (in_encode || index(line, "{") == 0) invalid = 1
+			in_encode = 1
+			encode_depth = brace_count(line, "{") - brace_count(line, "}")
+			next
+		}
+		if (!in_encode) next
+
+		if (fields[1] == "header" && fields[2] == "Content-Type") {
+			mime = fields[3]
+			if (!(mime in required) || mime == "text/*" || mime ~ /^text\/event-stream/) invalid = 1
+			seen[mime]++
+		}
+		encode_depth += brace_count(line, "{") - brace_count(line, "}")
+		if (encode_depth <= 0) in_encode = 0
+	}
+	END {
+		for (mime in required) if (seen[mime] != 1) invalid = 1
+		if (encode_count != 1 || in_encode) invalid = 1
+		exit invalid ? 1 : 0
+	}
+	' "$1"
+}
+
+run_compression_self_tests() {
+	tmp_dir=$(mktemp -d)
+	trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+	cat >"$tmp_dir/valid" <<'EOF'
+example.com {
+	encode {
+		zstd
+		gzip 6
+		minimum_length 256
+		match {
+			header Content-Type text/css*
+			header Content-Type text/csv*
+			header Content-Type text/html*
+			header Content-Type text/javascript*
+			header Content-Type text/markdown*
+			header Content-Type text/plain*
+			header Content-Type text/xml*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type application/rss+xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+}
+EOF
+	validate_sse_compression_policy "$tmp_dir/valid" || {
+		echo "Caddy compression guard rejected the canonical non-SSE policy" >&2
+		exit 1
+	}
+
+	sed 's#text/plain\*#text/*#' "$tmp_dir/valid" >"$tmp_dir/invalid"
+	if validate_sse_compression_policy "$tmp_dir/invalid"; then
+		echo "Caddy compression guard accepted text/*" >&2
+		exit 1
+	fi
+	sed '/text\/plain\*/a\			header Content-Type text/event-stream*' "$tmp_dir/valid" >"$tmp_dir/invalid"
+	if validate_sse_compression_policy "$tmp_dir/invalid"; then
+		echo "Caddy compression guard accepted text/event-stream" >&2
+		exit 1
+	fi
+	sed '/application\/json\*/d' "$tmp_dir/valid" >"$tmp_dir/invalid"
+	if validate_sse_compression_policy "$tmp_dir/invalid"; then
+		echo "Caddy compression guard accepted a reduced compression allowlist" >&2
+		exit 1
+	fi
+	cp "$tmp_dir/valid" "$tmp_dir/invalid"
+	printf 'flush_interval -1\n' >>"$tmp_dir/invalid"
+	if validate_sse_compression_policy "$tmp_dir/invalid"; then
+		echo "Caddy compression guard accepted a forced flush interval" >&2
+		exit 1
+	fi
+
+	rm -rf "$tmp_dir"
+	trap - EXIT HUP INT TERM
+}
+
 run_self_tests() {
 	tmp_dir=$(mktemp -d)
 	trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
@@ -450,8 +569,14 @@ EOF
 	trap - EXIT HUP INT TERM
 }
 
+run_compression_self_tests
 run_self_tests
 run_caddy_adaptation_tests
+
+if ! validate_sse_compression_policy "$caddyfile"; then
+	echo "Caddyfile compression must use the non-SSE text MIME allowlist without a forced flush interval" >&2
+	exit 1
+fi
 
 if ! reject_cache_control_override "$caddyfile"; then
 	echo "Caddyfile must not override Cache-Control response headers; the backend owns asset cache policy" >&2
@@ -465,4 +590,4 @@ if ! printf '%s\n' "$active_config" | grep -Eq '^[[:space:]]*reverse_proxy[[:spa
 	exit 1
 fi
 
-echo "Caddyfile preserves backend Cache-Control policy and reverse_proxy routing"
+echo "Caddyfile preserves backend cache policy, SSE streaming, and reverse_proxy routing"

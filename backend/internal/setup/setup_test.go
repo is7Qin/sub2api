@@ -1,12 +1,120 @@
 package setup
 
 import (
+	"bufio"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"gopkg.in/yaml.v3"
 )
+
+func TestPromptOptionalCredentialPreservesSpecialCharactersAndSpaces(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader(" acl:user/@% \r\n"))
+	if got := promptOptionalCredential(reader, "Redis Username"); got != " acl:user/@% " {
+		t.Fatalf("promptOptionalCredential() = %q", got)
+	}
+}
+
+func TestBuildSetupRedisOptionsPreservesCredentialsAndTransport(t *testing.T) {
+	cfg := &RedisConfig{
+		Host:      "redis.example.com",
+		Port:      6380,
+		Username:  " acl:user/@% ",
+		Password:  " password/@% ",
+		DB:        3,
+		EnableTLS: true,
+	}
+
+	opts := buildSetupRedisOptions(cfg)
+	if opts.Addr != "redis.example.com:6380" || opts.Username != cfg.Username || opts.Password != cfg.Password || opts.DB != 3 {
+		t.Fatalf("buildSetupRedisOptions() did not preserve Redis fields")
+	}
+	if opts.TLSConfig == nil || opts.TLSConfig.ServerName != cfg.Host {
+		t.Fatalf("buildSetupRedisOptions() TLS config = %#v", opts.TLSConfig)
+	}
+	if opts.DialTimeout != 0 || opts.ReadTimeout != 0 || opts.WriteTimeout != 0 {
+		t.Fatalf("setup options unexpectedly changed go-redis timeout defaults: %#v", opts)
+	}
+}
+
+func TestSetupConfigFromEnvPreservesRedisUsername(t *testing.T) {
+	t.Setenv("REDIS_USERNAME", " acl:user/@% ")
+	t.Setenv("REDIS_PASSWORD", " password/@% ")
+
+	cfg := setupConfigFromEnv()
+	if cfg.Redis.Username != " acl:user/@% " || cfg.Redis.Password != " password/@% " {
+		t.Fatalf("setupConfigFromEnv() did not preserve Redis credentials exactly")
+	}
+}
+
+func TestValidateRedisUsernameUsesUTF8ByteLimit(t *testing.T) {
+	if err := validateRedisUsername(""); err != nil {
+		t.Fatalf("empty username should select Redis default user: %v", err)
+	}
+	if err := validateRedisUsername(strings.Repeat("é", 64)); err != nil {
+		t.Fatalf("128-byte username should be valid: %v", err)
+	}
+
+	const secret = "secret-username/@%"
+	err := validateRedisUsername(strings.Repeat("a", 127) + "é" + secret)
+	if err == nil || !strings.Contains(err.Error(), "at most 128 bytes") {
+		t.Fatalf("129+ byte username error = %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("validation error leaked username: %v", err)
+	}
+}
+
+func TestRedisConnectionRejectsOversizeUsernameBeforeDial(t *testing.T) {
+	username := strings.Repeat("a", 129)
+	const password = "password-must-not-leak/@%"
+	err := TestRedisConnection(&RedisConfig{
+		Host: "127.0.0.1", Port: 1, Username: username, Password: password,
+	})
+	if err == nil || err.Error() != "Redis username must be at most 128 bytes" {
+		t.Fatalf("TestRedisConnection() error = %v", err)
+	}
+	if strings.Contains(err.Error(), username) || strings.Contains(err.Error(), password) {
+		t.Fatalf("validation error leaked Redis credentials: %v", err)
+	}
+}
+
+func TestWriteConfigFileIncludesRedisUsernameExactly(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	configPath := GetConfigFilePath()
+	requireNoError(t, os.WriteFile(configPath, []byte("old config"), 0o644))
+	requireNoError(t, os.Chmod(configPath, 0o644))
+
+	cfg := &SetupConfig{Redis: RedisConfig{
+		Host: "redis", Port: 6379, Username: " acl:user/@% ", Password: " password/@% ", DB: 2,
+	}}
+	requireNoError(t, writeConfigFile(cfg))
+
+	data, err := os.ReadFile(configPath)
+	requireNoError(t, err)
+	var written SetupConfig
+	requireNoError(t, yaml.Unmarshal(data, &written))
+	if written.Redis.Username != cfg.Redis.Username || written.Redis.Password != cfg.Redis.Password {
+		t.Fatalf("written Redis credentials changed during YAML serialization")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(configPath)
+		requireNoError(t, err)
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("config permissions = %o, want 600", got)
+		}
+	}
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDecideAdminBootstrap(t *testing.T) {
 	t.Parallel()

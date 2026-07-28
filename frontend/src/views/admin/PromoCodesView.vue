@@ -410,7 +410,7 @@ import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { adminAPI } from '@/api/admin'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import type { PromoCode, PromoCodeUsage } from '@/types'
 import type { Column } from '@/components/common/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -650,7 +650,10 @@ const handleEdit = (code: PromoCode) => {
   editForm.bonus_amount = code.bonus_amount
   editForm.max_uses = code.max_uses
   editForm.status = code.status
-  editForm.expires_at_str = code.expires_at ? new Date(code.expires_at).toISOString().slice(0, 16) : ''
+  const expiresAt = code.expires_at ? new Date(code.expires_at) : null
+  editForm.expires_at_str = expiresAt && !Number.isNaN(expiresAt.getTime())
+    ? formatDateTimeLocalInput(Math.floor(expiresAt.getTime() / 1000))
+    : ''
   editForm.notes = code.notes || ''
   showEditDialog.value = true
 }
@@ -660,8 +663,33 @@ const closeEditDialog = () => {
   editingCode.value = null
 }
 
+const parsePromoExpiry = (value: string): number | null => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value)
+  if (!match) return null
+  const [, year, month, day, hours, minutes] = match.map(Number)
+  const timestamp = parseDateTimeLocalInput(value)
+  if (timestamp === null) return null
+
+  const parsed = new Date(timestamp * 1000)
+  // Date silently normalizes invalid calendar fields and nonexistent DST wall-clock times.
+  if (
+    parsed.getFullYear() !== year
+    || parsed.getMonth() !== month - 1
+    || parsed.getDate() !== day
+    || parsed.getHours() !== hours
+    || parsed.getMinutes() !== minutes
+  ) return null
+  return timestamp
+}
+
 const handleUpdate = async () => {
   if (!editingCode.value) return
+
+  const expiresAt = editForm.expires_at_str ? parsePromoExpiry(editForm.expires_at_str) : 0
+  if (expiresAt === null) {
+    appStore.showError(t('admin.promo.invalidExpiresAt'))
+    return
+  }
 
   updating.value = true
   try {
@@ -670,7 +698,7 @@ const handleUpdate = async () => {
       bonus_amount: editForm.bonus_amount,
       max_uses: editForm.max_uses,
       status: editForm.status,
-      expires_at: editForm.expires_at_str ? Math.floor(new Date(editForm.expires_at_str).getTime() / 1000) : 0,
+      expires_at: expiresAt,
       notes: editForm.notes
     })
     appStore.showSuccess(t('admin.promo.codeUpdated'))

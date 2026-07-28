@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -138,14 +139,14 @@ func (r *ChannelMonitorRunner) Start() {
 }
 
 // Schedule 为指定监控创建（或重置）独立定时任务。
-//   - m.Enabled=false → 等同于 Unschedule(m.ID)
+//   - m.Enabled=false 或 APIKeyDecryptFailed=true → 等同于 Unschedule(m.ID)
 //   - 已存在的任务会先被取消再重建（适用于 IntervalSeconds 变更场景）
 //   - 新任务立即触发首次检测，之后按 IntervalSeconds 周期触发
 func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 	if r == nil || m == nil {
 		return
 	}
-	if !m.Enabled {
+	if !m.Enabled || m.APIKeyDecryptFailed {
 		r.Unschedule(m.ID)
 		return
 	}
@@ -263,7 +264,7 @@ func (r *ChannelMonitorRunner) fire(ctx context.Context, task *scheduledMonitor)
 		return
 	}
 	if _, ok := r.pool.TrySubmit(func() {
-		r.runOne(task.id, task.name)
+		r.runOne(task)
 	}); !ok {
 		// 池满：丢弃本次检测，但必须释放已占用的 inFlight 槽，否则该 monitor 会被永久卡住。
 		r.releaseInFlight(task.id)
@@ -291,23 +292,37 @@ func (r *ChannelMonitorRunner) releaseInFlight(id int64) {
 	r.inFlightMu.Unlock()
 }
 
-// runOne 执行单个监控的检测。所有错误只记日志，不熔断。
+// runOne 执行单个监控的检测。普通错误只记日志；API key 解密失败会撤销任务。
 // 任务结束时（含 panic recover）必须释放 in-flight 槽。
-func (r *ChannelMonitorRunner) runOne(id int64, name string) {
+func (r *ChannelMonitorRunner) runOne(task *scheduledMonitor) {
 	ctx, cancel := context.WithTimeout(context.Background(), monitorRequestTimeout+monitorPingTimeout+monitorRunOneBuffer)
 	defer cancel()
 
-	defer r.releaseInFlight(id)
+	defer r.releaseInFlight(task.id)
 
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error("channel_monitor: runner panic",
-				"monitor_id", id, "name", name, "panic", rec)
+				"monitor_id", task.id, "name", task.name, "panic", rec)
 		}
 	}()
 
-	if _, err := r.svc.RunCheck(ctx, id); err != nil {
+	if _, err := r.svc.RunCheck(ctx, task.id); err != nil {
+		if errors.Is(err, ErrChannelMonitorAPIKeyDecryptFailed) {
+			r.unscheduleTask(task)
+		}
 		slog.Warn("channel_monitor: run check failed",
-			"monitor_id", id, "name", name, "error", err)
+			"monitor_id", task.id, "name", task.name, "error", err)
 	}
+}
+
+// unscheduleTask only removes the task that observed the terminal error. A
+// concurrent repair may already have replaced it with a fresh schedule.
+func (r *ChannelMonitorRunner) unscheduleTask(task *scheduledMonitor) {
+	r.mu.Lock()
+	if current, ok := r.tasks[task.id]; ok && current == task {
+		delete(r.tasks, task.id)
+		task.cancel()
+	}
+	r.mu.Unlock()
 }

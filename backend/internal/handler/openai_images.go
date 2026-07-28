@@ -17,6 +17,22 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	imageQualityDiagnosticValues = map[string]struct{}{"auto": {}, "low": {}, "medium": {}, "high": {}, "standard": {}, "hd": {}}
+	imageSizeDiagnosticValues    = map[string]struct{}{"auto": {}, "256x256": {}, "512x512": {}, "1024x1024": {}, "1024x1536": {}, "1536x1024": {}, "1792x1024": {}, "1024x1792": {}}
+)
+
+func boundedImageDiagnosticValue(value string, known map[string]struct{}) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "default"
+	}
+	if _, ok := known[value]; ok {
+		return value
+	}
+	return "other"
+}
+
 // Images handles OpenAI Images API requests.
 // POST /v1/images/generations
 // POST /v1/images/edits
@@ -80,6 +96,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		zap.Bool("stream", parsed.Stream),
 		zap.Bool("multipart", parsed.Multipart),
 		zap.String("capability", string(parsed.RequiredCapability)),
+		zap.String("img_quality", boundedImageDiagnosticValue(parsed.Quality, imageQualityDiagnosticValues)),
+		zap.String("img_size", boundedImageDiagnosticValue(parsed.Size, imageSizeDiagnosticValues)),
 	)
 
 	if !service.GroupAllowsImageGeneration(apiKey.Group) {

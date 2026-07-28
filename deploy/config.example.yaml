@@ -814,6 +814,9 @@ redis:
   # Redis port
   # Redis 端口
   port: 6379
+  # Optional Redis ACL username. Empty uses the default user (including bundled Redis).
+  # 可选 Redis ACL 用户名。留空使用默认用户（包括内置 Redis）。
+  username: ""
   # Redis password (leave empty if no password is set)
   # Redis 密码（如果未设置密码则留空）
   password: ""

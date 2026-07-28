@@ -252,19 +252,33 @@ const billingModeOptions = ref<SelectOption[]>([
 
 const emitChange = () => emit('change')
 
-const debounceUserSearch = () => {
+const invalidateUserSearch = () => {
+  if (userSearchTimeout) {
+    clearTimeout(userSearchTimeout)
+    userSearchTimeout = null
+  }
   userSearchRevision += 1
-  if (userSearchTimeout) clearTimeout(userSearchTimeout)
+}
+
+const debounceUserSearch = () => {
+  invalidateUserSearch()
+  const query = userKeyword.value.trim()
+  if (!query) {
+    userResults.value = []
+    return
+  }
+
+  const revision = userSearchRevision
   userSearchTimeout = setTimeout(async () => {
-    if (!userKeyword.value) {
-      userResults.value = []
-      return
-    }
+    userSearchTimeout = null
     try {
-      const results = await adminAPI.usage.searchUsers(userKeyword.value)
-      userResults.value = results.sort((a, b) => Number(a.deleted) - Number(b.deleted))
+      const results = await adminAPI.usage.searchUsers(query)
+      // A later input or programmatic selection must win even if this request resolves last.
+      if (revision === userSearchRevision) {
+        userResults.value = results.sort((a, b) => Number(a.deleted) - Number(b.deleted))
+      }
     } catch {
-      userResults.value = []
+      if (revision === userSearchRevision) userResults.value = []
     }
   }, 300)
 }
@@ -284,6 +298,7 @@ const debounceApiKeySearch = () => {
 }
 
 const selectUser = async (u: SimpleUser) => {
+  invalidateUserSearch()
   userKeyword.value = u.email
   showUserDropdown.value = false
   filters.value.user_id = u.id
@@ -300,6 +315,7 @@ const selectUser = async (u: SimpleUser) => {
 }
 
 const clearUser = () => {
+  invalidateUserSearch()
   userKeyword.value = ''
   userResults.value = []
   showUserDropdown.value = false
@@ -399,6 +415,7 @@ watch(
   () => filters.value.user_id,
   (userId) => {
     if (!userId) {
+      invalidateUserSearch()
       userKeyword.value = ''
       userResults.value = []
     }
@@ -436,12 +453,14 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  userSearchRevision += 1
+  invalidateUserSearch()
   document.removeEventListener('click', onDocumentClick)
 })
 
 const setUserKeyword = (keyword: string) => {
+  invalidateUserSearch()
   userKeyword.value = keyword
+  userResults.value = []
   showUserDropdown.value = false
 }
 

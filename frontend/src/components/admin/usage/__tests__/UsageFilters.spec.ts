@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
 
 import UsageFilters from '../UsageFilters.vue'
 
@@ -99,6 +99,28 @@ function mountFilters(filters = defaultFilters()) {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
+
+enableAutoUnmount(afterEach)
+
+const user = (id: number, email: string) => ({ id, email, deleted: false })
+
+async function startUserSearch(wrapper: ReturnType<typeof mountFilters>, query: string) {
+  const input = wrapper.find('input[type="text"]')
+  await input.trigger('focus')
+  await input.setValue(query)
+  vi.advanceTimersByTime(300)
+  await flushPromises()
+}
+
 describe('UsageFilters — user search dropdown', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -162,6 +184,68 @@ describe('UsageFilters — user search dropdown', () => {
     // Also confirm user_id was set by checking the emitted change came through
     // (the component uses toRef so modelValue is mutated in place and 'change' is emitted)
     expect(wrapper.props('modelValue').user_id).toBe(1)
+  })
+
+  it('keeps only the latest trimmed query result when responses resolve out of order', async () => {
+    const first = deferred<ReturnType<typeof user>[]>()
+    const second = deferred<ReturnType<typeof user>[]>()
+    mockSearchUsers.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const wrapper = mountFilters()
+
+    await startUserSearch(wrapper, '  first  ')
+    await startUserSearch(wrapper, 'second')
+    expect(mockSearchUsers).toHaveBeenNthCalledWith(1, 'first')
+    expect(mockSearchUsers).toHaveBeenNthCalledWith(2, 'second')
+
+    second.resolve([user(2, 'second@test.com')])
+    await flushPromises()
+    first.resolve([user(1, 'first@test.com')])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('second@test.com')
+    expect(wrapper.text()).not.toContain('first@test.com')
+  })
+
+  it('ignores a stale rejection after newer results are displayed', async () => {
+    const first = deferred<ReturnType<typeof user>[]>()
+    mockSearchUsers.mockReturnValueOnce(first.promise).mockResolvedValueOnce([user(2, 'new@test.com')])
+    const wrapper = mountFilters()
+
+    await startUserSearch(wrapper, 'old')
+    await startUserSearch(wrapper, 'new')
+    expect(wrapper.text()).toContain('new@test.com')
+
+    first.reject(new Error('stale failure'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('new@test.com')
+  })
+
+  it.each(['clear', 'select', 'external reset', 'setUserKeyword', 'unmount'])('invalidates pending results on %s', async (action) => {
+    const pending = deferred<ReturnType<typeof user>[]>()
+    mockSearchUsers.mockReturnValueOnce(pending.promise)
+    const filters = defaultFilters()
+    const wrapper = mountFilters(filters)
+    await startUserSearch(wrapper, 'stale')
+
+    if (action === 'clear') {
+      await wrapper.find('input[type="text"]').setValue('')
+    } else if (action === 'select') {
+      await (wrapper.vm as any).selectUser(user(9, 'selected@test.com'))
+    } else if (action === 'external reset') {
+      filters.user_id = 7
+      await wrapper.setProps({ modelValue: { ...filters } })
+      filters.user_id = undefined
+      await wrapper.setProps({ modelValue: { ...filters } })
+    } else if (action === 'setUserKeyword') {
+      const vm = wrapper.vm as any
+      vm.setUserKeyword('routed@test.com')
+    } else {
+      wrapper.unmount()
+    }
+
+    pending.resolve([user(1, 'stale@test.com')])
+    await flushPromises()
+    if (action !== 'unmount') expect(wrapper.text()).not.toContain('stale@test.com')
   })
 })
 

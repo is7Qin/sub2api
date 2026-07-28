@@ -4816,6 +4816,7 @@ export default {
       failedToLoad: '加载优惠码失败',
       failedToCreate: '创建优惠码失败',
       failedToUpdate: '更新优惠码失败',
+      invalidExpiresAt: '请输入有效的过期日期和时间。',
       failedToDelete: '删除优惠码失败',
       failedToLoadUsages: '加载使用记录失败'
     },
@@ -4900,6 +4901,10 @@ export default {
     ops: {
       title: '运维监控',
       description: '运维监控与排障',
+      systemLogs: {
+        cleanupFailed: '清理系统日志失败',
+        cleanupFilterRequired: '请至少添加一个具体筛选条件后再清理系统日志'
+      },
       // Dashboard
       systemHealth: '系统健康',
       overview: '概览',

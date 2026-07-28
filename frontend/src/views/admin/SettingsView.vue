@@ -26,6 +26,7 @@
                 role="tab"
                 :aria-selected="activeTab === tab.key"
                 :tabindex="activeTab === tab.key ? 0 : -1"
+                :data-testid="`settings-tab-${tab.key}`"
                 :class="[
                   'settings-tab',
                   activeTab === tab.key && 'settings-tab-active',
@@ -784,6 +785,33 @@
                   </button>
                 </div>
               </template>
+            </div>
+          </div>
+
+          <!-- Global upstream error behavior -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.errorPassthrough.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.errorPassthrough.description") }}
+              </p>
+            </div>
+            <div class="flex items-center justify-between gap-4 p-6">
+              <p class="text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.errorPassthrough.globalScope") }}
+              </p>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm shrink-0"
+                data-testid="manage-error-passthrough-rules"
+                @click="showErrorPassthroughRules = true"
+              >
+                {{ t("admin.errorPassthrough.title") }}
+              </button>
             </div>
           </div>
 
@@ -6897,7 +6925,11 @@
         </div>
       </form>
 
-      <!-- Provider dialogs placed outside the settings form to prevent form submission bubbling -->
+      <!-- Dialogs are outside the settings form to prevent form submission bubbling. -->
+      <ErrorPassthroughRulesModal
+        :show="showErrorPassthroughRules"
+        @close="showErrorPassthroughRules = false"
+      />
       <PaymentProviderDialog
         ref="providerDialogRef"
         :show="showProviderDialog"
@@ -6973,6 +7005,7 @@ import AppLayout from "@/components/layout/AppLayout.vue";
 import Icon from "@/components/icons/Icon.vue";
 import Select from "@/components/common/Select.vue";
 import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
+import ErrorPassthroughRulesModal from "@/components/admin/ErrorPassthroughRulesModal.vue";
 import PaymentProviderList from "@/components/payment/PaymentProviderList.vue";
 import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vue";
 import GroupBadge from "@/components/common/GroupBadge.vue";
@@ -6997,6 +7030,7 @@ import {
 } from "@/utils/registrationEmailPolicy";
 
 const { t, locale } = useI18n();
+const showErrorPassthroughRules = ref(false);
 const appStore = useAppStore();
 const adminSettingsStore = useAdminSettingsStore();
 const isZhLocale = computed(() => locale.value.startsWith("zh"));

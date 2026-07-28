@@ -119,13 +119,11 @@
                         {{ t('admin.accounts.toolActions') }}
                       </div>
                     </div>
-                    <button class="account-tools-menu-item" @click="openErrorPassthrough">
-                      <span class="account-tools-menu-icon bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300">
-                        <Icon name="shield" size="sm" />
-                      </span>
-                      <span class="flex-1 text-left">{{ t('admin.errorPassthrough.title') }}</span>
-                    </button>
-                    <button class="account-tools-menu-item" @click="openTLSFingerprintProfiles">
+                    <button
+                      class="account-tools-menu-item"
+                      data-testid="tls-fingerprint-profiles-action"
+                      @click="openTLSFingerprintProfiles"
+                    >
                       <span class="account-tools-menu-icon bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
                         <Icon name="lock" size="sm" />
                       </span>
@@ -382,7 +380,6 @@
         <span>{{ t('admin.accounts.dataExportIncludeProxies') }}</span>
       </label>
     </ConfirmDialog>
-    <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
   </AppLayout>
 </template>
@@ -421,7 +418,6 @@ import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
-import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
@@ -488,7 +484,6 @@ const showDeleteDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
-const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
@@ -869,7 +864,6 @@ const isAnyModalOpen = computed(() => {
     showTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
-    showErrorPassthrough.value ||
     showTLSFingerprintProfiles.value
   )
 })
@@ -999,11 +993,6 @@ const openImportData = () => {
 const openExportDataDialogFromMenu = () => {
   closeAccountToolsDropdown()
   openExportDataDialog()
-}
-
-const openErrorPassthrough = () => {
-  closeAccountToolsDropdown()
-  showErrorPassthrough.value = true
 }
 
 const openTLSFingerprintProfiles = () => {

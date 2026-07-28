@@ -2,6 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 
+vi.mock("@/components/admin/ErrorPassthroughRulesModal.vue", () => ({
+  default: {
+    props: ["show"],
+    emits: ["close"],
+    template:
+      '<div data-testid="error-passthrough-rules-modal" :data-show="String(show)" @click="$emit(\'close\')" />',
+  },
+}));
+
 import SettingsView from "../SettingsView.vue";
 
 const {
@@ -434,8 +443,9 @@ const baseSettingsResponse = {
   },
 };
 
-function mountView() {
+function mountView(attachTo?: Element) {
   return mount(SettingsView, {
+    attachTo,
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
@@ -485,7 +495,7 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
   await flushPromises();
 }
 
-describe("admin SettingsView payment visible method controls", () => {
+describe("admin SettingsView controls", () => {
   beforeEach(() => {
     getSettings.mockReset();
     updateSettings.mockReset();
@@ -585,6 +595,34 @@ describe("admin SettingsView payment visible method controls", () => {
     });
     fetchPublicSettings.mockResolvedValue(undefined);
     adminSettingsFetch.mockResolvedValue(undefined);
+  });
+
+  it("opens and closes global error passthrough rules only from Gateway", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const wrapper = mountView(host);
+
+    try {
+      await flushPromises();
+      const actionSelector = '[data-testid="manage-error-passthrough-rules"]';
+      const modal = wrapper.get('[data-testid="error-passthrough-rules-modal"]');
+      expect(wrapper.get(actionSelector).isVisible()).toBe(false);
+      expect(modal.attributes("data-show")).toBe("false");
+
+      await wrapper.get('[data-testid="settings-tab-gateway"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get(actionSelector).isVisible()).toBe(true);
+
+      await wrapper.get(actionSelector).trigger("click");
+      expect(modal.attributes("data-show")).toBe("true");
+
+      await modal.trigger("click");
+      expect(modal.attributes("data-show")).toBe("false");
+      expect(updateSettings).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
   });
 
   it("does not render legacy visible payment method controls", async () => {
@@ -835,6 +873,11 @@ describe("admin SettingsView payment visible method controls", () => {
       min_429: 2,
       ratio_threshold: 0.01,
       block_seconds: 60,
+      usage_window_check_enabled: false,
+      usage_window_5h_threshold_percent: 100,
+      usage_window_7d_threshold_percent: 100,
+      usage_window_missing_data_fallback_seconds: 0,
+      plan_type_settings: [],
     });
   });
 

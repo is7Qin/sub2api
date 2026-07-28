@@ -104,8 +104,14 @@ function mountView() {
         ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
-        ErrorPassthroughRulesModal: true,
-        TLSFingerprintProfilesModal: true,
+        ErrorPassthroughRulesModal: {
+          template: '<div data-testid="error-passthrough-rules-modal" />'
+        },
+        TLSFingerprintProfilesModal: {
+          props: ['show'],
+          emits: ['close'],
+          template: '<div data-testid="tls-fingerprint-profiles-modal" :data-show="String(show)" />'
+        },
         CreateAccountModal: true,
         EditAccountModal: true,
         BulkEditAccountModal: true,
@@ -146,6 +152,20 @@ describe('admin AccountsView usage windows hint', () => {
     getBatchTodayStats.mockResolvedValue({ stats: {} })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
+  })
+
+  it('keeps TLS Fingerprint Profiles available without Error Passthrough Rules', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[title="admin.accounts.moreActions"]').trigger('click')
+
+    expect(wrapper.text()).not.toContain('admin.errorPassthrough.title')
+    expect(wrapper.find('[data-testid="error-passthrough-rules-modal"]').exists()).toBe(false)
+    const tlsAction = wrapper.find('[data-testid="tls-fingerprint-profiles-action"]')
+    expect(tlsAction.exists()).toBe(true)
+    await tlsAction.trigger('click')
+    expect(wrapper.find('[data-testid="tls-fingerprint-profiles-modal"]').attributes('data-show')).toBe('true')
   })
 
   it('renders an explanatory tooltip next to the usage windows column header', async () => {

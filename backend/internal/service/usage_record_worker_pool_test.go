@@ -193,6 +193,151 @@ func TestUsageRecordWorkerPool_OverflowSample(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestUsageRecordWorkerPool_SubmitMandatoryUnsampledFallbackExactlyOnce(t *testing.T) {
+	sampledReached := make(chan struct{})
+	releaseSampled := make(chan struct{})
+	releaseWorker := make(chan struct{})
+	pool := newUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:           1,
+		QueueSize:             1,
+		TaskTimeout:           time.Second,
+		OverflowPolicy:        config.UsageRecordOverflowPolicySample,
+		OverflowSamplePercent: 1,
+		AutoScaleEnabled:      false,
+	}, &usageRecordWorkerPoolTestHooks{
+		beforeSampleFallback: func() {
+			close(sampledReached)
+			<-releaseSampled
+		},
+	})
+	t.Cleanup(func() {
+		select {
+		case <-releaseSampled:
+		default:
+			close(releaseSampled)
+		}
+		select {
+		case <-releaseWorker:
+		default:
+			close(releaseWorker)
+		}
+		pool.Stop()
+	})
+
+	workerStarted := make(chan struct{})
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {
+		close(workerStarted)
+		<-releaseWorker
+	}))
+	<-workerStarted
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {}))
+
+	sampledMode := make(chan UsageRecordSubmitMode, 1)
+	go func() {
+		sampledMode <- pool.Submit(func(ctx context.Context) {})
+	}()
+	<-sampledReached
+
+	var calls atomic.Int32
+	mode := pool.SubmitMandatory(func(ctx context.Context) {
+		calls.Add(1)
+	})
+	require.Equal(t, UsageRecordSubmitModeDropped, mode)
+	require.Equal(t, int32(1), calls.Load())
+
+	close(releaseSampled)
+	close(releaseWorker)
+	require.Equal(t, UsageRecordSubmitModeSync, <-sampledMode)
+	pool.Stop()
+	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestUsageRecordWorkerPool_SubmitMandatorySyncBackpressureExecutesExactlyOnce(t *testing.T) {
+	backpressureReached := make(chan struct{})
+	releaseBackpressure := make(chan struct{})
+	releaseWorker := make(chan struct{})
+	pool := newUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		TaskTimeout:      time.Second,
+		OverflowPolicy:   config.UsageRecordOverflowPolicySync,
+		AutoScaleEnabled: false,
+	}, &usageRecordWorkerPoolTestHooks{
+		beforeSyncBackpressure: func() {
+			close(backpressureReached)
+			<-releaseBackpressure
+		},
+	})
+	t.Cleanup(func() {
+		select {
+		case <-releaseBackpressure:
+		default:
+			close(releaseBackpressure)
+		}
+		select {
+		case <-releaseWorker:
+		default:
+			close(releaseWorker)
+		}
+		pool.Stop()
+	})
+
+	workerStarted := make(chan struct{})
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {
+		close(workerStarted)
+		<-releaseWorker
+	}))
+	<-workerStarted
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(ctx context.Context) {}))
+
+	var calls atomic.Int32
+	mode := make(chan UsageRecordSubmitMode, 1)
+	go func() {
+		mode <- pool.SubmitMandatory(func(ctx context.Context) {
+			calls.Add(1)
+		})
+	}()
+	<-backpressureReached
+	require.Equal(t, int32(0), calls.Load())
+
+	close(releaseBackpressure)
+	close(releaseWorker)
+	require.Equal(t, UsageRecordSubmitModeSync, <-mode)
+	pool.Stop()
+	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestUsageRecordWorkerPool_SubmitMandatoryStopInterleavingFallsBackExactlyOnce(t *testing.T) {
+	submitReached := make(chan struct{})
+	releaseSubmit := make(chan struct{})
+	pool := newUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		TaskTimeout:      time.Second,
+		OverflowPolicy:   config.UsageRecordOverflowPolicyDrop,
+		AutoScaleEnabled: false,
+	}, &usageRecordWorkerPoolTestHooks{
+		beforeSubmit: func() {
+			close(submitReached)
+			<-releaseSubmit
+		},
+	})
+
+	var calls atomic.Int32
+	mode := make(chan UsageRecordSubmitMode, 1)
+	go func() {
+		mode <- pool.SubmitMandatory(func(ctx context.Context) {
+			calls.Add(1)
+		})
+	}()
+	<-submitReached
+	pool.Stop()
+	close(releaseSubmit)
+
+	require.Equal(t, UsageRecordSubmitModeDropped, <-mode)
+	require.Equal(t, int32(1), calls.Load())
+}
+
 func TestUsageRecordWorkerPool_SubmitAfterStop(t *testing.T) {
 	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
 		WorkerCount:           1,

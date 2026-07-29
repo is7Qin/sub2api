@@ -64,6 +64,12 @@ type UsageRecordWorkerPoolOptions struct {
 	AutoScaleCooldown     time.Duration
 }
 
+type usageRecordWorkerPoolTestHooks struct {
+	beforeSubmit           func()
+	beforeSampleFallback   func()
+	beforeSyncBackpressure func()
+}
+
 // UsageRecordWorkerPoolStats 使用量记录池运行时统计。
 type UsageRecordWorkerPoolStats struct {
 	MaxConcurrency     int
@@ -85,6 +91,7 @@ type UsageRecordWorkerPool struct {
 	pool                  pond.Pool
 	taskTimeout           time.Duration
 	overflowPolicy        string
+	testHooks             *usageRecordWorkerPoolTestHooks
 	overflowSamplePercent int
 	overflowCounter       atomic.Uint64
 	droppedQueueFull      atomic.Uint64
@@ -114,11 +121,16 @@ func NewUsageRecordWorkerPool(cfg *config.Config) *UsageRecordWorkerPool {
 
 // NewUsageRecordWorkerPoolWithOptions 根据给定参数构建使用量记录池。
 func NewUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions) *UsageRecordWorkerPool {
+	return newUsageRecordWorkerPoolWithOptions(opts, nil)
+}
+
+func newUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions, testHooks *usageRecordWorkerPoolTestHooks) *UsageRecordWorkerPool {
 	opts = normalizeUsageRecordPoolOptions(opts)
 
 	p := &UsageRecordWorkerPool{
 		taskTimeout:           opts.TaskTimeout,
 		overflowPolicy:        opts.OverflowPolicy,
+		testHooks:             testHooks,
 		overflowSamplePercent: opts.OverflowSamplePercent,
 		autoScaleEnabled:      opts.AutoScaleEnabled,
 		autoScaleMinWorkers:   opts.AutoScaleMinWorkers,
@@ -147,6 +159,9 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 	if p == nil || task == nil {
 		return UsageRecordSubmitModeDropped
 	}
+	if p.testHooks != nil && p.testHooks.beforeSubmit != nil {
+		p.testHooks.beforeSubmit()
+	}
 	if p.pool == nil || p.pool.Stopped() {
 		p.droppedPoolStopped.Add(1)
 		p.logDrop("stopped")
@@ -171,6 +186,9 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 		return p.submitWithBackpressure(task)
 	case config.UsageRecordOverflowPolicySample:
 		if p.shouldSyncFallback() {
+			if p.testHooks != nil && p.testHooks.beforeSampleFallback != nil {
+				p.testHooks.beforeSampleFallback()
+			}
 			return p.submitWithBackpressure(task)
 		}
 	}
@@ -182,6 +200,9 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 
 func (p *UsageRecordWorkerPool) submitWithBackpressure(task UsageRecordTask) UsageRecordSubmitMode {
 	p.syncFallback.Add(1)
+	if p.testHooks != nil && p.testHooks.beforeSyncBackpressure != nil {
+		p.testHooks.beforeSyncBackpressure()
+	}
 	if err := p.pool.Go(func() {
 		p.execute(task)
 	}); err != nil {
@@ -321,6 +342,16 @@ func (p *UsageRecordWorkerPool) shouldSyncFallback() bool {
 	}
 	n := p.overflowCounter.Add(1)
 	return int((n-1)%100) < p.overflowSamplePercent
+}
+
+// SubmitMandatory transfers the task to the pool or executes it once when the
+// pool declines ownership. The returned mode describes the initial submission.
+func (p *UsageRecordWorkerPool) SubmitMandatory(task UsageRecordTask) UsageRecordSubmitMode {
+	mode := p.Submit(task)
+	if mode == UsageRecordSubmitModeDropped && p != nil && task != nil {
+		p.execute(task)
+	}
+	return mode
 }
 
 func (p *UsageRecordWorkerPool) execute(task UsageRecordTask) {

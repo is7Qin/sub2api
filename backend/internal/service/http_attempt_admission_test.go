@@ -15,12 +15,13 @@ import (
 )
 
 type attemptRecordingUpstream struct {
-	mu       sync.Mutex
-	contexts []context.Context
-	calls    int
-	onDo     func(int)
-	response *http.Response
-	err      error
+	mu         sync.Mutex
+	contexts   []context.Context
+	attemptIDs []string
+	calls      int
+	onDo       func(int)
+	response   *http.Response
+	err        error
 }
 
 func (u *attemptRecordingUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
@@ -29,6 +30,7 @@ func (u *attemptRecordingUpstream) Do(req *http.Request, _ string, _ int64, _ in
 	call := u.calls
 	if req != nil {
 		u.contexts = append(u.contexts, req.Context())
+		u.attemptIDs = append(u.attemptIDs, HTTPAttemptID(req.Context()))
 	}
 	onDo := u.onDo
 	resp := u.response
@@ -171,6 +173,40 @@ func TestHTTPAttemptAuthorityRejectsCancellationDuringFirstTransfer(t *testing.T
 	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, upstream.calls)
 	require.Zero(t, admittedSideEffects)
+}
+
+func TestHTTPAttemptAuthorityAssignsIdentityOnlyAfterAdmission(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = withHTTPAttemptAuthority(WithHTTPAttemptAdmissionHook(ctx, cancel))
+	upstream := &attemptRecordingUpstream{}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.com", nil)
+	require.NoError(t, err)
+
+	require.Empty(t, HTTPAttemptID(ctx))
+	_, err = doHTTPUpstream(ctx, upstream, req, "", 1, 1)
+
+	require.True(t, IsHTTPUpstreamAttemptNotAdmitted(err))
+	require.Empty(t, HTTPAttemptID(ctx))
+	require.Empty(t, upstream.attemptIDs)
+}
+
+func TestHTTPAttemptAuthorityAssignsDistinctIdentityToEachServiceRetry(t *testing.T) {
+	ctx := withHTTPAttemptAuthority(context.Background())
+	upstream := &attemptRecordingUpstream{}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.com", nil)
+	require.NoError(t, err)
+
+	resp, err := doHTTPUpstream(ctx, upstream, req, "", 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	resp, err = doHTTPUpstream(ctx, upstream, req, "", 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Len(t, upstream.attemptIDs, 2)
+	require.NotEmpty(t, upstream.attemptIDs[0])
+	require.NotEmpty(t, upstream.attemptIDs[1])
+	require.NotEqual(t, upstream.attemptIDs[0], upstream.attemptIDs[1])
 }
 
 func TestHTTPAttemptAuthorityRunsSideEffectsAfterFirstAdmission(t *testing.T) {

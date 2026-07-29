@@ -11,6 +11,7 @@ import (
 )
 
 type httpAttemptAuthorityKey struct{}
+type httpAttemptIDKey struct{}
 
 // physicalHTTPAttemptMaxLifetime is a total headers-plus-body safety fuse for
 // admitted work whose caller supplied no deadline. Client cancellation still
@@ -82,6 +83,16 @@ func httpAttemptAuthorityFromContext(ctx context.Context) *httpAttemptAuthority 
 	return &httpAttemptAuthority{clientCtx: ctx}
 }
 
+// HTTPAttemptID returns the identity of the physical upstream request carried
+// by ctx. It is absent until admission and differs across service retries.
+func HTTPAttemptID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	attemptID, _ := ctx.Value(httpAttemptIDKey{}).(string)
+	return attemptID
+}
+
 // admit linearizes client cancellation against one physical HTTP request. The
 // original client context remains the authority for any later retry.
 func (a *httpAttemptAuthority) admit() error {
@@ -136,9 +147,10 @@ func doHTTPUpstream(
 	if err := authority.admit(); err != nil {
 		return nil, err
 	}
-	ownedReq, releaseAttempt := ownedHTTPAttemptRequest(req, authority.clientCtx)
+	attemptID := generateRequestID()
+	ownedReq, releaseAttempt := ownedHTTPAttemptRequest(req, authority.clientCtx, attemptID)
 	resp, err := upstream.Do(ownedReq, proxyURL, accountID, accountConcurrency)
-	return ownHTTPAttemptResponse(resp, err, releaseAttempt)
+	return ownHTTPAttemptResponse(resp, err, releaseAttempt, ownedReq)
 }
 
 func doHTTPUpstreamWithTLS(
@@ -154,19 +166,22 @@ func doHTTPUpstreamWithTLS(
 	if err := authority.admit(); err != nil {
 		return nil, err
 	}
-	ownedReq, releaseAttempt := ownedHTTPAttemptRequest(req, authority.clientCtx)
+	attemptID := generateRequestID()
+	ownedReq, releaseAttempt := ownedHTTPAttemptRequest(req, authority.clientCtx, attemptID)
 	resp, err := upstream.DoWithTLS(ownedReq, proxyURL, accountID, accountConcurrency, profile)
-	return ownHTTPAttemptResponse(resp, err, releaseAttempt)
+	return ownHTTPAttemptResponse(resp, err, releaseAttempt, ownedReq)
 }
 
 func ownedHTTPAttemptRequest(
 	req *http.Request,
 	logicalCtx context.Context,
+	attemptID string,
 ) (*http.Request, context.CancelFunc) {
 	requestCtx := logicalCtx
 	if req != nil && req.Context() != nil {
 		requestCtx = req.Context()
 	}
+	requestCtx = context.WithValue(requestCtx, httpAttemptIDKey{}, attemptID)
 	attemptCtx, releaseAttempt := ownedHTTPAttemptContext(requestCtx, logicalCtx)
 	if req == nil {
 		return nil, releaseAttempt
@@ -197,6 +212,7 @@ func ownHTTPAttemptResponse(
 	resp *http.Response,
 	err error,
 	releaseAttempt context.CancelFunc,
+	ownedReq *http.Request,
 ) (*http.Response, error) {
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -205,6 +221,14 @@ func ownHTTPAttemptResponse(
 		}
 		releaseAttempt()
 		return resp, err
+	}
+	if resp != nil && ownedReq != nil {
+		if resp.Request == nil {
+			resp.Request = ownedReq
+		} else {
+			attemptID := HTTPAttemptID(ownedReq.Context())
+			resp.Request = resp.Request.WithContext(context.WithValue(resp.Request.Context(), httpAttemptIDKey{}, attemptID))
+		}
 	}
 	if resp == nil || resp.Body == nil {
 		releaseAttempt()

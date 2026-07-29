@@ -876,7 +876,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if handleHTTPAttemptNotAdmitted(c, err) {
 				return
 			}
-			setOpsSelectedAccount(c, account.ID, account.Platform)
+			runPostForwardUsageSubmission(
+				func() bool {
+					return h.maybeSubmitMessagesUsage(c, result, err, currentAPIKey, currentSubscription, account, attemptParsedReq, fs.ForceCacheBilling, channelMapping, reqModel, subject.UserID)
+				},
+				func() { setOpsSelectedAccount(c, account.ID, account.Platform) },
+			)
 			if err != nil && failoverClientGone(c) {
 				return
 			}
@@ -989,57 +994,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
-
-			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
-			userAgent := c.GetHeader("User-Agent")
-			clientIP := ip.GetClientIP(c)
-			// Forward 内部可能继续改写 body，usage 去重指纹必须使用最终上游接受的当前 body。
-			requestPayloadHash := service.HashUsageRequestPayload(attemptParsedReq.Body.Bytes())
-			inboundEndpoint := GetInboundEndpoint(c)
-			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
-
-			if result.ReasoningEffort == nil {
-				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(attemptParsedReq.OutputEffort)
-			}
-			if result.ReasoningEffort == nil && attemptParsedReq.ThinkingEnabled {
-				protocolModel := result.UpstreamModel
-				if protocolModel == "" {
-					protocolModel = result.Model
-				}
-				result.ReasoningEffort = service.DefaultEffortForThinkingEnabled(protocolModel)
-			}
-
-			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
-			// ForceCacheBilling 提前拍成标量，避免 worker 闭包保活 failover 状态里的响应体。
-			forceCacheBilling := fs.ForceCacheBilling
-			quotaPlatform := service.QuotaPlatform(c.Request.Context(), currentAPIKey)
-			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:             result,
-					QuotaPlatform:      quotaPlatform,
-					APIKey:             currentAPIKey,
-					User:               currentAPIKey.User,
-					Account:            account,
-					Subscription:       currentSubscription,
-					InboundEndpoint:    inboundEndpoint,
-					UpstreamEndpoint:   upstreamEndpoint,
-					UserAgent:          userAgent,
-					IPAddress:          clientIP,
-					RequestPayloadHash: requestPayloadHash,
-					ForceCacheBilling:  forceCacheBilling,
-					APIKeyService:      h.apiKeyService,
-					ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
-				}); err != nil {
-					logger.L().With(
-						zap.String("component", "handler.gateway.messages"),
-						zap.Int64("user_id", subject.UserID),
-						zap.Int64("api_key_id", currentAPIKey.ID),
-						zap.Any("group_id", currentAPIKey.GroupID),
-						zap.String("model", reqModel),
-						zap.Int64("account_id", account.ID),
-					).Error("gateway.record_usage_failed", zap.Error(err))
-				}
-			})
 			return
 		}
 		if !retryWithFallback {
@@ -2243,6 +2197,95 @@ func (h *GatewayHandler) maybeLogCompatibilityFallbackMetrics(reqLog *zap.Logger
 		zap.Float64("session_hash_legacy_read_hit_rate", metrics.SessionHashLegacyReadHitRate),
 		zap.Int64("metadata_legacy_fallback_total", metrics.MetadataLegacyFallbackTotal),
 	)
+}
+
+func (h *GatewayHandler) maybeSubmitMessagesUsage(
+	c *gin.Context,
+	result *service.ForwardResult,
+	forwardErr error,
+	apiKey *service.APIKey,
+	subscription *service.UserSubscription,
+	account *service.Account,
+	parsed *service.ParsedRequest,
+	forceCacheBilling bool,
+	channelMapping service.ChannelMappingResult,
+	requestedModel string,
+	userID int64,
+) bool {
+	if c == nil || apiKey == nil || account == nil || parsed == nil {
+		return false
+	}
+	return submitMessagesUsageOnce(result, forwardErr, account.Platform, func() {
+		if result.ReasoningEffort == nil {
+			result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsed.OutputEffort)
+		}
+		if result.ReasoningEffort == nil && parsed.ThinkingEnabled {
+			protocolModel := result.UpstreamModel
+			if protocolModel == "" {
+				protocolModel = result.Model
+			}
+			result.ReasoningEffort = service.DefaultEffortForThinkingEnabled(protocolModel)
+		}
+		userAgent := c.GetHeader("User-Agent")
+		clientIP := ip.GetClientIP(c)
+		requestPayloadHash := service.HashUsageRequestPayload(parsed.Body.Bytes())
+		inboundEndpoint := GetInboundEndpoint(c)
+		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+				Result:             result,
+				QuotaPlatform:      quotaPlatform,
+				APIKey:             apiKey,
+				User:               apiKey.User,
+				Account:            account,
+				Subscription:       subscription,
+				InboundEndpoint:    inboundEndpoint,
+				UpstreamEndpoint:   upstreamEndpoint,
+				UserAgent:          userAgent,
+				IPAddress:          clientIP,
+				RequestPayloadHash: requestPayloadHash,
+				ForceCacheBilling:  forceCacheBilling,
+				APIKeyService:      h.apiKeyService,
+				ChannelUsageFields: channelMapping.ToUsageFields(requestedModel, result.UpstreamModel),
+			}); err != nil {
+				logger.L().With(
+					zap.String("component", "handler.gateway.messages"),
+					zap.Int64("user_id", userID),
+					zap.Int64("api_key_id", apiKey.ID),
+					zap.Any("group_id", apiKey.GroupID),
+					zap.String("model", requestedModel),
+					zap.Int64("account_id", account.ID),
+				).Error("gateway.record_usage_failed", zap.Error(err))
+			}
+		})
+	})
+}
+
+// runPostForwardUsageSubmission keeps the usage dispatch ahead of the existing
+// post-forward error and failover continuation in Messages.
+func runPostForwardUsageSubmission(submit func() bool, continueForward func()) bool {
+	submitted := false
+	if submit != nil {
+		submitted = submit()
+	}
+	if continueForward != nil {
+		continueForward()
+	}
+	return submitted
+}
+
+func submitMessagesUsageOnce(result *service.ForwardResult, forwardErr error, platform string, submit func()) bool {
+	if result == nil || submit == nil {
+		return false
+	}
+	// Preserve legacy platform-agnostic success accounting. Only Anthropic gains
+	// partial billing for admitted error results with explicit provider usage.
+	if forwardErr != nil && (platform != service.PlatformAnthropic || result.AttemptID == "" || !service.HasExplicitForwardUsage(result)) {
+		return false
+	}
+	submit()
+	return true
 }
 
 func (h *GatewayHandler) submitUsageRecordTask(parent context.Context, task service.UsageRecordTask) {

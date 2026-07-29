@@ -1088,6 +1088,43 @@ func TestOpenAIResponsesWebSocket_PostOutputContextFailedRecordsUsageWithoutSche
 	require.Zero(t, got.healthResetCount)
 }
 
+func TestOpenAIResponsesWebSocket_PassthroughSchedulerTTFTUsesProductionAfterTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		outputPayloads []string
+		wantTTFT       bool
+	}{
+		{name: "terminal only"},
+		{
+			name: "output delta",
+			outputPayloads: []string{
+				`{"type":"response.created","response":{"id":"resp_usage_e2e"}}`,
+				`{"type":"response.output_text.delta","response_id":"resp_usage_e2e","item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial"}`,
+			},
+			wantTTFT: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reporter := &openAIWSUsageHandlerScheduleReporterSpy{reported: make(chan openAIWSUsageHandlerScheduleReport, 1)}
+			runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				firstPayload:     `{"type":"response.create","model":"gpt-5.4","stream":false}`,
+				outputPayloads:   tc.outputPayloads,
+				expectUsageLog:   true,
+				scheduleReporter: reporter,
+			})
+
+			select {
+			case report := <-reporter.reported:
+				require.True(t, report.success)
+				require.Equal(t, tc.wantTTFT, report.firstTokenMs != nil,
+					"the production websocket AfterTurn callback must only report semantic output as TTFT")
+			case <-time.After(3 * time.Second):
+				t.Fatal("等待 WebSocket scheduler result 上报超时")
+			}
+		})
+	}
+}
+
 func TestOpenAIResponsesWebSocket_PassthroughUsageLogPersistsUserAgentAndReasoningEffort(t *testing.T) {
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:   `{"type":"response.create","model":"gpt-5.4","stream":false,"reasoning":{"effort":"HIGH"}}`,
@@ -1349,6 +1386,7 @@ type openAIResponsesWSUsageLogCase struct {
 	outputPayloads      []string
 	terminalPayload     string
 	expectUsageLog      bool
+	scheduleReporter    openAIAccountScheduleResultReporter
 }
 
 type openAIResponsesWSUsageLogResult struct {
@@ -1357,6 +1395,19 @@ type openAIResponsesWSUsageLogResult struct {
 	metrics                 service.OpenAIAccountSchedulerMetricsSnapshot
 	rateLimitedAccountCount int
 	healthResetCount        int
+}
+
+type openAIWSUsageHandlerScheduleReport struct {
+	success      bool
+	firstTokenMs *int
+}
+
+type openAIWSUsageHandlerScheduleReporterSpy struct {
+	reported chan openAIWSUsageHandlerScheduleReport
+}
+
+func (s *openAIWSUsageHandlerScheduleReporterSpy) ReportOpenAIAccountScheduleResult(_ int64, success bool, firstTokenMs *int, _ ...*service.Account) {
+	s.reported <- openAIWSUsageHandlerScheduleReport{success: success, firstTokenMs: firstTokenMs}
 }
 
 type openAIWSUsageHandler403CounterStub struct {
@@ -2808,10 +2859,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		},
 	}
 	h := &OpenAIGatewayHandler{
-		gatewayService:      gatewaySvc,
-		billingCacheService: billingCacheSvc,
-		apiKeyService:       &service.APIKeyService{},
-		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+		gatewayService:                gatewaySvc,
+		accountScheduleResultReporter: tc.scheduleReporter,
+		billingCacheService:           billingCacheSvc,
+		apiKeyService:                 &service.APIKeyService{},
+		concurrencyHelper:             NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
 	}
 
 	apiKey := &service.APIKey{
@@ -2850,12 +2902,12 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	cancelWrite()
 	require.NoError(t, err)
 
-	for range tc.outputPayloads {
+	for _, outputPayload := range tc.outputPayloads {
 		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
 		_, event, readErr := clientConn.Read(readCtx)
 		cancelRead()
 		require.NoError(t, readErr)
-		require.Equal(t, "response.output_text.delta", gjson.GetBytes(event, "type").String())
+		require.Equal(t, gjson.Get(outputPayload, "type").String(), gjson.GetBytes(event, "type").String())
 	}
 
 	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)

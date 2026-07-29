@@ -183,7 +183,7 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
 	require.Equal(t, 7, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	require.Equal(t, 2, result.Usage.CacheReadInputTokens)
-	require.NotNil(t, result.FirstTokenMs)
+	require.Nil(t, result.FirstTokenMs, "a terminal-only response must not produce a TTFT sample")
 	require.Equal(t, int64(1), result.ClientToUpstreamFrames)
 	require.Equal(t, int64(1), result.UpstreamToClientFrames)
 	require.Equal(t, int64(0), result.DroppedDownstreamFrames)
@@ -197,6 +197,78 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
 	require.Len(t, clientWrites, 1)
 	require.Equal(t, coderws.MessageText, clientWrites[0].msgType)
 	require.JSONEq(t, `{"type":"response.completed","response":{"id":"resp_123","usage":{"input_tokens":7,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}`, string(clientWrites[0].payload))
+}
+
+func TestRelay_TerminalOnlyTurnHasNoFirstToken(t *testing.T) {
+	t.Parallel()
+
+	for _, terminalEventType := range []string{
+		"response.completed",
+		"response.done",
+		"response.failed",
+		"response.incomplete",
+		"response.cancelled",
+		"response.canceled",
+	} {
+		terminalEventType := terminalEventType
+		t.Run(terminalEventType, func(t *testing.T) {
+			t.Parallel()
+
+			clientConn := newPassthroughTestFrameConn(nil, false)
+			upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+				{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_terminal_only"}}`)},
+				{msgType: coderws.MessageText, payload: []byte(`{"type":"` + terminalEventType + `","response":{"id":"resp_terminal_only","usage":{"input_tokens":1,"output_tokens":0}}}`)},
+			}, true)
+
+			base := time.Unix(0, 0)
+			var ticks atomic.Int64
+			nowFn := func() time.Time {
+				return base.Add(time.Duration(ticks.Add(1)) * 10 * time.Millisecond)
+			}
+			var turn RelayTurnResult
+			result, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+				Now: nowFn,
+				OnTurnComplete: func(current RelayTurnResult) {
+					turn = current
+				},
+			})
+
+			require.Nil(t, relayExit)
+			require.Equal(t, terminalEventType, turn.TerminalEventType)
+			require.Greater(t, turn.Duration, time.Duration(0))
+			require.Nil(t, turn.FirstTokenMs)
+			require.Nil(t, result.FirstTokenMs)
+		})
+	}
+}
+
+func TestRelay_OutputDeltaSetsFirstTokenBeforeCompletion(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_delta"}}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.output_text.delta","response_id":"resp_delta","delta":"hi"}`)},
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_delta","usage":{"input_tokens":1,"output_tokens":1}}}`)},
+	}, true)
+
+	base := time.Unix(0, 0)
+	var ticks atomic.Int64
+	nowFn := func() time.Time {
+		return base.Add(time.Duration(ticks.Add(1)) * 10 * time.Millisecond)
+	}
+	var turn RelayTurnResult
+	_, relayExit := Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		Now: nowFn,
+		OnTurnComplete: func(current RelayTurnResult) {
+			turn = current
+		},
+	})
+
+	require.Nil(t, relayExit)
+	require.NotNil(t, turn.FirstTokenMs)
+	require.Greater(t, *turn.FirstTokenMs, 0)
+	require.Less(t, int64(*turn.FirstTokenMs), turn.Duration.Milliseconds())
 }
 
 func TestRelay_FunctionCallOutputBytesPreserved(t *testing.T) {

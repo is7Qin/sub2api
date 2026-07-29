@@ -25,18 +25,23 @@ import (
 	"go.uber.org/zap"
 )
 
+type openAIAccountScheduleResultReporter interface {
+	ReportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int, accounts ...*service.Account)
+}
+
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
-	gatewayService           *service.OpenAIGatewayService
-	billingCacheService      *service.BillingCacheService
-	apiKeyService            *service.APIKeyService
-	usageRecordWorkerPool    *service.UsageRecordWorkerPool
-	errorPassthroughService  *service.ErrorPassthroughService
-	contentModerationService *service.ContentModerationService
-	concurrencyHelper        *ConcurrencyHelper
-	imageLimiter             *imageConcurrencyLimiter
-	maxAccountSwitches       int
-	cfg                      *config.Config
+	gatewayService                *service.OpenAIGatewayService
+	accountScheduleResultReporter openAIAccountScheduleResultReporter
+	billingCacheService           *service.BillingCacheService
+	apiKeyService                 *service.APIKeyService
+	usageRecordWorkerPool         *service.UsageRecordWorkerPool
+	errorPassthroughService       *service.ErrorPassthroughService
+	contentModerationService      *service.ContentModerationService
+	concurrencyHelper             *ConcurrencyHelper
+	imageLimiter                  *imageConcurrencyLimiter
+	maxAccountSwitches            int
+	cfg                           *config.Config
 }
 
 func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
@@ -111,6 +116,16 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 	}
 }
 
+func (h *OpenAIGatewayHandler) reportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int, accounts ...*service.Account) {
+	reporter := h.accountScheduleResultReporter
+	if reporter == nil {
+		reporter = h.gatewayService
+	}
+	if reporter != nil {
+		reporter.ReportOpenAIAccountScheduleResult(accountID, success, firstTokenMs, accounts...)
+	}
+}
+
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
 func NewOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
@@ -131,16 +146,17 @@ func NewOpenAIGatewayHandler(
 		}
 	}
 	return &OpenAIGatewayHandler{
-		gatewayService:           gatewayService,
-		billingCacheService:      billingCacheService,
-		apiKeyService:            apiKeyService,
-		usageRecordWorkerPool:    usageRecordWorkerPool,
-		errorPassthroughService:  errorPassthroughService,
-		contentModerationService: contentModerationService,
-		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
-		imageLimiter:             &imageConcurrencyLimiter{},
-		maxAccountSwitches:       maxAccountSwitches,
-		cfg:                      cfg,
+		gatewayService:                gatewayService,
+		accountScheduleResultReporter: gatewayService,
+		billingCacheService:           billingCacheService,
+		apiKeyService:                 apiKeyService,
+		usageRecordWorkerPool:         usageRecordWorkerPool,
+		errorPassthroughService:       errorPassthroughService,
+		contentModerationService:      contentModerationService,
+		concurrencyHelper:             NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
+		imageLimiter:                  &imageConcurrencyLimiter{},
+		maxAccountSwitches:            maxAccountSwitches,
+		cfg:                           cfg,
 	}
 }
 
@@ -1766,7 +1782,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 				}
 				if requestErr == nil {
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, account)
+					h.reportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, account)
 				}
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)

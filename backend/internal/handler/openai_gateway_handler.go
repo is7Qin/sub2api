@@ -86,28 +86,28 @@ func newOpenAIModelMappedBodyCache(body []byte, replace openAIModelBodyReplaceFu
 	}
 }
 
-func usageRecordContext(parent context.Context, base context.Context) context.Context {
-	if base == nil {
-		base = context.Background()
-	}
-	if parent == nil {
-		return base
-	}
-	if clientRequestID, _ := parent.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
-		base = context.WithValue(base, ctxkey.ClientRequestID, strings.TrimSpace(clientRequestID))
-	}
-	if requestID, _ := parent.Value(ctxkey.RequestID).(string); strings.TrimSpace(requestID) != "" {
-		base = context.WithValue(base, ctxkey.RequestID, strings.TrimSpace(requestID))
-	}
-	return base
-}
-
 func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecordTask) service.UsageRecordTask {
 	if task == nil {
 		return nil
 	}
+	var clientRequestID, requestID string
+	if parent != nil {
+		clientRequestID, _ = parent.Value(ctxkey.ClientRequestID).(string)
+		requestID, _ = parent.Value(ctxkey.RequestID).(string)
+	}
+	clientRequestID = strings.TrimSpace(clientRequestID)
+	requestID = strings.TrimSpace(requestID)
 	return func(ctx context.Context) {
-		task(usageRecordContext(parent, ctx))
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if clientRequestID != "" {
+			ctx = context.WithValue(ctx, ctxkey.ClientRequestID, clientRequestID)
+		}
+		if requestID != "" {
+			ctx = context.WithValue(ctx, ctxkey.RequestID, requestID)
+		}
+		task(ctx)
 	}
 }
 
@@ -585,7 +585,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
-		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
+		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:                result,
 				APIKey:                apiKey,
@@ -1125,7 +1125,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		setOpsUpstreamEndpoint(c, upstreamEndpoint)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 
-		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
+		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:                result,
 				APIKey:                apiKey,
@@ -1772,7 +1772,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 				setOpsUpstreamEndpoint(c, upstreamEndpoint)
 				quotaPlatform := service.QuotaPlatform(ctx, apiKey)
-				h.submitOpenAIUsageRecordTask(ctx, result, func(taskCtx context.Context) {
+				h.submitLegacyUsageRecordTask(ctx, func(taskCtx context.Context) {
 					if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
 						Result:                result,
 						APIKey:                apiKey,
@@ -1984,27 +1984,40 @@ func openAIForwardResultHasUsage(result *service.OpenAIForwardResult) bool {
 		result.ImageCount > 0
 }
 
-func (h *OpenAIGatewayHandler) submitUsageRecordTask(parent context.Context, task service.UsageRecordTask) {
+func submitMandatoryUsageRecordTask(
+	parent context.Context,
+	pool *service.UsageRecordWorkerPool,
+	component string,
+	task service.UsageRecordTask,
+) {
 	if task == nil {
 		return
 	}
 	task = wrapUsageRecordTaskContext(parent, task)
-	if h.usageRecordWorkerPool != nil {
-		h.usageRecordWorkerPool.Submit(task)
+	if pool != nil {
+		if mode := pool.SubmitMandatory(task); mode == service.UsageRecordSubmitModeDropped {
+			logger.L().With(zap.String("component", component)).Warn("usage_record.task_mandatory_sync_fallback")
+		}
 		return
 	}
-	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
+
+	// No-pool construction remains bounded and synchronous; production pools use
+	// their configured timeout through SubmitMandatory.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			logger.L().With(
-				zap.String("component", "handler.openai_gateway.responses"),
+				zap.String("component", component),
 				zap.Any("panic", recovered),
-			).Error("openai.usage_record_task_panic_recovered")
+			).Error("usage_record.task_panic_recovered")
 		}
 	}()
 	task(ctx)
+}
+
+func (h *OpenAIGatewayHandler) submitUsageRecordTask(parent context.Context, task service.UsageRecordTask) {
+	submitMandatoryUsageRecordTask(parent, h.usageRecordWorkerPool, "handler.openai_gateway.usage", task)
 }
 
 func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Context, result *service.OpenAIForwardResult, task service.UsageRecordTask) {
@@ -2012,33 +2025,23 @@ func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Contex
 		h.submitMandatoryUsageRecordTask(parent, task)
 		return
 	}
-	h.submitUsageRecordTask(parent, task)
+	h.submitLegacyUsageRecordTask(parent, task)
 }
 
-func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTask(parent context.Context, task service.UsageRecordTask) {
+// Responses WebSocket remains on its pre-Phase-2 best-effort ownership contract.
+func (h *OpenAIGatewayHandler) submitLegacyUsageRecordTask(parent context.Context, task service.UsageRecordTask) {
 	if task == nil {
 		return
 	}
-	task = wrapUsageRecordTaskContext(parent, task)
 	if h.usageRecordWorkerPool != nil {
-		if mode := h.usageRecordWorkerPool.Submit(task); mode != service.UsageRecordSubmitModeDropped {
-			return
-		}
-		logger.L().With(
-			zap.String("component", "handler.openai_gateway.usage"),
-		).Warn("openai.usage_record_task_mandatory_sync_fallback")
+		h.usageRecordWorkerPool.Submit(wrapUsageRecordTaskContext(parent, task))
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			logger.L().With(
-				zap.String("component", "handler.openai_gateway.usage"),
-				zap.Any("panic", recovered),
-			).Error("openai.usage_record_task_panic_recovered")
-		}
-	}()
-	task(ctx)
+	submitMandatoryUsageRecordTask(parent, nil, "handler.openai_gateway.usage", task)
+}
+
+func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTask(parent context.Context, task service.UsageRecordTask) {
+	h.submitUsageRecordTask(parent, task)
 }
 
 func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, streamStarted bool) (func(), bool) {

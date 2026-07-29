@@ -2127,6 +2127,11 @@ func intPtrForTest(v int) *int {
 func TestOpenAIAccountRuntimeStats_ReportAndSnapshot(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	stats.report(1001, true, nil)
+	zeroTTFT := 0
+	stats.report(1001, true, &zeroTTFT)
+	_, _, hasTTFT := stats.snapshot(1001)
+	require.False(t, hasTTFT, "zero-millisecond samples must not initialize TTFT EWMA")
+
 	firstTTFT := 100
 	stats.report(1001, false, &firstTTFT)
 	secondTTFT := 200

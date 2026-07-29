@@ -979,7 +979,8 @@ func sanitizeResponseFailedMessageForClient(payload []byte) ([]byte, bool) {
 }
 
 func isTokenEvent(eventType string) bool {
-	if eventType == "" {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" || isTerminalEvent(eventType) {
 		return false
 	}
 	switch eventType {
@@ -995,7 +996,7 @@ func isTokenEvent(eventType string) bool {
 	if strings.HasPrefix(eventType, "response.output") {
 		return true
 	}
-	return eventType == "response.completed" || eventType == "response.done"
+	return false
 }
 
 func minDuration(a, b time.Duration) time.Duration {

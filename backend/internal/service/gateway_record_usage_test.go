@@ -328,6 +328,76 @@ func TestGatewayServiceRecordUsage_UsesFallbackRequestIDForUsageLog(t *testing.T
 	require.Equal(t, "local:gateway-local-fallback", usageRepo.lastLog.RequestID)
 }
 
+func TestGatewayServiceRecordUsage_AttemptIdentityStableAcrossReplayContexts(t *testing.T) {
+	result := &ForwardResult{
+		RequestID: "upstream-request",
+		AttemptID: "physical-a",
+		Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 6},
+		Model:     "claude-sonnet-4",
+	}
+	record := func(ctx context.Context) (*UsageBillingCommand, *UsageLog) {
+		usageRepo := &openAIRecordUsageLogRepoStub{}
+		billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+		svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+		err := svc.RecordUsage(ctx, &RecordUsageInput{
+			Result:  result,
+			APIKey:  &APIKey{ID: 506},
+			User:    &User{ID: 606},
+			Account: &Account{ID: 706},
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, billingRepo.calls)
+		return billingRepo.lastCmd, usageRepo.lastLog
+	}
+
+	clientCtx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "logical-1")
+	differentCtx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "logical-2")
+	first, firstLog := record(clientCtx)
+	emptyReplay, emptyReplayLog := record(context.Background())
+	differentReplay, differentReplayLog := record(differentCtx)
+
+	require.Equal(t, "attempt:physical-a", first.RequestID)
+	require.Equal(t, first.RequestID, emptyReplay.RequestID)
+	require.Equal(t, first.RequestID, differentReplay.RequestID)
+	require.Equal(t, "client:logical-1", firstLog.RequestID)
+	require.Equal(t, "upstream-request", emptyReplayLog.RequestID)
+	require.Equal(t, "client:logical-2", differentReplayLog.RequestID)
+}
+
+func TestGatewayServiceRecordUsage_AttemptIdentitySeparatesFailoverBilling(t *testing.T) {
+	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-stable-123")
+	record := func(attemptID string) (*UsageBillingCommand, *UsageLog) {
+		usageRepo := &openAIRecordUsageLogRepoStub{}
+		billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+		svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+		err := svc.RecordUsage(ctx, &RecordUsageInput{
+			Result: &ForwardResult{
+				RequestID: "upstream-request",
+				AttemptID: attemptID,
+				Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 6},
+				Model:     "claude-sonnet-4",
+			},
+			APIKey:  &APIKey{ID: 506},
+			User:    &User{ID: 606},
+			Account: &Account{ID: 706},
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, billingRepo.calls)
+		return billingRepo.lastCmd, usageRepo.lastLog
+	}
+
+	first, firstLog := record("attempt-a")
+	replay, replayLog := record("attempt-a")
+	second, secondLog := record("attempt-b")
+
+	require.Equal(t, "attempt:attempt-a", first.RequestID)
+	require.Equal(t, first.RequestID, replay.RequestID)
+	require.NotEqual(t, first.RequestID, second.RequestID)
+	require.Equal(t, "client:client-stable-123", firstLog.RequestID)
+	require.Equal(t, firstLog.RequestID, replayLog.RequestID)
+	require.Equal(t, firstLog.RequestID, secondLog.RequestID)
+}
+
 func TestGatewayServiceRecordUsage_PrefersClientRequestIDOverUpstreamRequestID(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}

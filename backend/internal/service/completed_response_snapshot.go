@@ -14,6 +14,7 @@ type completedResponseSnapshot struct {
 	statusCode int
 	header     http.Header
 	body       []byte
+	request    *http.Request
 }
 
 func snapshotCompletedResponse(resp *http.Response, body []byte) completedResponseSnapshot {
@@ -25,6 +26,7 @@ func snapshotCompletedResponse(resp *http.Response, body []byte) completedRespon
 		statusCode: resp.StatusCode,
 		header:     resp.Header.Clone(),
 		body:       bytes.Clone(body),
+		request:    resp.Request,
 	}
 }
 
@@ -49,5 +51,6 @@ func (s completedResponseSnapshot) response() *http.Response {
 		StatusCode: s.statusCode,
 		Header:     s.header.Clone(),
 		Body:       io.NopCloser(bytes.NewReader(s.body)),
+		Request:    s.request,
 	}
 }

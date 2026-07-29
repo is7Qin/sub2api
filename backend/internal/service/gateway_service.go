@@ -564,6 +564,8 @@ type ClaudeUsage struct {
 // ForwardResult 转发结果
 type ForwardResult struct {
 	RequestID string
+	// AttemptID scopes billing idempotency to one admitted physical upstream request while RequestID retains logical correlation.
+	AttemptID string
 	Usage     ClaudeUsage
 	Model     string
 	// UpstreamModel is the actual upstream model after mapping.
@@ -5350,6 +5352,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 								StatusCode: retryResp.StatusCode,
 								Header:     retryResp.Header.Clone(),
 								Body:       io.NopCloser(bytes.NewReader(retryRespBody)),
+								Request:    retryResp.Request,
 							}
 							break
 						}
@@ -5639,6 +5642,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if reqStream {
 		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
 		if err != nil {
+			partialResult := forwardResultFromStreaming(resp, streamResult, originalModel, mappedModel, startTime)
 			var sseErr *sseStreamErrorEventError
 			if errors.As(err, &sseErr) {
 				// 上游 HTTP 200 + SSE 流体内出现 event:error 帧。
@@ -5676,12 +5680,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					truncateString(sseErr.RawData, 1000),
 				)
 
-				return nil, &UpstreamFailoverError{
+				return partialResult, &UpstreamFailoverError{
 					StatusCode:   403,
 					ResponseBody: body,
 				}
 			}
-			return nil, err
+			return partialResult, err
 		}
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
@@ -5695,6 +5699,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	return &ForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            *usage,
 		Model:            originalModel, // 使用原始模型用于计费和日志
 		UpstreamModel:    mappedModel,
@@ -5958,7 +5963,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if input.RequestStream {
 		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
 		if err != nil {
-			return nil, err
+			return forwardResultFromStreaming(resp, streamResult, input.OriginalModel, input.RequestModel, input.StartTime), err
 		}
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
@@ -5975,6 +5980,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 	return &ForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            *usage,
 		Model:            input.OriginalModel,
 		UpstreamModel:    input.RequestModel,
@@ -8286,6 +8292,53 @@ type streamingResult struct {
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
 }
 
+func forwardResultAttemptID(resp *http.Response) string {
+	if resp == nil || resp.Request == nil {
+		return ""
+	}
+	return HTTPAttemptID(resp.Request.Context())
+}
+
+func forwardResultFromStreaming(resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time) *ForwardResult {
+	if streamResult == nil {
+		return nil
+	}
+	usage := ClaudeUsage{}
+	if streamResult.usage != nil {
+		usage = *streamResult.usage
+	}
+	requestID := ""
+	if resp != nil {
+		requestID = resp.Header.Get("x-request-id")
+	}
+	return &ForwardResult{
+		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
+		Usage:            usage,
+		Model:            model,
+		UpstreamModel:    upstreamModel,
+		Stream:           true,
+		Duration:         time.Since(startTime),
+		FirstTokenMs:     streamResult.firstTokenMs,
+		ClientDisconnect: streamResult.clientDisconnect,
+	}
+}
+
+// HasExplicitForwardUsage reports whether an admitted upstream result contains provider-reported usage.
+func HasExplicitForwardUsage(result *ForwardResult) bool {
+	return hasExplicitUsage(result)
+}
+
+func hasExplicitUsage(result *ForwardResult) bool {
+	if result == nil {
+		return false
+	}
+	u := result.Usage
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheCreationInputTokens > 0 ||
+		u.CacheReadInputTokens > 0 || u.CacheCreation5mTokens > 0 || u.CacheCreation1hTokens > 0 ||
+		u.ImageOutputTokens > 0
+}
+
 func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*streamingResult, error) {
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
@@ -9210,7 +9263,16 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
 	// by the caller after recording the usage log.
 }
 
-func resolveUsageBillingRequestID(ctx context.Context, upstreamRequestID string) string {
+func resolveUsageBillingRequestID(ctx context.Context, upstreamRequestID, attemptID string) string {
+	if attemptID = strings.TrimSpace(attemptID); attemptID != "" {
+		// Replay context can change, but an admitted physical attempt's billing
+		// identity must remain invariant across normal, error, and replay paths.
+		return "attempt:" + attemptID
+	}
+	return resolveUsageCorrelationRequestID(ctx, upstreamRequestID)
+}
+
+func resolveUsageCorrelationRequestID(ctx context.Context, upstreamRequestID string) string {
 	if ctx != nil {
 		if clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
 			return "client:" + strings.TrimSpace(clientRequestID)
@@ -9795,8 +9857,13 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	if quotaPlatform == "" {
 		quotaPlatform = PlatformFromAPIKey(apiKey)
 	}
-	requestID := usageLog.RequestID
-	usageLogPersisted, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
+	// Results without an admitted attempt retain the legacy request ID, including
+	// a generated ID shared by the usage log and billing command.
+	billingRequestID := usageLog.RequestID
+	if strings.TrimSpace(result.AttemptID) != "" {
+		billingRequestID = resolveUsageBillingRequestID(ctx, result.RequestID, result.AttemptID)
+	}
+	usageLogPersisted, billingErr := applyUsageBilling(ctx, billingRequestID, usageLog, &postUsageBillingParams{
 		Cost:                  cost,
 		User:                  user,
 		APIKey:                apiKey,
@@ -9974,7 +10041,7 @@ func (s *GatewayService) buildRecordUsageLog(
 	opts *recordUsageOpts,
 ) *UsageLog {
 	durationMs := int(result.Duration.Milliseconds())
-	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
+	requestID := resolveUsageCorrelationRequestID(ctx, result.RequestID)
 	usageLog := &UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,

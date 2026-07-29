@@ -106,9 +106,12 @@ func normalizeCodexCallID(id string) string {
 	if len(candidate) <= codexCallIDMaxLength {
 		return candidate
 	}
+	return compactCodexCallID(candidate)
+}
 
-	// Hash the normalized form so equivalent call_/fc_ IDs remain paired.
-	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + candidate))
+func compactCodexCallID(id string) string {
+	// Keep this domain separate from hashes used for unrelated identifiers.
+	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + id))
 	encoded := hex.EncodeToString(digest[:])
 	return codexCallIDPrefix + encoded[:codexCallIDMaxLength-len(codexCallIDPrefix)]
 }
@@ -1259,10 +1262,13 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		// 仅修正真正的 tool/function call 标识，避免误改普通 message/reasoning id；
 		// 若 item_reference 指向 legacy call_* 标识，则仅修正该引用本身。
 		fixCallIDPrefix := func(id string) string {
-			if opts.PreserveCallIDs {
-				return id
+			if !opts.PreserveCallIDs {
+				return normalizeCodexCallID(id)
 			}
-			return normalizeCodexCallID(id)
+			if len(id) > codexCallIDMaxLength {
+				return compactCodexCallID(id)
+			}
+			return id
 		}
 
 		if typ == "item_reference" {

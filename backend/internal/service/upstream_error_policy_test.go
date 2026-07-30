@@ -96,6 +96,21 @@ func TestRecognizeUpstreamErrorFact_UnknownIsNotRecognized(t *testing.T) {
 	require.Equal(t, RecognizedUpstreamErrorPolicy{}, policy)
 }
 
+func TestRecognizeLegacyUpstreamError_RecognizedFactUsesBuiltInPolicy(t *testing.T) {
+	policy, ok := RecognizeLegacyUpstreamError(PlatformOpenAI, http.StatusServiceUnavailable, []byte(`{"error":{"code":"server_is_overloaded","type":"response.failed","message":"retry later"}}`))
+
+	require.True(t, ok)
+	require.Equal(t, http.StatusServiceUnavailable, policy.Presentation.HTTPStatus)
+	require.Equal(t, "server_is_overloaded", policy.Presentation.ErrorCode)
+	require.Equal(t, "service_unavailable_error", policy.Presentation.ErrorType)
+}
+
+func TestRecognizeLegacyUpstreamError_UnknownRemainsUnknown(t *testing.T) {
+	_, ok := RecognizeLegacyUpstreamError(PlatformOpenAI, http.StatusUnprocessableEntity, []byte(`{"error":{"code":"vendor_specific","message":"unknown"}}`))
+
+	require.False(t, ok)
+}
+
 func TestRecognizeUpstreamErrorFact_AnthropicOverloadedSSEReturnsDirect503(t *testing.T) {
 	fact := UpstreamErrorFact{
 		Provider:     PlatformAnthropic,

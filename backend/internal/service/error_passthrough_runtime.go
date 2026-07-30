@@ -27,6 +27,17 @@ func getBoundErrorPassthroughService(c *gin.Context) *ErrorPassthroughService {
 	return svc
 }
 
+// NewLegacyUpstreamErrorFact creates the bounded fact used by legacy final-error
+// boundaries before any configurable rule can inspect it.
+func NewLegacyUpstreamErrorFact(platform string, upstreamStatus int, responseBody []byte) UpstreamErrorFact {
+	fact := ParseOpenAIJSONErrorFact(platform, UpstreamErrorSourceHTTP, responseBody, "")
+	if upstreamStatus > 0 {
+		fact.HTTPStatusKnown = true
+		fact.HTTPStatus = upstreamStatus
+	}
+	return fact
+}
+
 // applyErrorPassthroughRule 按规则改写错误响应；未命中时返回默认响应参数。
 func applyErrorPassthroughRule(
 	c *gin.Context,
@@ -46,7 +57,21 @@ func applyErrorPassthroughRule(
 		return status, errType, errMsg, false
 	}
 
-	rule := svc.MatchRule(platform, upstreamStatus, responseBody)
+	fact := NewLegacyUpstreamErrorFact(platform, upstreamStatus, responseBody)
+	if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+		if policy.Presentation.HTTPStatus > 0 {
+			status = policy.Presentation.HTTPStatus
+		}
+		if policy.Presentation.ErrorType != "" {
+			errType = policy.Presentation.ErrorType
+		}
+		if policy.Presentation.Message != "" {
+			errMsg = policy.Presentation.Message
+		}
+		return status, errType, errMsg, true
+	}
+
+	rule := svc.MatchUnknownRule(fact)
 	if rule == nil {
 		return status, errType, errMsg, false
 	}

@@ -17,6 +17,43 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestErrorPassthroughService_MatchUnknownRuleUsesBoundedFactText(t *testing.T) {
+	responseCode := http.StatusTeapot
+	customMessage := "safe unknown message"
+	svc := &ErrorPassthroughService{}
+	svc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"vendor_failure"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &responseCode, CustomMessage: &customMessage,
+	}})
+
+	matched := svc.MatchUnknownRule(UpstreamErrorFact{
+		Provider: PlatformOpenAI, Source: UpstreamErrorSourceHTTP,
+		HTTPStatusKnown: true, HTTPStatus: http.StatusBadGateway,
+		ProviderCode: "vendor_failure", InternalMatchText: "openai vendor_failure",
+	})
+
+	require.NotNil(t, matched)
+	require.Equal(t, responseCode, *matched.ResponseCode)
+}
+
+func TestErrorPassthroughService_MatchUnknownRuleRejectsRecognizedFact(t *testing.T) {
+	responseCode := http.StatusTeapot
+	svc := &ErrorPassthroughService{}
+	svc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"server_is_overloaded"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &responseCode,
+	}})
+
+	matched := svc.MatchUnknownRule(UpstreamErrorFact{
+		Provider: PlatformOpenAI, Source: UpstreamErrorSourceSSE,
+		ProviderCode: "server_is_overloaded", InternalMatchText: "openai server_is_overloaded",
+	})
+
+	require.Nil(t, matched)
+}
+
 func TestApplyErrorPassthroughRule_NoBoundService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

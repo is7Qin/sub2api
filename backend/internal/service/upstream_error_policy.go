@@ -231,6 +231,21 @@ func RecognizeUpstreamErrorFact(fact UpstreamErrorFact) (RecognizedUpstreamError
 	return RecognizedUpstreamErrorPolicy{}, false
 }
 
+// RecognizeLegacyUpstreamError classifies body-only error boundaries before
+// legacy database passthrough matching. It uses only the bounded fact fields.
+func RecognizeLegacyUpstreamError(provider string, statusCode int, body []byte) (RecognizedUpstreamErrorPolicy, bool) {
+	source := UpstreamErrorSourceHTTP
+	if strings.EqualFold(provider, PlatformAnthropic) {
+		// Anthropic native stream errors arrive as event:error with HTTP 200;
+		// legacy failover callers retain only the bounded terminal body.
+		source = UpstreamErrorSourceSSE
+	}
+	fact := ParseOpenAIJSONErrorFact(provider, source, body, "")
+	fact.HTTPStatusKnown = statusCode > 0
+	fact.HTTPStatus = statusCode
+	return RecognizeUpstreamErrorFact(fact)
+}
+
 func writeRecognizedOpenAIHTTPError(c *gin.Context, presentation UpstreamClientPresentation) {
 	MarkResponseCommitted(c)
 	c.JSON(presentation.HTTPStatus, gin.H{

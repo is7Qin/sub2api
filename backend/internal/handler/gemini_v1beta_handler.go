@@ -690,25 +690,35 @@ func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverE
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 
-	// 先检查透传规则
-	if h.errorPassthroughService != nil && len(responseBody) > 0 {
-		if rule := h.errorPassthroughService.MatchRule(service.PlatformGemini, statusCode, responseBody); rule != nil {
-			// 确定响应状态码
-			respCode := statusCode
+	fact, hasFact := failoverErr.UpstreamFact()
+	if !hasFact {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformGemini, statusCode, responseBody)
+	}
+	if policy, recognized := service.RecognizeUpstreamErrorFact(fact); recognized {
+		googleError(c, policy.Presentation.HTTPStatus, policy.Presentation.Message)
+		return
+	}
+
+	// Only unknown errors may use an administrator-configured passthrough rule.
+	if h.errorPassthroughService != nil {
+		if rule := h.errorPassthroughService.MatchUnknownRule(fact); rule != nil {
+			respCode := http.StatusBadGateway
+			if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
+				respCode = fact.HTTPStatus
+			}
 			if !rule.PassthroughCode && rule.ResponseCode != nil {
 				respCode = *rule.ResponseCode
 			}
-
-			// 确定响应消息
-			msg := service.ExtractUpstreamErrorMessage(responseBody)
+			msg := fact.SafeMessage
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
 				msg = *rule.CustomMessage
 			}
-
+			if msg == "" {
+				msg = "Upstream request failed"
+			}
 			if rule.SkipMonitoring {
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
-
 			googleError(c, respCode, msg)
 			return
 		}

@@ -2176,25 +2176,37 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 
-	// 先检查透传规则
-	if h.errorPassthroughService != nil && len(responseBody) > 0 {
-		if rule := h.errorPassthroughService.MatchRule("openai", statusCode, responseBody); rule != nil {
-			// 确定响应状态码
-			respCode := statusCode
+	fact, hasFact := failoverErr.UpstreamFact()
+	if !hasFact {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, statusCode, responseBody)
+	}
+	if policy, recognized := service.RecognizeUpstreamErrorFact(fact); recognized {
+		presentation := policy.Presentation
+		service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+		h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
+		return
+	}
+
+	// Only unknown errors may use an administrator-configured passthrough rule.
+	if h.errorPassthroughService != nil {
+		if rule := h.errorPassthroughService.MatchUnknownRule(fact); rule != nil {
+			respCode := http.StatusBadGateway
+			if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
+				respCode = fact.HTTPStatus
+			}
 			if !rule.PassthroughCode && rule.ResponseCode != nil {
 				respCode = *rule.ResponseCode
 			}
-
-			// 确定响应消息
-			msg := service.ExtractUpstreamErrorMessage(responseBody)
+			msg := fact.SafeMessage
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
 				msg = *rule.CustomMessage
 			}
-
+			if msg == "" {
+				msg = "Upstream request failed"
+			}
 			if rule.SkipMonitoring {
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
-
 			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
 			return
 		}

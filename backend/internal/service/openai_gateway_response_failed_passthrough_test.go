@@ -173,7 +173,7 @@ func TestForwardAsChatCompletions_StreamingRecognizedCyberPolicyAfterOutputEmits
 	require.NotContains(t, rec.Body.String(), "safety_identifier")
 }
 
-func TestForwardAsAnthropic_BufferedResponseFailedAppliesPassthroughRule(t *testing.T) {
+func TestForwardAsAnthropic_BufferedResponseFailedBypassesPassthroughRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	c, rec := newOpenAICompatMessagesTestContext(body)
@@ -187,12 +187,12 @@ func TestForwardAsAnthropic_BufferedResponseFailedAppliesPassthroughRule(t *test
 	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, cyberPolicyMessage, gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, sanitizeUpstreamErrorFactScalar(cyberPolicyMessage, upstreamErrorFactMaxScalarBytes), gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
-func TestForwardAsAnthropic_StreamingResponseFailedBeforeOutputAppliesPassthroughRule(t *testing.T) {
+func TestForwardAsAnthropic_StreamingResponseFailedBeforeOutputBypassesPassthroughRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	c, rec := newOpenAICompatMessagesTestContext(body)
@@ -207,8 +207,8 @@ func TestForwardAsAnthropic_StreamingResponseFailedBeforeOutputAppliesPassthroug
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, cyberPolicyMessage, gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, sanitizeUpstreamErrorFactScalar(cyberPolicyMessage, upstreamErrorFactMaxScalarBytes), gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 

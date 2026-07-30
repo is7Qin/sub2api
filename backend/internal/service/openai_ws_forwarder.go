@@ -528,6 +528,47 @@ func sanitizeOpenAIWSErrorEventPayload(message []byte, sanitizedMessage string) 
 	return out
 }
 
+// renderRecognizedOpenAIWSErrorEvent preserves only the stable error envelope
+// required by the client protocol; raw upstream siblings are never forwarded.
+func renderRecognizedOpenAIWSErrorEvent(presentation UpstreamClientPresentation) []byte {
+	payload, err := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]string{
+			"code":    presentation.ErrorCode,
+			"type":    presentation.ErrorType,
+			"message": presentation.Message,
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return payload
+}
+
+// renderRecognizedOpenAIWSResponseFailedEvent reconstructs only the response
+// terminal fields that form the stable client contract.
+func renderRecognizedOpenAIWSResponseFailedEvent(requestErr *OpenAIUpstreamRequestError, upstreamPayload []byte) []byte {
+	if requestErr == nil {
+		return upstreamPayload
+	}
+	response := map[string]any{
+		"status": "failed",
+		"error": map[string]string{
+			"code":    requestErr.Code,
+			"type":    requestErr.Type,
+			"message": requestErr.Message,
+		},
+	}
+	if responseID := extractOpenAIResponseIDFromJSONBytes(upstreamPayload); responseID != "" {
+		response["id"] = responseID
+	}
+	payload, err := json.Marshal(map[string]any{"type": "response.failed", "response": response})
+	if err != nil {
+		return upstreamPayload
+	}
+	return payload
+}
+
 func summarizeOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
 	if len(message) == 0 {
 		return "-", "-", "-"
@@ -2476,6 +2517,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	firstEventType := ""
 	lastEventType := ""
 	var requestErr *OpenAIUpstreamRequestError
+	// Keep buffered preamble frames uncommitted for newly recognized direct
+	// failures, so the HTTP handler can own the safe JSON presentation.
+	suppressRecognizedDirectTerminal := false
 
 	var flusher http.Flusher
 	if reqStream {
@@ -2607,6 +2651,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
 
+		upstreamMessage := message
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
 		if eventType == "" {
 			continue
@@ -2626,7 +2671,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		lastEventType = eventType
 
-		if responseID == "" && eventResponseID != "" {
+		// A top-level error-event ID identifies the event, not a Responses turn.
+		// Do not promote it to responseID before semantic-terminal classification.
+		if eventType != "error" && responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID
 		}
 
@@ -2670,17 +2717,58 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
 		}
 		if eventType == "response.failed" {
-			fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, message, responseID)
+			fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, upstreamMessage, responseID)
 			terminalFact = &fact
-			requestErr = newOpenAIUpstreamRequestError(message, responseID)
+			contextCandidate := openAIHasContextWindowCandidate(upstreamMessage)
+			if contextCandidate {
+				// Context-window envelopes retain the strict legacy classifier;
+				// malformed or conflicting candidates must not broaden into a
+				// different built-in policy.
+				requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+			} else {
+				requestErr = newRecognizedOpenAIUpstreamRequestError(fact)
+				if requestErr == nil {
+					requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+				}
+			}
 			if requestErr != nil {
-				requestErr.observeTerminal(*usage, firstTokenMs != nil)
+				requestErr.observeTerminal(*usage, wroteDownstream || len(bufferedStreamEvents) > 0)
+				suppressRecognizedDirectTerminal = reqStream &&
+					isNewRecognizedDirectOpenAIError(fact) &&
+					!wroteDownstream && len(bufferedStreamEvents) == 0
 			}
 		}
 		imageCounter.AddSSEData(message)
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, message, "")
+			if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+				lease.MarkBroken()
+				requestErr = newRecognizedOpenAIUpstreamRequestErrorForPolicy(policy, "")
+				requestErr.observeTerminal(*usage, wroteDownstream || len(bufferedStreamEvents) > 0)
+				terminalFact = &fact
+				if reqStream && !clientDisconnected && requestErr.OutputStarted {
+					flushBufferedStreamEvents("recognized_error_event")
+					emitStreamMessage(renderRecognizedOpenAIWSErrorEvent(policy.Presentation), true)
+				}
+				return &OpenAIForwardResult{
+					RequestID:        responseID,
+					Usage:            *usage,
+					Model:            originalModel,
+					UpstreamModel:    mappedModel,
+					ImageCount:       imageCounter.Count(),
+					ImageOutputSizes: imageCounter.Sizes(),
+					ServiceTier:      extractOpenAIServiceTier(reqBody),
+					ReasoningEffort:  ApplyThinkingEnabledFallback(extractOpenAIReasoningEffort(reqBody, originalModel, mappedModel), payloadAsJSONBytes(payload), mappedModel),
+					Stream:           reqStream,
+					OpenAIWSMode:     true,
+					ResponseHeaders:  lease.HandshakeHeaders(),
+					upstreamFact:     terminalFact,
+					Duration:         time.Since(startTime),
+					FirstTokenMs:     firstTokenMs,
+				}, requestErr
+			}
 			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMsg := sanitizeOpenAIWSErrorMessageForDiagnostic(errMsgRaw, "Upstream websocket error")
 			message = sanitizeOpenAIWSErrorEventPayload(message, errMsg)
@@ -2751,7 +2839,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws error event: %s", errMsg)
 		}
 
-		if reqStream {
+		if suppressRecognizedDirectTerminal {
+			// The handler will render this newly recognized pre-output error.
+		} else if reqStream {
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
 			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
@@ -2849,7 +2939,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		clientDisconnected,
 	)
 
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:        responseID,
 		Usage:            *usage,
 		Model:            originalModel,
@@ -2864,7 +2954,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		upstreamFact:     terminalFact,
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
-	}, requestErr
+	}
+	if requestErr != nil {
+		return result, requestErr
+	}
+	return result, nil
 }
 
 func stripCodexSparkImageGenerationToolFromRawPayload(payload []byte, model string, account *Account) ([]byte, bool, error) {
@@ -3657,7 +3751,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				upstreamMessage = sanitized
 				eventType, eventResponseID, _ = parseOpenAIWSEventEnvelope(upstreamMessage)
 			}
-			if responseID == "" && eventResponseID != "" {
+			// A top-level error-event ID identifies the event, not a Responses turn.
+			// Do not promote it to responseID before semantic-terminal classification.
+			if eventType != "error" && responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}
 			if eventType != "" {
@@ -3789,9 +3885,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if eventType == "response.failed" {
 					fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, upstreamMessage, responseID)
 					terminalFact = &fact
-					requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+					requestErr = newRecognizedOpenAIUpstreamRequestError(fact)
+					if requestErr == nil {
+						requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+					}
 					if requestErr != nil {
-						requestErr.observeTerminal(usage, firstTokenMs != nil)
+						// This turn's terminal write must not make a terminal-only
+						// failure appear to have started client output.
+						requestErr.observeTerminal(usage, wroteDownstream)
 					}
 				}
 				// 客户端已断连时，上游连接的 session 状态不可信，标记 broken 避免回池复用。

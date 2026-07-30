@@ -43,14 +43,20 @@ type RelayResult struct {
 	DroppedDownstreamFrames int64
 }
 
+type RelaySemanticTerminal struct {
+	Terminal  bool
+	StopRelay bool
+}
+
 type RelayTurnResult struct {
-	RequestModel      string
-	Usage             Usage
-	RequestID         string
-	TerminalEventType string
-	TerminalPayload   []byte
-	Duration          time.Duration
-	FirstTokenMs      *int
+	RequestModel         string
+	Usage                Usage
+	RequestID            string
+	TerminalEventType    string
+	TerminalPayload      []byte
+	Duration             time.Duration
+	FirstTokenMs         *int
+	ClientEventDelivered bool
 }
 
 type RelayExit struct {
@@ -68,6 +74,7 @@ type RelayOptions struct {
 	StartClientAfterFirstDownstream bool
 	OnUsageParseFailure             func(eventType string, usageRaw string)
 	OnTurnComplete                  func(turn RelayTurnResult)
+	ClassifySemanticTerminal        func(msgType coderws.MessageType, payload []byte, eventType string) RelaySemanticTerminal
 	BeforeWriteClient               func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
 	TransformWriteClient            func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error)
 	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn, markActivity func()) (coderws.MessageType, []byte, error)
@@ -94,8 +101,9 @@ type relayState struct {
 	turnTimingByID    map[string]*relayTurnTiming
 	// Kept for the full connection: a replay can arrive after its turn timing
 	// is released, so removing IDs with active-turn state would re-enable billing.
-	completedResponseIDs map[string]struct{}
-	activeTurn           *relayTurnTiming
+	completedResponseIDs     map[string]struct{}
+	activeTurn               *relayTurnTiming
+	classifySemanticTerminal func(msgType coderws.MessageType, payload []byte, eventType string) RelaySemanticTerminal
 
 	// ID-less terminal events have no response ID to key replay suppression on.
 	// The client turn sequence provides a bounded per-turn key without
@@ -144,13 +152,15 @@ func (g *downstreamWriteGate) disabled() bool {
 }
 
 type observedUpstreamEvent struct {
-	terminal   bool
-	eventType  string
-	responseID string
-	payload    []byte
-	usage      Usage
-	duration   time.Duration
-	firstToken *int
+	terminal             bool
+	eventType            string
+	responseID           string
+	payload              []byte
+	usage                Usage
+	duration             time.Duration
+	firstToken           *int
+	clientEventDelivered bool
+	stopRelay            bool
 }
 
 type relayTurnTiming struct {
@@ -194,7 +204,10 @@ func Relay(
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel}
+	state := &relayState{
+		requestModel:             result.RequestModel,
+		classifySemanticTerminal: options.ClassifySemanticTerminal,
+	}
 	state.idlessTurnGeneration.Store(1)
 	onTrace := options.OnTrace
 
@@ -549,10 +562,19 @@ func runUpstreamToClient(
 		observedEvent := observedUpstreamEvent{}
 		switch msgType {
 		case coderws.MessageText:
-			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
+			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+			semantic := RelaySemanticTerminal{}
+			if state != nil && state.classifySemanticTerminal != nil {
+				semantic = state.classifySemanticTerminal(msgType, payload, eventType)
+			}
+			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure, semantic.Terminal)
+			observedEvent.stopRelay = semantic.StopRelay
 		case coderws.MessageBinary:
 			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
+		// The terminal's own write is deliberately excluded: only an earlier
+		// successful downstream frame establishes client-visible output.
+		observedEvent.clientEventDelivered = wroteDownstream
 		emitTurnComplete(onTurnComplete, state, observedEvent)
 		if downstreamWrites != nil && downstreamWrites.disabled() {
 			if droppedFrames != nil {
@@ -641,6 +663,24 @@ func runUpstreamToClient(
 				return
 			}
 			continue
+		}
+		if observedEvent.stopRelay && writeErr != nil {
+			if downstreamWrites != nil {
+				downstreamWrites.disable()
+			}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "write_client", err: writeErr, wroteDownstream: wroteDownstream})
+			return
+		}
+		if observedEvent.stopRelay && writeErr == nil {
+			wroteDownstream = true
+			if afterWriteClient != nil {
+				afterWriteClient()
+			}
+			if forwardedFrames != nil {
+				forwardedFrames.Add(1)
+			}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "semantic_terminal", graceful: true, wroteDownstream: wroteDownstream})
+			return
 		}
 		if writeErr != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
@@ -767,10 +807,12 @@ func observeUpstreamMessage(
 	startAt time.Time,
 	nowFn func() time.Time,
 	onUsageParseFailure func(eventType string, usageRaw string),
+	semanticTerminal ...bool,
 ) observedUpstreamEvent {
 	if state == nil || len(message) == 0 {
 		return observedUpstreamEvent{}
 	}
+	semantic := len(semanticTerminal) > 0 && semanticTerminal[0]
 	values := gjson.GetManyBytes(message, "type", "response.id", "response_id", "id")
 	eventType := strings.TrimSpace(values[0].String())
 	if eventType == "" {
@@ -780,14 +822,16 @@ func observeUpstreamMessage(
 	if responseID == "" {
 		responseID = strings.TrimSpace(values[2].String())
 	}
-	// 仅 terminal 事件兜底读取顶层 id，避免把 event_id 当成 response_id 关联到 turn。
-	if responseID == "" && isTerminalEvent(eventType) {
+	// Only native response terminals may fall back to a top-level ID. A
+	// classifier-only semantic terminal can be an event envelope, not a turn.
+	if responseID == "" && isTerminalEvent(eventType) && !semantic {
 		responseID = strings.TrimSpace(values[3].String())
 	}
 	now := nowFn()
 	// An upstream may replay a terminal frame while closing. Ignore duplicate
 	// bookkeeping so it cannot double-charge or release a later turn's slots.
-	if isTerminalEvent(eventType) {
+	effectiveTerminal := isTerminalEvent(eventType) || semantic
+	if effectiveTerminal {
 		if responseID != "" && !openAIWSRelayMarkResponseCompleted(state, responseID) {
 			return observedUpstreamEvent{eventType: eventType, responseID: responseID}
 		}
@@ -825,7 +869,7 @@ func observeUpstreamMessage(
 			}
 		}
 	}
-	if !isTerminalEvent(eventType) {
+	if !effectiveTerminal {
 		return observed
 	}
 	observed.terminal = true
@@ -868,13 +912,14 @@ func relayTurnResult(state *relayState, observed observedUpstreamEvent) RelayTur
 		requestModel = state.requestModel
 	}
 	return RelayTurnResult{
-		RequestModel:      requestModel,
-		Usage:             observed.usage,
-		RequestID:         strings.TrimSpace(observed.responseID),
-		TerminalEventType: observed.eventType,
-		TerminalPayload:   append([]byte(nil), observed.payload...),
-		Duration:          observed.duration,
-		FirstTokenMs:      openAIWSRelayCloneIntPtr(observed.firstToken),
+		RequestModel:         requestModel,
+		Usage:                observed.usage,
+		RequestID:            strings.TrimSpace(observed.responseID),
+		TerminalEventType:    observed.eventType,
+		TerminalPayload:      append([]byte(nil), observed.payload...),
+		Duration:             observed.duration,
+		FirstTokenMs:         openAIWSRelayCloneIntPtr(observed.firstToken),
+		ClientEventDelivered: observed.clientEventDelivered,
 	}
 }
 

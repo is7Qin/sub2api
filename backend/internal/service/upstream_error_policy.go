@@ -28,6 +28,59 @@ type RecognizedUpstreamErrorPolicy struct {
 	Presentation UpstreamClientPresentation
 }
 
+type UpstreamAccountHealthAction string
+
+const (
+	UpstreamHealthNone                  UpstreamAccountHealthAction = "none"
+	UpstreamHealthRecordOnly            UpstreamAccountHealthAction = "record_only"
+	UpstreamHealthApplyRateLimit        UpstreamAccountHealthAction = "apply_rate_limit"
+	UpstreamHealthTemporarilyUnschedule UpstreamAccountHealthAction = "temporarily_unschedule"
+	UpstreamHealthPermanentlyDisable    UpstreamAccountHealthAction = "permanently_disable"
+	UpstreamHealthApplyModelRateLimit   UpstreamAccountHealthAction = "apply_model_rate_limit"
+)
+
+type UpstreamCandidateRank uint8
+
+const (
+	UpstreamCandidateGenericTransport UpstreamCandidateRank = iota
+	UpstreamCandidateStatusOnly
+	UpstreamCandidateStructured
+)
+
+type UpstreamErrorCandidate struct {
+	Presentation UpstreamClientPresentation
+	Rank         UpstreamCandidateRank
+}
+
+// UpstreamRecoveryPolicy separates bounded recovery decisions from client
+// presentation and the legacy account-health/error carriers.
+type UpstreamRecoveryPolicy struct {
+	Disposition             UpstreamAttemptDisposition
+	SameAccountRetryBudget  int
+	AccountTransitionBudget int
+	AccountHealthAction     UpstreamAccountHealthAction
+	CandidateRank           UpstreamCandidateRank
+	Presentation            UpstreamClientPresentation
+}
+
+func NewUpstreamErrorCandidate(fact UpstreamErrorFact, rank UpstreamCandidateRank) *UpstreamErrorCandidate {
+	presentation := normalizedUpstreamClientPresentation(fact)
+	if presentation.HTTPStatus == 0 {
+		if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
+			presentation.HTTPStatus = fact.HTTPStatus
+		} else {
+			presentation.HTTPStatus = http.StatusBadGateway
+		}
+	}
+	if presentation.ErrorType == "" {
+		presentation.ErrorType = "api_error"
+	}
+	if presentation.Message == "" {
+		presentation.Message = "Upstream request failed"
+	}
+	return &UpstreamErrorCandidate{Presentation: presentation, Rank: rank}
+}
+
 // RecognizedUpstreamError is a direct, safe presentation that must bypass
 // account health and failover handling.
 type RecognizedUpstreamError struct {
@@ -84,6 +137,39 @@ func (e *RecognizedUpstreamError) observeTerminal(usage OpenAIUsage, outputStart
 	usageCopy := usage
 	e.Usage = &usageCopy
 	e.OutputStarted = outputStarted
+}
+
+func ResolveUpstreamRecoveryPolicy(fact UpstreamErrorFact) (UpstreamRecoveryPolicy, bool) {
+	if recognized, ok := RecognizeUpstreamErrorFact(fact); ok {
+		return UpstreamRecoveryPolicy{
+			Disposition:         recognized.Disposition,
+			AccountHealthAction: UpstreamHealthNone,
+			CandidateRank:       UpstreamCandidateStructured,
+			Presentation:        recognized.Presentation,
+		}, true
+	}
+
+	if strings.EqualFold(strings.TrimSpace(fact.ProviderCode), "rate_limit_exceeded") ||
+		strings.EqualFold(strings.TrimSpace(fact.ProviderType), "rate_limit_error") {
+		return UpstreamRecoveryPolicy{
+			Disposition:             UpstreamAttemptFailover,
+			SameAccountRetryBudget:  1,
+			AccountTransitionBudget: 1,
+			AccountHealthAction:     UpstreamHealthApplyRateLimit,
+			CandidateRank:           UpstreamCandidateStructured,
+			Presentation:            NewUpstreamErrorCandidate(fact, UpstreamCandidateStructured).Presentation,
+		}, true
+	}
+	if fact.HTTPStatusKnown && fact.HTTPStatus >= http.StatusInternalServerError {
+		return UpstreamRecoveryPolicy{
+			Disposition:             UpstreamAttemptFailover,
+			AccountTransitionBudget: 1,
+			AccountHealthAction:     UpstreamHealthRecordOnly,
+			CandidateRank:           UpstreamCandidateStatusOnly,
+			Presentation:            NewUpstreamErrorCandidate(fact, UpstreamCandidateStatusOnly).Presentation,
+		}, true
+	}
+	return UpstreamRecoveryPolicy{}, false
 }
 
 func RecognizeUpstreamErrorFact(fact UpstreamErrorFact) (RecognizedUpstreamErrorPolicy, bool) {

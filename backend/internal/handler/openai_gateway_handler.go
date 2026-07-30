@@ -349,6 +349,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	recovery := NewUpstreamRecoveryState()
 
 	selectionCtx := service.WithPublicModelSupportMiss404(c.Request.Context())
 	if imageIntent {
@@ -393,7 +394,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 			if lastFailoverErr != nil {
-				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+				h.handleResponsesFailoverExhausted(c, recovery, lastFailoverErr, streamStarted)
 			} else {
 				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
 			}
@@ -529,11 +530,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
+					recovery.ObserveFailoverError(failoverErr)
+					if recovery.HasTransitionBudget() && !recovery.CanTransition(maxAccountSwitches) {
+						h.handleResponsesFailoverExhausted(c, recovery, lastFailoverErr, streamStarted)
+						return
+					}
 					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						h.handleResponsesFailoverExhausted(c, recovery, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
+					if recovery.HasTransitionBudget() {
+						recovery.RecordTransition()
+					}
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
@@ -590,6 +599,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if requestScopedFailure && !requestFailureOutputStarted && !openAIForwardResultHasUsage(result) {
 			return
 		}
+		recovery.ClearOnSuccess()
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
@@ -879,6 +889,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	recovery := NewUpstreamRecoveryState()
 	effectiveMappedModel := preferredMappedModel
 
 	selectionCtx := service.WithPublicModelSupportMiss404(c.Request.Context())
@@ -921,7 +932,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				}
 			} else {
 				anthropicStreamStarted := streamStarted || (c.Writer != nil && c.Writer.Written())
-				if lastFailoverErr != nil {
+				if candidate, ok := recovery.FinalCandidate(); ok {
+					h.handleAnthropicCandidate(c, candidate, anthropicStreamStarted)
+				} else if lastFailoverErr != nil {
 					h.handleAnthropicFailoverExhausted(c, lastFailoverErr, anthropicStreamStarted)
 				} else {
 					h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", anthropicStreamStarted)
@@ -1062,7 +1075,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						}
 						failedAccountIDs[account.ID] = struct{}{}
 						lastFailoverErr = failoverErr
+						recovery.ObserveFailoverError(failoverErr)
 						anthropicStreamStarted := streamStarted || (c.Writer != nil && c.Writer.Written())
+						if recovery.HasTransitionBudget() && !recovery.CanTransition(maxAccountSwitches) {
+							if candidate, ok := recovery.FinalCandidate(); ok {
+								h.handleAnthropicCandidate(c, candidate, anthropicStreamStarted)
+							} else {
+								h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							}
+							return
+						}
 						if switchCount >= maxAccountSwitches {
 							h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
 							return
@@ -1074,6 +1096,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						}
 						h.gatewayService.RecordOpenAIAccountSwitch()
 						switchCount = nextSwitchCount
+						if recovery.HasTransitionBudget() {
+							recovery.RecordTransition()
+						}
 						reqLog.Warn("openai_messages.upstream_failover_switching",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
@@ -1132,6 +1157,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if requestScopedFailure && !requestFailureOutputStarted && !openAIForwardResultHasUsage(result) {
 			return
 		}
+		recovery.ClearOnSuccess()
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
@@ -2085,6 +2111,38 @@ func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, stream
 func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
 	status, errType, message := concurrencyErrorResponse(err, slotType)
 	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
+}
+
+// handleResponsesFailoverExhausted prefers the bounded fact-derived candidate
+// over legacy raw-body compatibility rendering.
+func (h *OpenAIGatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, recovery *UpstreamRecoveryState, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			h.handleUpstreamCandidate(c, candidate, streamStarted)
+			return
+		}
+	}
+	h.handleFailoverExhausted(c, failoverErr, streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
+		return
+	}
+	presentation := candidate.Presentation
+	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleAnthropicCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+		return
+	}
+	presentation := candidate.Presentation
+	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	h.anthropicStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {

@@ -2008,7 +2008,7 @@ func TestOpenAIResponses_ContextFailedDoesNotSwitchRateLimitOrRecordUsage(t *tes
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
-	upstreamBody := "event: response.failed\n" + `data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"},"usage":{"input_tokens":5,"output_tokens":0}}}` + "\n\n"
+	upstreamBody := "event: response.failed\n" + `data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"}}}` + "\n\n"
 	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -2032,7 +2032,7 @@ func TestOpenAIResponses_ContextFailedDoesNotSwitchRateLimitOrRecordUsage(t *tes
 	require.Equal(t, int64(9914), selectedID)
 	select {
 	case <-usageRepo.created:
-		t.Fatal("pre-output request failure must not record usage")
+		t.Fatal("context_length_exceeded must not record usage when upstream provides no usage")
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -2050,7 +2050,7 @@ func TestOpenAIMessages_ContextFailedDoesNotSwitchOrRateLimitAccount(t *testing.
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
-	upstreamBody := `data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"},"usage":{"input_tokens":5,"output_tokens":0}}}` + "\n\n"
+	upstreamBody := `data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"}}}` + "\n\n"
 	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -2075,7 +2075,7 @@ func TestOpenAIMessages_ContextFailedDoesNotSwitchOrRateLimitAccount(t *testing.
 	require.Equal(t, int64(9910), selectedID)
 	select {
 	case <-usageRepo.created:
-		t.Fatal("request-scoped context failure must not record usage")
+		t.Fatal("context_length_exceeded must not record usage when upstream provides no usage")
 	case <-time.After(50 * time.Millisecond):
 	}
 }

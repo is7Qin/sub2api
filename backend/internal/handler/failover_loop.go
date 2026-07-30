@@ -42,6 +42,89 @@ const (
 )
 
 // FailoverState 跨循环迭代共享的 failover 状态
+type UpstreamRecoveryState struct {
+	transitionBudget int
+	transitionsUsed  int
+	bestCandidate    *service.UpstreamErrorCandidate
+}
+
+func NewUpstreamRecoveryState() *UpstreamRecoveryState {
+	return &UpstreamRecoveryState{}
+}
+
+func (s *UpstreamRecoveryState) AdoptPolicy(policy service.UpstreamRecoveryPolicy) {
+	if s == nil || policy.AccountTransitionBudget <= 0 {
+		return
+	}
+	if s.transitionBudget == 0 || policy.AccountTransitionBudget < s.transitionBudget {
+		s.transitionBudget = policy.AccountTransitionBudget
+	}
+}
+
+// ObserveFailoverError retains only bounded client presentation data and, when
+// available, adopts the request-wide recovery budget attached to the fact.
+func (s *UpstreamRecoveryState) ObserveFailoverError(failoverErr *service.UpstreamFailoverError) {
+	if s == nil || failoverErr == nil {
+		return
+	}
+	if fact, ok := failoverErr.UpstreamFact(); ok {
+		if policy, recognized := service.ResolveUpstreamRecoveryPolicy(fact); recognized {
+			s.AdoptPolicy(policy)
+			s.RetainCandidate(service.NewUpstreamErrorCandidate(fact, policy.CandidateRank))
+			return
+		}
+		s.RetainCandidate(service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly))
+		return
+	}
+	s.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		HTTPStatusKnown: failoverErr.StatusCode > 0,
+		HTTPStatus:      failoverErr.StatusCode,
+	}, service.UpstreamCandidateStatusOnly))
+}
+
+func (s *UpstreamRecoveryState) HasTransitionBudget() bool {
+	return s != nil && s.transitionBudget > 0
+}
+
+func (s *UpstreamRecoveryState) RetainCandidate(candidate *service.UpstreamErrorCandidate) {
+	if s == nil || candidate == nil {
+		return
+	}
+	if s.bestCandidate == nil || candidate.Rank >= s.bestCandidate.Rank {
+		copy := *candidate
+		s.bestCandidate = &copy
+	}
+}
+
+func (s *UpstreamRecoveryState) CanTransition(configuredHardCap int) bool {
+	return s != nil && configuredHardCap > 0 &&
+		s.transitionsUsed < configuredHardCap &&
+		s.transitionBudget > s.transitionsUsed
+}
+
+func (s *UpstreamRecoveryState) RecordTransition() {
+	if s != nil {
+		s.transitionsUsed++
+	}
+}
+
+func (s *UpstreamRecoveryState) ClearOnSuccess() {
+	if s == nil {
+		return
+	}
+	s.bestCandidate = nil
+	s.transitionBudget = 0
+	s.transitionsUsed = 0
+}
+
+func (s *UpstreamRecoveryState) FinalCandidate() (*service.UpstreamErrorCandidate, bool) {
+	if s == nil || s.bestCandidate == nil {
+		return nil, false
+	}
+	copy := *s.bestCandidate
+	return &copy, true
+}
+
 type FailoverState struct {
 	SwitchCount           int
 	MaxSwitches           int
@@ -49,7 +132,15 @@ type FailoverState struct {
 	SameAccountRetryCount map[int64]int
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
+	Recovery              *UpstreamRecoveryState
 	hasBoundSession       bool
+}
+
+func (s *FailoverState) FinalCandidate() (*service.UpstreamErrorCandidate, bool) {
+	if s == nil || s.Recovery == nil {
+		return nil, false
+	}
+	return s.Recovery.FinalCandidate()
 }
 
 // NewFailoverState 创建 failover 状态
@@ -58,6 +149,7 @@ func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 		MaxSwitches:           maxSwitches,
 		FailedAccountIDs:      make(map[int64]struct{}),
 		SameAccountRetryCount: make(map[int64]int),
+		Recovery:              NewUpstreamRecoveryState(),
 		hasBoundSession:       hasBoundSession,
 	}
 }
@@ -86,6 +178,7 @@ func (s *FailoverState) HandleFailoverError(
 		return FailoverCanceled
 	}
 	s.LastFailoverErr = failoverErr
+	s.Recovery.ObserveFailoverError(failoverErr)
 
 	// 缓存计费判断
 	if needForceCacheBilling(s.hasBoundSession, failoverErr) {
@@ -128,6 +221,12 @@ func (s *FailoverState) HandleFailoverError(
 	}
 	s.FailedAccountIDs[accountID] = struct{}{}
 
+	// Recognized recoverable policies own a request-wide transition budget. Legacy
+	// failover errors retain their configured behavior until their boundary is migrated.
+	if s.Recovery.HasTransitionBudget() && !s.Recovery.CanTransition(s.MaxSwitches) {
+		return FailoverExhausted
+	}
+
 	// 检查是否耗尽
 	if s.SwitchCount >= s.MaxSwitches {
 		return FailoverExhausted
@@ -138,6 +237,9 @@ func (s *FailoverState) HandleFailoverError(
 		return FailoverCanceled
 	}
 	s.SwitchCount++
+	if s.Recovery.transitionBudget > 0 {
+		s.Recovery.RecordTransition()
+	}
 	logger.FromContext(ctx).Warn("gateway.failover_switch_account",
 		zap.Int64("account_id", accountID),
 		zap.Int("upstream_status", failoverErr.StatusCode),

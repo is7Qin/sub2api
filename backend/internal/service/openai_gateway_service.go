@@ -321,9 +321,19 @@ type OpenAIForwardResult struct {
 	ImageOutputSizes   []string
 	ImageSizeSource    string
 	ImageSizeBreakdown map[string]int
+	upstreamFact       *UpstreamErrorFact
 
 	wsReplayInput       []json.RawMessage
 	wsReplayInputExists bool
+}
+
+// UpstreamFact returns the observational terminal error fact without exposing
+// the mutable attachment retained by the WebSocket forwarding path.
+func (r *OpenAIForwardResult) UpstreamFact() (UpstreamErrorFact, bool) {
+	if r == nil || r.upstreamFact == nil {
+		return UpstreamErrorFact{}, false
+	}
+	return *r.upstreamFact, true
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -3958,11 +3968,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				})
 
 				s.handleFailoverSideEffects(ctx, resp, account, respBody, upstreamModel)
-				return nil, &UpstreamFailoverError{
-					StatusCode:             resp.StatusCode,
-					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-				}
+				return nil, newOpenAIHTTPFailoverError(
+					resp,
+					respBody,
+					account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+				)
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body, upstreamModel)
 		}
@@ -4993,19 +5003,19 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		UpstreamResponseBody: upstreamDetail,
 	})
 	if account == nil || account.Type != AccountTypeAPIKey {
-		return &UpstreamFailoverError{
-			StatusCode:      resp.StatusCode,
-			ResponseBody:    body,
-			ResponseHeaders: resp.Header.Clone(),
-		}
+		failoverErr := newOpenAIHTTPFailoverError(resp, body, false)
+		failoverErr.ResponseHeaders = resp.Header.Clone()
+		return failoverErr
 	}
 	statusCode, safeMessage := openAIPassthroughSafeMessage(resp.StatusCode, "")
 	safeBody, safeHeaders := sanitizedOpenAIPassthroughError(statusCode, resp.Header, safeMessage)
-	return newSanitizedUpstreamFailoverError(
+	fact := ParseHTTPUpstreamErrorFact(PlatformOpenAI, resp, body)
+	return newSanitizedUpstreamFailoverErrorWithFact(
 		statusCode,
 		safeBody,
 		safeHeaders,
 		account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+		&fact,
 	)
 }
 
@@ -5266,10 +5276,17 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		// still honor the pool-mode status-code policy, including an explicit empty list.
 		retryableOnSameAccount = account.IsPoolModeRetryableStatus(http.StatusBadGateway)
 	}
+	fact := ParseOpenAIJSONErrorFact(PlatformOpenAI, UpstreamErrorSourceSSE, payload, upstreamRequestID)
+	if len(payload) == 0 {
+		fact.Source = UpstreamErrorSourceStreamTermination
+		fact.SafeMessage = boundedUpstreamErrorFactScalar(message, upstreamErrorFactMaxScalarBytes)
+		fact.InternalMatchText = buildUpstreamErrorFactMatchText(fact)
+	}
 	return &UpstreamFailoverError{
 		StatusCode:             http.StatusBadGateway,
 		ResponseBody:           body,
 		RetryableOnSameAccount: retryableOnSameAccount,
+		upstreamFact:           &fact,
 	}
 }
 
@@ -5937,11 +5954,11 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		Detail:             upstreamDetail,
 	})
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newOpenAIHTTPFailoverError(
+			resp,
+			body,
+			account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+		)
 	}
 
 	// Return appropriate error response
@@ -6078,11 +6095,11 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		Detail:             upstreamDetail,
 	})
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newOpenAIHTTPFailoverError(
+			resp,
+			body,
+			account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+		)
 	}
 
 	// Map status code to error type and write response

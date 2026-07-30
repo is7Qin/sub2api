@@ -146,6 +146,68 @@ func TestOpenAIStreamingPassthroughDeduplicatesFunctionCallArguments(t *testing.
 	require.NotContains(t, body, `"name":"edit"`)
 }
 
+func TestOpenAINonStreamingPassthroughRejectsSuccessfulUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing usage", body: `{"id":"resp_missing","output":[]}`},
+		{name: "non-object usage", body: `{"id":"resp_invalid","output":[],"usage":"sk-upstream-secret"}`},
+		{name: "empty usage", body: `{"id":"resp_empty","output":[],"usage":{}}`},
+		{name: "invalid numeric usage", body: `{"id":"resp_bad_numbers","output":[],"usage":{"input_tokens":1.5,"output_tokens":-2}}`},
+		{name: "negative nested cache usage", body: `{"id":"resp_bad_cache","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cached_tokens":-1}}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}
+			svc := &OpenAIGatewayService{cfg: passthroughPrivacyTestConfig()}
+
+			result, err := svc.handleNonStreamingResponsePassthrough(c.Request.Context(), resp, c, "client-model", "upstream-model")
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.NotContains(t, rec.Body.String(), "sk-upstream-secret")
+			require.NotContains(t, err.Error(), "sk-upstream-secret")
+		})
+	}
+}
+
+func TestOpenAINonStreamingPassthroughAcceptsExplicitZeroUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := `{"id":"resp_zero","output":[],"usage":{"input_tokens":0,"output_tokens":0}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	svc := &OpenAIGatewayService{cfg: passthroughPrivacyTestConfig()}
+
+	result, err := svc.handleNonStreamingResponsePassthrough(c.Request.Context(), resp, c, "client-model", "upstream-model")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Zero(t, result.usage.InputTokens)
+	require.Zero(t, result.usage.OutputTokens)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestOpenAINonStreamingPassthroughDeduplicatesFunctionCallOutputArguments(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

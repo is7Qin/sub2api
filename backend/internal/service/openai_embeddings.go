@@ -154,11 +154,17 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 
+	usage, err := extractValidatedOpenAIEmbeddingsUsage(respBody)
+	if err != nil {
+		writeOpenAIEmbeddingsError(c, http.StatusBadGateway, "api_error", "Upstream returned invalid usage")
+		return nil, err
+	}
+
 	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
 
 	return &OpenAIForwardResult{
 		RequestID:     firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
-		Usage:         extractOpenAIEmbeddingsUsage(respBody),
+		Usage:         usage,
 		Model:         originalModel,
 		BillingModel:  billingModel,
 		UpstreamModel: upstreamModel,
@@ -194,6 +200,41 @@ func writeOpenAIEmbeddingsError(c *gin.Context, statusCode int, errType, message
 			"message": message,
 		},
 	})
+}
+
+func extractValidatedOpenAIEmbeddingsUsage(body []byte) (OpenAIUsage, error) {
+	if !gjson.ValidBytes(body) {
+		return OpenAIUsage{}, errors.New("invalid embeddings response usage")
+	}
+	usage := gjson.GetBytes(body, "usage")
+	if !usage.Exists() || !usage.IsObject() {
+		return OpenAIUsage{}, errors.New("invalid embeddings response usage")
+	}
+	for _, field := range []string{
+		"prompt_tokens",
+		"input_tokens",
+		"total_tokens",
+		"completion_tokens",
+		"output_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"input_tokens_details.cached_tokens",
+		"cache_read_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_tokens",
+		"cache_creation_input_tokens",
+		"input_tokens_details.cache_creation_tokens",
+		"prompt_tokens_details.image_tokens",
+		"input_tokens_details.image_tokens",
+	} {
+		value := usage.Get(field)
+		if value.Exists() && !isNonNegativeGJSONInteger(value) {
+			return OpenAIUsage{}, errors.New("invalid embeddings response usage")
+		}
+	}
+	if !usage.Get("prompt_tokens").Exists() && !usage.Get("input_tokens").Exists() && !usage.Get("total_tokens").Exists() {
+		return OpenAIUsage{}, errors.New("invalid embeddings response usage")
+	}
+	return extractOpenAIEmbeddingsUsage(body), nil
 }
 
 func extractOpenAIEmbeddingsUsage(body []byte) OpenAIUsage {

@@ -5587,17 +5587,24 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	usage := &OpenAIUsage{}
 	usageParsed := false
 	if len(body) > 0 {
-		if parsedUsage, ok := extractOpenAIResponsesUsageFromJSONBytes(body); ok {
+		if parsedUsage, ok := extractValidatedOpenAIResponsesUsageFromJSONBytes(body); ok {
 			*usage = parsedUsage
 			usageParsed = true
 		}
 	}
 	if !usageParsed {
-		// 兜底：尝试从 SSE 文本中解析 usage
-		usage = s.parseSSEUsageFromBody(string(body))
+		if bodyLooksLikeSSE := bodyHasSSEFraming(body); bodyLooksLikeSSE {
+			// 兜底：兼容被错误标记为 JSON 的 SSE 响应。
+			if finalResponse, ok := extractCodexFinalResponse(string(body)); ok {
+				if parsedUsage, ok := extractValidatedOpenAIResponsesUsageFromJSONBytes(finalResponse); ok {
+					*usage = parsedUsage
+					usageParsed = true
+				}
+			}
+		}
 	}
-	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && len(bytes.TrimSpace(body)) > 0 && !json.Valid(body) {
-		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned an invalid non-streaming response")
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && !usageParsed {
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned invalid usage")
 	}
 	responseID := extractOpenAIResponseIDFromJSONBytes(body)
 
@@ -5636,9 +5643,11 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 
 	usage := &OpenAIUsage{}
 	if ok {
-		if parsedUsage, parsed := extractOpenAIResponsesUsageFromJSONBytes(finalResponse); parsed {
-			*usage = parsedUsage
+		parsedUsage, parsed := extractValidatedOpenAIResponsesUsageFromJSONBytes(finalResponse)
+		if !parsed {
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned invalid usage")
 		}
+		*usage = parsedUsage
 		// When the terminal event has an empty output array, reconstruct
 		// output from accumulated delta events so the client gets full content.
 		if len(gjson.GetBytes(finalResponse, "output").Array()) == 0 {
@@ -5675,11 +5684,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream compact response returned conflicting terminal events", terminalPayload)
 		}
-		usage = s.parseSSEUsageFromBody(bodyText)
-		if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
-			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
-		}
-		body = []byte(bodyText)
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned invalid usage")
 	}
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -7078,6 +7083,82 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"))
 }
 
+// extractValidatedOpenAIResponsesUsageFromJSONBytes accepts only explicit,
+// structurally usable token accounting for successful non-stream responses.
+func extractValidatedOpenAIResponsesUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return OpenAIUsage{}, false
+	}
+	usage := gjson.GetBytes(body, "usage")
+	imageGen := gjson.GetBytes(body, "tool_usage.image_gen")
+	if !usage.IsObject() {
+		usage = gjson.GetBytes(body, "response.usage")
+		imageGen = gjson.GetBytes(body, "response.tool_usage.image_gen")
+	}
+	if !usage.IsObject() {
+		return OpenAIUsage{}, false
+	}
+
+	hasInputTokens := false
+	for _, field := range []string{
+		"input_tokens",
+		"prompt_tokens",
+		"output_tokens",
+		"completion_tokens",
+		"input_tokens_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"cache_creation_input_tokens",
+		"cache_write_input_tokens",
+		"cache_creation_tokens",
+		"cache_write_tokens",
+		"input_tokens_details.cache_write_tokens",
+		"prompt_tokens_details.cache_write_tokens",
+		"input_tokens_details.cache_creation_tokens",
+		"prompt_tokens_details.cache_creation_tokens",
+		"input_tokens_details.image_tokens",
+		"prompt_tokens_details.image_tokens",
+		"output_tokens_details.image_tokens",
+		"completion_tokens_details.image_tokens",
+	} {
+		value := usage.Get(field)
+		if !value.Exists() {
+			continue
+		}
+		if !isNonNegativeGJSONInteger(value) {
+			return OpenAIUsage{}, false
+		}
+		if field == "input_tokens" || field == "prompt_tokens" {
+			hasInputTokens = true
+		}
+	}
+	if !hasInputTokens {
+		return OpenAIUsage{}, false
+	}
+	for _, field := range []string{
+		"input_tokens_details.image_tokens",
+		"output_tokens_details.image_tokens",
+	} {
+		value := imageGen.Get(field)
+		if value.Exists() && !isNonNegativeGJSONInteger(value) {
+			return OpenAIUsage{}, false
+		}
+	}
+	parsedUsage, ok := openAIUsageFromGJSON(usage)
+	if !ok {
+		return OpenAIUsage{}, false
+	}
+	mergeHostedImageGenerationUsage(imageGen, &parsedUsage)
+	return parsedUsage, true
+}
+
+func isNonNegativeGJSONInteger(value gjson.Result) bool {
+	if value.Type != gjson.Number {
+		return false
+	}
+	_, err := strconv.ParseUint(value.Raw, 10, strconv.IntSize)
+	return err == nil
+}
+
 func extractOpenAIResponsesUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	usage, ok := extractOpenAIUsageFromJSONBytes(body)
 	if !ok {
@@ -7228,12 +7309,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
 	}
 
-	usageValue, usageOK := extractOpenAIResponsesUsageFromJSONBytes(body)
+	usageValue, usageOK := extractValidatedOpenAIResponsesUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
 			return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
 		}
-		return nil, fmt.Errorf("parse response: invalid json response")
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned invalid usage")
 	}
 	usage := &usageValue
 	responseID := extractOpenAIResponseIDFromJSONBytes(body)
@@ -7296,9 +7377,11 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 
 	usage := &OpenAIUsage{}
 	if ok {
-		if parsedUsage, parsed := extractOpenAIResponsesUsageFromJSONBytes(finalResponse); parsed {
-			*usage = parsedUsage
+		parsedUsage, parsed := extractValidatedOpenAIResponsesUsageFromJSONBytes(finalResponse)
+		if !parsed {
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned invalid usage")
 		}
+		*usage = parsedUsage
 		// When the terminal event has an empty output array, reconstruct
 		// output from accumulated delta events so the client gets full content.
 		// gjson Array() returns empty slice for null, missing, or empty arrays.
@@ -7336,11 +7419,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream compact response returned conflicting terminal events", terminalPayload)
 		}
-		usage = s.parseSSEUsageFromBody(bodyText)
-		if originalModel != mappedModel {
-			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
-		}
-		body = []byte(bodyText)
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream returned invalid usage")
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)

@@ -2147,6 +2147,170 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 	}
 }
 
+func TestOpenAIHandleNonStreamingResponse_RejectsSuccessfulUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing usage", body: `{"id":"resp_missing","output":[]}`},
+		{name: "non-object usage", body: `{"id":"resp_invalid","output":[],"usage":"sk-upstream-secret"}`},
+		{name: "empty usage", body: `{"id":"resp_empty","output":[],"usage":{}}`},
+		{name: "string tokens", body: `{"id":"resp_string","output":[],"usage":{"input_tokens":"bad","output_tokens":null}}`},
+		{name: "fractional and negative tokens", body: `{"id":"resp_bad_numbers","output":[],"usage":{"input_tokens":1.5,"output_tokens":-2}}`},
+		{name: "negative nested cache tokens", body: `{"id":"resp_bad_cache","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cached_tokens":-1}}}`},
+		{name: "fractional nested image tokens", body: `{"id":"resp_bad_image","output":[],"usage":{"input_tokens":10,"output_tokens":0,"output_tokens_details":{"image_tokens":1.5}}}`},
+		{name: "string nested cache write tokens", body: `{"id":"resp_bad_cache_write","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cache_write_tokens":"1"}}}`},
+		{name: "malformed json", body: `{"id":"resp_malformed","output":[],"usage":{"input_tokens":1}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+			result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.NotContains(t, rec.Body.String(), "sk-upstream-secret")
+			require.NotContains(t, err.Error(), "sk-upstream-secret")
+		})
+	}
+}
+
+func TestOpenAISSEToJSON_RejectsSuccessfulUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, passthrough := range []bool{false, true} {
+		name := "native"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			body := []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bad_sse\",\"output\":[],\"usage\":{\"input_tokens\":-1,\"output_tokens\":0}}}\n\ndata: [DONE]\n\n")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+			var err error
+			if passthrough {
+				_, err = svc.handlePassthroughSSEToJSON(resp, c, body, "model", "model")
+			} else {
+				_, err = svc.handleSSEToJSON(resp, c, body, "model", "model")
+			}
+
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+		})
+	}
+}
+
+func TestOpenAISSEToJSON_RejectsMissingTerminalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, passthrough := range []bool{false, true} {
+		name := "native"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			body := []byte("data: not-json\n\ndata: [DONE]\n\n")
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+			var err error
+			if passthrough {
+				_, err = svc.handlePassthroughSSEToJSON(resp, c, body, "model", "model")
+			} else {
+				_, err = svc.handleSSEToJSON(resp, c, body, "model", "model")
+			}
+
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+		})
+	}
+}
+
+func TestOpenAIHandleNonStreamingResponse_PreservesHostedImageUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_image","output":[],"usage":{"input_tokens":10,"output_tokens":0},"tool_usage":{"image_gen":{"input_tokens_details":{"image_tokens":3},"output_tokens_details":{"image_tokens":2}}}}`)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 3, result.usage.ImageInputTokens)
+	require.Equal(t, 2, result.usage.ImageOutputTokens)
+}
+
+func TestOpenAIHandleNonStreamingResponse_RejectsInvalidHostedImageUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_bad_image","output":[],"usage":{"input_tokens":10,"output_tokens":0},"tool_usage":{"image_gen":{"input_tokens_details":{"image_tokens":-1}}}}`)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+func TestOpenAIHandleNonStreamingResponse_AcceptsExplicitZeroUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_zero","output":[],"usage":{"input_tokens":0,"output_tokens":0}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Zero(t, result.usage.InputTokens)
+	require.Zero(t, result.usage.OutputTokens)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestOpenAINonStreamingContentTypePassThrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

@@ -211,6 +211,15 @@ func extractValidatedOpenAIEmbeddingsUsage(body []byte) (OpenAIUsage, error) {
 		return OpenAIUsage{}, errors.New("invalid embeddings response usage")
 	}
 	for _, field := range []string{
+		"prompt_tokens_details",
+		"input_tokens_details",
+	} {
+		value := usage.Get(field)
+		if value.Exists() && !value.IsObject() {
+			return OpenAIUsage{}, errors.New("invalid embeddings response usage")
+		}
+	}
+	for _, field := range []string{
 		"prompt_tokens",
 		"input_tokens",
 		"total_tokens",

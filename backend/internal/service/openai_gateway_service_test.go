@@ -2162,6 +2162,8 @@ func TestOpenAIHandleNonStreamingResponse_RejectsSuccessfulUnusableUsage(t *test
 		{name: "negative nested cache tokens", body: `{"id":"resp_bad_cache","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cached_tokens":-1}}}`},
 		{name: "fractional nested image tokens", body: `{"id":"resp_bad_image","output":[],"usage":{"input_tokens":10,"output_tokens":0,"output_tokens_details":{"image_tokens":1.5}}}`},
 		{name: "string nested cache write tokens", body: `{"id":"resp_bad_cache_write","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cache_write_tokens":"1"}}}`},
+		{name: "malformed token details", body: `{"id":"resp_bad_details","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":"malformed"}}`},
+		{name: "malformed hosted image usage", body: `{"id":"resp_bad_hosted_image","output":[],"usage":{"input_tokens":10,"output_tokens":0},"tool_usage":{"image_gen":"malformed"}}`},
 		{name: "malformed json", body: `{"id":"resp_malformed","output":[],"usage":{"input_tokens":1}`},
 	}
 
@@ -3704,7 +3706,7 @@ func BenchmarkNormalizeCompletedImageGenerationStatusLargeOutput(b *testing.B) {
 	}
 }
 
-func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
+func TestHandleSSEToJSON_NoFinalResponseReturnsProtocolError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -3721,11 +3723,12 @@ func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 	}, "\n"))
 
 	usage, err := svc.handleSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
-	require.NoError(t, err)
-	require.NotNil(t, usage)
-	require.Equal(t, 0, usage.InputTokens)
-	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
-	require.Contains(t, rec.Body.String(), `data: {"type":"response.in_progress"`)
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "Upstream returned invalid usage", gjson.Get(rec.Body.String(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "data:")
 }
 
 func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {

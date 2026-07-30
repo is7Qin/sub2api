@@ -7098,6 +7098,26 @@ func extractValidatedOpenAIResponsesUsageFromJSONBytes(body []byte) (OpenAIUsage
 	if !usage.IsObject() {
 		return OpenAIUsage{}, false
 	}
+	for _, field := range []string{
+		"input_tokens_details",
+		"prompt_tokens_details",
+		"output_tokens_details",
+		"completion_tokens_details",
+	} {
+		value := usage.Get(field)
+		if value.Exists() && !value.IsObject() {
+			return OpenAIUsage{}, false
+		}
+	}
+	if imageGen.Exists() && !imageGen.IsObject() {
+		return OpenAIUsage{}, false
+	}
+	for _, field := range []string{"input_tokens_details", "output_tokens_details"} {
+		value := imageGen.Get(field)
+		if value.Exists() && !value.IsObject() {
+			return OpenAIUsage{}, false
+		}
+	}
 
 	hasInputTokens := false
 	for _, field := range []string{

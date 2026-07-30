@@ -606,7 +606,10 @@ func TestOpenAIGatewayService_OAuthAdapter_UsesAllowlistFiltering(t *testing.T) 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp_allowlist","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -986,7 +989,10 @@ func TestOpenAIGatewayService_OAuthAdapter_NonCodexUAFallbackToCodexUA(t *testin
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp_fallback","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -1100,7 +1106,10 @@ func TestOpenAIGatewayService_OAuthAdapter_CodexCLIOnlyAllowsOfficialClientFamil
 			resp := &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+				Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+					`data: {"type":"response.completed","response":{"id":"resp_official","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+					`data: [DONE]`,
+				}, "\n\n"))),
 			}
 			upstream := &httpUpstreamRecorder{resp: resp}
 

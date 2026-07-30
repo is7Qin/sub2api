@@ -158,6 +158,7 @@ func TestOpenAINonStreamingPassthroughRejectsSuccessfulUnusableUsage(t *testing.
 		{name: "empty usage", body: `{"id":"resp_empty","output":[],"usage":{}}`},
 		{name: "invalid numeric usage", body: `{"id":"resp_bad_numbers","output":[],"usage":{"input_tokens":1.5,"output_tokens":-2}}`},
 		{name: "negative nested cache usage", body: `{"id":"resp_bad_cache","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cached_tokens":-1}}}`},
+		{name: "malformed token details", body: `{"id":"resp_bad_details","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":"malformed"}}`},
 	}
 
 	for _, tt := range tests {

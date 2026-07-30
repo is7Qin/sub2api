@@ -76,6 +76,7 @@ func TestForwardEmbeddings_RejectsSuccessfulResponseWithUnusableUsage(t *testing
 		{name: "null tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":null}}`},
 		{name: "negative nested cache tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":-1}}}`},
 		{name: "fractional nested image tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"input_tokens_details":{"image_tokens":1.5}}}`},
+		{name: "malformed token details", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"input_tokens_details":"malformed"}}`},
 		{name: "string cache alias", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"cache_read_tokens":"1"}}`},
 		{name: "malformed json", body: `{"object":"list","data":[],"usage":{"prompt_tokens":3},"secret":"sk-upstream-secret"`},
 	}

@@ -8523,6 +8523,12 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		if eventName == "error" {
+			fact := ParseAnthropicSSEErrorFact(account.Platform, []byte(dataLine), resp.Header.Get("x-request-id"))
+			if policy, ok := RecognizeUpstreamErrorFact(fact); ok {
+				recognized := newRecognizedUpstreamError(policy, fact)
+				recognized.OutputStarted = c.Writer.Written()
+				return nil, dataLine, nil, recognized
+			}
 			return nil, dataLine, nil, &sseStreamErrorEventError{RawData: dataLine}
 		}
 

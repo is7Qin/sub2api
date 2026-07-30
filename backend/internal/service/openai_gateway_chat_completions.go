@@ -295,6 +295,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeOpenAIUpstreamDiagnosticText(upstreamMsg)
+		if policy, ok := RecognizeUpstreamErrorFact(ParseHTTPUpstreamErrorFact(PlatformOpenAI, resp, respBody)); ok {
+			writeRecognizedOpenAIHTTPError(c, policy.Presentation)
+			return nil, newRecognizedOpenAIUpstreamRequestErrorForPolicy(policy, resp.Header.Get("x-request-id"))
+		}
 		if account.Type == AccountTypeAPIKey &&
 			openai_compat.ResolveResponsesSupportForModel(account.Extra, upstreamModel) == openai_compat.ResponsesSupportUnknown &&
 			!isResponsesEndpointSupportedByStatus(resp.StatusCode) {
@@ -479,7 +483,12 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		if len(payload) == 0 {
 			payload, _ = json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		}
-		if requestErr := newOpenAIUpstreamRequestError(payload, requestID); requestErr != nil {
+		fact := ParseOpenAIJSONErrorFact(PlatformOpenAI, UpstreamErrorSourceSSE, payload, requestID)
+		requestErr := newRecognizedOpenAIUpstreamRequestError(fact)
+		if requestErr == nil {
+			requestErr = newOpenAIUpstreamRequestError(payload, requestID)
+		}
+		if requestErr != nil {
 			requestErr.attachUsage(usage)
 			writeChatCompletionsRequestError(c, false, requestErr)
 			return &OpenAIForwardResult{
@@ -595,6 +604,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError
 	var streamRequestErr *OpenAIUpstreamRequestError
+	requestErrIsNewRecognizedDirect := false
 	var streamErr error
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -659,9 +669,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" {
 			payloadBytes := []byte(payload)
-			if requestErr := newOpenAIUpstreamRequestError(payloadBytes, requestID); requestErr != nil {
+			fact := ParseOpenAIJSONErrorFact(PlatformOpenAI, UpstreamErrorSourceSSE, payloadBytes, requestID)
+			requestErr := newRecognizedOpenAIUpstreamRequestError(fact)
+			if requestErr == nil {
+				requestErr = newOpenAIUpstreamRequestError(payloadBytes, requestID)
+			}
+			if requestErr != nil {
 				requestErr.observeTerminal(usage, clientOutputStarted)
 				streamRequestErr = requestErr
+				requestErrIsNewRecognizedDirect = isNewRecognizedDirectOpenAIError(fact)
 				return true
 			}
 			rawMessage := extractOpenAISSEErrorMessage(payloadBytes)
@@ -758,7 +774,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	finalizeStream := func() (*OpenAIForwardResult, error) {
 		if streamRequestErr != nil {
-			writeChatCompletionsRequestError(c, true, streamRequestErr)
+			writeChatCompletionsRequestError(c, streamRequestErr.OutputStarted || !requestErrIsNewRecognizedDirect, streamRequestErr)
 			return resultWithUsage(), streamRequestErr
 		}
 		if streamFailoverErr != nil {

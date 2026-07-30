@@ -186,6 +186,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeOpenAIUpstreamDiagnosticText(upstreamMsg)
+		if policy, ok := RecognizeUpstreamErrorFact(ParseHTTPUpstreamErrorFact(PlatformOpenAI, resp, respBody)); ok {
+			writeRecognizedOpenAIHTTPError(c, policy.Presentation)
+			return nil, newRecognizedOpenAIUpstreamRequestErrorForPolicy(policy, resp.Header.Get("x-request-id"))
+		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {

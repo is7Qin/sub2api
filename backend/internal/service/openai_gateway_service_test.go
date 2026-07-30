@@ -1558,7 +1558,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t
 	require.Empty(t, rec.Body.String())
 }
 
-func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFailover(t *testing.T) {
+func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsDirectRequestError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1588,10 +1588,11 @@ func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFai
 
 	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
 	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-	require.Contains(t, string(failoverErr.ResponseBody), "Please retry later")
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.Equal(t, http.StatusServiceUnavailable, requestErr.StatusCode)
+	require.Equal(t, "server_is_overloaded", requestErr.Code)
+	require.Equal(t, "Please retry later.", requestErr.Message)
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
 }
@@ -1999,6 +2000,45 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
 	require.True(t, ok)
 	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
+}
+
+func TestOpenAIStreamingPassthroughRecognizedResponseFailedBeforeOutputReturnsDirectRequestError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_recognized"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_recognized","status":"failed","error":{"code":"server_is_overloaded","type":"response.failed","message":"Bearer sk-private"},"safety_identifier":"user-private"}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-passthrough-recognized"}},
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "", "")
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.Equal(t, http.StatusServiceUnavailable, requestErr.StatusCode)
+	require.Equal(t, "server_is_overloaded", requestErr.Code)
+	require.False(t, requestErr.OutputStarted)
+	require.NotNil(t, result)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
 }
 
 func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *testing.T) {

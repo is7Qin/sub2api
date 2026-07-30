@@ -548,6 +548,37 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			return
 		}
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if result != nil && err != nil && result.AttemptID != "" && service.HasExplicitForwardUsage(result) && supportsPartialUsageBilling(account.Platform) {
+			userAgent := c.GetHeader("User-Agent")
+			clientIP := ip.GetClientIP(c)
+			requestPayloadHash := service.HashUsageRequestPayload(body)
+			inboundEndpoint := GetInboundEndpoint(c)
+			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+			forceCacheBilling := fs.ForceCacheBilling
+			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+				if recordErr := h.gatewayService.RecordUsageWithLongContext(ctx, &service.RecordUsageLongContextInput{
+					Result:                result,
+					QuotaPlatform:         quotaPlatform,
+					APIKey:                apiKey,
+					User:                  apiKey.User,
+					Account:               account,
+					Subscription:          subscription,
+					InboundEndpoint:       inboundEndpoint,
+					UpstreamEndpoint:      upstreamEndpoint,
+					UserAgent:             userAgent,
+					IPAddress:             clientIP,
+					RequestPayloadHash:    requestPayloadHash,
+					LongContextThreshold:  200000,
+					LongContextMultiplier: 2.0,
+					ForceCacheBilling:     forceCacheBilling,
+					APIKeyService:         h.apiKeyService,
+					ChannelUsageFields:    channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+				}); recordErr != nil {
+					logger.L().With(zap.String("component", "handler.gemini_v1beta.models"), zap.Int64("account_id", account.ID)).Error("gemini.record_partial_usage_failed", zap.Error(recordErr))
+				}
+			})
+		}
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {

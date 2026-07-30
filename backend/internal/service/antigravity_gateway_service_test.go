@@ -1934,6 +1934,110 @@ func TestStreamUpstreamResponse_NormalComplete(t *testing.T) {
 	require.Contains(t, body, "message_delta")
 }
 
+func TestHandleGeminiStreamToNonStreaming_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":17,"candidatesTokenCount":9}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleGeminiStreamToNonStreaming(c, resp, time.Now())
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 17, result.usage.InputTokens)
+	require.Equal(t, 9, result.usage.OutputTokens)
+}
+
+func TestHandleClaudeStreamToNonStreaming_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":19,"candidatesTokenCount":10}}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleClaudeStreamToNonStreaming(c, resp, time.Now(), "claude-sonnet-4-5")
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 19, result.usage.InputTokens)
+	require.Equal(t, 10, result.usage.OutputTokens)
+}
+
+func TestHandleGeminiStreamingResponse_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 11, result.usage.InputTokens)
+	require.Equal(t, 7, result.usage.OutputTokens)
+}
+
+func TestHandleClaudeStreamingResponse_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":8}}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleClaudeStreamingResponse(c, resp, time.Now(), "claude-sonnet-4-5")
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 13, result.usage.InputTokens)
+	require.Equal(t, 8, result.usage.OutputTokens)
+}
+
 // TestHandleGeminiStreamingResponse_NormalComplete
 // 验证：正常 Gemini 流式转发，数据正确透传、usage 正确收集
 func TestHandleGeminiStreamingResponse_NormalComplete(t *testing.T) {

@@ -201,3 +201,84 @@ func TestRecognizeUpstreamErrorFact_ServerOverloadNormalizesTerminalEventType(t 
 	require.True(t, ok)
 	require.Equal(t, "service_unavailable_error", policy.Presentation.ErrorType)
 }
+
+func TestResolveUpstreamRecoveryPolicy_ServerOverloadIsDirectAndNonRecoverable(t *testing.T) {
+	policy, ok := ResolveUpstreamRecoveryPolicy(UpstreamErrorFact{
+		Provider:     PlatformOpenAI,
+		ProviderCode: "server_is_overloaded",
+		ProviderType: "response.failed",
+	})
+
+	require.True(t, ok)
+	require.Equal(t, UpstreamAttemptDirectReturn, policy.Disposition)
+	require.Zero(t, policy.SameAccountRetryBudget)
+	require.Zero(t, policy.AccountTransitionBudget)
+	require.Equal(t, UpstreamHealthNone, policy.AccountHealthAction)
+	require.Equal(t, UpstreamCandidateStructured, policy.CandidateRank)
+	require.Equal(t, http.StatusServiceUnavailable, policy.Presentation.HTTPStatus)
+}
+
+func TestResolveUpstreamRecoveryPolicy_AccountQuotaAllowsOneTransition(t *testing.T) {
+	policy, ok := ResolveUpstreamRecoveryPolicy(UpstreamErrorFact{
+		Provider:        PlatformOpenAI,
+		HTTPStatus:      http.StatusTooManyRequests,
+		HTTPStatusKnown: true,
+		ProviderCode:    "rate_limit_exceeded",
+		ProviderType:    "rate_limit_error",
+		SafeMessage:     "quota exceeded",
+	})
+
+	require.True(t, ok)
+	require.Equal(t, UpstreamAttemptFailover, policy.Disposition)
+	require.LessOrEqual(t, policy.SameAccountRetryBudget, 1)
+	require.Equal(t, 1, policy.AccountTransitionBudget)
+	require.Equal(t, UpstreamHealthApplyRateLimit, policy.AccountHealthAction)
+	require.Equal(t, UpstreamCandidateStructured, policy.CandidateRank)
+}
+
+func TestResolveUpstreamRecoveryPolicy_RateLimitKeepsStructuredSemanticsWith5xxStatus(t *testing.T) {
+	policy, ok := ResolveUpstreamRecoveryPolicy(UpstreamErrorFact{
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusServiceUnavailable,
+		ProviderCode:    "rate_limit_exceeded",
+		ProviderType:    "rate_limit_error",
+		SafeMessage:     "quota exceeded",
+	})
+
+	require.True(t, ok)
+	require.Equal(t, UpstreamHealthApplyRateLimit, policy.AccountHealthAction)
+	require.Equal(t, UpstreamCandidateStructured, policy.CandidateRank)
+	require.Equal(t, 1, policy.AccountTransitionBudget)
+}
+
+func TestResolveUpstreamRecoveryPolicy_GenericProvider5xxAllowsOneTransition(t *testing.T) {
+	policy, ok := ResolveUpstreamRecoveryPolicy(UpstreamErrorFact{
+		Provider:        PlatformOpenAI,
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusBadGateway,
+	})
+
+	require.True(t, ok)
+	require.Equal(t, UpstreamAttemptFailover, policy.Disposition)
+	require.Zero(t, policy.SameAccountRetryBudget)
+	require.Equal(t, 1, policy.AccountTransitionBudget)
+	require.Equal(t, UpstreamHealthRecordOnly, policy.AccountHealthAction)
+	require.Equal(t, UpstreamCandidateStatusOnly, policy.CandidateRank)
+}
+
+func TestUpstreamErrorCandidatePrecedenceAndSafety(t *testing.T) {
+	structured := NewUpstreamErrorCandidate(UpstreamErrorFact{
+		ProviderCode: "rate_limit_exceeded",
+		ProviderType: "rate_limit_error",
+		SafeMessage:  "quota exceeded",
+	}, UpstreamCandidateStructured)
+	transport := NewUpstreamErrorCandidate(UpstreamErrorFact{
+		Source:      UpstreamErrorSourceTransport,
+		SafeMessage: "proxy failure",
+	}, UpstreamCandidateGenericTransport)
+
+	require.Equal(t, UpstreamCandidateStructured, structured.Rank)
+	require.Equal(t, "rate_limit_exceeded", structured.Presentation.ErrorCode)
+	require.NotContains(t, structured.Presentation.Message, "Authorization")
+	require.Equal(t, UpstreamCandidateGenericTransport, transport.Rank)
+}

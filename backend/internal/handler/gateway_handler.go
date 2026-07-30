@@ -329,7 +329,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
-					if fs.LastFailoverErr != nil {
+					if candidate, ok := fs.FinalCandidate(); ok && candidate.Rank == service.UpstreamCandidateStructured {
+						h.handleUpstreamCandidate(c, candidate, streamStarted)
+					} else if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
 					} else {
 						h.handleFailoverExhaustedSimple(c, 502, streamStarted)
@@ -1614,6 +1616,18 @@ func (h *GatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCod
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+}
+
+// handleUpstreamCandidate renders a retained, bounded semantic candidate rather
+// than re-reading the legacy failover response body after recovery is exhausted.
+func (h *GatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
+		return
+	}
+	presentation := candidate.Presentation
+	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
 
 func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) {

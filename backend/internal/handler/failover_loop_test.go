@@ -919,6 +919,53 @@ func TestHandleFailoverError_EdgeCases(t *testing.T) {
 // HandleSelectionExhausted 测试
 // ---------------------------------------------------------------------------
 
+func TestUpstreamRecoveryState_CandidatePrecedenceAndSuccess(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	structured := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		ProviderCode: "rate_limit_exceeded",
+		ProviderType: "rate_limit_error",
+		SafeMessage:  "quota exceeded",
+	}, service.UpstreamCandidateStructured)
+	statusOnly := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusServiceUnavailable,
+	}, service.UpstreamCandidateStatusOnly)
+	transport := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		Source:      service.UpstreamErrorSourceTransport,
+		SafeMessage: "transport failed",
+	}, service.UpstreamCandidateGenericTransport)
+
+	state.RetainCandidate(structured)
+	state.RetainCandidate(statusOnly)
+	state.RetainCandidate(transport)
+
+	candidate, ok := state.FinalCandidate()
+	require.True(t, ok)
+	require.Equal(t, structured.Presentation, candidate.Presentation)
+
+	state.ClearOnSuccess()
+	_, ok = state.FinalCandidate()
+	require.False(t, ok)
+}
+
+func TestUpstreamRecoveryState_TransitionBudgetIsRequestWide(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	state.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+
+	require.True(t, state.CanTransition(3))
+	state.RecordTransition()
+	require.False(t, state.CanTransition(3))
+
+	state.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+	require.False(t, state.CanTransition(3), "later account errors must not multiply the budget")
+}
+
+func TestUpstreamRecoveryState_ConfiguredHardCapRemainsHardCap(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	state.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+	require.False(t, state.CanTransition(0))
+}
+
 func TestHandleSelectionExhausted(t *testing.T) {
 	t.Run("无LastFailoverErr时返回Exhausted", func(t *testing.T) {
 		fs := NewFailoverState(3, false)

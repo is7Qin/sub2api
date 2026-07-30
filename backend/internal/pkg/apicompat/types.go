@@ -4,7 +4,10 @@
 // formats can be served through a unified gateway.
 package apicompat
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // ---------------------------------------------------------------------------
 // Anthropic Messages API types
@@ -237,7 +240,58 @@ type ResponsesInputItem struct {
 	ID        string `json:"id,omitempty"`
 
 	// type=function_call_output
-	Output string `json:"output,omitempty"`
+	Output    string `json:"output,omitempty"`
+	outputRaw json.RawMessage
+}
+
+// UnmarshalJSON preserves non-string function_call_output values for the
+// Responses-to-Anthropic converter while retaining the existing string field.
+func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type alias ResponsesInputItem
+	var wire struct {
+		*alias
+		Output json.RawMessage `json:"output"`
+	}
+
+	*i = ResponsesInputItem{}
+	wire.alias = (*alias)(i)
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	output := bytes.TrimSpace(wire.Output)
+	if len(output) == 0 || bytes.Equal(output, []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(output, &i.Output); err == nil {
+		return nil
+	} else if i.Type != "function_call_output" {
+		// Keep the pre-existing strict string behavior for every other item type.
+		return err
+	}
+	i.outputRaw = append(i.outputRaw[:0], output...)
+	i.Output = string(output)
+	return nil
+}
+
+// MarshalJSON restores a structured output value when a request item is
+// decoded and re-encoded, while leaving ordinary string output unchanged.
+func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
+	type alias ResponsesInputItem
+	if len(i.outputRaw) == 0 || i.Output != string(i.outputRaw) {
+		return json.Marshal(alias(i))
+	}
+
+	data, err := json.Marshal(alias(i))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	fields["output"] = append(json.RawMessage(nil), i.outputRaw...)
+	return json.Marshal(fields)
 }
 
 // ResponsesContentPart is a typed content part in a Responses message.

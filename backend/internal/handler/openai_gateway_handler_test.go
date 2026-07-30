@@ -1052,10 +1052,31 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 	require.Equal(t, "bad prompt", logs[0].InputExcerpt)
 }
 
-func TestOpenAIResponsesWebSocket_ContextFailedRelaysNativeTerminalWithoutUsageOrSchedulerOutcome(t *testing.T) {
+func TestOpenAIResponsesWebSocket_PreOutputContextFailedWithExplicitUsageRecordsExactlyOnce(t *testing.T) {
 	for _, terminalPayload := range []string{
 		`{"type":"response.failed","response":{"id":"resp_context_e2e","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window api_key=sk-private"},"usage":{"input_tokens":5,"output_tokens":0}}}`,
 		`{"type":"response.failed","response":{"status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window api_key=sk-private"},"usage":{"input_tokens":5,"output_tokens":0}}}`,
+	} {
+		got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+			firstPayload:    `{"type":"response.create","model":"gpt-5.4","stream":false}`,
+			terminalPayload: terminalPayload,
+			expectUsageLog:  true,
+		})
+
+		require.NotNil(t, got.log)
+		require.Equal(t, 5, got.log.InputTokens)
+		require.Zero(t, got.log.OutputTokens)
+		require.Zero(t, got.metrics.AccountSwitchTotal)
+		require.Zero(t, got.metrics.RuntimeStatsAccountCount)
+		require.Zero(t, got.rateLimitedAccountCount)
+		require.Zero(t, got.healthResetCount)
+	}
+}
+
+func TestOpenAIResponsesWebSocket_PreOutputContextFailedWithoutNonzeroUsageDoesNotRecord(t *testing.T) {
+	for _, terminalPayload := range []string{
+		`{"type":"response.failed","response":{"id":"resp_context_zero","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"context window"},"usage":{"input_tokens":0,"output_tokens":0}}}`,
+		`{"type":"response.failed","response":{"id":"resp_context_missing","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"context window"}}}`,
 	} {
 		got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 			firstPayload:    `{"type":"response.create","model":"gpt-5.4","stream":false}`,
@@ -1066,6 +1087,7 @@ func TestOpenAIResponsesWebSocket_ContextFailedRelaysNativeTerminalWithoutUsageO
 		require.Zero(t, got.metrics.AccountSwitchTotal)
 		require.Zero(t, got.metrics.RuntimeStatsAccountCount)
 		require.Zero(t, got.rateLimitedAccountCount)
+		require.Zero(t, got.healthResetCount)
 	}
 }
 

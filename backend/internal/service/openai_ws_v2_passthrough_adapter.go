@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -16,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
+
+const openAIWSV2TerminalDrainHardDeadline = 30 * time.Second
 
 type openAIWSClientFrameConn struct {
 	conn *coderws.Conn
@@ -543,6 +546,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Options: openaiwsv2.RelayOptions{
 			WriteTimeout:                    s.openAIWSWriteTimeout(),
 			IdleTimeout:                     s.openAIWSPassthroughIdleTimeout(),
+			UpstreamDrainTimeout:            openAIWSV2TerminalDrainHardDeadline,
 			FirstMessageType:                coderws.MessageText,
 			FirstMessageSent:                upstreamFirstMessageSent,
 			StartClientAfterFirstDownstream: true,

@@ -1762,7 +1762,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				turnSlots.releaseTurn()
 				var requestErr *service.OpenAIUpstreamRequestError
-				if errors.As(turnErr, &requestErr) && !requestErr.OutputStarted {
+				if errors.As(turnErr, &requestErr) && !requestErr.OutputStarted && !openAIForwardResultHasUsage(result) {
 					return
 				}
 				if turnErr != nil && requestErr == nil {

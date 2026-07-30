@@ -558,6 +558,20 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					truncateOpenAIWSLogValue(usageRaw, openAIWSLogValueMaxLen),
 				)
 			},
+			ClassifySemanticTerminal: func(msgType coderws.MessageType, payload []byte, eventType string) openaiwsv2.RelaySemanticTerminal {
+				if msgType != coderws.MessageText || (eventType != "response.failed" && eventType != "error") {
+					return openaiwsv2.RelaySemanticTerminal{}
+				}
+				if eventType == "response.failed" && openAIHasContextWindowCandidate(payload) {
+					requestErr := newOpenAIUpstreamRequestError(payload, "")
+					return openaiwsv2.RelaySemanticTerminal{Terminal: requestErr != nil, StopRelay: requestErr != nil}
+				}
+				fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, payload, "")
+				if _, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+					return openaiwsv2.RelaySemanticTerminal{Terminal: true, StopRelay: true}
+				}
+				return openaiwsv2.RelaySemanticTerminal{}
+			},
 			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
 				turnNo := int(completedTurns.Add(1))
 				turnResult := &OpenAIForwardResult{
@@ -591,9 +605,19 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					turnResult.Usage.CacheReadInputTokens,
 				)
 				turnErr := error(nil)
-				if turn.TerminalEventType == "response.failed" {
-					if requestErr := newOpenAIUpstreamRequestError(turn.TerminalPayload, turn.RequestID); requestErr != nil {
-						requestErr.observeTerminal(turnResult.Usage, turn.FirstTokenMs != nil)
+				if turn.TerminalEventType == "response.failed" || turn.TerminalEventType == "error" {
+					var requestErr *OpenAIUpstreamRequestError
+					if turn.TerminalEventType == "response.failed" && openAIHasContextWindowCandidate(turn.TerminalPayload) {
+						requestErr = newOpenAIUpstreamRequestError(turn.TerminalPayload, turn.RequestID)
+					} else {
+						fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, turn.TerminalPayload, turn.RequestID)
+						requestErr = newRecognizedOpenAIUpstreamRequestError(fact)
+						if requestErr == nil && turn.TerminalEventType == "response.failed" {
+							requestErr = newOpenAIUpstreamRequestError(turn.TerminalPayload, turn.RequestID)
+						}
+					}
+					if requestErr != nil {
+						requestErr.observeTerminal(turnResult.Usage, turn.ClientEventDelivered)
 						requestFailure.Store(requestErr)
 						turnErr = requestErr
 					}
@@ -609,11 +633,33 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			TransformWriteClient: func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error) {
-				if msgType != coderws.MessageText || eventType != "response.failed" {
+				if msgType != coderws.MessageText {
 					return payload, nil
 				}
-				if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(payload, eventType); changed {
-					return sanitized, nil
+				if eventType == "response.failed" && openAIHasContextWindowCandidate(payload) {
+					if requestErr := newOpenAIUpstreamRequestError(payload, ""); requestErr != nil {
+						return renderRecognizedOpenAIWSResponseFailedEvent(requestErr, payload), nil
+					}
+					return payload, nil
+				}
+				fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, payload, "")
+				if requestErr := newRecognizedOpenAIUpstreamRequestError(fact); requestErr != nil {
+					if eventType == "response.failed" {
+						return renderRecognizedOpenAIWSResponseFailedEvent(requestErr, payload), nil
+					}
+					if eventType == "error" {
+						return renderRecognizedOpenAIWSErrorEvent(UpstreamClientPresentation{
+							HTTPStatus: requestErr.StatusCode,
+							ErrorCode:  requestErr.Code,
+							ErrorType:  requestErr.Type,
+							Message:    requestErr.Message,
+						}), nil
+					}
+				}
+				if eventType == "response.failed" {
+					if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(payload, eventType); changed {
+						return sanitized, nil
+					}
 				}
 				return payload, nil
 			},

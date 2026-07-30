@@ -587,7 +587,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else if !requestScopedFailure {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil, account)
 		}
-		if requestScopedFailure && !requestFailureOutputStarted {
+		if requestScopedFailure && !requestFailureOutputStarted && !openAIForwardResultHasUsage(result) {
 			return
 		}
 
@@ -1129,7 +1129,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		} else if !requestScopedFailure {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil, account)
 		}
-		if requestScopedFailure && !requestFailureOutputStarted {
+		if requestScopedFailure && !requestFailureOutputStarted && !openAIForwardResultHasUsage(result) {
 			return
 		}
 

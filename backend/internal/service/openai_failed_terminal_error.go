@@ -59,6 +59,38 @@ func (e *OpenAIUpstreamRequestError) attachUsage(usage OpenAIUsage) {
 	e.observeTerminal(usage, false)
 }
 
+func openAIHasContextWindowCandidate(payload []byte) bool {
+	if len(payload) > openAIErrorClassificationMaxBytes || !utf8.Valid(payload) {
+		return false
+	}
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return false
+	}
+	return openAIValueHasContextWindowCandidate(root, 1)
+}
+
+func openAIValueHasContextWindowCandidate(value any, depth int) bool {
+	if depth > openAIErrorClassificationMaxDepth {
+		return false
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for key, nested := range object {
+		if strings.EqualFold(key, "code") {
+			if code, ok := nested.(string); ok && strings.EqualFold(strings.TrimSpace(code), "context_length_exceeded") {
+				return true
+			}
+		}
+		if (key == "error" || key == "response") && openAIValueHasContextWindowCandidate(nested, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
 func newOpenAIUpstreamRequestError(payload []byte, requestID string) *OpenAIUpstreamRequestError {
 	match := classifyOpenAIFailedTerminalContextWindowError(payload)
 	if !match.matched() {

@@ -462,26 +462,12 @@ func TestApplyCodexOAuthTransform_StripsClientNamespaceFromReplayedInput(t *test
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"input": []any{
-			map[string]any{
-				"type":      "function_call",
-				"call_id":   "call_1",
-				"name":      "read",
-				"namespace": "mcp",
-				"arguments": "{}",
-			},
-			map[string]any{
-				"type":      "custom_tool_call",
-				"call_id":   "call_2",
-				"name":      "shell",
-				"namespace": "tools",
-				"input":     "pwd",
-			},
-			map[string]any{
-				"type":      "message",
-				"role":      "user",
-				"content":   "keep metadata",
-				"namespace": "application-data",
-			},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "read", "namespace": "mcp", "arguments": "{}"},
+			map[string]any{"type": "custom_tool_call", "call_id": "call_2", "name": "shell", "namespace": "tools", "input": "pwd"},
+			map[string]any{"type": "function_call", "call_id": "call_3", "name": "generate", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "custom_tool_call", "call_id": "call_4", "name": "edit", "namespace": "image_gen", "input": "{}"},
+			map[string]any{"type": "mcp_tool_call", "call_id": "call_5", "name": "native_image", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "message", "role": "user", "content": "keep metadata", "namespace": "application-data"},
 		},
 	}
 
@@ -489,21 +475,21 @@ func TestApplyCodexOAuthTransform_StripsClientNamespaceFromReplayedInput(t *test
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Len(t, input, 3)
-	call, ok := input[0].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, call, "namespace")
-	require.Equal(t, "read", call["name"])
-	require.Equal(t, "fc_1", call["call_id"])
+	require.Len(t, input, 6)
+	for _, index := range []int{0, 1, 2, 3} {
+		call, ok := input[index].(map[string]any)
+		require.True(t, ok)
+		require.NotContains(t, call, "namespace")
+	}
+	require.Equal(t, "fc_1", input[0].(map[string]any)["call_id"])
+	require.Equal(t, "fc_2", input[1].(map[string]any)["call_id"])
+	require.Equal(t, "fc_3", input[2].(map[string]any)["call_id"])
+	require.Equal(t, "fc_4", input[3].(map[string]any)["call_id"])
+	mcpCall := input[4].(map[string]any)
+	require.Equal(t, "image_gen", mcpCall["namespace"], "mcp_tool_call is handled by the existing generic namespace pipeline")
+	require.Equal(t, "fc_5", mcpCall["call_id"])
 
-	customCall, ok := input[1].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, customCall, "namespace")
-	require.Equal(t, "shell", customCall["name"])
-	require.Equal(t, "fc_2", customCall["call_id"])
-
-	message, ok := input[2].(map[string]any)
-	require.True(t, ok)
+	message := input[5].(map[string]any)
 	require.Equal(t, "application-data", message["namespace"])
 }
 

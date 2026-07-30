@@ -3174,6 +3174,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		ctx = withHTTPAttemptAuthority(ctx)
 	}
 	startTime := time.Now()
+	// A Gin context spans scheduler failover attempts, including OAuth to API-key
+	// transitions. Never let a prior attempt's response mapping leak forward.
+	clearOpenAIResponsesNamespaceNames(c)
 
 	restrictionResult := s.detectCodexClientRestriction(c, account)
 	apiKeyID := getAPIKeyIDFromContext(c)
@@ -3456,6 +3459,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		decoded, decodeErr := ensureReqBody()
 		if decodeErr != nil {
 			return nil, decodeErr
+		}
+		if shouldNormalizeOpenAIResponsesNamespaces(account, wsDecision.Transport, clientTransport) {
+			changed, namespaceErr := normalizeOpenAIResponsesNamespaces(c, decoded)
+			if namespaceErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+					"type": "invalid_request_error", "message": namespaceErr.Error(), "param": "tools",
+				}})
+				return nil, namespaceErr
+			}
+			if changed {
+				markDecodedModified()
+			}
 		}
 		codexResult := codexTransformResult{}
 		if compatMessagesBridge {
@@ -6137,6 +6152,10 @@ func openAIStreamingResultShouldExposeOnError(result *openaiStreamingResult) boo
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
+	return s.handleStreamingResponseWithNamespaceRestorer(ctx, resp, c, account, startTime, originalModel, mappedModel, restoreOpenAIResponsesNamespacePayload)
+}
+
+func (s *OpenAIGatewayService) handleStreamingResponseWithNamespaceRestorer(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, restoreNamespace func(*gin.Context, []byte) ([]byte, error)) (*openaiStreamingResult, error) {
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
@@ -6423,6 +6442,23 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if normalizedData, normalized := normalizeOpenAIResponsesFunctionCallArguments(dataBytes); normalized {
 				dataBytes = normalizedData
 				data = string(normalizedData)
+				line = "data: " + data
+				eventType = classifyOpenAIResponseSSEEvent(dataBytes, currentEventType)
+			}
+			restoredData, restoreErr := restoreNamespace(c, dataBytes)
+			if restoreErr != nil {
+				// A local best-effort presentation conversion must never trigger a
+				// second upstream request after the stream is visible to the client.
+				if openAIStreamClientOutputStarted(c, clientOutputStarted) {
+					restoredData = dataBytes
+				} else {
+					streamFailoverErr = fmt.Errorf("restore OpenAI namespace response: %w", restoreErr)
+					return
+				}
+			}
+			if !bytes.Equal(restoredData, dataBytes) {
+				dataBytes = restoredData
+				data = string(restoredData)
 				line = "data: " + data
 				eventType = classifyOpenAIResponseSSEEvent(dataBytes, currentEventType)
 			}
@@ -7230,6 +7266,10 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
+	body, err = restoreOpenAIResponsesNamespacePayload(c, body)
+	if err != nil {
+		return nil, fmt.Errorf("restore OpenAI namespace response: %w", err)
+	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -7303,6 +7343,11 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		}
 		// Correct tool calls in final response
 		body = s.correctToolCallsInResponseBody(body)
+		restoredBody, restoreErr := restoreOpenAIResponsesNamespacePayload(c, body)
+		if restoreErr != nil {
+			return nil, fmt.Errorf("restore OpenAI namespace response: %w", restoreErr)
+		}
+		body = restoredBody
 	} else {
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 		if terminalOK {
@@ -8975,6 +9020,12 @@ func normalizeOpenAIOAuthHTTPUpstreamRequestBody(req *http.Request, c *gin.Conte
 	normalized, _, err = normalizeOpenAIOAuthHTTPBody(normalized, isOpenAIResponsesCompactPath(c))
 	if err != nil {
 		return body, fmt.Errorf("normalize oauth body: %w", err)
+	}
+	if shouldStripOpenAIResponsesInputNamespaces(c, account) {
+		normalized, err = stripOpenAIResponsesInputNamespaces(normalized)
+		if err != nil {
+			return body, fmt.Errorf("normalize oauth input namespaces: %w", err)
+		}
 	}
 	resetHTTPRequestBody(req, normalized)
 	return normalized, nil

@@ -50,14 +50,18 @@ func bindCyberPolicyPassthroughRule(c *gin.Context) {
 }
 
 func bindCyberPolicyPassthroughRuleWithMessage(c *gin.Context, customMessage *string) {
+	bindOpenAIErrorPassthroughRule(c, "cyber_policy", customMessage)
+}
+
+func bindOpenAIErrorPassthroughRule(c *gin.Context, keyword string, customMessage *string) {
 	responseCode := http.StatusBadRequest
 	rule := &model.ErrorPassthroughRule{
 		ID:              1,
-		Name:            "cyber-policy",
+		Name:            "openai-error-policy",
 		Enabled:         true,
 		Priority:        1,
 		Platforms:       []string{PlatformOpenAI},
-		Keywords:        []string{"cyber_policy"},
+		Keywords:        []string{keyword},
 		MatchMode:       model.MatchModeAll,
 		PassthroughCode: false,
 		ResponseCode:    &responseCode,
@@ -69,14 +73,13 @@ func bindCyberPolicyPassthroughRuleWithMessage(c *gin.Context, customMessage *st
 	BindErrorPassthroughService(c, ruleSvc)
 }
 
-func TestForwardAsChatCompletions_BufferedResponseFailedAppliesPassthroughRule(t *testing.T) {
+func TestForwardAsChatCompletions_RecognizedCyberPolicyDoesNotRequireRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
-	bindCyberPolicyPassthroughRule(c)
 
 	svc, upstream := newResponseFailedPassthroughTestService(cyberPolicyFailedSSE(), "rid_cyber_chat")
 
@@ -87,19 +90,42 @@ func TestForwardAsChatCompletions_BufferedResponseFailedAppliesPassthroughRule(t
 	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, cyberPolicyMessage, gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.Equal(t, "cyber_policy", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. To get authorized for security work, join the Trusted Access for Cyber program: [url-redacted]", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "safety_identifier")
+	require.NotContains(t, gjson.GetBytes(rec.Body.Bytes(), "error.type").String(), "response.failed")
+}
+
+func TestForwardAsChatCompletions_BufferedResponseFailedUsesBuiltInPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	svc, upstream := newResponseFailedPassthroughTestService(cyberPolicyFailedSSE(), "rid_cyber_chat")
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newOpenAICompatMessagesTestAccount(), body, "")
+
+	requireSingleResponseFailedUpstreamRequest(t, upstream)
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.True(t, IsResponseCommitted(c))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "cyber_policy", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. To get authorized for security work, join the Trusted Access for Cyber program: [url-redacted]", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 	require.NotContains(t, rec.Body.String(), "response.failed")
 }
 
-func TestForwardAsChatCompletions_StreamingResponseFailedBeforeOutputAppliesPassthroughRule(t *testing.T) {
+func TestForwardAsChatCompletions_StreamingResponseFailedBeforeOutputUsesBuiltInPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
-	bindCyberPolicyPassthroughRule(c)
 
 	svc, upstream := newResponseFailedPassthroughTestService(cyberPolicyFailedSSE(), "rid_cyber_chat")
 
@@ -111,9 +137,40 @@ func TestForwardAsChatCompletions_StreamingResponseFailedBeforeOutputAppliesPass
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, cyberPolicyMessage, gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
-	require.NotContains(t, rec.Body.String(), "response.failed")
+	require.Equal(t, "cyber_policy", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.NotContains(t, rec.Body.String(), "safety_identifier")
+	require.NotContains(t, rec.Body.String(), "[DONE]")
+}
+
+func TestForwardAsChatCompletions_StreamingRecognizedCyberPolicyAfterOutputEmitsOneSafeTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamSSE := `event: response.created
+` +
+		`data: {"type":"response.created","response":{"id":"resp_cyber"}}` + "\n\n" +
+		`event: response.output_text.delta
+` +
+		`data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\n" +
+		cyberPolicyFailedSSE()
+	svc, upstream := newResponseFailedPassthroughTestService(upstreamSSE, "rid_cyber_chat")
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newOpenAICompatMessagesTestAccount(), body, "")
+
+	requireSingleResponseFailedUpstreamRequest(t, upstream)
+	require.Error(t, err)
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.True(t, requestErr.OutputStarted)
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "data: [DONE]"))
+	require.Contains(t, rec.Body.String(), "partial")
+	require.Contains(t, rec.Body.String(), "cyber_policy")
+	require.NotContains(t, rec.Body.String(), "safety_identifier")
 }
 
 func TestForwardAsAnthropic_BufferedResponseFailedAppliesPassthroughRule(t *testing.T) {
@@ -160,7 +217,7 @@ func TestResponseFailedPassthroughMappedMessagesAreSanitizedAndBounded(t *testin
 	const secret = "response-failed-passthrough-secret"
 	upstreamMessage := "cyber policy access_token=" + secret + " " + strings.Repeat("oversized ", openAIMessagesErrorMessageMaxBytes)
 	failedSSE := `event: response.failed` + "\n" +
-		`data: {"id":"resp_private","object":"response","model":"gpt-5.5","status":"failed","error":{"code":"cyber_policy","message":` +
+		`data: {"id":"resp_private","object":"response","model":"gpt-5.5","status":"failed","error":{"code":"unrecognized_policy","message":` +
 		strconv.Quote(upstreamMessage) + `},"output":[],"usage":{"input_tokens":5,"output_tokens":0,"total_tokens":5}}` + "\n\n"
 
 	tests := []struct {
@@ -199,7 +256,7 @@ func TestResponseFailedPassthroughMappedMessagesAreSanitizedAndBounded(t *testin
 						c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 						c.Request.Header.Set("Content-Type", "application/json")
 					}
-					bindCyberPolicyPassthroughRuleWithMessage(c, ruleCase.customMessage)
+					bindOpenAIErrorPassthroughRule(c, "unrecognized_policy", ruleCase.customMessage)
 					svc := newOpenAICompatMessagesSSEService(io.NopCloser(strings.NewReader(failedSSE)), "rid_private", nil)
 
 					var err error

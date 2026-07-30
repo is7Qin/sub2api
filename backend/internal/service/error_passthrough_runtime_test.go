@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestApplyErrorPassthroughRule_NoBoundService(t *testing.T) {
@@ -61,6 +62,95 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "upstream_error", errField["type"])
 	assert.Equal(t, "Upstream request failed", errField["message"])
+}
+
+func TestOpenAIForward_RecognizedOverloadBypassesFailoverAndConflictingRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	conflictingMessage := "database rule must not win"
+	responseCode := http.StatusTeapot
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled:         true,
+		Priority:        1,
+		Platforms:       []string{PlatformOpenAI},
+		Keywords:        []string{"server_is_overloaded"},
+		MatchMode:       model.MatchModeAll,
+		PassthroughCode: false,
+		ResponseCode:    &responseCode,
+		CustomMessage:   &conflictingMessage,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	respBody := []byte(`{"error":{"code":"server_is_overloaded","type":"response.failed","message":"Bearer sk-private"}}`)
+	svc := &OpenAIGatewayService{
+		httpUpstream: &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+			Header:     http.Header{},
+		}},
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	account := &Account{
+		ID:          120,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.4","input":"hello"}`))
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "server_is_overloaded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	assert.Equal(t, "service_unavailable_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	assert.NotContains(t, rec.Body.String(), "sk-private")
+	assert.NotContains(t, rec.Body.String(), conflictingMessage)
+}
+
+func TestOpenAIHandleErrorResponse_RecognizedOverloadBypassesConflictingRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	conflictingMessage := "database rule must not win"
+	responseCode := http.StatusTeapot
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled:         true,
+		Priority:        1,
+		Platforms:       []string{PlatformOpenAI},
+		Keywords:        []string{"server_is_overloaded"},
+		MatchMode:       model.MatchModeAll,
+		PassthroughCode: false,
+		ResponseCode:    &responseCode,
+		CustomMessage:   &conflictingMessage,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	svc := &OpenAIGatewayService{}
+	respBody := []byte(`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Please retry later"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+		Header:     http.Header{},
+	}
+	account := &Account{ID: 120, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account, nil)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "server_is_overloaded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	assert.Equal(t, "service_unavailable_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	assert.Equal(t, "Please retry later", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	_, skipMonitoring := c.Get(OpsSkipPassthroughKey)
+	assert.False(t, skipMonitoring)
 }
 
 func TestOpenAIHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {

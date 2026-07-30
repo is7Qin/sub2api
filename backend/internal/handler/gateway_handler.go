@@ -889,6 +889,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 			if err != nil {
+				var recognizedErr *service.RecognizedUpstreamError
+				if errors.As(err, &recognizedErr) {
+					h.anthropicStreamingAwareError(c, recognizedErr.Presentation.HTTPStatus, recognizedErr.Presentation.ErrorType, recognizedErr.Presentation.Message, recognizedErr.OutputStarted || streamStarted)
+					return
+				}
+
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {

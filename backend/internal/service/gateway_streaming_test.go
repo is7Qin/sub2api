@@ -573,6 +573,41 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 
 // 边界用例：上游只发了 event: error 而没有 data 行。RawData 为空，
 // 调用方不得 panic，UpstreamFailoverError.ResponseBody 应回退为空切片。
+func TestHandleStreamingResponse_RecognizedInvalidRequestSSEErrorBeforeOutputReturnsDirectError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newMinimalGatewayService()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	const errorJSON = `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens must be positive"}}`
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"x-request-id": []string{"rid-invalid-request"}},
+		Body:       pr,
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("event: error\ndata: " + errorJSON + "\n\n"))
+	}()
+
+	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformAnthropic}, time.Now(), "model", "model", false)
+	_ = pr.Close()
+
+	require.Error(t, err)
+	var recognizedErr *RecognizedUpstreamError
+	require.ErrorAs(t, err, &recognizedErr)
+	require.Equal(t, http.StatusBadRequest, recognizedErr.Presentation.HTTPStatus)
+	require.Equal(t, "invalid_request_error", recognizedErr.Presentation.ErrorType)
+	require.Equal(t, "max_tokens must be positive", recognizedErr.Presentation.Message)
+	require.False(t, recognizedErr.OutputStarted)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
 func TestHandleStreamingResponse_SSEErrorEvent_EmptyDataLine(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newMinimalGatewayService()

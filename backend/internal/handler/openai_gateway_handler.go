@@ -2296,6 +2296,7 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 
 	msg := strings.TrimSpace(err.Error())
 	for _, prefix := range []string{
+		"OpenAI upstream request failed:",
 		"upstream response failed:",
 		"upstream request failed:",
 		"upstream error:",

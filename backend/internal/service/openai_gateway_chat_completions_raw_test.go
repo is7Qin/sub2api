@@ -79,6 +79,32 @@ func TestBuildOpenAIResponsesURL_ProbeURL(t *testing.T) {
 	}
 }
 
+func TestForwardAsRawChatCompletions_RecognizedOverloadBypassesFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-raw-overload"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"server_is_overloaded","type":"response.failed","message":"Please retry later"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Equal(t, "server_is_overloaded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "service_unavailable_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+}
+
 func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDownstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

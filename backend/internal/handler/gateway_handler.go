@@ -478,6 +478,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+			if err != nil {
+				h.maybeSubmitMessagesUsage(c, result, err, apiKey, subscription, account, parsedReq, fs.ForceCacheBilling, channelMapping, reqModel, subject.UserID)
+			}
 			if err != nil && failoverClientGone(c) {
 				return
 			}
@@ -2279,13 +2282,22 @@ func submitMessagesUsageOnce(result *service.ForwardResult, forwardErr error, pl
 	if result == nil || submit == nil {
 		return false
 	}
-	// Preserve legacy platform-agnostic success accounting. Only Anthropic gains
-	// partial billing for admitted error results with explicit provider usage.
-	if forwardErr != nil && (platform != service.PlatformAnthropic || result.AttemptID == "" || !service.HasExplicitForwardUsage(result)) {
+	// Preserve legacy platform-agnostic success accounting. Partial error billing
+	// is limited to adapters that return provider-observed usage for an admitted attempt.
+	if forwardErr != nil && (!supportsPartialUsageBilling(platform) || result.AttemptID == "" || !service.HasExplicitForwardUsage(result)) {
 		return false
 	}
 	submit()
 	return true
+}
+
+func supportsPartialUsageBilling(platform string) bool {
+	switch platform {
+	case service.PlatformAnthropic, service.PlatformGemini, service.PlatformAntigravity:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *GatewayHandler) submitUsageRecordTask(parent context.Context, task service.UsageRecordTask) {

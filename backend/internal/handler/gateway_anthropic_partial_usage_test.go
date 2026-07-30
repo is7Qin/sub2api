@@ -62,12 +62,28 @@ func TestSubmitMessagesUsageOnce_AntigravitySuccessExactlyOnce(t *testing.T) {
 	require.Equal(t, 1, calls)
 }
 
-func TestSubmitMessagesUsageOnce_AntigravityErrorDoesNotPartialBill(t *testing.T) {
+func TestSubmitMessagesUsageOnce_AntigravityPartialUsageSubmits(t *testing.T) {
 	calls := 0
 	result := &service.ForwardResult{AttemptID: "antigravity-attempt", Usage: service.ClaudeUsage{InputTokens: 5, OutputTokens: 3}}
 
-	require.False(t, submitMessagesUsageOnce(result, errors.New("upstream failed"), service.PlatformAntigravity, func() { calls++ }))
-	require.Equal(t, 0, calls)
+	require.True(t, submitMessagesUsageOnce(result, errors.New("upstream failed"), service.PlatformAntigravity, func() { calls++ }))
+	require.Equal(t, 1, calls)
+}
+
+func TestSubmitMessagesUsageOnce_GeminiPartialUsageSubmits(t *testing.T) {
+	calls := 0
+	result := &service.ForwardResult{AttemptID: "gemini-attempt", Usage: service.ClaudeUsage{OutputTokens: 3}}
+
+	require.True(t, submitMessagesUsageOnce(result, errors.New("unexpected EOF"), service.PlatformGemini, func() { calls++ }))
+	require.Equal(t, 1, calls)
+}
+
+func TestSubmitMessagesUsageOnce_UnsupportedPartialUsageDoesNotSubmit(t *testing.T) {
+	calls := 0
+	result := &service.ForwardResult{AttemptID: "unsupported-attempt", Usage: service.ClaudeUsage{InputTokens: 5}}
+
+	require.False(t, submitMessagesUsageOnce(result, errors.New("upstream failed"), "unsupported", func() { calls++ }))
+	require.Zero(t, calls)
 }
 
 func TestRunPostForwardUsageSubmission_SubmitsBeforeContinuation(t *testing.T) {
@@ -108,6 +124,14 @@ func TestRunPostForwardUsageSubmission_SubmitsBeforeContinuation(t *testing.T) {
 			result:     &service.ForwardResult{AttemptID: "antigravity-attempt", Usage: service.ClaudeUsage{InputTokens: 5}},
 			forwardErr: errors.New("antigravity failed"),
 			platform:   service.PlatformAntigravity,
+			wantSubmit: true,
+		},
+		{
+			name:       "gemini error",
+			result:     &service.ForwardResult{AttemptID: "gemini-attempt", Usage: service.ClaudeUsage{OutputTokens: 3}},
+			forwardErr: errors.New("gemini failed"),
+			platform:   service.PlatformGemini,
+			wantSubmit: true,
 		},
 		{
 			name:       "success",

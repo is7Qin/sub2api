@@ -1495,6 +1495,42 @@ func liftInitialAnthropicSystemMessages(body []byte) ([]byte, bool) {
 	return out, true
 }
 
+// isProxiedClaudeCodeOAuthRequest accepts only the body evidence preserved by an
+// intermediary after direct Claude Code detection has failed. It is deliberately
+// narrow: the parsed metadata must match the raw body, and only a direct
+// top-level system text billing block can bypass OAuth mimicry.
+func isProxiedClaudeCodeOAuthRequest(parsed *ParsedRequest, body []byte) bool {
+	if parsed == nil || !gjson.ValidBytes(body) || ParseMetadataUserID(parsed.MetadataUserID) == nil {
+		return false
+	}
+	metadataUserID := gjson.GetBytes(body, "metadata.user_id")
+	if metadataUserID.Type != gjson.String || metadataUserID.String() != parsed.MetadataUserID {
+		return false
+	}
+
+	system := gjson.GetBytes(body, "system")
+	if !system.IsArray() {
+		return false
+	}
+	matched := false
+	system.ForEach(func(_, block gjson.Result) bool {
+		// Claude Code emits this only as a direct text system block. Do not
+		// search arbitrary system objects, messages, or tool payloads.
+		if !block.IsObject() || block.Get("type").String() != "text" {
+			return true
+		}
+		text := block.Get("text")
+		if text.Type == gjson.String &&
+			strings.HasPrefix(text.String(), claudeCodeBillingHeaderPrefix) &&
+			strings.Contains(text.String(), claudeCodeEntrypointMarker) {
+			matched = true
+			return false
+		}
+		return true
+	})
+	return matched
+}
+
 func normalizeNativeAnthropicOAuthRequestBody(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -4975,6 +5011,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	//
 	// 对于非 Claude Code 的第三方客户端（opencode 等），仍然走完整 mimicry。
 	isClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCode && account.IsAnthropicOAuthOrSetupToken() {
+		isClaudeCode = isProxiedClaudeCodeOAuthRequest(parsed, body)
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 	if !shouldMimicClaudeCode {
 		if err := replaceBody(normalizeNativeAnthropicRequestForAccount(account, body)); err != nil {
@@ -10204,6 +10243,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	isClaudeCodeCT := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCodeCT && account.IsAnthropicOAuthOrSetupToken() {
+		isClaudeCodeCT = isProxiedClaudeCodeOAuthRequest(parsed, body)
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 
 	if shouldMimicClaudeCode {

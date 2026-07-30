@@ -977,6 +977,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CompletedContextFieldsAreNotRequestFailure(t *testing.T) {
+	parseCalls := countUpstreamErrorFactParses(t)
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{}
@@ -1064,6 +1065,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CompletedContext
 	case <-time.After(5 * time.Second):
 		t.Fatal("waiting for websocket exit timed out")
 	}
+	require.Zero(t, parseCalls.Load())
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughContextFailureOwnsTurnWhenClientWriteFails(t *testing.T) {

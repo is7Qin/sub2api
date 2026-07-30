@@ -594,6 +594,7 @@ type UpstreamFailoverError struct {
 	ResponseHeaders         http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
 	ForceCacheBilling       bool        // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount  bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	upstreamFact            *UpstreamErrorFact
 	sanitizedClientResponse *sanitizedUpstreamClientResponse
 }
 
@@ -607,6 +608,15 @@ func (e *UpstreamFailoverError) Error() string {
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
 }
 
+// UpstreamFact returns a copy of the observational error fact attached by a
+// provider boundary. Legacy failover behavior continues to use the fields above.
+func (e *UpstreamFailoverError) UpstreamFact() (UpstreamErrorFact, bool) {
+	if e == nil || e.upstreamFact == nil {
+		return UpstreamErrorFact{}, false
+	}
+	return *e.upstreamFact, true
+}
+
 // SanitizedClientResponse returns a copy of the fixed client-safe response when
 // this error was created through the private sanitized-response boundary.
 func (e *UpstreamFailoverError) SanitizedClientResponse() (int, []byte, http.Header, bool) {
@@ -618,11 +628,16 @@ func (e *UpstreamFailoverError) SanitizedClientResponse() (int, []byte, http.Hea
 }
 
 func newSanitizedUpstreamFailoverError(statusCode int, body []byte, headers http.Header, retryableOnSameAccount bool) *UpstreamFailoverError {
+	return newSanitizedUpstreamFailoverErrorWithFact(statusCode, body, headers, retryableOnSameAccount, nil)
+}
+
+func newSanitizedUpstreamFailoverErrorWithFact(statusCode int, body []byte, headers http.Header, retryableOnSameAccount bool, fact *UpstreamErrorFact) *UpstreamFailoverError {
 	return &UpstreamFailoverError{
 		StatusCode:             statusCode,
 		ResponseBody:           body,
 		ResponseHeaders:        headers,
 		RetryableOnSameAccount: retryableOnSameAccount,
+		upstreamFact:           fact,
 		sanitizedClientResponse: &sanitizedUpstreamClientResponse{
 			statusCode: statusCode,
 			body:       append([]byte(nil), body...),
@@ -641,6 +656,19 @@ type sseStreamErrorEventError struct {
 }
 
 func (e *sseStreamErrorEventError) Error() string { return "have error in stream" }
+
+func newAnthropicSSEFailoverError(account *Account, body []byte, requestID string) *UpstreamFailoverError {
+	provider := PlatformAnthropic
+	if account != nil && account.Platform != "" {
+		provider = account.Platform
+	}
+	fact := ParseAnthropicSSEErrorFact(provider, body, requestID)
+	return &UpstreamFailoverError{
+		StatusCode:   http.StatusForbidden,
+		ResponseBody: body,
+		upstreamFact: &fact,
+	}
+}
 
 // TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
 // 由 handler 层在同账号重试全部用尽、切换账号时调用。
@@ -5680,10 +5708,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					truncateString(sseErr.RawData, 1000),
 				)
 
-				return partialResult, &UpstreamFailoverError{
-					StatusCode:   403,
-					ResponseBody: body,
-				}
+				return partialResult, newAnthropicSSEFailoverError(
+					account,
+					body,
+					resp.Header.Get("x-request-id"),
+				)
 			}
 			return partialResult, err
 		}

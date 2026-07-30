@@ -78,6 +78,7 @@ type openAIWSFallbackError struct {
 	Err              error
 	UpstreamURL      string
 	UpstreamEndpoint string
+	upstreamFact     *UpstreamErrorFact
 }
 
 func (e *openAIWSFallbackError) Error() string {
@@ -95,6 +96,25 @@ func (e *openAIWSFallbackError) Unwrap() error {
 		return nil
 	}
 	return e.Err
+}
+
+func (e *openAIWSFallbackError) UpstreamFact() (UpstreamErrorFact, bool) {
+	if e == nil || e.upstreamFact == nil {
+		return UpstreamErrorFact{}, false
+	}
+	return *e.upstreamFact, true
+}
+
+func newOpenAIWSFallbackErrorWithFact(reason string, err error, upstreamURL string, payload []byte, requestID string) *openAIWSFallbackError {
+	fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, payload, requestID)
+	safeURL := safeUpstreamURL(upstreamURL)
+	return &openAIWSFallbackError{
+		Reason:           strings.TrimSpace(reason),
+		Err:              err,
+		UpstreamURL:      safeURL,
+		UpstreamEndpoint: endpointFromSafeUpstreamURL(safeURL),
+		upstreamFact:     &fact,
+	}
 }
 
 func wrapOpenAIWSFallback(reason string, err error) error {
@@ -2536,6 +2556,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	readTimeout := s.openAIWSReadTimeout()
 	var pendingJSONDocuments [][]byte
+	var terminalFact *UpstreamErrorFact
 
 	for {
 		var message []byte
@@ -2649,6 +2670,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
 		}
 		if eventType == "response.failed" {
+			fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, message, responseID)
+			terminalFact = &fact
 			requestErr = newOpenAIUpstreamRequestError(message, responseID)
 			if requestErr != nil {
 				requestErr.observeTerminal(*usage, firstTokenMs != nil)
@@ -2703,7 +2726,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			// error 事件后连接不再可复用，避免回池后污染下一请求。
 			lease.MarkBroken()
 			if !wroteDownstream && canFallback {
-				return nil, wrapFallback(fallbackReason, errors.New(errMsg))
+				return nil, newOpenAIWSFallbackErrorWithFact(
+					fallbackReason,
+					errors.New(errMsg),
+					wsURL,
+					message,
+					responseID,
+				)
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
@@ -2832,6 +2861,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Stream:           reqStream,
 		OpenAIWSMode:     true,
 		ResponseHeaders:  lease.HandshakeHeaders(),
+		upstreamFact:     terminalFact,
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
 	}, requestErr
@@ -3507,10 +3537,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			var dialErr *openAIWSDialError
 			if errors.As(acquireErr, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
 				s.persistOpenAIWSRateLimitSignal(ctx, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(sanitizeOpenAIUpstreamDiagnosticText(acquireErr.Error())))
-				return nil, &UpstreamFailoverError{
-					StatusCode:      http.StatusTooManyRequests,
-					ResponseHeaders: cloneHeader(dialErr.ResponseHeaders),
+				resp := &http.Response{
+					StatusCode: dialErr.StatusCode,
+					Header:     dialErr.ResponseHeaders,
 				}
+				return nil, newOpenAIWebSocketHandshakeFailoverError(resp, dialErr.ResponseBody)
 			}
 			if errors.Is(acquireErr, errOpenAIWSPreferredConnUnavailable) {
 				return nil, NewOpenAIWSClientCloseError(
@@ -3695,11 +3726,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				if !wroteDownstream && isOpenAIWSRateLimitError(errCodeRaw, errTypeRaw, errMsgRaw) {
 					lease.MarkBroken()
-					return nil, &UpstreamFailoverError{
-						StatusCode:      http.StatusTooManyRequests,
-						ResponseBody:    append([]byte(nil), upstreamMessage...),
-						ResponseHeaders: cloneHeader(lease.HandshakeHeaders()),
-					}
+					return nil, newOpenAIWebSocketFailoverError(
+						http.StatusTooManyRequests,
+						append([]byte(nil), upstreamMessage...),
+						lease.HandshakeHeaders(),
+					)
 				}
 			}
 			isTokenEvent := isOpenAIWSTokenEvent(eventType)
@@ -3754,7 +3785,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			if isTerminalEvent {
 				var requestErr *OpenAIUpstreamRequestError
+				var terminalFact *UpstreamErrorFact
 				if eventType == "response.failed" {
+					fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, upstreamMessage, responseID)
+					terminalFact = &fact
 					requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
 					if requestErr != nil {
 						requestErr.observeTerminal(usage, firstTokenMs != nil)
@@ -3797,6 +3831,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					Stream:          reqStream,
 					OpenAIWSMode:    true,
 					ResponseHeaders: lease.HandshakeHeaders(),
+					upstreamFact:    terminalFact,
 					Duration:        time.Since(turnStart),
 					FirstTokenMs:    firstTokenMs,
 				}

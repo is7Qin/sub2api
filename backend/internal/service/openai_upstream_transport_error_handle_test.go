@@ -48,6 +48,13 @@ func TestHandleOpenAIUpstreamTransportError_PersistentEvictsAndFailsOver(t *test
 	var fo *UpstreamFailoverError
 	require.True(t, errors.As(retErr, &fo), "persistent error must return *UpstreamFailoverError")
 	require.Equal(t, http.StatusBadGateway, fo.StatusCode)
+	fact, ok := fo.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, UpstreamErrorSourceTransport, fact.Source)
+	require.False(t, fact.HTTPStatusKnown)
+	require.Zero(t, fact.HTTPStatus)
+	require.NotContains(t, fact.SafeMessage, "chatgpt.com")
+	require.NotContains(t, fact.SafeMessage, "username/password")
 
 	require.Len(t, repo.tempUnschedCalls, 1)
 	require.Equal(t, int64(4627), repo.tempUnschedCalls[0].accountID)

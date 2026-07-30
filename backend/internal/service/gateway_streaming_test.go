@@ -312,6 +312,52 @@ func TestHandleStreamingResponse_PartialUsageAfterUnexpectedEOF_RetainsResult(t 
 	require.Equal(t, 5, result.usage.InputTokens)
 }
 
+func TestGatewayService_ForwardNative_SuccessDoesNotParseUpstreamErrorFact(t *testing.T) {
+	parseCalls := countUpstreamErrorFactParses(t)
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	body := NewRequestBodyRef([]byte(`{"model":"claude-sonnet-4","stream":true,"messages":[]}`))
+	parsed, err := ParseGatewayRequest(body, PlatformAnthropic)
+	require.NoError(t, err)
+
+	pr, pw := io.Pipe()
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"X-Request-Id": []string{"rid-success-native"},
+		},
+		Body: pr,
+	}}
+	svc := newMinimalGatewayService()
+	svc.httpUpstream = upstream
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9}}}\n\n"))
+		_, _ = pw.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"))
+		_, _ = pw.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\n"))
+		_, _ = pw.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}()
+
+	result, err := svc.Forward(context.Background(), c, &Account{
+		ID:          1,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}, parsed)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 9, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+	require.Equal(t, "rid-success-native", result.RequestID)
+	require.Contains(t, rec.Body.String(), `"message_stop"`)
+	require.Zero(t, parseCalls.Load())
+}
+
 func TestGatewayService_ForwardNative_PartialUsageReturnsResultAndError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

@@ -343,7 +343,7 @@ func TestForwardAsAnthropic_BufferedResponseFailedTriggersFailover(t *testing.T)
 	}, "\n")
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_failed"}},
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"rid_failed"}},
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 
@@ -369,6 +369,14 @@ func TestForwardAsAnthropic_BufferedResponseFailedTriggersFailover(t *testing.T)
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.Equal(t, "bad upstream", gjson.GetBytes(failoverErr.ResponseBody, "error.message").String())
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, UpstreamErrorSourceSSE, fact.Source)
+	require.False(t, fact.HTTPStatusKnown)
+	require.Zero(t, fact.HTTPStatus)
+	require.Equal(t, "server_error", fact.ProviderCode)
+	require.Equal(t, "bad upstream", fact.SafeMessage)
+	require.Equal(t, "rid_failed", fact.RequestID)
 }
 
 func TestForwardAsAnthropic_StreamingResponseFailedBeforeOutputTriggersFailover(t *testing.T) {
@@ -954,6 +962,13 @@ func TestOpenAIStreamFailoverErrorHonorsPoolModeRetryStatusPolicy(t *testing.T) 
 
 	err := svc.newOpenAIStreamFailoverError(nil, account, false, "rid", payload, "server overloaded")
 	require.False(t, err.RetryableOnSameAccount)
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	fact, ok := err.UpstreamFact()
+	require.True(t, ok)
+	require.False(t, fact.HTTPStatusKnown)
+	require.Zero(t, fact.HTTPStatus)
+	require.Equal(t, "server_error", fact.ProviderCode)
+	require.Equal(t, "server overloaded", fact.SafeMessage)
 
 	account.Credentials["pool_mode_retry_status_codes"] = []any{502}
 	err = svc.newOpenAIStreamFailoverError(nil, account, false, "rid", payload, "server overloaded")

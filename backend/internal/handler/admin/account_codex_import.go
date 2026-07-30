@@ -118,7 +118,8 @@ type codexJWTOpenAIClaims struct {
 }
 
 type codexAccountIndex struct {
-	accountsByKey map[string]service.Account
+	accountsByKey   map[string][]service.Account
+	keysByAccountID map[int64]map[string]struct{}
 }
 
 func (h *AccountHandler) ImportCodexSession(c *gin.Context) {
@@ -1140,7 +1141,10 @@ func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refresh
 }
 
 func buildCodexAccountIndex(accounts []service.Account) *codexAccountIndex {
-	index := &codexAccountIndex{accountsByKey: map[string]service.Account{}}
+	index := &codexAccountIndex{
+		accountsByKey:   map[string][]service.Account{},
+		keysByAccountID: map[int64]map[string]struct{}{},
+	}
 	for _, account := range accounts {
 		index.Add(account)
 	}
@@ -1152,7 +1156,10 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		return
 	}
 	if i.accountsByKey == nil {
-		i.accountsByKey = map[string]service.Account{}
+		i.accountsByKey = map[string][]service.Account{}
+	}
+	if i.keysByAccountID == nil {
+		i.keysByAccountID = map[int64]map[string]struct{}{}
 	}
 	identityToken := codexCredentialString(account.Credentials, "personal_access_token")
 	if identityToken == "" {
@@ -1164,9 +1171,60 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		codexCredentialString(account.Credentials, "email"),
 		identityToken,
 	)
-	for _, key := range keys {
-		i.accountsByKey[key] = account
+	orderedKeys := make([]string, 0, len(keys)+2)
+	accountKeys := make(map[string]struct{}, len(keys)+2)
+	appendKey := func(key string) {
+		if _, exists := accountKeys[key]; exists {
+			return
+		}
+		accountKeys[key] = struct{}{}
+		orderedKeys = append(orderedKeys, key)
 	}
+	for _, key := range keys {
+		appendKey(key)
+	}
+	if strings.EqualFold(codexCredentialString(account.Credentials, "auth_mode"), service.OpenAIAuthModeAgentIdentity) {
+		for _, key := range buildCodexAgentIdentityKeys(
+			codexCredentialString(account.Credentials, "chatgpt_account_id"),
+			codexCredentialString(account.Credentials, "chatgpt_user_id"),
+		) {
+			appendKey(key)
+		}
+	}
+	if runtimeID := codexCredentialString(account.Credentials, "agent_runtime_id"); runtimeID != "" {
+		appendKey("agent:" + runtimeID)
+	}
+
+	previousKeys := i.keysByAccountID[account.ID]
+	for key := range previousKeys {
+		if _, retained := accountKeys[key]; retained {
+			i.accountsByKey[key] = upsertCodexAccount(i.accountsByKey[key], account)
+			continue
+		}
+		i.removeFromKey(key, account.ID)
+	}
+	for _, key := range orderedKeys {
+		if _, existed := previousKeys[key]; existed {
+			continue
+		}
+		i.accountsByKey[key] = append(i.accountsByKey[key], account)
+	}
+	i.keysByAccountID[account.ID] = accountKeys
+}
+
+func (i *codexAccountIndex) removeFromKey(key string, accountID int64) {
+	accounts := i.accountsByKey[key]
+	kept := accounts[:0]
+	for _, account := range accounts {
+		if account.ID != accountID {
+			kept = append(kept, account)
+		}
+	}
+	if len(kept) == 0 {
+		delete(i.accountsByKey, key)
+		return
+	}
+	i.accountsByKey[key] = kept
 }
 
 func (i *codexAccountIndex) Find(keys []string) *service.Account {
@@ -1174,11 +1232,23 @@ func (i *codexAccountIndex) Find(keys []string) *service.Account {
 		return nil
 	}
 	for _, key := range keys {
-		if account, ok := i.accountsByKey[key]; ok {
+		accounts := i.accountsByKey[key]
+		if len(accounts) > 0 {
+			account := accounts[0]
 			return &account
 		}
 	}
 	return nil
+}
+
+func upsertCodexAccount(accounts []service.Account, account service.Account) []service.Account {
+	for idx := range accounts {
+		if accounts[idx].ID == account.ID {
+			accounts[idx] = account
+			return accounts
+		}
+	}
+	return append(accounts, account)
 }
 
 func firstSeenCodexIdentity(seen map[string]int, keys []string) (int, bool) {

@@ -110,6 +110,27 @@ func TestBillingQuotaAuthInvalidationMigrationProvidesIdempotentSourceIdentity(t
 	require.Contains(t, sqlText, "NEW.quota_used >= NEW.quota")
 }
 
+func TestStageAuthCacheInvalidationTxTargetsPartialSourceKeyIndex(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO auth_cache_invalidation_outbox.*ON CONFLICT \(source_key\) WHERE source_key IS NOT NULL DO NOTHING`).
+		WithArgs(strings.Repeat("a", 64), "quota-source-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	require.NoError(t, stageAuthCacheInvalidationTx(context.Background(), tx, AuthCacheInvalidationStage{
+		CacheKey:  strings.Repeat("a", 64),
+		SourceKey: "quota-source-1",
+	}))
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestAuthCacheInvalidationMigration_SecurityCoverageAndNoPlaintextPayload(t *testing.T) {
 	content, err := migrations.FS.ReadFile("167_auth_cache_invalidation_outbox.sql")
 	require.NoError(t, err)

@@ -36,7 +36,7 @@ func stageAuthCacheInvalidationTx(ctx context.Context, tx *sql.Tx, event AuthCac
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO auth_cache_invalidation_outbox (cache_key, source_key)
 		VALUES ($1, $2)
-		ON CONFLICT (source_key) DO NOTHING
+		ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING
 	`, event.CacheKey, event.SourceKey)
 	return err
 }

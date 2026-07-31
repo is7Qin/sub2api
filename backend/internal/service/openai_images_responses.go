@@ -1635,6 +1635,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			if imageCount > 0 {
 				return &OpenAIForwardResult{
 					RequestID:        resp.Header.Get("x-request-id"),
+					AttemptID:        forwardResultAttemptID(resp),
 					Usage:            usage,
 					Model:            requestModel,
 					UpstreamModel:    requestModel,
@@ -1679,6 +1680,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	}
 	return &OpenAIForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            usage,
 		Model:            requestModel,
 		UpstreamModel:    requestModel,

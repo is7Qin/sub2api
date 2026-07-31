@@ -208,6 +208,8 @@ func TestForwardEmbeddings_APIKeyPassthroughRecordsUsageAndBatchInput(t *testing
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotNil(t, result)
 	require.Equal(t, "emb-rid", result.RequestID)
+	require.NotEmpty(t, result.AttemptID)
+	require.Equal(t, HTTPAttemptID(upstream.lastReq.Context()), result.AttemptID)
 	require.Equal(t, "nowledge-embedding", result.Model)
 	require.Equal(t, "jina-embeddings-v5-text-small", result.BillingModel)
 	require.Equal(t, "jina-embeddings-v5-text-small", result.UpstreamModel)

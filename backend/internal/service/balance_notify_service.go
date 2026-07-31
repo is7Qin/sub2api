@@ -302,7 +302,16 @@ func (s *BalanceNotifyService) getSiteName(ctx context.Context) string {
 
 // filterVerifiedEmails returns deduplicated, non-disabled, verified emails.
 func filterVerifiedEmails(entries []NotifyEmailEntry) []string {
-	var recipients []string
+	verified := verifiedNotifyEmailEntries(entries)
+	recipients := make([]string, 0, len(verified))
+	for _, entry := range verified {
+		recipients = append(recipients, entry.Email)
+	}
+	return recipients
+}
+
+func verifiedNotifyEmailEntries(entries []NotifyEmailEntry) []NotifyEmailEntry {
+	verified := make([]NotifyEmailEntry, 0, len(entries))
 	seen := make(map[string]bool)
 	for _, entry := range entries {
 		if entry.Disabled || !entry.Verified {
@@ -317,15 +326,107 @@ func filterVerifiedEmails(entries []NotifyEmailEntry) []string {
 			continue
 		}
 		seen[lower] = true
-		recipients = append(recipients, email)
+		verified = append(verified, NotifyEmailEntry{Email: email, Verified: true})
 	}
-	return recipients
+	return verified
 }
 
 // collectBalanceNotifyRecipients returns verified, non-disabled email recipients.
 // Only emails with verified=true and disabled=false are included.
 func (s *BalanceNotifyService) collectBalanceNotifyRecipients(user *User) []string {
 	return filterVerifiedEmails(user.BalanceNotifyExtraEmails)
+}
+
+// FinalizeOutboxNotifications synchronously evaluates and sends alerts for a
+// durable billing attempt. Stable attempt-derived delivery keys make retries
+// idempotent while surfacing transport failures to the outbox worker.
+func (s *BalanceNotifyService) FinalizeOutboxNotifications(ctx context.Context, attemptID string, user *User, account *Account, cost *CostBreakdown, result *UsageBillingApplyResult) error {
+	if s == nil || user == nil || account == nil || cost == nil || result == nil || !result.Applied || strings.TrimSpace(attemptID) == "" {
+		return nil
+	}
+	if err := s.finalizeOutboxBalance(ctx, attemptID, user, cost, result); err != nil {
+		return err
+	}
+	return s.finalizeOutboxQuota(ctx, attemptID, account, cost, result)
+}
+
+func (s *BalanceNotifyService) finalizeOutboxBalance(ctx context.Context, attemptID string, user *User, cost *CostBreakdown, result *UsageBillingApplyResult) error {
+	if cost.ActualCost <= 0 || !s.canNotifyBalance(user) {
+		return nil
+	}
+	threshold, rechargeURL, ok := s.resolveUserEffectiveThreshold(ctx, user)
+	if !ok {
+		return nil
+	}
+	newBalance := user.Balance - cost.ActualCost
+	if result.NewBalance != nil {
+		newBalance = *result.NewBalance
+	}
+	if !crossedDownward(newBalance+cost.ActualCost, newBalance, threshold) {
+		return nil
+	}
+	for _, recipient := range s.collectBalanceNotifyRecipients(user) {
+		if s.notificationEmailService == nil {
+			return nil
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
+		err := s.notificationEmailService.Send(sendCtx, NotificationEmailSendInput{
+			Event: NotificationEmailEventBalanceLow, RecipientEmail: recipient, RecipientName: firstNonEmpty(user.Username, user.Email), UserID: user.ID,
+			SourceType: "billing_outbox_balance_low", SourceID: attemptID, ReminderKey: "balance_low",
+			Variables: map[string]string{"current_balance": fmt.Sprintf("%.2f", newBalance), "threshold": fmt.Sprintf("%.2f", threshold), "recharge_url": rechargeURL},
+		})
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *BalanceNotifyService) finalizeOutboxQuota(ctx context.Context, attemptID string, account *Account, cost *CostBreakdown, result *UsageBillingApplyResult) error {
+	if cost.TotalCost <= 0 || result.QuotaState == nil || !account.IsAPIKeyOrBedrock() || s.emailService == nil || s.settingRepo == nil || s.notificationEmailService == nil || !s.isAccountQuotaNotifyEnabled(ctx) {
+		return nil
+	}
+	recipients := s.getAccountQuotaNotifyEmails(ctx)
+	for _, dim := range buildQuotaDimsFromState(account, result.QuotaState) {
+		threshold := dim.resolvedThreshold()
+		if !dim.enabled || dim.threshold <= 0 || threshold <= 0 || dim.currentUsed-cost.TotalCost >= threshold || dim.currentUsed < threshold {
+			continue
+		}
+		for _, recipient := range recipients {
+			sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
+			err := s.notificationEmailService.Send(sendCtx, NotificationEmailSendInput{
+				Event: NotificationEmailEventAccountQuotaAlert, RecipientEmail: recipient, RecipientName: emailRecipientName(recipient),
+				SourceType: "billing_outbox_account_quota", SourceID: attemptID + ":" + dim.name, ReminderKey: "account_quota",
+				Variables: outboxQuotaAlertVariables(account, dim),
+			})
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func outboxQuotaAlertVariables(account *Account, dim quotaDim) map[string]string {
+	label := quotaDimLabels[dim.name]
+	if label == "" {
+		label = dim.name
+	}
+	remaining := dim.limit - dim.currentUsed
+	if remaining < 0 {
+		remaining = 0
+	}
+	threshold := fmt.Sprintf("$%.2f", dim.threshold)
+	if dim.thresholdType == thresholdTypePercentage {
+		threshold = fmt.Sprintf("%.0f%%", dim.threshold)
+	}
+	return map[string]string{
+		"account_id": strconv.FormatInt(account.ID, 10), "account_name": account.Name, "platform": account.Platform,
+		"quota_dimension": label, "quota_used": fmt.Sprintf("%.2f", dim.currentUsed), "quota_limit": fmt.Sprintf("%.2f", dim.limit),
+		"quota_remaining": fmt.Sprintf("%.2f", remaining), "quota_threshold": threshold,
+	}
 }
 
 // sendEmails sends an email to all recipients with shared timeout and error logging.

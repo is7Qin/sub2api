@@ -301,7 +301,7 @@ func TestOpenAIGatewayHandlerSubmitMandatoryUsageRecordTask_DroppedTaskSyncFallb
 	require.True(t, called.Load(), "mandatory usage task must run synchronously when async submit is dropped")
 }
 
-func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_WebSocketTokenResultPreservesLegacyDrop(t *testing.T) {
+func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_WebSocketTokenResultUsesMandatoryFallback(t *testing.T) {
 	pool := newUsageRecordTestPool(t)
 	pool.Stop()
 	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
@@ -311,7 +311,7 @@ func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_WebSocketTokenResultPre
 		calls.Add(1)
 	})
 
-	require.Equal(t, int32(0), calls.Load())
+	require.Equal(t, int32(1), calls.Load())
 	require.Equal(t, uint64(1), pool.Stats().DroppedPoolStopped)
 }
 

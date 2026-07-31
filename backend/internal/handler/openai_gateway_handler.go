@@ -2070,16 +2070,10 @@ func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Contex
 	h.submitLegacyUsageRecordTask(parent, task)
 }
 
-// Responses WebSocket remains on its pre-Phase-2 best-effort ownership contract.
+// All billable OpenAI results use the mandatory submission path. The gateway
+// service persists the immutable command to the durable outbox before returning.
 func (h *OpenAIGatewayHandler) submitLegacyUsageRecordTask(parent context.Context, task service.UsageRecordTask) {
-	if task == nil {
-		return
-	}
-	if h.usageRecordWorkerPool != nil {
-		h.usageRecordWorkerPool.Submit(wrapUsageRecordTaskContext(parent, task))
-		return
-	}
-	submitMandatoryUsageRecordTask(parent, nil, "handler.openai_gateway.usage", task)
+	h.submitMandatoryUsageRecordTask(parent, task)
 }
 
 func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTask(parent context.Context, task service.UsageRecordTask) {

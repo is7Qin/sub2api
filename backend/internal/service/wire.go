@@ -483,6 +483,32 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	return svc
 }
 
+// ProvideBillingOutboxWorker constructs the durable billing replay worker and
+// injects its repository into both gateway implementations before starting it.
+func ProvideBillingOutboxWorker(
+	repo BillingOutboxRepository,
+	usageBillingRepo UsageBillingRepository,
+	apiKeyService *APIKeyService,
+	gatewayService *GatewayService,
+	openAIGatewayService *OpenAIGatewayService,
+) *BillingOutboxWorker {
+	if gatewayService != nil {
+		gatewayService.SetBillingOutboxRepository(repo)
+	}
+	if openAIGatewayService != nil {
+		openAIGatewayService.SetBillingOutboxRepository(repo)
+	}
+	var deps *billingDeps
+	if gatewayService != nil {
+		deps = gatewayService.billingDeps()
+	} else if openAIGatewayService != nil {
+		deps = openAIGatewayService.billingDeps()
+	}
+	worker := NewBillingOutboxWorker(repo, usageBillingRepo, NewBillingOutboxPostProcessor(deps, apiKeyService))
+	worker.Start()
+	return worker
+}
+
 // ProvideBillingCacheService wires BillingCacheService with its RPM dependencies.
 func ProvideBillingCacheService(
 	cache BillingCache,
@@ -534,6 +560,7 @@ var ProviderSet = wire.NewSet(
 	ProvidePricingService,
 	NewBillingService,
 	ProvideBillingCacheService,
+	ProvideBillingOutboxWorker,
 	NewAnnouncementService,
 	NewAdminService,
 	ProvideOpenAIOAuthStartupConfigValidation,

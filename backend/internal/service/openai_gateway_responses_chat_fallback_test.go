@@ -43,6 +43,8 @@ func TestForwardResponses_ForceChatCompletionsRoutesNonStreamingToChatCompletion
 	require.NotNil(t, result)
 	require.Equal(t, "http://upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
 	require.Equal(t, "/v1/chat/completions", result.UpstreamEndpoint)
+	require.NotEmpty(t, result.AttemptID)
+	require.Equal(t, HTTPAttemptID(upstream.lastReq.Context()), result.AttemptID)
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.Equal(t, "You are a helpful coding assistant.", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
 	require.Equal(t, "hello", gjson.GetBytes(upstream.lastBody, "messages.1.content").String())

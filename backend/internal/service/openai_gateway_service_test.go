@@ -25,6 +25,33 @@ import (
 var _ AccountRepository = (*stubOpenAIAccountRepo)(nil)
 var _ GatewayCache = (*stubGatewayCache)(nil)
 
+func TestOpenAIForwardResultFromPassthroughNonStreamingResultPreservesAttemptID(t *testing.T) {
+	attemptID := "physical-attempt-19"
+	request, err := http.NewRequestWithContext(
+		context.WithValue(context.Background(), httpAttemptIDKey{}, attemptID),
+		http.MethodPost,
+		"https://upstream.example/v1/responses",
+		nil,
+	)
+	require.NoError(t, err)
+
+	result := openAIForwardResultFromPassthroughNonStreamingResult(
+		&openaiNonStreamingResultPassthrough{responseID: "resp-19", usage: &OpenAIUsage{}},
+		&http.Response{Header: http.Header{"X-Request-Id": []string{"upstream-19"}}, Request: request},
+		time.Now().Add(-time.Second),
+		"gpt-5",
+		"gpt-5",
+		"gpt-5-upstream",
+		nil,
+		nil,
+		"",
+		"",
+		"",
+	)
+
+	require.Equal(t, attemptID, result.AttemptID)
+}
+
 type stubOpenAIAccountRepo struct {
 	AccountRepository
 	accounts []Account

@@ -167,6 +167,51 @@ func TestUsageBillingRepositoryApply_MissingUserRollsBack(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUsageBillingRepositoryApplyAndStageOutboxFinalization_StagesWithinBillingTransaction(t *testing.T) {
+	db, mock := newUsageBillingSQLMock(t)
+	repo := &usageBillingRepository{db: db}
+	cmd := &service.UsageBillingCommand{
+		RequestID: "req-stage-finalization", AccountID: 1, APIKeyID: 10, UserID: 20, BalanceCost: 1.25,
+	}
+	cmd.Normalize()
+
+	mock.ExpectBegin()
+	expectUsageBillingClaimInserted(mock, cmd)
+	expectGuardedBalanceDeduction(mock, cmd.UserID, cmd.BalanceCost, 8.75)
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = 'finalization_pending'.*leased_by = \$2.*status = 'processing'`).
+		WithArgs(int64(7), "worker-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := repo.ApplyAndStageOutboxFinalization(context.Background(), cmd, service.UsageBillingOutboxBinding{OutboxID: 7, WorkerID: "worker-1"})
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+	require.NotNil(t, result.NewBalance)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageBillingRepositoryApplyAndStageOutboxFinalization_RollsBackWhenStageLosesLease(t *testing.T) {
+	db, mock := newUsageBillingSQLMock(t)
+	repo := &usageBillingRepository{db: db}
+	cmd := &service.UsageBillingCommand{
+		RequestID: "req-stage-lost-lease", AccountID: 1, APIKeyID: 10, UserID: 20, BalanceCost: 1.25,
+	}
+	cmd.Normalize()
+
+	mock.ExpectBegin()
+	expectUsageBillingClaimInserted(mock, cmd)
+	expectGuardedBalanceDeduction(mock, cmd.UserID, cmd.BalanceCost, 8.75)
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = 'finalization_pending'.*leased_by = \$2.*status = 'processing'`).
+		WithArgs(int64(8), "worker-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	result, err := repo.ApplyAndStageOutboxFinalization(context.Background(), cmd, service.UsageBillingOutboxBinding{OutboxID: 8, WorkerID: "worker-1"})
+	require.ErrorIs(t, err, service.ErrBillingOutboxClaimLost)
+	require.Nil(t, result)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUsageBillingRepositoryApply_DuplicateRequestIDSkipsEffects(t *testing.T) {
 	db, mock := newUsageBillingSQLMock(t)
 	repo := &usageBillingRepository{db: db}

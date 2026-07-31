@@ -369,6 +369,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 	return &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            usage,
 		Model:            originalModel,
 		BillingModel:     billingModel,
@@ -457,6 +458,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 
 	return &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            usage,
 		Model:            originalModel,
 		BillingModel:     billingModel,

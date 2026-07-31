@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -67,6 +69,89 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 		result.UsageLogPersisted = true
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return result, nil
+}
+
+func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Context, cmd *service.UsageBillingCommand, binding service.UsageBillingOutboxBinding) (_ *service.UsageBillingApplyResult, err error) {
+	if cmd == nil {
+		return &service.UsageBillingApplyResult{}, nil
+	}
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	if r == nil || r.db == nil {
+		return nil, errors.New("usage billing repository db is nil")
+	}
+	if binding.OutboxID <= 0 || strings.TrimSpace(binding.WorkerID) == "" {
+		return nil, service.ErrBillingOutboxClaimLost
+	}
+	cmd.Normalize()
+	if cmd.RequestID == "" {
+		return nil, service.ErrUsageBillingRequestIDRequired
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	applied, err := r.claimUsageBillingKey(ctx, tx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	result := &service.UsageBillingApplyResult{Applied: applied}
+	if applied {
+		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
+			return nil, err
+		}
+	}
+	if cmd.UsageLog != nil {
+		prepared, err := prepareUsageLogInsert(cmd.UsageLog)
+		if err != nil {
+			return nil, err
+		}
+		if err := execUsageLogInsertNoResult(ctx, tx, prepared); err != nil {
+			return nil, err
+		}
+		result.UsageLogPersisted = true
+	}
+	if !applied {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		tx = nil
+		return result, nil
+	}
+
+	applyResult, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE billing_attempt_outbox
+		SET status = 'finalization_pending', apply_result = $3::jsonb,
+			lease_until = NULL, leased_by = NULL, last_error = NULL, updated_at = NOW()
+		WHERE id = $1 AND leased_by = $2 AND status = 'processing' AND lease_until > NOW()
+	`, binding.OutboxID, binding.WorkerID, applyResult)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected != 1 {
+		return nil, fmt.Errorf("%w: %d", service.ErrBillingOutboxClaimLost, binding.OutboxID)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}

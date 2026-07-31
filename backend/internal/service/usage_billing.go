@@ -122,23 +122,35 @@ func valueOrZero(v *int64) int64 {
 // AccountQuotaState holds the post-increment quota state returned by the DB transaction.
 // All values are post-update (i.e., already include the increment).
 type AccountQuotaState struct {
-	TotalUsed   float64
-	TotalLimit  float64
-	DailyUsed   float64
-	DailyLimit  float64
-	WeeklyUsed  float64
-	WeeklyLimit float64
+	TotalUsed   float64 `json:"total_used"`
+	TotalLimit  float64 `json:"total_limit"`
+	DailyUsed   float64 `json:"daily_used"`
+	DailyLimit  float64 `json:"daily_limit"`
+	WeeklyUsed  float64 `json:"weekly_used"`
+	WeeklyLimit float64 `json:"weekly_limit"`
+}
+
+type UsageBillingOutboxBinding struct {
+	OutboxID int64
+	WorkerID string
 }
 
 type UsageBillingApplyResult struct {
-	Applied              bool
-	UsageLogPersisted    bool
-	APIKeyQuotaExhausted bool
-	BalanceOverdrafted   bool
-	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
-	QuotaState           *AccountQuotaState // post-increment quota state (nil = no quota increment)
+	Applied              bool               `json:"applied"`
+	UsageLogPersisted    bool               `json:"usage_log_persisted"`
+	APIKeyQuotaExhausted bool               `json:"api_key_quota_exhausted"`
+	BalanceOverdrafted   bool               `json:"balance_overdrafted"`
+	NewBalance           *float64           `json:"new_balance,omitempty"` // post-deduction balance (nil = no balance deduction)
+	QuotaState           *AccountQuotaState `json:"quota_state,omitempty"` // post-increment quota state (nil = no quota increment)
 }
 
 type UsageBillingRepository interface {
 	Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error)
+}
+
+// UsageBillingFinalizationRepository atomically commits a newly applied billing
+// command with the durable outbox marker needed to replay post-effects.
+type UsageBillingFinalizationRepository interface {
+	UsageBillingRepository
+	ApplyAndStageOutboxFinalization(ctx context.Context, cmd *UsageBillingCommand, binding UsageBillingOutboxBinding) (*UsageBillingApplyResult, error)
 }

@@ -17,6 +17,32 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestApplyErrorPassthroughRule_PassthroughBodyUsesFactSafeMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"vendor_failure"}, MatchMode: model.MatchModeAny,
+		PassthroughCode: true, PassthroughBody: true,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+	body := []byte(`{"error":{"code":"vendor_failure","message":"Authorization: Bearer sk-private https://internal.example/path"}}`)
+
+	status, errType, message, matched := applyErrorPassthroughRule(
+		c, PlatformOpenAI, http.StatusBadRequest, body,
+		http.StatusBadGateway, "upstream_error", "Upstream request failed",
+	)
+
+	require.True(t, matched)
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, "upstream_error", errType)
+	require.NotContains(t, message, "sk-private")
+	require.NotContains(t, message, "internal.example")
+	require.LessOrEqual(t, len(message), upstreamErrorFactMaxScalarBytes)
+}
+
 func TestErrorPassthroughService_MatchUnknownRuleUsesBoundedFactText(t *testing.T) {
 	responseCode := http.StatusTeapot
 	customMessage := "safe unknown message"

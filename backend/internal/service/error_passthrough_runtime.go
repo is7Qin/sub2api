@@ -71,27 +71,13 @@ func applyErrorPassthroughRule(
 		return status, errType, errMsg, true
 	}
 
-	rule := svc.MatchUnknownRule(fact)
-	if rule == nil {
+	resolved := ResolveFinalUpstreamError(fact, svc)
+	if !resolved.RuleMatched {
 		return status, errType, errMsg, false
 	}
-
-	status = upstreamStatus
-	if !rule.PassthroughCode && rule.ResponseCode != nil {
-		status = *rule.ResponseCode
-	}
-
-	errMsg = ExtractUpstreamErrorMessage(responseBody)
-	if !rule.PassthroughBody && rule.CustomMessage != nil {
-		errMsg = *rule.CustomMessage
-	}
-
-	// 命中 skip_monitoring 时在 context 中标记，供 ops_error_logger 跳过记录。
-	if rule.SkipMonitoring {
+	if resolved.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
 	}
-
-	// 与现有 failover 场景保持一致：命中规则时统一返回 upstream_error。
-	errType = "upstream_error"
-	return status, errType, errMsg, true
+	presentation := resolved.Presentation
+	return presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true
 }

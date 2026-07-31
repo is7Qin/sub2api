@@ -117,7 +117,7 @@ func (w *BillingOutboxWorker) run() {
 
 func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 	if finalRepo, ok := w.repo.(BillingOutboxFinalizationRepository); ok {
-		finalRecords, err := finalRepo.ClaimFinalization(ctx, w.workerID, billingOutboxBatchSize, billingOutboxLease)
+		finalRecords, err := finalRepo.ClaimFinalization(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
 		if err != nil {
 			return fmt.Errorf("claim billing outbox finalizations: %w", err)
 		}

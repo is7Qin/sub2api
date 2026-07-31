@@ -14,17 +14,19 @@ import (
 type billingOutboxRepoStub struct {
 	mu sync.Mutex
 
-	records             []BillingOutboxRecord
-	finalizationRecords []BillingOutboxRecord
-	claimLimit          int
-	workerID            string
-	lease               time.Duration
-	acked               []int64
-	finalizationAcked   []int64
-	retried             []billingOutboxRetry
-	finalizationRetried []billingOutboxRetry
-	stats               BillingOutboxStats
-	statsErr            error
+	records                []BillingOutboxRecord
+	finalizationRecords    []BillingOutboxRecord
+	claimLimit             int
+	finalizationClaimLimit int
+	finalizationClaimed    int
+	workerID               string
+	lease                  time.Duration
+	acked                  []int64
+	finalizationAcked      []int64
+	retried                []billingOutboxRetry
+	finalizationRetried    []billingOutboxRetry
+	stats                  BillingOutboxStats
+	statsErr               error
 }
 
 type billingOutboxRetry struct {
@@ -64,11 +66,17 @@ func (r *billingOutboxRepoStub) Retry(_ context.Context, id int64, workerID stri
 	return nil
 }
 
-func (r *billingOutboxRepoStub) ClaimFinalization(_ context.Context, workerID string, _ int, _ time.Duration) ([]BillingOutboxRecord, error) {
+func (r *billingOutboxRepoStub) ClaimFinalization(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.workerID = workerID
-	return append([]BillingOutboxRecord(nil), r.finalizationRecords...), nil
+	r.finalizationClaimLimit = limit
+	claimed := r.finalizationRecords
+	if len(claimed) > limit {
+		claimed = claimed[:limit]
+	}
+	r.finalizationClaimed = len(claimed)
+	return append([]BillingOutboxRecord(nil), claimed...), nil
 }
 
 func (r *billingOutboxRepoStub) RetryFinalization(_ context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error {
@@ -278,10 +286,16 @@ func TestBillingOutboxWorkerProcessesFinalizationBatchConcurrently(t *testing.T)
 		t.Fatal("finalization exceeded the concurrency limit before release")
 	case <-time.After(100 * time.Millisecond):
 	}
+	repo.mu.Lock()
+	claimed := repo.finalizationClaimed
+	claimLimit := repo.finalizationClaimLimit
+	repo.mu.Unlock()
+	require.Equal(t, billingOutboxConcurrency, claimLimit)
+	require.Equal(t, billingOutboxConcurrency, claimed)
 
 	close(release)
 	require.NoError(t, <-finished)
-	require.Len(t, repo.finalizationAcked, len(records))
+	require.Len(t, repo.finalizationAcked, billingOutboxConcurrency)
 }
 
 type blockingBillingOutboxPostProcessor struct {

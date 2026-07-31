@@ -110,6 +110,26 @@ func TestBillingQuotaAuthInvalidationMigrationProvidesIdempotentSourceIdentity(t
 	require.Contains(t, sqlText, "NEW.quota_used >= NEW.quota")
 }
 
+func TestBillingQuotaAuthInvalidationBackfillMigrationMatchesRepositoryContract(t *testing.T) {
+	content, err := migrations.FS.ReadFile("173_backfill_billing_quota_auth_invalidation.sql")
+	require.NoError(t, err)
+	sqlText := string(content)
+	for _, required := range []string{
+		"INSERT INTO auth_cache_invalidation_outbox (cache_key, source_key)",
+		"JOIN api_keys AS k ON k.id = o.api_key_id",
+		"o.status IN ('finalization_pending', 'finalizing')",
+		`o.apply_result @> '{"api_key_quota_exhausted": true}'::jsonb`,
+		"encode(sha256(convert_to(k.key, 'UTF8')), 'hex')",
+		"'billing-quota:' || request_id || ':' || o.api_key_id::text",
+		"NULLIF(BTRIM(o.command ->> 'request_id'), '')",
+		"ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING",
+		"SELECT DISTINCT",
+	} {
+		require.Contains(t, sqlText, required)
+	}
+	require.NotContains(t, sqlText, "INSERT INTO auth_cache_invalidation_outbox (cache_key, source_key, key)")
+}
+
 func TestStageAuthCacheInvalidationTxTargetsPartialSourceKeyIndex(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

@@ -18,13 +18,15 @@ import (
 const (
 	billingOutboxBatchSize    = 100
 	billingOutboxPollInterval = 500 * time.Millisecond
-	// The lease must exceed the bounded Apply and finalization windows so a
-	// live worker does not lose its fenced claim at a timeout boundary.
-	billingOutboxLease           = 90 * time.Second
-	billingOutboxConcurrency     = 16
-	billingOutboxApplyTimeout    = 30 * time.Second
-	billingOutboxAckRetryTimeout = 2 * time.Second
-	billingOutboxMaxAttempts     = 10
+	// Apply is bounded within the lease. Finalization may block indefinitely, so
+	// its claim is renewed until the synchronous Finalize call returns.
+	billingOutboxLease                     = 90 * time.Second
+	billingOutboxConcurrency               = 16
+	billingOutboxApplyTimeout              = 30 * time.Second
+	billingOutboxAckRetryTimeout           = 2 * time.Second
+	billingOutboxFinalizationRenewInterval = 20 * time.Second
+	billingOutboxFinalizationDBTimeout     = 2 * time.Second
+	billingOutboxMaxAttempts               = 10
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -48,19 +50,22 @@ type BillingOutboxPostProcessor interface {
 }
 
 type BillingOutboxWorker struct {
-	repo          BillingOutboxRepository
-	billing       UsageBillingRepository
-	postProcessor BillingOutboxPostProcessor
-	workerID      string
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	start         sync.Once
-	stop          sync.Once
-	running       atomic.Bool
-	processed     atomic.Uint64
-	failures      atomic.Uint64
-	lastError     atomic.Value
+	repo                           BillingOutboxRepository
+	billing                        UsageBillingRepository
+	postProcessor                  BillingOutboxPostProcessor
+	workerID                       string
+	finalizationLease              time.Duration
+	finalizationLeaseRenewInterval time.Duration
+	finalizationDBTimeout          time.Duration
+	ctx                            context.Context
+	cancel                         context.CancelFunc
+	wg                             sync.WaitGroup
+	start                          sync.Once
+	stop                           sync.Once
+	running                        atomic.Bool
+	processed                      atomic.Uint64
+	failures                       atomic.Uint64
+	lastError                      atomic.Value
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -70,7 +75,9 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 		processor = postProcessor[0]
 	}
 	worker := &BillingOutboxWorker{
-		repo: repo, billing: billing, postProcessor: processor, workerID: uuid.NewString(), ctx: ctx, cancel: cancel,
+		repo: repo, billing: billing, postProcessor: processor, workerID: uuid.NewString(),
+		finalizationLease: billingOutboxLease, finalizationLeaseRenewInterval: billingOutboxFinalizationRenewInterval,
+		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, ctx: ctx, cancel: cancel,
 	}
 	worker.lastError.Store("")
 	return worker
@@ -117,7 +124,7 @@ func (w *BillingOutboxWorker) run() {
 
 func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 	if finalRepo, ok := w.repo.(BillingOutboxFinalizationRepository); ok {
-		finalRecords, err := finalRepo.ClaimFinalization(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
+		finalRecords, err := finalRepo.ClaimFinalization(ctx, w.workerID, billingOutboxConcurrency, w.finalizationLease)
 		if err != nil {
 			return fmt.Errorf("claim billing outbox finalizations: %w", err)
 		}
@@ -226,28 +233,37 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 }
 
 func (w *BillingOutboxWorker) processFinalization(parent context.Context, record BillingOutboxRecord, repo BillingOutboxFinalizationRepository) {
+	finalizeCtx, cancelFinalize := context.WithCancel(parent)
+	defer cancelFinalize()
+	ownershipLost := func() bool { return false }
+
 	command := record.Command
 	command.Normalize()
 	if err := command.Validate(); err != nil {
 		w.recordFailure(err)
-		w.persistFinalizationFailure(repo, record, err, true)
+		w.persistFinalizationFailure(repo, record, err, true, ownershipLost)
 		return
 	}
 	if record.ApplyResult == nil {
 		err := errors.New("billing outbox finalization result is missing")
 		w.recordFailure(err)
-		w.persistFinalizationFailure(repo, record, err, true)
+		w.persistFinalizationFailure(repo, record, err, true, ownershipLost)
 		return
 	}
 	if w.postProcessor != nil {
-		finalizeCtx, cancel := context.WithTimeout(parent, billingOutboxApplyTimeout)
+		stopHeartbeat, heartbeatLost := w.renewFinalizationLease(cancelFinalize, record, repo)
 		err := w.postProcessor.Finalize(finalizeCtx, &command, record.ApplyResult)
-		cancel()
+		stopHeartbeat()
+		ownershipLost = heartbeatLost
 		if err != nil {
 			w.recordFailure(fmt.Errorf("finalize billing outbox command %d: %w", record.ID, err))
-			w.persistFinalizationFailure(repo, record, err, billingOutboxIsTerminalError(err))
+			w.persistFinalizationFailure(repo, record, err, billingOutboxIsTerminalError(err), ownershipLost)
 			return
 		}
+	}
+	if ownershipLost() || !w.renewFinalizationLeaseOnce(repo, record.ID) {
+		w.recordFailure(fmt.Errorf("ack billing outbox finalization %d: %w", record.ID, ErrBillingOutboxClaimLost))
+		return
 	}
 	ackCtx, cancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
 	err := repo.AckFinalization(ackCtx, record.ID, w.workerID)
@@ -260,7 +276,55 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 	w.lastError.Store("")
 }
 
-func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinalizationRepository, record BillingOutboxRecord, err error, terminal bool) {
+// renewFinalizationLease fences finalization state transitions while Finalize is
+// blocked. It intentionally uses background-bounded contexts: a stopped parent
+// must not interrupt the final ownership check needed to prevent a stale ACK.
+func (w *BillingOutboxWorker) renewFinalizationLease(cancelFinalize context.CancelFunc, record BillingOutboxRecord, repo BillingOutboxFinalizationRepository) (func(), func() bool) {
+	var lost atomic.Bool
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	interval := w.finalizationLeaseRenewInterval
+	if interval <= 0 || interval >= w.finalizationLease {
+		interval = w.finalizationLease / 3
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if !w.renewFinalizationLeaseOnce(repo, record.ID) {
+					lost.Store(true)
+					cancelFinalize()
+				}
+			}
+		}
+	}()
+	return func() { close(stop); <-done }, lost.Load
+}
+
+func (w *BillingOutboxWorker) renewFinalizationLeaseOnce(repo BillingOutboxFinalizationRepository, id int64) bool {
+	timeout := w.finalizationDBTimeout
+	if timeout <= 0 {
+		timeout = billingOutboxFinalizationDBTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	err := repo.RenewFinalizationLease(ctx, id, w.workerID, w.finalizationLease)
+	cancel()
+	return err == nil
+}
+
+func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinalizationRepository, record BillingOutboxRecord, err error, terminal bool, ownershipLost func() bool) {
+	if ownershipLost() || !w.renewFinalizationLeaseOnce(repo, record.ID) {
+		w.recordFailure(fmt.Errorf("release billing outbox finalization %d: %w", record.ID, ErrBillingOutboxClaimLost))
+		return
+	}
 	// Monetary effects already committed before this phase. A transient finalizer
 	// failure must remain replayable regardless of the ordinary Apply retry limit.
 	retryAt := time.Now().UTC().Add(billingOutboxRetryDelay(record.Attempts + 1))

@@ -140,6 +140,54 @@ func TestBillingOutboxRepository_ClaimFinalizationUsesLeaseAndReturnsStagedResul
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestBillingOutboxRepository_RenewFinalizationLeaseFencesExpiredOrReassignedClaims(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*lease_until = NOW\(\) \+ \(\$3 \* INTERVAL '1 second'\).*status = 'finalizing'.*leased_by = \$2.*lease_until > NOW\(\)`).
+		WithArgs(int64(6), "worker-a", int64(30)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	repo := NewBillingOutboxRepository(db)
+	renewer, ok := repo.(interface {
+		RenewFinalizationLease(context.Context, int64, string, time.Duration) error
+	})
+	require.True(t, ok, "billing outbox repository must expose fenced finalization lease renewal")
+	require.NoError(t, renewer.RenewFinalizationLease(context.Background(), 6, "worker-a", 30*time.Second))
+
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = 'finalizing'.*leased_by = \$2.*lease_until > NOW\(\)`).
+		WithArgs(int64(6), "worker-b", int64(30)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	err = renewer.RenewFinalizationLease(context.Background(), 6, "worker-b", 30*time.Second)
+	require.ErrorIs(t, err, service.ErrBillingOutboxClaimLost)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBillingOutboxRepository_FinalizationTransitionsRequireUnexpiredOwnership(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	repo := NewBillingOutboxRepository(db).(service.BillingOutboxFinalizationRepository)
+	next := time.Now().Add(time.Minute)
+
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = \$5.*leased_by = \$2.*status = 'finalizing'.*lease_until > NOW\(\)`).
+		WithArgs(int64(1), "worker", next, "retry", "finalization_pending").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, repo.RetryFinalization(context.Background(), 1, "worker", next, "retry", false))
+
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = \$4.*leased_by = \$2.*status = 'finalizing'.*lease_until > NOW\(\)`).
+		WithArgs(int64(2), "worker", "terminal", "terminal").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, repo.RetryFinalization(context.Background(), 2, "worker", next, "terminal", true))
+
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = 'succeeded'.*leased_by = \$2.*status = 'finalizing'.*lease_until > NOW\(\)`).
+		WithArgs(int64(2), "worker").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, repo.AckFinalization(context.Background(), 2, "worker"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestBillingOutboxRepository_RetryAckAndTerminalRetainOwnership(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

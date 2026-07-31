@@ -257,6 +257,29 @@ func (r *billingOutboxRepository) ClaimFinalization(ctx context.Context, workerI
 	return records, rows.Err()
 }
 
+func (r *billingOutboxRepository) RenewFinalizationLease(ctx context.Context, id int64, workerID string, lease time.Duration) error {
+	leaseSeconds := int64(lease / time.Second)
+	if leaseSeconds < 1 {
+		leaseSeconds = 30
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE billing_attempt_outbox
+		SET lease_until = NOW() + ($3 * INTERVAL '1 second'), updated_at = NOW()
+		WHERE id = $1 AND status = 'finalizing' AND leased_by = $2 AND lease_until > NOW()
+	`, id, workerID, leaseSeconds)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: %d", service.ErrBillingOutboxClaimLost, id)
+	}
+	return nil
+}
+
 func (r *billingOutboxRepository) RetryFinalization(ctx context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error {
 	lastError = boundedBillingOutboxError(lastError)
 	status := "finalization_pending"
@@ -271,14 +294,14 @@ func (r *billingOutboxRepository) RetryFinalization(ctx context.Context, id int6
 		result, err = r.db.ExecContext(ctx, `
 			UPDATE billing_attempt_outbox
 			SET status = $4, last_error = $3, lease_until = NULL, leased_by = NULL, updated_at = NOW()
-			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing'
+			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing' AND lease_until > NOW()
 		`, id, workerID, lastError, status)
 	} else {
 		result, err = r.db.ExecContext(ctx, `
 			UPDATE billing_attempt_outbox
 			SET status = $5, available_at = $3, last_error = $4,
 				lease_until = NULL, leased_by = NULL, updated_at = NOW()
-			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing'
+			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing' AND lease_until > NOW()
 		`, id, workerID, availableAt, lastError, status)
 	}
 	if err != nil {
@@ -298,7 +321,7 @@ func (r *billingOutboxRepository) AckFinalization(ctx context.Context, id int64,
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE billing_attempt_outbox
 		SET status = 'succeeded', lease_until = NULL, leased_by = NULL, last_error = NULL, updated_at = NOW()
-		WHERE id = $1 AND leased_by = $2 AND status = 'finalizing'
+		WHERE id = $1 AND leased_by = $2 AND status = 'finalizing' AND lease_until > NOW()
 	`, id, workerID)
 	if err != nil {
 		return err

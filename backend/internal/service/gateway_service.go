@@ -5223,6 +5223,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return returnRequestError(upstreamReq, err)
 		}
 
+		// Recognized error semantics own the client response and must not enter
+		// retry, failover, health mutation, or mutable passthrough-rule handling.
+		if resp.StatusCode >= 400 {
+			if result, err, handled := s.handleRecognizedHTTPErrorResponse(resp, c, account); handled {
+				return result, err
+			}
+		}
+
 		// 优先检测thinking block签名错误（400）并重试一次
 		if resp.StatusCode == 400 {
 			respBody, readErr := s.readUpstreamErrorBody(resp)
@@ -5490,21 +5498,23 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					preserveCompletedResponse = true
 					break
 				}
+				fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, respBody)
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
 					UpstreamStatusCode: resp.StatusCode,
-					UpstreamRequestID:  resp.Header.Get("x-request-id"),
+					UpstreamRequestID:  fact.RequestID,
 					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
 					Kind:               "retry",
-					Message:            extractUpstreamErrorMessage(respBody),
+					Message:            fact.SafeMessage,
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 						}
 						return ""
 					}(),
+					UpstreamFact: &fact,
 				})
 				logger.LegacyPrintf("service.gateway", "Account %d: upstream error %d, retry %d/%d after %v (elapsed=%v/%v)",
 					account.ID, resp.StatusCode, attempt, maxRetryAttempts, delay, elapsed, maxRetryElapsed)
@@ -5546,14 +5556,16 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
+			fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, respBody)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamRequestID:  fact.RequestID,
 				Kind:               "retry_exhausted_failover",
-				Message:            extractUpstreamErrorMessage(respBody),
+				Message:            fact.SafeMessage,
+				UpstreamFact:       &fact,
 				Detail: func() string {
 					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -5581,13 +5593,16 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
 		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
+		fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, respBody)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
+			AccountName:        account.Name,
 			UpstreamStatusCode: resp.StatusCode,
-			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			UpstreamRequestID:  fact.RequestID,
 			Kind:               "failover",
-			Message:            extractUpstreamErrorMessage(respBody),
+			Message:            fact.SafeMessage,
+			UpstreamFact:       &fact,
 			Detail: func() string {
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -8034,6 +8049,57 @@ func (s *GatewayService) readUpstreamErrorBody(resp *http.Response) ([]byte, err
 		limit = int64(s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// handleRecognizedHTTPErrorResponse consumes one bounded error response only when
+// built-in semantics recognize it. It is called by Forward before retry/failover
+// dispatch so direct errors never reach health mutation or rule matching.
+func (s *GatewayService) handleRecognizedHTTPErrorResponse(resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error, bool) {
+	body, readErr := s.readUpstreamErrorBody(resp)
+	if readErr != nil {
+		return nil, nil, false
+	}
+	_ = resp.Body.Close()
+	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (recognized): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
+	fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, body)
+	policy, recognized := RecognizeUpstreamErrorFact(fact)
+	if !recognized {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return nil, nil, false
+	}
+
+	upstreamDetail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		upstreamDetail = truncateString(string(body), maxBytes)
+	}
+	setOpsUpstreamError(c, resp.StatusCode, fact.SafeMessage, upstreamDetail)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: resp.StatusCode,
+		UpstreamRequestID:  fact.RequestID,
+		Kind:               "http_error",
+		Message:            fact.SafeMessage,
+		Detail:             upstreamDetail,
+		UpstreamFact:       &fact,
+	})
+
+	presentation := policy.Presentation
+	MarkResponseCommitted(c)
+	c.JSON(presentation.HTTPStatus, gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    presentation.ErrorType,
+			"message": presentation.Message,
+		},
+	})
+	return nil, fmt.Errorf("recognized upstream error: %s", presentation.ErrorCode), true
 }
 
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {

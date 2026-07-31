@@ -237,6 +237,59 @@ func (m *mockAccountRepoForPlatform) ResetQuotaUsed(ctx context.Context, id int6
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
 
+func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	conflictingCode := http.StatusTeapot
+	conflictingMessage := "database must not win"
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformAnthropic},
+		Keywords: []string{"cyber_policy"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &conflictingCode, CustomMessage: &conflictingMessage, SkipMonitoring: true,
+	}})
+	BindErrorPassthroughService(c, rules)
+
+	account := &Account{
+		ID: 901, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "test-key"},
+	}
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`))),
+	}}}
+	svc := &GatewayService{cfg: testConfig(), httpUpstream: upstream, rateLimitService: rateLimits}
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
+	require.NoError(t, err)
+
+	_, err = svc.Forward(context.Background(), c, account, parsed)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Len(t, upstream.requests, 1)
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), conflictingMessage)
+	_, skip := c.Get(OpsSkipPassthroughKey)
+	require.False(t, skip)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].UpstreamFact)
+	require.Equal(t, "cyber_policy", events[0].UpstreamFact.ProviderCode)
+	require.True(t, IsResponseCommitted(c))
+}
+
 func TestGatewayHandleErrorResponse_RecognizedDirectBeforeHealthAndRules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

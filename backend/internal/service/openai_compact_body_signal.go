@@ -45,7 +45,7 @@ func isBareOpenAIResponsesPath(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
 	}
-	normalizedPath := path.Clean(strings.TrimSpace(c.Request.URL.Path))
+	normalizedPath := path.Clean(c.Request.URL.Path)
 	switch normalizedPath {
 	case "/v1/responses", "/responses", "/backend-api/codex/responses":
 		return true

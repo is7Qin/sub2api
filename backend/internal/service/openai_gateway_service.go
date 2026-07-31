@@ -8101,6 +8101,9 @@ func (s *OpenAIGatewayService) replaceModelInSSEBody(body, fromModel, toModel st
 }
 
 func (s *OpenAIGatewayService) validateUpstreamBaseURL(raw string) (string, error) {
+	if _, err := normalizedAppendableUpstreamBaseURL(raw); err != nil {
+		return "", fmt.Errorf("invalid base_url: %w", err)
+	}
 	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
 		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
 		if err != nil {
@@ -8245,8 +8248,18 @@ func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error)
 }
 
 func isOpenAIResponsesCompactPath(c *gin.Context) bool {
-	suffix := strings.TrimSpace(openAIResponsesRequestPathSuffix(c))
+	suffix := openAIResponsesRequestPathSuffix(c)
 	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
+}
+
+// IsForwardableOpenAIResponsesRequestPath reports whether the decoded wildcard
+// suffix can safely be appended to an upstream Responses URL.
+func IsForwardableOpenAIResponsesRequestPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	_, ok := sanitizedUpstreamPathSuffix(openAIResponsesRequestPathSuffixRaw(c))
+	return ok
 }
 
 func normalizeOpenAICodexCompactReasoningEffortForAccount(c *gin.Context, account *Account, body []byte) ([]byte, bool, error) {
@@ -8335,34 +8348,43 @@ func resolveOpenAICompactSessionID(c *gin.Context) string {
 }
 
 func openAIResponsesRequestPathSuffix(c *gin.Context) string {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return ""
-	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
-	if normalizedPath == "" {
-		return ""
-	}
-	idx := strings.LastIndex(normalizedPath, "/responses")
-	if idx < 0 {
-		return ""
-	}
-	suffix := normalizedPath[idx+len("/responses"):]
-	if suffix == "" || suffix == "/" {
-		return ""
-	}
-	if !strings.HasPrefix(suffix, "/") {
+	suffix, ok := sanitizedUpstreamPathSuffix(openAIResponsesRequestPathSuffixRaw(c))
+	if !ok {
 		return ""
 	}
 	return suffix
 }
 
+func openAIResponsesRequestPathSuffixRaw(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return ""
+	}
+	if wildcard, ok := c.Params.Get("subpath"); ok {
+		return wildcard
+	}
+
+	// Direct service tests do not pass through Gin's router. Accept only the
+	// known route prefixes so an embedded later "/responses" cannot become the
+	// validation anchor for a different suffix.
+	path := c.Request.URL.Path
+	for _, prefix := range []string{"/backend-api/codex/responses", "/openai/v1/responses", "/v1/responses", "/responses"} {
+		if path == prefix {
+			return ""
+		}
+		if strings.HasPrefix(path, prefix+"/") {
+			return path[len(prefix):]
+		}
+	}
+	return ""
+}
+
 func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
 	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	trimmedSuffix := strings.TrimSpace(suffix)
-	if trimmedBase == "" || trimmedSuffix == "" {
+	validatedSuffix, ok := sanitizedUpstreamPathSuffix(suffix)
+	if trimmedBase == "" || !ok || validatedSuffix == "" {
 		return trimmedBase
 	}
-	return trimmedBase + trimmedSuffix
+	return trimmedBase + validatedSuffix
 }
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {

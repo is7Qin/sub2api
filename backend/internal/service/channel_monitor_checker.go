@@ -161,7 +161,7 @@ func pingEndpointOrigin(ctx context.Context, endpoint string) *int {
 //
 // 加新 provider 只需要在 providerAdapters 里增加一个条目，无需触碰 callProvider / validateProvider。
 type providerAdapter struct {
-	buildPath    func(model string) string
+	buildPath    func(baseURL, model string) (string, error)
 	buildBody    func(model, prompt string) ([]byte, error)
 	buildHeaders func(apiKey string) map[string]string
 	textPath     string // gjson 提取响应文本的 path
@@ -173,7 +173,7 @@ type providerAdapter struct {
 var providerAdapters = map[string]providerAdapter{
 	MonitorProviderOpenAI: providerOpenAIChatAdapter,
 	MonitorProviderAnthropic: {
-		buildPath: func(string) string { return providerAnthropicPath },
+		buildPath: func(baseURL, _ string) (string, error) { return joinURL(baseURL, providerAnthropicPath), nil },
 		buildBody: func(model, prompt string) ([]byte, error) {
 			return json.Marshal(map[string]any{
 				"model":      model,
@@ -191,7 +191,9 @@ var providerAdapters = map[string]providerAdapter{
 	},
 	MonitorProviderGemini: {
 		// Gemini 把 model 名写在 URL path 上：/v1beta/models/{model}:generateContent
-		buildPath: func(model string) string { return fmt.Sprintf(providerGeminiPathTemplate, model) },
+		buildPath: func(baseURL, model string) (string, error) {
+			return buildGeminiAIStudioModelActionURL(baseURL, model, "generateContent", false)
+		},
 		buildBody: func(_, prompt string) ([]byte, error) {
 			return json.Marshal(map[string]any{
 				"contents": []map[string]any{
@@ -210,7 +212,7 @@ var providerAdapters = map[string]providerAdapter{
 
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
 var providerOpenAIChatAdapter = providerAdapter{
-	buildPath: func(string) string { return providerOpenAIPath },
+	buildPath: func(baseURL, _ string) (string, error) { return joinURL(baseURL, providerOpenAIPath), nil },
 	buildBody: func(model, prompt string) ([]byte, error) {
 		return json.Marshal(map[string]any{
 			"model":      model,
@@ -227,7 +229,7 @@ var providerOpenAIChatAdapter = providerAdapter{
 
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
 var providerOpenAIResponsesAdapter = providerAdapter{
-	buildPath: func(string) string { return providerOpenAIResponsesPath },
+	buildPath: func(baseURL, _ string) (string, error) { return joinURL(baseURL, providerOpenAIResponsesPath), nil },
 	buildBody: func(model, prompt string) ([]byte, error) {
 		return json.Marshal(map[string]any{
 			"model":             model,
@@ -280,8 +282,11 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	if err != nil {
 		return "", "", 0, err
 	}
+	full, err := adapter.buildPath(endpoint, model)
+	if err != nil {
+		return "", "", 0, err
+	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
-	full := joinURL(endpoint, adapter.buildPath(model))
 	respBytes, status, err := postRawJSON(ctx, full, body, headers)
 	if err != nil {
 		return "", "", status, err

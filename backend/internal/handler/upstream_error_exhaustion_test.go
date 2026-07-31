@@ -95,6 +95,41 @@ func TestGatewayGeminiCandidateUnknown503UsesGeneric502(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "private vendor detail")
 }
 
+func TestOpenAIAnthropicFailoverExhaustedUnknown503UsesSafeFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"type":"vendor_failure","message":"private vendor detail"}}`),
+	}
+
+	(&OpenAIGatewayHandler{}).handleAnthropicFailoverExhausted(c, failoverErr, false)
+
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "private vendor detail")
+}
+
+func TestOpenAIAnthropicFailoverExhaustedAfterCommitEmitsOneSafeError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	_, _ = c.Writer.WriteString(":\n\n")
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":{"type":"vendor_failure","message":"private vendor detail"}}`),
+	}
+
+	(&OpenAIGatewayHandler{}).handleAnthropicFailoverExhausted(c, failoverErr, true)
+
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error\n"))
+	require.Equal(t, 1, strings.Count(rec.Body.String(), `"type":"error"`))
+	require.Contains(t, rec.Body.String(), "Upstream request failed")
+	require.NotContains(t, rec.Body.String(), "private vendor detail")
+}
+
 func TestGatewayResponsesCandidateAfterCommitEmitsOneResponseFailed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

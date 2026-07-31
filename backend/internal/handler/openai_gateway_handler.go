@@ -1260,10 +1260,17 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, stat
 	h.anthropicErrorResponse(c, status, errType, message)
 }
 
-// handleAnthropicFailoverExhausted maps upstream failover errors to Anthropic format.
+// handleAnthropicFailoverExhausted maps a bounded upstream fact to Anthropic format.
 func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
-	status, errType, errMsg := h.mapUpstreamError(failoverErr.StatusCode)
-	h.anthropicStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	if failoverErr == nil {
+		h.handleAnthropicCandidate(c, nil, streamStarted)
+		return
+	}
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, failoverErr.StatusCode, failoverErr.ResponseBody)
+	}
+	h.handleAnthropicCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }
 
 // ensureAnthropicErrorResponse writes a fallback Anthropic error when the

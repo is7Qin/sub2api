@@ -2456,7 +2456,8 @@ func collectGeminiSSEWithOrderedParts(body io.Reader, isOAuth, orderedParts bool
 			break
 		}
 		if err != nil {
-			return nil, nil, err
+			partial := mergeCollectedGeminiSSEParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts, collectedParts, orderedParts)
+			return partial, usage, err
 		}
 	}
 

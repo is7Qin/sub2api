@@ -492,7 +492,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			requestErr.attachUsage(usage)
 			writeChatCompletionsRequestError(c, false, requestErr)
 			return &OpenAIForwardResult{
-				RequestID: requestID, ResponseID: finalResponse.ID, Usage: usage,
+				RequestID: requestID, AttemptID: forwardResultAttemptID(resp), ResponseID: finalResponse.ID, Usage: usage,
 				Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
 				Stream: false, Duration: time.Since(startTime),
 			}, requestErr
@@ -519,14 +519,14 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			MarkResponseCommitted(c)
 			writeChatCompletionsError(c, status, errType, errMsg)
 			return &OpenAIForwardResult{
-				RequestID: requestID, ResponseID: finalResponse.ID, Usage: usage,
+				RequestID: requestID, AttemptID: forwardResultAttemptID(resp), ResponseID: finalResponse.ID, Usage: usage,
 				Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
 				Stream: false, Duration: time.Since(startTime),
 			}, fmt.Errorf("upstream response failed: %s", errMsg)
 		}
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", message)
 		return &OpenAIForwardResult{
-			RequestID: requestID, ResponseID: finalResponse.ID, Usage: usage,
+			RequestID: requestID, AttemptID: forwardResultAttemptID(resp), ResponseID: finalResponse.ID, Usage: usage,
 			Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
 			Stream: false, Duration: time.Since(startTime),
 		}, fmt.Errorf("upstream response failed: %s", message)
@@ -550,6 +550,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
+		AttemptID:     forwardResultAttemptID(resp),
 		Usage:         usage,
 		Model:         originalModel,
 		BillingModel:  billingModel,
@@ -631,6 +632,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:     requestID,
+			AttemptID:     forwardResultAttemptID(resp),
 			Usage:         usage,
 			Model:         originalModel,
 			BillingModel:  billingModel,

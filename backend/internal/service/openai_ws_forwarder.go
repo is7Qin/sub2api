@@ -2851,6 +2851,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	return &OpenAIForwardResult{
 		RequestID:        responseID,
+		AttemptID:        fmt.Sprintf("openai-ws:%d:%d:%d", account.ID, startTime.UnixNano(), attempt),
 		Usage:            *usage,
 		Model:            originalModel,
 		UpstreamModel:    mappedModel,

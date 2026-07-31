@@ -287,7 +287,10 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
-	RequestID  string
+	RequestID string
+	// AttemptID identifies the admitted physical upstream request. It scopes
+	// durable billing replay independently from the logical request correlation ID.
+	AttemptID  string
 	ResponseID string
 	Usage      OpenAIUsage
 	Model      string // 原始模型（用于响应和日志显示）
@@ -436,6 +439,7 @@ type OpenAIGatewayService struct {
 	settingService          *SettingService
 	codexFingerprintService *OpenAICodexFingerprintService
 	userPlatformQuotaRepo   UserPlatformQuotaRepository
+	billingOutboxRepo       BillingOutboxRepository
 
 	agentIdentityTaskMu           sync.Mutex
 	openaiWSPoolOnce              sync.Once
@@ -516,6 +520,7 @@ func NewOpenAIGatewayService(
 		settingService:          settingService,
 		codexFingerprintService: NewOpenAICodexFingerprintService(accountRepo, settingService),
 		userPlatformQuotaRepo:   userPlatformQuotaRepo,
+		billingOutboxRepo:       nil,
 		responseHeaderFilter:    compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle:   newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
@@ -527,6 +532,14 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// SetBillingOutboxRepository injects durable billing command storage after the
+// gateway's existing constructor has completed.
+func (s *OpenAIGatewayService) SetBillingOutboxRepository(repo BillingOutboxRepository) {
+	if s != nil {
+		s.billingOutboxRepo = repo
+	}
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）
@@ -4048,6 +4061,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		forwardResult := &OpenAIForwardResult{
 			RequestID:       resp.Header.Get("x-request-id"),
+			AttemptID:       forwardResultAttemptID(resp),
 			ResponseID:      responseID,
 			Usage:           *usage,
 			Model:           originalModel,
@@ -4100,6 +4114,7 @@ func openAIForwardResultFromStreamingResult(
 	}
 	result := &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		ResponseID:       strings.TrimSpace(streamResult.responseID),
 		Usage:            *usage,
 		Model:            originalModel,
@@ -4345,6 +4360,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	forwardResult := &OpenAIForwardResult{
 		RequestID:       resp.Header.Get("x-request-id"),
+		AttemptID:       forwardResultAttemptID(resp),
 		ResponseID:      responseID,
 		Usage:           *usage,
 		Model:           reqModel,
@@ -4398,6 +4414,7 @@ func openAIForwardResultFromPassthroughNonStreamingResult(
 	}
 	forwardResult := &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		ResponseID:       strings.TrimSpace(result.responseID),
 		Usage:            *usage,
 		Model:            originalModel,
@@ -4448,6 +4465,7 @@ func openAIForwardResultFromPassthroughStreamingResult(
 	}
 	result := &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		ResponseID:       strings.TrimSpace(streamResult.responseID),
 		Usage:            *usage,
 		Model:            originalModel,
@@ -8497,7 +8515,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Create usage log
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
-	requestID := resolveUsageBillingRequestID(ctx, result.RequestID, "")
+	requestID := resolveUsageBillingRequestID(ctx, result.RequestID, result.AttemptID)
 	if result.OpenAIWSMode {
 		if upstreamRequestID := strings.TrimSpace(result.RequestID); upstreamRequestID != "" {
 			requestID = upstreamRequestID
@@ -8624,11 +8642,16 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			APIKeyService:         input.APIKeyService,
 			Platform:              quotaPlatform,
 			PreserveAccountHealth: input.PreserveAccountHealth,
-		}, s.billingDeps(), s.usageBillingRepo)
+		}, s.billingDeps(), s.usageBillingRepo, s.billingOutboxRepo)
 		return applied, err
 	}()
 
 	if billingErr != nil {
+		if s.billingOutboxRepo != nil {
+			// Preserve the immutable usage audit record when durable enqueue is
+			// unavailable; direct Apply failures retain their all-or-nothing path.
+			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+		}
 		return billingErr
 	}
 	if !usageLogPersisted {

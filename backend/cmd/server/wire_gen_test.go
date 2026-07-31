@@ -107,6 +107,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // paymentOrderExpiry
 		nil, // channelMonitorRunner
 		nil, // quotaFlusher
+		nil, // billingOutboxWorker
 	)
 
 	require.NotPanics(t, func() {
@@ -135,6 +136,7 @@ func TestWireGeneratedStartupValidationRunsBeforeSideEffectingProviders(t *testi
 		"service.ProvideTokenRefreshService",
 		"service.ProvideAccountExpiryService",
 		"service.ProvideSubscriptionExpiryService",
+		"service.ProvideBillingOutboxWorker",
 	} {
 		providerIndex := strings.Index(wireGen, provider)
 		require.NotEqual(t, -1, providerIndex, "%s must be present in generated wiring", provider)

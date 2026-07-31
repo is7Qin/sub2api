@@ -723,6 +723,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	billingOutboxRepo     BillingOutboxRepository
 }
 
 // NewGatewayService creates a new GatewayService
@@ -790,6 +791,7 @@ func NewGatewayService(
 		resolver:              resolver,
 		balanceNotifyService:  balanceNotifyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		billingOutboxRepo:     nil,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -804,6 +806,14 @@ func NewGatewayService(
 		svc.initDebugGatewayBodyFile(path)
 	}
 	return svc
+}
+
+// SetBillingOutboxRepository injects durable billing command storage after the
+// gateway's existing constructor has completed.
+func (s *GatewayService) SetBillingOutboxRepository(repo BillingOutboxRepository) {
+	if s != nil {
+		s.billingOutboxRepo = repo
+	}
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
@@ -9395,13 +9405,36 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	return cmd
 }
 
-func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog, p *postUsageBillingParams, deps *billingDeps, repo UsageBillingRepository) (bool, error) {
+func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog, p *postUsageBillingParams, deps *billingDeps, repo UsageBillingRepository, outbox BillingOutboxRepository) (bool, error) {
 	if p == nil || deps == nil {
 		return false, nil
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
-	if cmd == nil || cmd.RequestID == "" || repo == nil {
+	if cmd == nil || cmd.RequestID == "" {
+		postUsageBilling(ctx, p, deps)
+		return false, nil
+	}
+	if err := cmd.Validate(); err != nil {
+		return false, err
+	}
+	if outbox != nil {
+		attemptID := strings.TrimPrefix(cmd.RequestID, "attempt:")
+		if attemptID == "" {
+			attemptID = cmd.RequestID
+		}
+		billingCtx, cancel := detachedBillingContext(ctx)
+		defer cancel()
+		if _, err := outbox.Enqueue(billingCtx, &BillingOutboxCommand{
+			AttemptID: attemptID, RequestID: cmd.RequestID, APIKeyID: cmd.APIKeyID,
+			RequestFingerprint: cmd.RequestFingerprint, Billing: *cmd,
+			PostEffects: buildBillingOutboxPostEffects(p),
+		}); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if repo == nil {
 		postUsageBilling(ctx, p, deps)
 		return false, nil
 	}
@@ -9435,6 +9468,43 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 
 	finalizePostUsageBilling(billingCtx, p, deps, result)
 	return result.UsageLogPersisted, nil
+}
+
+func buildBillingOutboxPostEffects(p *postUsageBillingParams) *BillingOutboxPostEffects {
+	if p == nil || p.Cost == nil || p.User == nil || p.APIKey == nil || p.Account == nil {
+		return nil
+	}
+	return &BillingOutboxPostEffects{
+		UserID:                         p.User.ID,
+		UserUsername:                   p.User.Username,
+		UserEmail:                      p.User.Email,
+		UserBalance:                    p.User.Balance,
+		UserTotalRecharged:             p.User.TotalRecharged,
+		BalanceNotifyEnabled:           p.User.BalanceNotifyEnabled,
+		BalanceNotifyThreshold:         p.User.BalanceNotifyThreshold,
+		BalanceNotifyThresholdType:     p.User.BalanceNotifyThresholdType,
+		BalanceNotifyExtraEmails:       append([]NotifyEmailEntry(nil), p.User.BalanceNotifyExtraEmails...),
+		APIKeyGroupID:                  p.APIKey.GroupID,
+		AccountID:                      p.Account.ID,
+		AccountName:                    p.Account.Name,
+		AccountPlatform:                p.Account.Platform,
+		AccountType:                    p.Account.Type,
+		QuotaNotifyDailyEnabled:        p.Account.GetQuotaNotifyDailyEnabled(),
+		QuotaNotifyDailyThreshold:      p.Account.GetQuotaNotifyDailyThreshold(),
+		QuotaNotifyDailyThresholdType:  p.Account.GetQuotaNotifyDailyThresholdType(),
+		QuotaNotifyWeeklyEnabled:       p.Account.GetQuotaNotifyWeeklyEnabled(),
+		QuotaNotifyWeeklyThreshold:     p.Account.GetQuotaNotifyWeeklyThreshold(),
+		QuotaNotifyWeeklyThresholdType: p.Account.GetQuotaNotifyWeeklyThresholdType(),
+		QuotaNotifyTotalEnabled:        p.Account.GetQuotaNotifyTotalEnabled(),
+		QuotaNotifyTotalThreshold:      p.Account.GetQuotaNotifyTotalThreshold(),
+		QuotaNotifyTotalThresholdType:  p.Account.GetQuotaNotifyTotalThresholdType(),
+		ActualCost:                     p.Cost.ActualCost,
+		TotalCost:                      p.Cost.TotalCost,
+		IsSubscriptionBill:             p.IsSubscriptionBill,
+		AccountRateMultiplier:          p.AccountRateMultiplier,
+		Platform:                       p.Platform,
+		PreserveAccountHealth:          p.PreserveAccountHealth,
+	}
 }
 
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
@@ -9909,9 +9979,15 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		AccountRateMultiplier: accountRateMultiplier,
 		APIKeyService:         input.APIKeyService,
 		Platform:              quotaPlatform,
-	}, s.billingDeps(), s.usageBillingRepo)
+	}, s.billingDeps(), s.usageBillingRepo, s.billingOutboxRepo)
 
 	if billingErr != nil {
+		if s.billingOutboxRepo != nil {
+			// A failed durable enqueue has not transactionally persisted the usage
+			// audit record, so retain it independently while surfacing the delivery
+			// error. Direct Apply failures retain their existing all-or-nothing path.
+			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		}
 		return billingErr
 	}
 	if !usageLogPersisted {

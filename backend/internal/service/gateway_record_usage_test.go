@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,32 @@ func newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo UsageLogReposi
 	return svc
 }
 
+type gatewayRecordUsageBillingOutboxStub struct {
+	command *BillingOutboxCommand
+	calls   int
+	err     error
+}
+
+func (s *gatewayRecordUsageBillingOutboxStub) Enqueue(_ context.Context, command *BillingOutboxCommand) (*BillingOutboxRecord, error) {
+	s.calls++
+	s.command = command
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &BillingOutboxRecord{Command: *command}, nil
+}
+
+func (s *gatewayRecordUsageBillingOutboxStub) Claim(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
+func (s *gatewayRecordUsageBillingOutboxStub) Retry(context.Context, int64, string, time.Time, string, bool) error {
+	return nil
+}
+func (s *gatewayRecordUsageBillingOutboxStub) Ack(context.Context, int64, string) error { return nil }
+func (s *gatewayRecordUsageBillingOutboxStub) Stats(context.Context) (BillingOutboxStats, error) {
+	return BillingOutboxStats{}, nil
+}
+
 type openAIRecordUsageBestEffortLogRepoStub struct {
 	UsageLogRepository
 
@@ -74,6 +101,38 @@ func (s *openAIRecordUsageBestEffortLogRepoStub) Create(ctx context.Context, log
 		s.createContextValue = ctx.Value(s.contextValueKey)
 	}
 	return false, s.createErr
+}
+
+func TestGatewayServiceRecordUsage_EnqueuesDurableCommandBeforeApply(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	outbox := &gatewayRecordUsageBillingOutboxStub{}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+	svc.billingOutboxRepo = outbox
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{RequestID: "upstream", AttemptID: "physical-a", Usage: ClaudeUsage{InputTokens: 10, OutputTokens: 6}, Model: "claude-sonnet-4"},
+		APIKey: &APIKey{ID: 501, Quota: 100}, User: &User{ID: 601}, Account: &Account{ID: 701},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, outbox.calls)
+	require.Equal(t, 0, billingRepo.calls)
+	require.Equal(t, "physical-a", outbox.command.AttemptID)
+	require.Equal(t, "attempt:physical-a", outbox.command.Billing.RequestID)
+}
+
+func TestGatewayServiceRecordUsage_PersistsUsageLogWhenOutboxEnqueueFails(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	outbox := &gatewayRecordUsageBillingOutboxStub{err: errors.New("outbox unavailable")}
+	svc := newGatewayRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+	svc.billingOutboxRepo = outbox
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{RequestID: "upstream", AttemptID: "physical-failure", Usage: ClaudeUsage{InputTokens: 10, OutputTokens: 6}, Model: "claude-sonnet-4"},
+		APIKey: &APIKey{ID: 501, Quota: 100}, User: &User{ID: 601}, Account: &Account{ID: 701},
+	})
+	require.EqualError(t, err, "outbox unavailable")
+	require.Equal(t, 1, usageRepo.calls)
 }
 
 func TestGatewayServiceRecordUsage_BillingUsesDetachedContext(t *testing.T) {

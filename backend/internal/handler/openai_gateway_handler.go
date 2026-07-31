@@ -1244,7 +1244,8 @@ func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int
 func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
 		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
+		if ok && !service.IsResponseCommitted(c) {
+			service.MarkResponseCommitted(c)
 			errPayload, _ := json.Marshal(gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -2177,7 +2178,7 @@ func (h *OpenAIGatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 	presentation := resolved.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
 }
 
@@ -2191,7 +2192,7 @@ func (h *OpenAIGatewayHandler) handleAnthropicCandidate(c *gin.Context, candidat
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 	presentation := resolved.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	h.anthropicStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
 
@@ -2276,7 +2277,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		// 通用 `event: error` 帧不被识别为终止事件，会导致
 		// "stream closed before response.completed"。
 		if inboundIsResponses(c) {
-			if writeResponsesFailedSSE(c, errType, message) {
+			if writeResponsesFailedSSE(c, errType, code, message) {
 				return
 			}
 		}

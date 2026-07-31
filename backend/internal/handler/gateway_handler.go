@@ -1614,7 +1614,7 @@ func (h *GatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate *serv
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 	presentation := resolved.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
 
@@ -1637,12 +1637,16 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) 
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted)
+}
+
+func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
 	if streamStarted {
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
 		// response.completed/failed/incomplete/cancelled 集合。
 		// Anthropic-backed Responses 路径同样会因为通用 error 帧被拒。
 		if inboundIsResponses(c) {
-			if writeResponsesFailedSSE(c, errType, message) {
+			if writeResponsesFailedSSE(c, errType, code, message) {
 				return
 			}
 		}
@@ -1666,7 +1670,8 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 func (h *GatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
 		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
+		if ok && !service.IsResponseCommitted(c) {
+			service.MarkResponseCommitted(c)
 			errPayload, _ := json.Marshal(gin.H{
 				"type": "error",
 				"error": gin.H{

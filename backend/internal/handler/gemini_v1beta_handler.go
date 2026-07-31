@@ -699,7 +699,7 @@ func (h *GatewayHandler) handleGeminiCandidate(c *gin.Context, candidate *servic
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 	presentation := resolved.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	googleError(c, presentation.HTTPStatus, presentation.Message)
 }
 

@@ -34,8 +34,8 @@ const (
 	// ops_error_logger 中间件检查此 key，为 true 时跳过错误记录。
 	OpsSkipPassthroughKey = "ops_skip_passthrough"
 
-	// ResponseCommittedKey 由服务层错误写入器在写完完整 HTTP 响应后设置。
-	// handler 兜底错误检查此 key，避免在 JSON/Data 响应后追加第二份 SSE/JSON。
+	// ResponseCommittedKey 由服务层响应写入器或 handler 的 SSE 终止写入器设置。
+	// 它让后续兜底路径不能在已完成的 HTTP/SSE 响应后追加第二份终止响应。
 	ResponseCommittedKey = "response_committed"
 
 	// Client-side configuration denials should remain visible in ops_error_logs,

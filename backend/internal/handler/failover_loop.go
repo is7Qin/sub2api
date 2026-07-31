@@ -143,6 +143,17 @@ func (s *FailoverState) FinalCandidate() (*service.UpstreamErrorCandidate, bool)
 	return s.Recovery.FinalCandidate()
 }
 
+// Candidate presentation may normalize the client status; ops must retain only
+// the status actually observed from upstream.
+func setOpsUpstreamCandidateError(c *gin.Context, fact service.UpstreamErrorFact, message string) {
+	if !fact.HTTPStatusKnown {
+		c.Set(service.OpsUpstreamStatusCodeKey, 0)
+		service.SetOpsUpstreamError(c, 0, message, "")
+		return
+	}
+	service.SetOpsUpstreamError(c, fact.HTTPStatus, message, "")
+}
+
 // NewFailoverState 创建 failover 状态
 func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 	return &FailoverState{

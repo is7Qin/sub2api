@@ -400,7 +400,7 @@ func (h *GatewayHandler) handleCCCandidate(c *gin.Context, candidate *service.Up
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 	presentation := resolved.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	if streamStarted {
 		h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true)
 		return

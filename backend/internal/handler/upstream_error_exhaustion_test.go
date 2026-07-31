@@ -154,6 +154,103 @@ func TestGatewayChatCandidateAfterCommitEmitsSafeSSEError(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "private vendor detail")
 }
 
+func TestCandidateRenderersPreserveOpsUpstreamStatusProvenance(t *testing.T) {
+	renderers := []struct {
+		name   string
+		render func(*gin.Context, *service.UpstreamErrorCandidate)
+	}{
+		{
+			name: "gateway_generic",
+			render: func(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+				(&GatewayHandler{}).handleUpstreamCandidate(c, candidate, false)
+			},
+		},
+		{
+			name: "gateway_chat_completions",
+			render: func(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+				(&GatewayHandler{}).handleCCCandidate(c, candidate, false)
+			},
+		},
+		{
+			name: "gateway_responses",
+			render: func(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+				(&GatewayHandler{}).handleResponsesCandidate(c, candidate, false)
+			},
+		},
+		{
+			name: "gateway_gemini",
+			render: func(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+				(&GatewayHandler{}).handleGeminiCandidate(c, candidate)
+			},
+		},
+		{
+			name: "openai_gateway_responses",
+			render: func(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+				(&OpenAIGatewayHandler{}).handleUpstreamCandidate(c, candidate, false)
+			},
+		},
+		{
+			name: "openai_gateway_anthropic",
+			render: func(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+				(&OpenAIGatewayHandler{}).handleAnthropicCandidate(c, candidate, false)
+			},
+		},
+	}
+
+	facts := []struct {
+		name              string
+		fact              service.UpstreamErrorFact
+		wantUpstream      int
+		wantUpstreamKnown bool
+	}{
+		{
+			name: "known",
+			fact: service.UpstreamErrorFact{
+				Provider:        service.PlatformOpenAI,
+				Source:          service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true,
+				HTTPStatus:      http.StatusServiceUnavailable,
+				ProviderCode:    "vendor_failure",
+			},
+			wantUpstream:      http.StatusServiceUnavailable,
+			wantUpstreamKnown: true,
+		},
+		{
+			name: "unknown",
+			fact: service.UpstreamErrorFact{
+				Provider:        service.PlatformOpenAI,
+				Source:          service.UpstreamErrorSourceTransport,
+				HTTPStatusKnown: false,
+			},
+			wantUpstreamKnown: false,
+		},
+	}
+
+	for _, renderer := range renderers {
+		for _, fact := range facts {
+			t.Run(renderer.name+"_"+fact.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				if !fact.wantUpstreamKnown {
+					c.Set(service.OpsUpstreamStatusCodeKey, http.StatusTeapot)
+				}
+				candidate := service.NewUpstreamErrorCandidate(fact.fact, service.UpstreamCandidateStatusOnly)
+
+				renderer.render(c, candidate)
+
+				require.Equal(t, http.StatusBadGateway, rec.Code, "client presentation status must not change")
+				got, ok := c.Get(service.OpsUpstreamStatusCodeKey)
+				if fact.wantUpstreamKnown {
+					require.True(t, ok)
+					require.Equal(t, fact.wantUpstream, got)
+				} else if ok {
+					require.Zero(t, got, "unknown final fact must clear stale upstream status")
+				}
+			})
+		}
+	}
+}
+
 func TestGatewayGeminiCandidateUnknown503UsesGeneric502(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

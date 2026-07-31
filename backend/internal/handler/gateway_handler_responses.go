@@ -366,9 +366,9 @@ func (h *GatewayHandler) handleResponsesCandidate(c *gin.Context, candidate *ser
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 	presentation := resolved.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	if streamStarted {
-		h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true)
+		h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, true)
 		return
 	}
 	code := presentation.ErrorCode

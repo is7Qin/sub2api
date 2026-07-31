@@ -7,17 +7,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_cache_invalidation_outbox_source_key
     ON auth_cache_invalidation_outbox (source_key)
     WHERE source_key IS NOT NULL;
 
--- Billing stages this transition explicitly with the physical attempt source key.
--- Suppress the generic trigger copy so quota exhaustion has one durable event.
+-- Billing also stages quota exhaustion explicitly with the physical attempt source key.
+-- Keep generic trigger invalidations because non-billing updates can cross the quota boundary.
 CREATE OR REPLACE FUNCTION enqueue_api_key_auth_cache_invalidation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         PERFORM enqueue_auth_cache_invalidation(OLD.key);
         RETURN OLD;
-    END IF;
-    IF OLD.quota_used < OLD.quota AND NEW.quota_used >= NEW.quota THEN
-        RETURN NEW;
     END IF;
     IF OLD.key IS DISTINCT FROM NEW.key
        OR OLD.status IS DISTINCT FROM NEW.status

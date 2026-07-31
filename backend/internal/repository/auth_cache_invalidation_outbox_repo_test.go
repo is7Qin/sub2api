@@ -106,8 +106,6 @@ func TestBillingQuotaAuthInvalidationMigrationProvidesIdempotentSourceIdentity(t
 	require.Contains(t, sqlText, "ADD COLUMN IF NOT EXISTS source_key TEXT")
 	require.Contains(t, sqlText, "UNIQUE INDEX IF NOT EXISTS idx_auth_cache_invalidation_outbox_source_key")
 	require.Contains(t, sqlText, "WHERE source_key IS NOT NULL")
-	require.Contains(t, sqlText, "OLD.quota_used < OLD.quota")
-	require.Contains(t, sqlText, "NEW.quota_used >= NEW.quota")
 }
 
 func TestBillingQuotaAuthInvalidationBackfillMigrationMatchesRepositoryContract(t *testing.T) {

@@ -194,3 +194,146 @@ func TestResponsesInputToAnthropic_AcceptsValidFunctionArguments(t *testing.T) {
 	require.Len(t, blocks, 1)
 	require.JSONEq(t, `{"cmd":"pwd"}`, string(blocks[0].Input))
 }
+
+func functionOutputBlock(t *testing.T, input string) AnthropicContentBlock {
+	t.Helper()
+	msgs := convertAnthropic(t, input)
+	for _, msg := range msgs {
+		for _, block := range parseContentBlocks(msg.Content) {
+			if block.Type == "tool_result" {
+				return block
+			}
+		}
+	}
+	t.Fatalf("missing tool_result block")
+	return AnthropicContentBlock{}
+}
+
+func TestResponsesToAnthropic_FunctionOutputStringPreserved(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"exec","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":"plain result"}
+	]`)
+	require.JSONEq(t, `"plain result"`, string(block.Content))
+}
+
+func TestResponsesInputItemStructuredOutputWireRoundTrip(t *testing.T) {
+	input := []byte(`{"type":"function_call_output","call_id":"call_A","output":[{"type":"input_text","text":"result"}]}`)
+	var item ResponsesInputItem
+	require.NoError(t, json.Unmarshal(input, &item))
+	wire, err := json.Marshal(item)
+	require.NoError(t, err)
+	require.JSONEq(t, string(input), string(wire))
+}
+
+func TestResponsesInputItemNonFunctionOutputRejectsStructuredValue(t *testing.T) {
+	var item ResponsesInputItem
+	err := json.Unmarshal([]byte(`{"type":"message","output":[{"type":"input_text","text":"not allowed"}]}`), &item)
+	require.Error(t, err)
+}
+
+func TestResponsesToAnthropic_FunctionOutputStructuredTextAndImagePreservesOrder(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"inspect","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[
+			{"type":"input_text","text":"before"},
+			{"type":"input_image","image_url":"data:image/png;base64,AAAA"},
+			{"type":"output_text","text":"after"}
+		]}
+	]`)
+	var blocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(block.Content, &blocks))
+	require.Len(t, blocks, 3)
+	require.Equal(t, "text", blocks[0].Type)
+	require.Equal(t, "before", blocks[0].Text)
+	require.Equal(t, "image", blocks[1].Type)
+	require.NotNil(t, blocks[1].Source)
+	require.Equal(t, "image/png", blocks[1].Source.MediaType)
+	require.Equal(t, "AAAA", blocks[1].Source.Data)
+	require.Equal(t, "text", blocks[2].Type)
+	require.Equal(t, "after", blocks[2].Text)
+}
+
+func TestResponsesToAnthropic_FunctionOutputSupportedTextAliases(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"exec","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[
+			{"type":"input_text","text":"input"},
+			{"type":"output_text","text":"output"},
+			{"type":"text","text":"plain"}
+		]}
+	]`)
+	var blocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(block.Content, &blocks))
+	require.Len(t, blocks, 3)
+	require.Equal(t, []string{"input", "output", "plain"}, []string{blocks[0].Text, blocks[1].Text, blocks[2].Text})
+}
+
+func TestResponsesToAnthropic_FunctionOutputEmptyArrayUsesFallback(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"exec","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[]}
+	]`)
+	require.JSONEq(t, `"(empty)"`, string(block.Content))
+}
+
+func TestResponsesToAnthropic_FunctionOutputUnsupportedPartsUseTextFallback(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"exec","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[{"type":"unknown","text":"ignored"}]}
+	]`)
+	require.JSONEq(t, `"[{\"type\":\"unknown\",\"text\":\"ignored\"}]"`, string(block.Content))
+}
+
+func TestResponsesToAnthropic_FunctionOutputMalformedImageIsOmitted(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"inspect","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[
+			{"type":"input_image","image_url":"https://example.test/image.png"},
+			{"type":"input_text","text":"still valid"}
+		]}
+	]`)
+	var blocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(block.Content, &blocks))
+	require.Len(t, blocks, 1)
+	require.Equal(t, "still valid", blocks[0].Text)
+}
+
+func TestResponsesToAnthropic_FunctionOutputMalformedPartDoesNotDiscardSiblings(t *testing.T) {
+	block := functionOutputBlock(t, `[
+		{"type":"function_call","call_id":"call_A","name":"inspect","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[
+			{"type":"input_image","image_url":123},
+			{"type":"output_text","text":"kept"}
+		]}
+	]`)
+	var blocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(block.Content, &blocks))
+	require.Len(t, blocks, 1)
+	require.Equal(t, "kept", blocks[0].Text)
+}
+
+func TestResponsesInputItemOutputMutationWinsOverRawValue(t *testing.T) {
+	var item ResponsesInputItem
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"function_call_output","output":[{"type":"input_text","text":"old"}]}`), &item))
+	item.Output = "new"
+	wire, err := json.Marshal(item)
+	require.NoError(t, err)
+	var decoded map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &decoded))
+	require.JSONEq(t, `"new"`, string(decoded["output"]))
+}
+
+func TestResponsesToAnthropic_FunctionOutputPreservesPairingAndOrdinaryMessages(t *testing.T) {
+	msgs := convertAnthropic(t, `[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]},
+		{"type":"function_call","call_id":"call_A","name":"exec","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_A","output":[{"type":"output_text","text":"done"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"final"}]}
+	]`)
+	require.GreaterOrEqual(t, len(msgs), 4)
+	require.Equal(t, "question", parseContentBlocks(msgs[0].Content)[0].Text)
+	require.Equal(t, "call_A", parseContentBlocks(msgs[1].Content)[0].ID)
+	require.Equal(t, "call_A", parseContentBlocks(msgs[2].Content)[0].ToolUseID)
+	require.Equal(t, "final", parseContentBlocks(msgs[3].Content)[0].Text)
+}

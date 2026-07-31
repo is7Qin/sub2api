@@ -4,6 +4,10 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +34,7 @@ func TestSchedulerCacheSetSnapshotSkipsOnlyUnencodableAccounts(t *testing.T) {
 	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	stale := service.Account{ID: 112, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 	require.NoError(t, cache.SetAccount(ctx, &stale))
+	require.NoError(t, cache.rdb.Set(ctx, schedulerLastUsedKey("112"), time.Now().UnixMilli(), 0).Err())
 
 	err := cache.SetSnapshot(ctx, bucket, []service.Account{
 		{ID: 111, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
@@ -45,6 +50,7 @@ func TestSchedulerCacheSetSnapshotSkipsOnlyUnencodableAccounts(t *testing.T) {
 	cachedInvalid, err := cache.GetAccount(ctx, stale.ID)
 	require.NoError(t, err)
 	require.Nil(t, cachedInvalid)
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerAccountKey("112"), schedulerAccountMetaKey("112"), schedulerLastUsedKey("112")).Val())
 }
 
 func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
@@ -72,6 +78,7 @@ func TestSchedulerCacheUpdateLastUsedClearsOnlyUnencodableAccount(t *testing.T) 
 	valid := service.Account{ID: 115, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 	require.NoError(t, cache.SetAccount(ctx, &invalid))
 	require.NoError(t, cache.SetAccount(ctx, &valid))
+	require.NoError(t, cache.rdb.Set(ctx, schedulerLastUsedKey("114"), time.Now().UnixMilli(), 0).Err())
 
 	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	validTime := time.Now().UTC().Truncate(time.Second)
@@ -84,6 +91,9 @@ func TestSchedulerCacheUpdateLastUsedClearsOnlyUnencodableAccount(t *testing.T) 
 	require.NoError(t, err)
 	require.Nil(t, cachedInvalid)
 	exists, err := cache.rdb.Exists(ctx, schedulerAccountMetaKey("114")).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+	exists, err = cache.rdb.Exists(ctx, schedulerLastUsedKey("114")).Result()
 	require.NoError(t, err)
 	require.Zero(t, exists)
 	cachedValid, err := cache.GetAccount(ctx, valid.ID)
@@ -194,6 +204,165 @@ func TestBuildSchedulerMetadataAccount_KeepsQuotaAutoPauseFields(t *testing.T) {
 	require.Equal(t, 0.96, got.Extra["auto_pause_7d_threshold"])
 	require.Equal(t, true, got.Extra["auto_pause_5h_disabled"])
 	require.Equal(t, false, got.Extra["auto_pause_7d_disabled"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsQuotaStateForCachedAccounts(t *testing.T) {
+	now := time.Now().UTC()
+	activeStart := now.Add(-time.Hour).Format(time.RFC3339)
+	expiredDailyStart := now.Add(-25 * time.Hour).Format(time.RFC3339)
+	expiredWeeklyStart := now.Add(-8 * 24 * time.Hour).Format(time.RFC3339)
+	weeklyResetDay := float64(now.AddDate(0, 0, 1).Weekday())
+
+	cases := []struct {
+		name          string
+		platform      string
+		typ           string
+		extra         map[string]any
+		quotaExceeded bool
+	}{
+		{name: "anthropic api key total quota exhausted", platform: service.PlatformAnthropic, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_limit": 10.0, "quota_used": 10.0}, quotaExceeded: true},
+		{name: "gemini api key rolling daily quota exhausted", platform: service.PlatformGemini, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_daily_limit": 20.0, "quota_daily_used": 20.0, "quota_daily_start": activeStart, "quota_daily_reset_mode": "rolling"}, quotaExceeded: true},
+		{name: "gemini api key expired rolling daily window", platform: service.PlatformGemini, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_daily_limit": 20.0, "quota_daily_used": 20.0, "quota_daily_start": expiredDailyStart, "quota_daily_reset_mode": "rolling"}},
+		{name: "bedrock fixed weekly quota exhausted", platform: service.PlatformAnthropic, typ: service.AccountTypeBedrock,
+			extra: map[string]any{"quota_weekly_limit": 30.0, "quota_weekly_used": 30.0, "quota_weekly_start": activeStart, "quota_weekly_reset_mode": "fixed", "quota_weekly_reset_day": weeklyResetDay, "quota_weekly_reset_hour": 0.0, "quota_reset_timezone": "UTC"}, quotaExceeded: true},
+		{name: "bedrock expired fixed weekly window", platform: service.PlatformAnthropic, typ: service.AccountTypeBedrock,
+			extra: map[string]any{"quota_weekly_limit": 30.0, "quota_weekly_used": 30.0, "quota_weekly_start": expiredWeeklyStart, "quota_weekly_reset_mode": "fixed", "quota_weekly_reset_day": weeklyResetDay, "quota_weekly_reset_hour": 0.0, "quota_reset_timezone": "UTC"}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := make(map[string]any, len(tc.extra)+1)
+			for key, value := range tc.extra {
+				extra[key] = value
+			}
+			extra["unrelated"] = "drop me"
+			account := service.Account{ID: int64(46690 + i), Platform: tc.platform, Type: tc.typ, Extra: extra, Status: service.StatusActive, Schedulable: true}
+			cache := newSchedulerCacheUnit(t)
+			ctx := context.Background()
+			bucket := service.SchedulerBucket{GroupID: int64(46690 + i), Platform: tc.platform, Mode: service.SchedulerModeSingle}
+			require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{account}))
+
+			snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+			require.NoError(t, err)
+			require.True(t, hit)
+			require.Len(t, snapshot, 1)
+			cached := snapshot[0]
+			require.Equal(t, tc.extra, cached.Extra)
+			require.NotContains(t, cached.Extra, "unrelated")
+			require.Equal(t, tc.quotaExceeded, cached.IsQuotaExceeded())
+			require.Equal(t, !tc.quotaExceeded, cached.IsSchedulable())
+		})
+	}
+}
+
+type schedulerSnapshotWriteFailureHook struct {
+	zaddCalls atomic.Int32
+}
+
+func (h *schedulerSnapshotWriteFailureHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *schedulerSnapshotWriteFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "zadd" && h.zaddCalls.Add(1) == 2 {
+			return errors.New("injected snapshot zadd failure")
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *schedulerSnapshotWriteFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestSchedulerCacheSetSnapshotPartialFailureDoesNotPublishNewVersion(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	cache.writeChunkSize = 1
+	bucket := service.SchedulerBucket{GroupID: 23, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	oldAccount := service.Account{ID: 731, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{oldAccount}))
+	oldVersion := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+
+	hook := &schedulerSnapshotWriteFailureHook{}
+	cache.rdb.AddHook(hook)
+	err := cache.SetSnapshot(ctx, bucket, []service.Account{
+		{ID: 732, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+		{ID: 733, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	})
+	require.ErrorContains(t, err, "injected snapshot zadd failure")
+	require.Equal(t, oldVersion, cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val())
+	newVersionNumber, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerVersionPrefix, bucket)).Int64()
+	require.NoError(t, err)
+	newVersion := strconv.FormatInt(newVersionNumber, 10)
+	require.NotEqual(t, oldVersion, newVersion)
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerSnapshotKey(bucket, newVersion)).Val())
+	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, snapshot, 1)
+	require.Equal(t, oldAccount.ID, snapshot[0].ID)
+}
+
+func TestSchedulerCacheSetSnapshotPreservesIDMemberSemanticsAndPayloadBytes(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	validOne := service.Account{ID: 721, Name: "first", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": true}}
+	validTwo := service.Account{ID: 722, Name: "second", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	invalid := service.Account{ID: 799, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, ExpiresAt: &invalidTime}
+	bucket := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+
+	fullExpected, metaExpected, err := marshalSchedulerCacheAccount(validOne)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{validOne, invalid, validTwo, validOne}))
+	fullActual, err := cache.rdb.Get(ctx, schedulerAccountKey("721")).Bytes()
+	require.NoError(t, err)
+	metaActual, err := cache.rdb.Get(ctx, schedulerAccountMetaKey("721")).Bytes()
+	require.NoError(t, err)
+	require.Equal(t, fullExpected, fullActual)
+	require.Equal(t, metaExpected, metaActual)
+	version := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+	require.Equal(t, []string{"722", "721"}, cache.rdb.ZRange(ctx, schedulerSnapshotKey(bucket, version), 0, -1).Val())
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerAccountKey("799"), schedulerAccountMetaKey("799"), schedulerLastUsedKey("799")).Val())
+
+	empty := service.SchedulerBucket{GroupID: 22, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	require.NoError(t, cache.SetSnapshot(ctx, empty, nil))
+	snapshot, hit, err := cache.GetSnapshot(ctx, empty)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Nil(t, snapshot)
+}
+
+func BenchmarkSchedulerSnapshotAccountMemberMaterialization(b *testing.B) {
+	for _, size := range []int{128, 1024, 10000} {
+		accounts := make([]service.Account, size)
+		ids := make([]int64, size)
+		for i := range accounts {
+			accounts[i].ID = int64(i + 1)
+			ids[i] = accounts[i].ID
+		}
+		b.Run(fmt.Sprintf("ids/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				members := make([]redis.Z, 0, len(ids))
+				for idx, id := range ids {
+					members = append(members, redis.Z{Score: float64(idx), Member: strconv.FormatInt(id, 10)})
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("old_accounts/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				temporary := append([]service.Account(nil), accounts...)
+				members := make([]redis.Z, 0, len(temporary))
+				for idx, account := range temporary {
+					members = append(members, redis.Z{Score: float64(idx), Member: strconv.FormatInt(account.ID, 10)})
+				}
+			}
+		})
+	}
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsModelRateLimits(t *testing.T) {

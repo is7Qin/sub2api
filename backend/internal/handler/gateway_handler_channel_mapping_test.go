@@ -142,6 +142,7 @@ func newGatewayChannelMappingHandlerWithMapping(t *testing.T, group *service.Gro
 	)
 	handler := NewGatewayHandler(
 		gatewayService,
+		nil,
 		geminiCompatService,
 		antigravityService,
 		nil,

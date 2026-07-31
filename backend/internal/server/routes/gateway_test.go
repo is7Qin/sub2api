@@ -77,3 +77,35 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI images handler", path)
 	}
 }
+
+func TestGatewayRoutesKeyBillingInfoPathIsRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	for _, route := range router.Routes() {
+		if route.Method == http.MethodGet && route.Path == "/v1/sub2api/billing" {
+			return
+		}
+	}
+	t.Fatal("GET /v1/sub2api/billing should be registered")
+}
+
+func TestGatewayRoutesKeyBillingInfoPrecedesGroupAssignment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterGatewayRoutes(
+		router,
+		&handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: &handler.OpenAIGatewayHandler{}},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{})
+			c.Next()
+		}),
+		nil, nil, nil, nil, &config.Config{},
+	)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/sub2api/billing", nil))
+
+	// The endpoint's own ungrouped-key contract wins over RequireGroupAssignment.
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), "API key is not assigned to a group")
+}

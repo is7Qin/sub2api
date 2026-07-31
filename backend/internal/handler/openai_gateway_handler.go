@@ -544,7 +544,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						recovery.RecordTransition()
 					}
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						if candidate, ok := recovery.FinalCandidate(); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
+						} else {
+							h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						}
 						return
 					}
 					fields := []zap.Field{
@@ -1086,12 +1090,20 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							return
 						}
 						if switchCount >= maxAccountSwitches {
-							h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							if candidate, ok := recovery.FinalCandidate(); ok {
+								h.handleAnthropicCandidate(c, candidate, anthropicStreamStarted)
+							} else {
+								h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							}
 							return
 						}
 						nextSwitchCount := switchCount + 1
 						if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, nextSwitchCount) {
-							h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							if candidate, ok := recovery.FinalCandidate(); ok {
+								h.handleAnthropicCandidate(c, candidate, anthropicStreamStarted)
+							} else {
+								h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							}
 							return
 						}
 						h.gatewayService.RecordOpenAIAccountSwitch()
@@ -2130,7 +2142,11 @@ func (h *OpenAIGatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate
 		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
 		return
 	}
-	presentation := candidate.Presentation
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
 	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
 	h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
 }
@@ -2140,7 +2156,11 @@ func (h *OpenAIGatewayHandler) handleAnthropicCandidate(c *gin.Context, candidat
 		h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
 		return
 	}
-	presentation := candidate.Presentation
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
 	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
 	h.anthropicStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
@@ -2176,48 +2196,11 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 
-	fact, hasFact := failoverErr.UpstreamFact()
-	if !hasFact {
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
 		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, statusCode, responseBody)
 	}
-	if policy, recognized := service.RecognizeUpstreamErrorFact(fact); recognized {
-		presentation := policy.Presentation
-		service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
-		h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
-		return
-	}
-
-	// Only unknown errors may use an administrator-configured passthrough rule.
-	if h.errorPassthroughService != nil {
-		if rule := h.errorPassthroughService.MatchUnknownRule(fact); rule != nil {
-			respCode := http.StatusBadGateway
-			if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
-				respCode = fact.HTTPStatus
-			}
-			if !rule.PassthroughCode && rule.ResponseCode != nil {
-				respCode = *rule.ResponseCode
-			}
-			msg := fact.SafeMessage
-			if !rule.PassthroughBody && rule.CustomMessage != nil {
-				msg = *rule.CustomMessage
-			}
-			if msg == "" {
-				msg = "Upstream request failed"
-			}
-			if rule.SkipMonitoring {
-				c.Set(service.OpsSkipPassthroughKey, true)
-			}
-			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
-			return
-		}
-	}
-	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
-	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
-
-	// 使用默认的错误映射
-	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleUpstreamCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况

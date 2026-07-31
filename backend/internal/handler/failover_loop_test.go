@@ -941,11 +941,26 @@ func TestUpstreamRecoveryState_CandidatePrecedenceAndSuccess(t *testing.T) {
 
 	candidate, ok := state.FinalCandidate()
 	require.True(t, ok)
+	require.Equal(t, "rate_limit_exceeded", candidate.Fact.ProviderCode)
 	require.Equal(t, structured.Presentation, candidate.Presentation)
 
 	state.ClearOnSuccess()
 	_, ok = state.FinalCandidate()
 	require.False(t, ok)
+}
+
+func TestUpstreamRecoveryState_SameRankUsesMostRecentCandidate(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	state.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		ProviderCode: "first", SafeMessage: "first",
+	}, service.UpstreamCandidateStructured))
+	state.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		ProviderCode: "second", SafeMessage: "second",
+	}, service.UpstreamCandidateStructured))
+
+	candidate, ok := state.FinalCandidate()
+	require.True(t, ok)
+	require.Equal(t, "second", candidate.Fact.ProviderCode)
 }
 
 func TestUpstreamRecoveryState_TransitionBudgetIsRequestWide(t *testing.T) {

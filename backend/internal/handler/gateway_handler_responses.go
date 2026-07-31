@@ -192,7 +192,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				failoverClientGone(c)
 				return
 			default:
-				if fs.LastFailoverErr != nil {
+				if candidate, ok := fs.FinalCandidate(); ok {
+					h.handleResponsesCandidate(c, candidate, streamStarted)
+				} else if fs.LastFailoverErr != nil {
 					h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 				} else {
 					h.responsesErrorResponse(c, http.StatusBadGateway, "server_error", "All available accounts exhausted")
@@ -285,7 +287,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverExhausted:
-					h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					if candidate, ok := fs.FinalCandidate(); ok {
+						h.handleResponsesCandidate(c, candidate, streamStarted)
+					} else {
+						h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					}
 					return
 				case FailoverCanceled:
 					failoverClientGone(c)
@@ -350,19 +356,42 @@ func (h *GatewayHandler) responsesErrorResponse(c *gin.Context, status int, code
 	})
 }
 
-// handleResponsesFailoverExhausted writes a failover-exhausted error in Responses format.
-func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
-	if streamStarted {
-		return // Can't write error after stream started
-	}
-	statusCode := http.StatusBadGateway
-	if lastErr != nil && lastErr.StatusCode > 0 {
-		statusCode = lastErr.StatusCode
-	}
-	if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
-		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
-		h.responsesErrorResponse(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage())
+func (h *GatewayHandler) handleResponsesCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
 		return
 	}
-	h.responsesErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
+	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	if streamStarted {
+		h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true)
+		return
+	}
+	code := presentation.ErrorCode
+	if code == "" {
+		code = presentation.ErrorType
+	}
+	h.responsesErrorResponse(c, presentation.HTTPStatus, code, presentation.Message)
+}
+
+// handleResponsesFailoverExhausted writes a failover-exhausted error in Responses format.
+func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
+	if lastErr == nil {
+		h.handleResponsesCandidate(c, nil, streamStarted)
+		return
+	}
+	if service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
+		service.SetOpsUpstreamError(c, lastErr.StatusCode, service.OpenAISilentRefusalClientMessage(), "")
+		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage(), streamStarted)
+		return
+	}
+	fact, ok := lastErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, lastErr.StatusCode, lastErr.ResponseBody)
+	}
+	h.handleResponsesCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }

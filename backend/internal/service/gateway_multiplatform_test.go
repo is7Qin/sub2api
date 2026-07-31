@@ -3,15 +3,22 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // testConfig 返回一个用于测试的默认配置
@@ -26,6 +33,8 @@ type mockAccountRepoForPlatform struct {
 	listPlatformFunc                func(ctx context.Context, platform string) ([]Account, error)
 	listModelAvailabilityCandidates func(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error)
 	getByIDCalls                    int
+	setErrorCalls                   int
+	setSchedulableCalls             int
 }
 
 func (m *mockAccountRepoForPlatform) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -139,12 +148,14 @@ func (m *mockAccountRepoForPlatform) BatchUpdateLastUsed(ctx context.Context, up
 	return nil
 }
 func (m *mockAccountRepoForPlatform) SetError(ctx context.Context, id int64, errorMsg string) error {
+	m.setErrorCalls++
 	return nil
 }
 func (m *mockAccountRepoForPlatform) ClearError(ctx context.Context, id int64) error {
 	return nil
 }
 func (m *mockAccountRepoForPlatform) SetSchedulable(ctx context.Context, id int64, schedulable bool) error {
+	m.setSchedulableCalls++
 	return nil
 }
 func (m *mockAccountRepoForPlatform) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
@@ -225,6 +236,54 @@ func (m *mockAccountRepoForPlatform) ResetQuotaUsed(ctx context.Context, id int6
 
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
+
+func TestGatewayHandleErrorResponse_RecognizedDirectBeforeHealthAndRules(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	body := []byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	conflictingCode := http.StatusTeapot
+	conflictingMessage := "database must not win"
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformAnthropic},
+		Keywords: []string{"cyber_policy"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &conflictingCode, CustomMessage: &conflictingMessage, SkipMonitoring: true,
+	}})
+	BindErrorPassthroughService(c, rules)
+	account := &Account{ID: 901, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+	accountRepo := &mockAccountRepoForPlatform{
+		accountsByID: map[int64]*Account{account.ID: account},
+	}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	svc := &GatewayService{rateLimitService: rateLimits}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), conflictingMessage)
+	_, skip := c.Get(OpsSkipPassthroughKey)
+	require.False(t, skip)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].UpstreamFact)
+	require.Equal(t, "cyber_policy", events[0].UpstreamFact.ProviderCode)
+	require.True(t, IsResponseCommitted(c))
+}
 
 // mockGatewayCacheForPlatform 单平台测试用的 cache mock
 type mockGatewayCacheForPlatform struct {

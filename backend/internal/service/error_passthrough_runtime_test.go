@@ -117,7 +117,7 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 
 	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
@@ -440,6 +440,53 @@ func TestApplyErrorPassthroughRule_NoSkipMonitoringDoesNotSetContextKey(t *testi
 	assert.True(t, matched)
 	_, exists := c.Get(OpsSkipPassthroughKey)
 	assert.False(t, exists, "OpsSkipPassthroughKey should NOT be set when skip_monitoring=false")
+}
+
+func TestGatewayHandleErrorResponse_Unknown400UsesSafeEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"error":{"message":"bad request"},"access_token":"secret-token","debug":"internal"}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, err := (&GatewayService{}).handleErrorResponse(
+		context.Background(), resp, c,
+		&Account{ID: 902, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "secret-token")
+	require.NotContains(t, rec.Body.String(), "debug")
+	require.True(t, IsResponseCommitted(c))
+}
+
+func TestGatewayHandleErrorResponse_Unknown503UsesGeneric502(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"error":{"code":"vendor_failure","message":"private vendor detail"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, err := (&GatewayService{}).handleErrorResponse(
+		context.Background(), resp, c,
+		&Account{ID: 903, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "private vendor detail")
+	require.True(t, IsResponseCommitted(c))
 }
 
 func TestGatewayHandleErrorResponse_SetsResponseCommitted(t *testing.T) {

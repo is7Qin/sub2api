@@ -8043,8 +8043,8 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
 
-	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
-	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, body)
+	upstreamMsg := fact.SafeMessage
 
 	// Print a compact upstream request fingerprint when we hit the Claude Code OAuth
 	// credential scope error. This avoids requiring env-var tweaks in a fixed deploy.
@@ -8069,16 +8069,30 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		}
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
-	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	setOpsUpstreamError(c, resp.StatusCode, fact.SafeMessage, upstreamDetail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
+		AccountName:        account.Name,
 		UpstreamStatusCode: resp.StatusCode,
-		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		UpstreamRequestID:  fact.RequestID,
 		Kind:               "http_error",
-		Message:            upstreamMsg,
+		Message:            fact.SafeMessage,
 		Detail:             upstreamDetail,
+		UpstreamFact:       &fact,
 	})
+	if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+		presentation := policy.Presentation
+		MarkResponseCommitted(c)
+		c.JSON(presentation.HTTPStatus, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    presentation.ErrorType,
+				"message": presentation.Message,
+			},
+		})
+		return nil, fmt.Errorf("recognized upstream error: %s", presentation.ErrorCode)
+	}
 
 	// 处理上游错误，标记账号状态
 	shouldDisable := false
@@ -8105,83 +8119,17 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		)
 	}
 
+	resolved := ResolveFinalUpstreamError(fact, getBoundErrorPassthroughService(c))
+	if resolved.SkipMonitoring {
+		c.Set(OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
 	MarkResponseCommitted(c)
-
-	// 非 failover 错误也支持错误透传规则匹配。
-	if status, errType, errMsg, matched := applyErrorPassthroughRule(
-		c,
-		account.Platform,
-		resp.StatusCode,
-		body,
-		http.StatusBadGateway,
-		"upstream_error",
-		"Upstream request failed",
-	); matched {
-		c.JSON(status, gin.H{
-			"type": "error",
-			"error": gin.H{
-				"type":    errType,
-				"message": errMsg,
-			},
-		})
-
-		summary := upstreamMsg
-		if summary == "" {
-			summary = errMsg
-		}
-		if summary == "" {
-			return nil, fmt.Errorf("upstream error: %d (passthrough rule matched)", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, summary)
-	}
-
-	// 根据状态码返回适当的自定义错误响应（不透传上游详细信息）
-	var errType, errMsg string
-	var statusCode int
-
-	switch resp.StatusCode {
-	case 400:
-		c.Data(http.StatusBadRequest, "application/json", body)
-		summary := upstreamMsg
-		if summary == "" {
-			summary = truncateForLog(body, 512)
-		}
-		if summary == "" {
-			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, summary)
-	case 401:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream authentication failed, please contact administrator"
-	case 403:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream access forbidden, please contact administrator"
-	case 429:
-		statusCode = http.StatusTooManyRequests
-		errType = "rate_limit_error"
-		errMsg = "Upstream rate limit exceeded, please retry later"
-	case 529:
-		statusCode = http.StatusServiceUnavailable
-		errType = "overloaded_error"
-		errMsg = "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream service temporarily unavailable"
-	default:
-		statusCode = http.StatusBadGateway
-		errType = "upstream_error"
-		errMsg = "Upstream request failed"
-	}
-
-	// 返回自定义错误响应
-	c.JSON(statusCode, gin.H{
+	c.JSON(presentation.HTTPStatus, gin.H{
 		"type": "error",
 		"error": gin.H{
-			"type":    errType,
-			"message": errMsg,
+			"type":    presentation.ErrorType,
+			"message": presentation.Message,
 		},
 	})
 

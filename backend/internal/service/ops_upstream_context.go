@@ -152,6 +152,10 @@ type OpsUpstreamErrorEvent struct {
 
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+
+	// UpstreamFact is a bounded, in-memory semantic fact used to make ops rule
+	// matching respect recognized direct-return errors. It is not persisted.
+	UpstreamFact *UpstreamErrorFact `json:"-"`
 }
 
 func (ev *OpsUpstreamErrorEvent) ResolvedUpstreamEndpoint() string {
@@ -203,7 +207,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 // failover errors (which never go through the final applyErrorPassthroughRule
 // path) can still suppress ops_error_logs recording.
 func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEvent) {
-	if ev.UpstreamStatusCode == 0 {
+	if ev == nil || ev.UpstreamStatusCode == 0 {
 		return
 	}
 
@@ -212,16 +216,24 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 		return
 	}
 
-	// Use the best available body representation for keyword matching.
-	// Even when body is empty, MatchRule can still match rules that only
-	// specify ErrorCodes (no Keywords), so we always call it.
+	if ev.UpstreamFact != nil {
+		// Recognized semantics own their presentation and must not be reclassified
+		// by mutable database rules for monitoring suppression.
+		if _, recognized := RecognizeUpstreamErrorFact(*ev.UpstreamFact); recognized {
+			return
+		}
+		if rule := svc.MatchUnknownRule(*ev.UpstreamFact); rule != nil && rule.SkipMonitoring {
+			c.Set(OpsSkipPassthroughKey, true)
+		}
+		return
+	}
+
+	// Legacy events carry no semantic fact, so retain body-based matching.
 	body := ev.Detail
 	if body == "" {
 		body = ev.Message
 	}
-
-	rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, []byte(body))
-	if rule != nil && rule.SkipMonitoring {
+	if rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, []byte(body)); rule != nil && rule.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
 	}
 }
@@ -283,9 +295,9 @@ func endpointFromSafeUpstreamURL(rawURL string) string {
 		path = parsed.Path
 	}
 	for _, match := range []struct {
-		path                     string
-		endpoint                 string
-		preserveSuffix           bool
+		path                    string
+		endpoint                string
+		preserveSuffix          bool
 		allowGeminiActionSuffix bool
 	}{
 		{"/v1/chat/completions", "/v1/chat/completions", false, false},

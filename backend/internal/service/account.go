@@ -692,6 +692,13 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）
 func (a *Account) IsModelSupported(requestedModel string) bool {
+	// API-key passthrough delegates model semantics to the upstream service.
+	// Check this before model_mapping because switching from whitelist mode can
+	// leave a stale mapping that would incorrectly remove the account from the
+	// scheduler's candidate set.
+	if a.IsOpenAIAPIKeyPassthroughEnabled() {
+		return true
+	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
 		// Managed OpenAI OAuth forwards to the Codex upstream, whose accepted model

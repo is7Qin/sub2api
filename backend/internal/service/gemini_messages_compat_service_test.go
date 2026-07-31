@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,27 @@ type geminiCompatHTTPUpstreamStub struct {
 	err      error
 	calls    int
 	lastReq  *http.Request
+}
+
+type geminiCompatFreshResponseStub struct {
+	status  int
+	headers http.Header
+	body    []byte
+	calls   int
+}
+
+func (s *geminiCompatFreshResponseStub) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	s.calls++
+	return &http.Response{
+		StatusCode: s.status,
+		Header:     s.headers.Clone(),
+		Body:       io.NopCloser(bytes.NewReader(s.body)),
+		Request:    req,
+	}, nil
+}
+
+func (s *geminiCompatFreshResponseStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -1177,4 +1199,165 @@ func parseAnthropicContentBlockEvents(t *testing.T, raw string) []anthropicConte
 		})
 	}
 	return events
+}
+
+func TestGeminiMessagesForwardNative_Unknown400SkippedDoesNotExposeUpstreamBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateBody := `{"private_metadata":"token=do-not-leak","unexpected":"internal.example"}`
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(privateBody),
+	}
+	svc := &GeminiMessagesCompatService{
+		httpUpstream:     stub,
+		rateLimitService: NewRateLimitService(nil, nil, &config.Config{}, nil, nil),
+		cfg:              &config.Config{},
+	}
+	account := &Account{ID: 301, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusInternalServerError)},
+	}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", strings.NewReader(`{"contents":[]}`))
+
+	_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), "private_metadata")
+	require.NotContains(t, rec.Body.String(), "internal.example")
+	require.Contains(t, rec.Body.String(), "Upstream request failed")
+}
+
+func TestGeminiMessagesForwardNative_Unknown503SkippedBecomesGeneric502(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateBody := `{"private_metadata":"token=do-not-leak","unexpected":"internal.example"}`
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusServiceUnavailable,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(privateBody),
+	}
+	svc := &GeminiMessagesCompatService{
+		httpUpstream:     stub,
+		rateLimitService: NewRateLimitService(nil, nil, &config.Config{}, nil, nil),
+		cfg:              &config.Config{},
+	}
+	account := &Account{ID: 302, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusInternalServerError)},
+	}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", strings.NewReader(`{"contents":[]}`))
+
+	_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.NotContains(t, rec.Body.String(), "private_metadata")
+	require.NotContains(t, rec.Body.String(), "internal.example")
+	require.Contains(t, rec.Body.String(), "Upstream request failed")
+}
+
+func TestGeminiMessagesForwardNative_RecognizedInvalidArgumentKeepsGoogleSemantics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"private validation detail"}}`),
+	}
+	ruleStatus := http.StatusTeapot
+	ruleMessage := "DB rule must not override recognized Gemini semantics"
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformGemini},
+		Keywords: []string{"private validation detail"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &ruleStatus, CustomMessage: &ruleMessage,
+	}})
+	svc := &GeminiMessagesCompatService{httpUpstream: stub, cfg: &config.Config{}}
+	account := &Account{ID: 304, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	BindErrorPassthroughService(c, rules)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", strings.NewReader(`{"contents":[]}`))
+
+	_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var got struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, http.StatusBadRequest, got.Error.Code)
+	require.Equal(t, "INVALID_ARGUMENT", got.Error.Status)
+	require.Equal(t, "Invalid request", got.Error.Message)
+	require.NotContains(t, rec.Body.String(), "private validation detail")
+}
+
+func TestGeminiMessagesForwardNative_Unknown400UsesBoundedPassthroughRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateMessage := strings.Repeat("safe ", upstreamErrorFactMaxScalarBytes) + "https://internal.example/secret"
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(fmt.Sprintf(`{"error":{"code":"vendor_failure","message":%q},"private_metadata":"do-not-leak"}`, privateMessage)),
+	}
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformGemini},
+		Keywords: []string{"vendor_failure"}, MatchMode: model.MatchModeAny,
+		PassthroughCode: true, PassthroughBody: true,
+	}})
+	svc := &GeminiMessagesCompatService{httpUpstream: stub, cfg: &config.Config{}}
+	account := &Account{ID: 305, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	BindErrorPassthroughService(c, rules)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", strings.NewReader(`{"contents":[]}`))
+
+	_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var got struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.LessOrEqual(t, len(got.Error.Message), upstreamErrorFactMaxScalarBytes)
+	require.NotContains(t, rec.Body.String(), "private_metadata")
+	require.NotContains(t, rec.Body.String(), "internal.example")
+}
+
+func TestGeminiMessagesForwardNative_Unknown400WithoutPolicyDoesNotExposeUpstreamBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateBody := `{"private_metadata":"token=do-not-leak","unexpected":"internal.example"}`
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(privateBody),
+	}
+	svc := &GeminiMessagesCompatService{
+		httpUpstream:     stub,
+		rateLimitService: NewRateLimitService(nil, nil, &config.Config{}, nil, nil),
+		cfg:              &config.Config{},
+	}
+	account := &Account{ID: 303, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", strings.NewReader(`{"contents":[]}`))
+
+	_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), "private_metadata")
+	require.NotContains(t, rec.Body.String(), "internal.example")
+	require.Contains(t, rec.Body.String(), "Upstream request failed")
 }

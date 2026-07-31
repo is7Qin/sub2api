@@ -1496,13 +1496,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			switch policy {
 			case ErrorPolicySkipped:
 				respBody = unwrapIfNeeded(isOAuth, respBody)
-				contentType := resp.Header.Get("Content-Type")
-				if contentType == "" {
-					contentType = "application/json"
-				}
-				MarkResponseCommitted(c)
-				c.Data(http.StatusInternalServerError, contentType, respBody)
-				return nil, fmt.Errorf("gemini upstream error: %d (skipped by error policy)", resp.StatusCode)
+				return nil, s.writeResolvedGoogleUpstreamError(c, resp, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
 				if policy == ErrorPolicyMatched {
 					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
@@ -1611,16 +1605,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			Detail:             upstreamDetail,
 		})
 
-		contentType := resp.Header.Get("Content-Type")
-		if contentType == "" {
-			contentType = "application/json"
-		}
-		MarkResponseCommitted(c)
-		c.Data(resp.StatusCode, contentType, respBody)
-		if upstreamMsg == "" {
-			return nil, fmt.Errorf("gemini upstream error: %d", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("gemini upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+		return nil, s.writeResolvedGoogleUpstreamError(c, resp, respBody)
 	}
 
 	var usage *ClaudeUsage
@@ -2324,6 +2309,31 @@ func (s *GeminiMessagesCompatService) writeGoogleError(c *gin.Context, status in
 		},
 	})
 	return fmt.Errorf("%s", message)
+}
+
+func (s *GeminiMessagesCompatService) writeResolvedGoogleUpstreamError(c *gin.Context, resp *http.Response, body []byte) error {
+	// Preserve explicitly recognized Gemini statuses before consulting mutable
+	// passthrough rules; those rules apply only to unknown upstream errors.
+	if mapped := mapGeminiErrorBodyToClaudeError(body); mapped != nil && mapped.StatusCode > 0 {
+		message := genericUpstreamFailureMessage
+		switch mapped.StatusCode {
+		case http.StatusBadRequest:
+			message = "Invalid request"
+		case http.StatusNotFound:
+			message = "Resource not found"
+		case http.StatusTooManyRequests:
+			message = "Upstream rate limit exceeded, please retry later"
+		}
+		return s.writeGoogleError(c, mapped.StatusCode, message)
+	}
+
+	fact := ParseHTTPUpstreamErrorFact(PlatformGemini, resp, body)
+	resolved := ResolveFinalUpstreamError(fact, getBoundErrorPassthroughService(c))
+	if resolved.SkipMonitoring {
+		c.Set(OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
+	return s.writeGoogleError(c, presentation.HTTPStatus, presentation.Message)
 }
 
 func unwrapIfNeeded(isOAuth bool, raw []byte) []byte {

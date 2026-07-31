@@ -47,7 +47,8 @@ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 
 	for _, path := range []string{
 		"/v1/responses/compact",
-		"/responses/compact",
+		"/v1/responses/compact/detail",
+		"/responses/resp_68f0a1b2/cancel",
 		"/backend-api/codex/responses",
 		"/backend-api/codex/responses/compact",
 	} {
@@ -58,6 +59,39 @@ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 		router.ServeHTTP(w, req)
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI responses handler", path)
 	}
+}
+
+func TestGatewayRoutesOpenAIResponsesWildcardPathsRejectUnsafeSubpaths(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	for _, path := range []string{
+		"/v1/responses/%2e%2e%2fadmin",
+		"/responses/compact%3fadmin=true",
+		"/backend-api/codex/responses/double%2f%2fslash",
+		"/v1/responses/compact%20",
+		"/v1/responses/bad%3fvalue/responses/compact",
+		"/v1/responses" + strings.Repeat("/a", 9) + "/responses/compact",
+		"/v1/responses/compact//detail",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusNotFound, w.Code, "path=%s", path)
+		require.Contains(t, w.Body.String(), `"type":"not_found_error"`)
+		require.Contains(t, w.Body.String(), "Unsupported responses subpath")
+	}
+}
+
+func TestGatewayRoutesOpenAIResponsesCompactTrailingSlashIsAccepted(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact/", strings.NewReader(`{"model":"gpt-5"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	require.NotEqual(t, http.StatusNotFound, w.Code)
 }
 
 func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {

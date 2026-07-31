@@ -1,9 +1,19 @@
 package service
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 )
+
+func normalizedAppendableUpstreamBaseURL(base string) (string, error) {
+	trimmed := strings.TrimSpace(base)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(trimmed, "#") {
+		return "", errors.New("upstream base url must not contain query or fragment")
+	}
+	return strings.TrimRight(trimmed, "/"), nil
+}
 
 func buildOpenAIEndpointURL(base string, endpoint string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")

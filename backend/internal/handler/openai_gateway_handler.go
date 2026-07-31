@@ -663,7 +663,7 @@ func isOpenAILegacyCompactPath(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
 	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	normalizedPath := strings.TrimRight(c.Request.URL.Path, "/")
 	return strings.HasSuffix(normalizedPath, "/responses/compact")
 }
 
@@ -716,7 +716,7 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 		if c.Request != nil {
 			ctx = c.Request.Context()
 			if c.Request.URL != nil {
-				path = strings.TrimSpace(c.Request.URL.Path)
+				path = c.Request.URL.Path
 			}
 		}
 		if c.Writer != nil {

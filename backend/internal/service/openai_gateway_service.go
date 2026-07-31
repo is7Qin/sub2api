@@ -3250,6 +3250,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
+		// API-key passthrough remains on the native Responses wire boundary, so
+		// apply the same upstream item-ID contract before forwarding it.
+		if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey {
+			sanitizedBody, changed, sanitizeErr := sanitizeOpenAIResponsesInputItemIDs(body)
+			if sanitizeErr != nil {
+				return nil, fmt.Errorf("sanitize OpenAI Responses input item IDs: %w", sanitizeErr)
+			}
+			if changed {
+				body = sanitizedBody
+				originalBody = sanitizedBody
+			}
+		}
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		mappedModel := account.GetMappedModel(reqModel)
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel, mappedModel)
@@ -3597,6 +3609,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, fmt.Errorf("serialize request body: %w", marshalErr)
 			}
 			requestView = newOpenAIRequestView(body)
+		}
+	}
+	// API-key native Responses accepts only persisted upstream item IDs. Apply
+	// this protocol-specific cleanup only when the request stays on Responses;
+	// raw Chat fallback continues to consume originalBody unchanged below.
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
+		openai_compat.ShouldUseResponsesAPIForModel(account.Extra, upstreamModel) {
+		sanitizedBody, changed, sanitizeErr := sanitizeOpenAIResponsesInputItemIDs(body)
+		if sanitizeErr != nil {
+			return nil, fmt.Errorf("sanitize OpenAI Responses input item IDs: %w", sanitizeErr)
+		}
+		if changed {
+			body = sanitizedBody
+			requestView = newOpenAIRequestView(body)
+			reqBody = nil
 		}
 	}
 	// Capability checks must follow model normalization (for example image-only

@@ -126,15 +126,17 @@ func TestUpstreamFailoverErrorFactDoesNotOverwriteCompatibilityStatus(t *testing
 	require.Zero(t, attached.HTTPStatus)
 }
 
-func TestNewAnthropicSSEFailoverErrorKeepsLegacySynthetic403(t *testing.T) {
+func TestNewAnthropicSSEFailoverErrorKeepsStatusUnknown(t *testing.T) {
 	body := []byte(`{"error":{"type":"invalid_request_error","message":"Invalid request"}}`)
 	err := newAnthropicSSEFailoverError(&Account{Platform: PlatformAnthropic}, body, "req_123")
 
 	attached, ok := err.UpstreamFact()
 	require.True(t, ok)
-	require.Equal(t, http.StatusForbidden, err.StatusCode)
+	require.Zero(t, err.StatusCode)
 	require.Equal(t, body, err.ResponseBody)
 	require.False(t, attached.HTTPStatusKnown)
+	require.Zero(t, attached.HTTPStatus)
+	require.Equal(t, UpstreamErrorSourceSSE, attached.Source)
 	require.Equal(t, "invalid_request_error", attached.ProviderType)
 	require.Equal(t, "Invalid request", attached.SafeMessage)
 }

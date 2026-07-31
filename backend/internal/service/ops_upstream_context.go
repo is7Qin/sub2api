@@ -207,7 +207,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 // failover errors (which never go through the final applyErrorPassthroughRule
 // path) can still suppress ops_error_logs recording.
 func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEvent) {
-	if ev == nil || ev.UpstreamStatusCode == 0 {
+	if ev == nil || (ev.UpstreamStatusCode == 0 && ev.UpstreamFact == nil) {
 		return
 	}
 

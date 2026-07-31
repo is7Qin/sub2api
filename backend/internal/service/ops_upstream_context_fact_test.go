@@ -34,6 +34,35 @@ func TestAppendOpsUpstreamError_RecognizedFactDeclinesRulePrecedence(t *testing.
 	require.False(t, skipped)
 }
 
+func TestAppendOpsUpstreamError_UnknownSSEFactUsesRulePrecedenceWithoutStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformAnthropic},
+		Keywords: []string{"stream failed"}, MatchMode: model.MatchModeAny,
+		SkipMonitoring: true,
+	}})
+	BindErrorPassthroughService(c, rules)
+	fact := ParseAnthropicSSEErrorFact(PlatformAnthropic, []byte(`{"error":{"type":"vendor_stream_error","message":"stream failed"}}`), "req_sse")
+
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform: PlatformAnthropic, UpstreamStatusCode: 0, UpstreamFact: &fact,
+		UpstreamRequestID: fact.RequestID, Message: fact.SafeMessage,
+	})
+
+	_, skipped := c.Get(OpsSkipPassthroughKey)
+	require.True(t, skipped)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.Zero(t, events[0].UpstreamStatusCode)
+	require.NotNil(t, events[0].UpstreamFact)
+	require.Equal(t, UpstreamErrorSourceSSE, events[0].UpstreamFact.Source)
+	require.False(t, events[0].UpstreamFact.HTTPStatusKnown)
+}
+
 func TestAppendOpsUpstreamError_UnknownFactUsesRulePrecedence(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(nil)

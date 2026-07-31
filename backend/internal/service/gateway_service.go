@@ -664,7 +664,7 @@ func newAnthropicSSEFailoverError(account *Account, body []byte, requestID strin
 	}
 	fact := ParseAnthropicSSEErrorFact(provider, body, requestID)
 	return &UpstreamFailoverError{
-		StatusCode:   http.StatusForbidden,
+		StatusCode:   0,
 		ResponseBody: body,
 		upstreamFact: &fact,
 	}
@@ -5699,6 +5699,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				// 保留 StatusCode=403 以兼容既有 failover/客户端响应语义，
 				// 但补全 ResponseBody 与 ops 上下文，让运维日志能反映上游真实错误。
 				body := []byte(sseErr.RawData)
+				fact := ParseAnthropicSSEErrorFact(account.Platform, body, resp.Header.Get("x-request-id"))
 
 				upstreamMsg := sanitizeUpstreamErrorMessage(
 					strings.TrimSpace(extractUpstreamErrorMessage(body)),
@@ -5717,9 +5718,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
-					UpstreamStatusCode: 403,
+					UpstreamStatusCode: 0,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
 					Kind:               "stream_error",
+					UpstreamFact:       &fact,
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})

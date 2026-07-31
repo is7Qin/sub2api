@@ -159,6 +159,12 @@ func (s *GatewayService) ForwardAsResponses(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, respBody)
+		if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+			presentation := policy.Presentation
+			writeResponsesError(c, presentation.HTTPStatus, presentation.ErrorCode, presentation.Message)
+			return nil, newRecognizedUpstreamError(policy, fact)
+		}
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -173,10 +179,12 @@ func (s *GatewayService) ForwardAsResponses(
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 			}
-			return nil, &UpstreamFailoverError{
-				StatusCode:   resp.StatusCode,
-				ResponseBody: respBody,
-			}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(
+				resp.StatusCode,
+				respBody,
+				account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				fact,
+			)
 		}
 
 		// Non-failover error: return Responses-formatted error to client

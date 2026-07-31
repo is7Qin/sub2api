@@ -617,6 +617,15 @@ func (e *UpstreamFailoverError) UpstreamFact() (UpstreamErrorFact, bool) {
 	return *e.upstreamFact, true
 }
 
+func newHTTPUpstreamFailoverErrorWithFact(statusCode int, body []byte, retryableOnSameAccount bool, fact UpstreamErrorFact) *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		RetryableOnSameAccount: retryableOnSameAccount,
+		upstreamFact:           &fact,
+	}
+}
+
 // SanitizedClientResponse returns a copy of the fixed client-safe response when
 // this error was created through the private sanitized-response boundary.
 func (e *UpstreamFailoverError) SanitizedClientResponse() (int, []byte, http.Header, bool) {
@@ -5580,11 +5589,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(
+				resp.StatusCode,
+				respBody,
+				account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				fact,
+			)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
@@ -5617,11 +5627,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return ""
 			}(),
 		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newHTTPUpstreamFailoverErrorWithFact(
+			resp.StatusCode,
+			respBody,
+			account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			fact,
+		)
 	}
 	if resp.StatusCode >= 400 {
 		// 可选：对部分 400 触发 failover（默认关闭以保持语义）
@@ -8195,7 +8206,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		}
 	}
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
+		return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, body, false, fact)
 	}
 
 	// 记录上游错误响应体摘要便于排障（可选：由配置控制；不回显到客户端）

@@ -3,6 +3,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +12,59 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestForwardAsChatCompletions_FailoverRetainsGeneric5xxHTTPFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{"X-Request-Id": []string{"req_conversion_503"}},
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"vendor_failure","message":"private vendor detail"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, nil)
+
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), err)
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, PlatformAnthropic, fact.Provider)
+	require.Equal(t, http.StatusServiceUnavailable, fact.HTTPStatus)
+	require.Equal(t, "vendor_failure", fact.ProviderType)
+	require.Equal(t, "req_conversion_503", fact.RequestID)
+}
+
+func TestForwardAsChatCompletions_RecognizedHTTPErrorBypassesFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"X-Request-Id": []string{"req_conversion_policy"}},
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"invalid_request_error","code":"cyber_policy","message":"policy rejected"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, nil)
+
+	var recognizedErr *RecognizedUpstreamError
+	require.True(t, errors.As(err, &recognizedErr), err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "cyber_policy", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
 
 func TestExtractCCReasoningEffortFromBody(t *testing.T) {
 	t.Parallel()

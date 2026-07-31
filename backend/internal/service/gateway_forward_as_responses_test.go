@@ -3,6 +3,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +12,60 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestForwardAsResponses_FailoverRetainsStructuredHTTPFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"model":"claude-sonnet-4-5","input":"hello"}`)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"X-Request-Id": []string{"req_conversion_rate_limit"}},
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"quota exceeded"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsResponses(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, nil)
+
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), err)
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, PlatformAnthropic, fact.Provider)
+	require.Equal(t, http.StatusTooManyRequests, fact.HTTPStatus)
+	require.Equal(t, "rate_limit_exceeded", fact.ProviderCode)
+	require.Equal(t, "rate_limit_error", fact.ProviderType)
+	require.Equal(t, "req_conversion_rate_limit", fact.RequestID)
+}
+
+func TestForwardAsResponses_RecognizedHTTPErrorBypassesFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"model":"claude-sonnet-4-5","input":"hello"}`)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"X-Request-Id": []string{"req_conversion_context"}},
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"context too long"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsResponses(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, nil)
+
+	var recognizedErr *RecognizedUpstreamError
+	require.True(t, errors.As(err, &recognizedErr), err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "context_length_exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "context too long", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
 
 func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
 	t.Parallel()

@@ -237,6 +237,125 @@ func (m *mockAccountRepoForPlatform) ResetQuotaUsed(ctx context.Context, id int6
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
 
+func TestGatewayForward_HTTPFailoverCarriersRetainParsedFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newAttempt := func(requestID string) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"X-Request-Id": []string{requestID}},
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"type":"vendor_failure","message":"private vendor detail"}}`))),
+		}
+	}
+
+	for _, test := range []struct {
+		name              string
+		account           *Account
+		responses         []*http.Response
+		expectedCalls     int
+		expectedRequestID string
+	}{
+		{
+			name: "immediate failover",
+			account: &Account{
+				ID: 910, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key":                    "test-key",
+					"custom_error_codes_enabled": true,
+					"custom_error_codes":         []any{float64(http.StatusServiceUnavailable)},
+				},
+			},
+			responses:         []*http.Response{newAttempt("req-immediate")},
+			expectedCalls:     1,
+			expectedRequestID: "req-immediate",
+		},
+		{
+			name: "retry exhausted failover",
+			account: &Account{
+				ID: 911, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key":                    "test-key",
+					"custom_error_codes_enabled": true,
+					"custom_error_codes":         []any{float64(http.StatusUnauthorized)},
+				},
+			},
+			responses: []*http.Response{
+				newAttempt("req-retry-1"),
+				newAttempt("req-retry-2"),
+				newAttempt("req-retry-3"),
+				newAttempt("req-retry-4"),
+				newAttempt("req-retry-5"),
+			},
+			expectedCalls:     maxRetryAttempts,
+			expectedRequestID: "req-retry-5",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{test.account.ID: test.account}}
+			upstream := &queuedHTTPUpstream{responses: test.responses}
+			svc := &GatewayService{
+				cfg:              testConfig(),
+				httpUpstream:     upstream,
+				rateLimitService: NewRateLimitService(accountRepo, nil, testConfig(), nil, nil),
+			}
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
+			require.NoError(t, err)
+
+			_, err = svc.Forward(context.Background(), c, test.account, parsed)
+
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			fact, ok := failoverErr.UpstreamFact()
+			require.True(t, ok)
+			require.Equal(t, PlatformAnthropic, fact.Provider)
+			require.Equal(t, http.StatusServiceUnavailable, fact.HTTPStatus)
+			require.Equal(t, "vendor_failure", fact.ProviderType)
+			require.Equal(t, test.expectedRequestID, fact.RequestID)
+			require.Len(t, upstream.requests, test.expectedCalls)
+		})
+	}
+}
+
+func TestGatewayHandleErrorResponse_DisablingCarrierRetainsParsedFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	account := &Account{
+		ID: 912, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":                    "test-key",
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusPaymentRequired)},
+		},
+	}
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	svc := &GatewayService{
+		cfg:              testConfig(),
+		rateLimitService: NewRateLimitService(accountRepo, nil, testConfig(), nil, nil),
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusPaymentRequired,
+		Header:     http.Header{"X-Request-Id": []string{"req-disable"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"type":"billing_error","code":"billing_required","message":"private billing detail"}}`))),
+	}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, PlatformAnthropic, fact.Provider)
+	require.Equal(t, http.StatusPaymentRequired, fact.HTTPStatus)
+	require.Equal(t, "billing_required", fact.ProviderCode)
+	require.Equal(t, "billing_error", fact.ProviderType)
+	require.Equal(t, "req-disable", fact.RequestID)
+}
+
 func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

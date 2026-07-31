@@ -12,6 +12,85 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAIResponsesNilSelectionPrefersPriorRecoveryCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	recovery := NewUpstreamRecoveryState()
+	recovery.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		Provider:        service.PlatformOpenAI,
+		Source:          service.UpstreamErrorSourceHTTP,
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusTooManyRequests,
+		ProviderCode:    "rate_limit_exceeded",
+		ProviderType:    "rate_limit_error",
+		SafeMessage:     "quota exceeded",
+	}, service.UpstreamCandidateStructured))
+
+	(&OpenAIGatewayHandler{}).handleResponsesAccountSelectionExhausted(c, recovery, false)
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "rate_limit_exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "quota exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
+
+func TestOpenAIMessagesNilSelectionPrefersPriorRecoveryCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	recovery := NewUpstreamRecoveryState()
+	recovery.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		Provider:        service.PlatformOpenAI,
+		Source:          service.UpstreamErrorSourceHTTP,
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusTooManyRequests,
+		ProviderCode:    "rate_limit_exceeded",
+		ProviderType:    "rate_limit_error",
+		SafeMessage:     "quota exceeded",
+	}, service.UpstreamCandidateStructured))
+
+	(&OpenAIGatewayHandler{}).handleMessagesAccountSelectionExhausted(c, recovery, false)
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "rate_limit_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "quota exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
+
+func TestOpenAINilSelectionWithoutPriorAttemptKeepsNoAvailableAccounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name    string
+		handle  func(*OpenAIGatewayHandler, *gin.Context, *UpstreamRecoveryState)
+		message string
+	}{
+		{
+			name: "responses",
+			handle: func(h *OpenAIGatewayHandler, c *gin.Context, recovery *UpstreamRecoveryState) {
+				h.handleResponsesAccountSelectionExhausted(c, recovery, false)
+			},
+			message: "No available accounts",
+		},
+		{
+			name: "messages",
+			handle: func(h *OpenAIGatewayHandler, c *gin.Context, recovery *UpstreamRecoveryState) {
+				h.handleMessagesAccountSelectionExhausted(c, recovery, false)
+			},
+			message: "No available accounts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			tt.handle(&OpenAIGatewayHandler{}, c, NewUpstreamRecoveryState())
+
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			require.Equal(t, tt.message, gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+		})
+	}
+}
+
 func TestOpenAIHandleUpstreamCandidate_Unknown503UsesGeneric502(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

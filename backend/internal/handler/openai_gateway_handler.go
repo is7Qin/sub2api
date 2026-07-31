@@ -402,7 +402,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			h.handleResponsesAccountSelectionExhausted(c, recovery, streamStarted)
 			return
 		}
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
@@ -948,7 +948,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
-			h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			h.handleMessagesAccountSelectionExhausted(c, recovery, streamStarted)
 			return
 		}
 		account := selection.Account
@@ -2130,6 +2130,29 @@ func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, stream
 func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
 	status, errType, message := concurrencyErrorResponse(err, slotType)
 	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
+}
+
+// handleResponsesAccountSelectionExhausted preserves the final structured
+// candidate after an upstream attempt, while initial routing failure keeps its
+// established no-accounts response.
+func (h *OpenAIGatewayHandler) handleResponsesAccountSelectionExhausted(c *gin.Context, recovery *UpstreamRecoveryState, streamStarted bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			h.handleUpstreamCandidate(c, candidate, streamStarted)
+			return
+		}
+	}
+	h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleMessagesAccountSelectionExhausted(c *gin.Context, recovery *UpstreamRecoveryState, streamStarted bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			h.handleAnthropicCandidate(c, candidate, streamStarted)
+			return
+		}
+	}
+	h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
 }
 
 // handleResponsesFailoverExhausted prefers the bounded fact-derived candidate

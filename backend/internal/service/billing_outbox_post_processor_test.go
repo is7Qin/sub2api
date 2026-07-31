@@ -98,6 +98,22 @@ func TestBillingOutboxPostProcessorSkipsBalanceAlertForSubscriptionBill(t *testi
 	require.Zero(t, smtpServer.messageCount())
 }
 
+func TestBillingOutboxPostProcessorDoesNotBestEffortInvalidateExhaustedAPIKey(t *testing.T) {
+	processor := &billingOutboxPostProcessor{deps: &billingDeps{}}
+	command := &BillingOutboxCommand{
+		APIKeyID: 10,
+		PostEffects: &BillingOutboxPostEffects{
+			UserID:    41,
+			AccountID: 52,
+		},
+	}
+
+	require.NoError(t, processor.Finalize(context.Background(), command, &UsageBillingApplyResult{
+		Applied:              true,
+		APIKeyQuotaExhausted: true,
+	}))
+}
+
 func TestBillingOutboxPostProcessorReturnsSynchronousNotificationFinalizationError(t *testing.T) {
 	notificationErr := errors.New("notification provider unavailable")
 	finalizer := billingOutboxNotificationFinalizerFunc(func(context.Context, *BillingOutboxCommand, *UsageBillingApplyResult) error {

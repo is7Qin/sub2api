@@ -16,12 +16,11 @@ func (f billingOutboxNotificationFinalizerFunc) FinalizeNotifications(ctx contex
 // and notification effects from the immutable outbox snapshot.
 type billingOutboxPostProcessor struct {
 	deps                  *billingDeps
-	apiKeyService         *APIKeyService
 	notificationFinalizer billingOutboxNotificationFinalizer
 }
 
-func NewBillingOutboxPostProcessor(deps *billingDeps, apiKeyService *APIKeyService) BillingOutboxPostProcessor {
-	return &billingOutboxPostProcessor{deps: deps, apiKeyService: apiKeyService}
+func NewBillingOutboxPostProcessor(deps *billingDeps, _ *APIKeyService) BillingOutboxPostProcessor {
+	return &billingOutboxPostProcessor{deps: deps}
 }
 
 func (p *billingOutboxPostProcessor) Finalize(ctx context.Context, command *BillingOutboxCommand, result *UsageBillingApplyResult) error {
@@ -29,15 +28,6 @@ func (p *billingOutboxPostProcessor) Finalize(ctx context.Context, command *Bill
 		return nil
 	}
 	effects := command.PostEffects
-	if result.APIKeyQuotaExhausted && p.apiKeyService != nil {
-		apiKey, err := p.apiKeyService.GetByID(ctx, command.APIKeyID)
-		if err != nil {
-			return err
-		}
-		if apiKey != nil {
-			p.apiKeyService.InvalidateAuthCacheByKey(ctx, apiKey.Key)
-		}
-	}
 	if p.deps.billingCacheService != nil {
 		// The billing transaction is authoritative. Finalization may be replayed
 		// after a crash, so every cache action here is an idempotent invalidation,

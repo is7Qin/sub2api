@@ -190,6 +190,83 @@ func TestUsageBillingRepositoryApplyAndStageOutboxFinalization_StagesWithinBilli
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUsageBillingRepositoryApplyAndStageOutboxFinalizationStagesQuotaAuthInvalidation(t *testing.T) {
+	db, mock := newUsageBillingSQLMock(t)
+	repo := &usageBillingRepository{db: db}
+	cmd := &service.UsageBillingCommand{
+		RequestID: "attempt:physical-1", AccountID: 1, APIKeyID: 10, UserID: 20, APIKeyQuotaCost: 1.25,
+	}
+	cmd.Normalize()
+
+	mock.ExpectBegin()
+	expectUsageBillingClaimInserted(mock, cmd)
+	expectAPIKeyQuotaIncrement(mock, cmd.APIKeyID, cmd.APIKeyQuotaCost, true)
+	cacheKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	mock.ExpectQuery(`SELECT encode\(sha256\(convert_to\(key, 'UTF8'\)\), 'hex'\).*FROM api_keys`).
+		WithArgs(cmd.APIKeyID).
+		WillReturnRows(sqlmock.NewRows([]string{"cache_key"}).AddRow(cacheKey))
+	mock.ExpectExec("INSERT INTO auth_cache_invalidation_outbox").
+		WithArgs(cacheKey, "billing-quota:"+cmd.RequestID+":10").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = 'finalization_pending'.*leased_by = \$2.*status = 'processing'`).
+		WithArgs(int64(7), "worker-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := repo.ApplyAndStageOutboxFinalization(context.Background(), cmd, service.UsageBillingOutboxBinding{OutboxID: 7, WorkerID: "worker-1"})
+	require.NoError(t, err)
+	require.True(t, result.APIKeyQuotaExhausted)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageBillingRepositoryApplyAndStageOutboxFinalizationRollsBackWhenQuotaInvalidationCannotStage(t *testing.T) {
+	db, mock := newUsageBillingSQLMock(t)
+	repo := &usageBillingRepository{db: db}
+	cmd := &service.UsageBillingCommand{
+		RequestID: "attempt:physical-2", AccountID: 1, APIKeyID: 10, UserID: 20, APIKeyQuotaCost: 1.25,
+	}
+	cmd.Normalize()
+
+	mock.ExpectBegin()
+	expectUsageBillingClaimInserted(mock, cmd)
+	expectAPIKeyQuotaIncrement(mock, cmd.APIKeyID, cmd.APIKeyQuotaCost, true)
+	cacheKey := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	mock.ExpectQuery(`SELECT encode\(sha256\(convert_to\(key, 'UTF8'\)\), 'hex'\).*FROM api_keys`).
+		WithArgs(cmd.APIKeyID).
+		WillReturnRows(sqlmock.NewRows([]string{"cache_key"}).AddRow(cacheKey))
+	mock.ExpectExec("INSERT INTO auth_cache_invalidation_outbox").
+		WithArgs(cacheKey, "billing-quota:"+cmd.RequestID+":10").
+		WillReturnError(sql.ErrConnDone)
+	mock.ExpectRollback()
+
+	result, err := repo.ApplyAndStageOutboxFinalization(context.Background(), cmd, service.UsageBillingOutboxBinding{OutboxID: 7, WorkerID: "worker-1"})
+	require.ErrorIs(t, err, sql.ErrConnDone)
+	require.Nil(t, result)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageBillingRepositoryApplyAndStageOutboxFinalizationDoesNotStageInvalidationWhenQuotaRemainsAvailable(t *testing.T) {
+	db, mock := newUsageBillingSQLMock(t)
+	repo := &usageBillingRepository{db: db}
+	cmd := &service.UsageBillingCommand{
+		RequestID: "attempt:physical-3", AccountID: 1, APIKeyID: 10, UserID: 20, APIKeyQuotaCost: 1.25,
+	}
+	cmd.Normalize()
+
+	mock.ExpectBegin()
+	expectUsageBillingClaimInserted(mock, cmd)
+	expectAPIKeyQuotaIncrement(mock, cmd.APIKeyID, cmd.APIKeyQuotaCost, false)
+	mock.ExpectExec(`(?s)UPDATE billing_attempt_outbox.*status = 'finalization_pending'.*leased_by = \$2.*status = 'processing'`).
+		WithArgs(int64(7), "worker-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := repo.ApplyAndStageOutboxFinalization(context.Background(), cmd, service.UsageBillingOutboxBinding{OutboxID: 7, WorkerID: "worker-1"})
+	require.NoError(t, err)
+	require.False(t, result.APIKeyQuotaExhausted)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUsageBillingRepositoryApplyAndStageOutboxFinalization_RollsBackWhenStageLosesLease(t *testing.T) {
 	db, mock := newUsageBillingSQLMock(t)
 	repo := &usageBillingRepository{db: db}

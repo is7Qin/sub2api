@@ -377,7 +377,7 @@ func (r *billingOutboxRepository) Stats(ctx context.Context) (service.BillingOut
 		SELECT COUNT(*) FILTER (WHERE status IN ('pending', 'finalization_pending')),
 			COUNT(*) FILTER (WHERE status IN ('processing', 'finalizing')),
 			COUNT(*) FILTER (WHERE status = 'terminal'), COALESCE(MAX(attempts), 0),
-			MIN(created_at) FILTER (WHERE status IN ('pending', 'processing', 'finalization_pending', 'finalizing', 'terminal')),
+			MIN(created_at) FILTER (WHERE status IN ('pending', 'processing', 'finalization_pending', 'finalizing')),
 			(SELECT last_error FROM billing_attempt_outbox WHERE last_error IS NOT NULL ORDER BY updated_at DESC, id DESC LIMIT 1)
 		FROM billing_attempt_outbox
 	`).Scan(&stats.Pending, &stats.Processing, &stats.Terminal, &stats.MaxAttempts, &oldest, &lastError)

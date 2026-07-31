@@ -117,12 +117,21 @@ type stagedUsageBillingRepoStub struct {
 }
 
 func (r *stagedUsageBillingRepoStub) ApplyAndStageOutboxFinalization(ctx context.Context, cmd *UsageBillingCommand, binding UsageBillingOutboxBinding) (*UsageBillingApplyResult, error) {
+	r.mu.Lock()
 	r.stageCalls++
 	r.binding = binding
-	if r.stageFn != nil {
-		return r.stageFn(ctx, cmd, binding)
+	stageFn := r.stageFn
+	r.mu.Unlock()
+	if stageFn != nil {
+		return stageFn(ctx, cmd, binding)
 	}
 	return &UsageBillingApplyResult{Applied: true}, nil
+}
+
+func (r *stagedUsageBillingRepoStub) stagingSnapshot() (int, UsageBillingOutboxBinding) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stageCalls, r.binding
 }
 
 func (r *usageBillingRepoStub) Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error) {
@@ -207,9 +216,10 @@ func TestBillingOutboxWorker_StagesNewBillingBeforeFinalization(t *testing.T) {
 
 	worker.processRecord(context.Background(), validBillingOutboxRecord(72))
 
-	require.Equal(t, 1, billing.stageCalls)
-	require.Equal(t, int64(72), billing.binding.OutboxID)
-	require.Equal(t, worker.workerID, billing.binding.WorkerID)
+	stageCalls, binding := billing.stagingSnapshot()
+	require.Equal(t, 1, stageCalls)
+	require.Equal(t, int64(72), binding.OutboxID)
+	require.Equal(t, worker.workerID, binding.WorkerID)
 	require.Empty(t, repo.acked)
 }
 
@@ -239,6 +249,50 @@ func TestBillingOutboxWorker_ReplaysDurablyStagedFinalizationWithoutApplyingAgai
 	require.Empty(t, billing.commands)
 	require.Equal(t, 1, postProcessor.calls)
 	require.Equal(t, []int64{73}, repo.finalizationAcked)
+}
+
+func TestBillingOutboxWorkerProcessesFinalizationBatchConcurrently(t *testing.T) {
+	records := make([]BillingOutboxRecord, 2*billingOutboxConcurrency)
+	for i := range records {
+		records[i] = validBillingOutboxRecord(int64(i + 1))
+		records[i].Status = "finalizing"
+		records[i].ApplyResult = &UsageBillingApplyResult{Applied: true}
+	}
+	repo := &billingOutboxRepoStub{finalizationRecords: records}
+	started := make(chan struct{}, len(records))
+	release := make(chan struct{})
+	postProcessor := &blockingBillingOutboxPostProcessor{started: started, release: release}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+
+	finished := make(chan error, 1)
+	go func() { finished <- worker.processBatch(context.Background()) }()
+	for range billingOutboxConcurrency {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("finalization did not start up to the concurrency limit")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("finalization exceeded the concurrency limit before release")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	require.NoError(t, <-finished)
+	require.Len(t, repo.finalizationAcked, len(records))
+}
+
+type blockingBillingOutboxPostProcessor struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (p *blockingBillingOutboxPostProcessor) Finalize(context.Context, *BillingOutboxCommand, *UsageBillingApplyResult) error {
+	p.started <- struct{}{}
+	<-p.release
+	return nil
 }
 
 func TestBillingOutboxWorker_RetriesFinalizationFailureWithoutAcknowledging(t *testing.T) {
@@ -274,9 +328,9 @@ func TestBillingOutboxWorker_KeepsAppliedFinalizationRetryablePastAttemptLimit(t
 	require.False(t, repo.finalizationRetried[0].availableAt.IsZero())
 }
 
-func TestBillingOutboxWorker_QuarantinesTransientFailureAtAttemptLimit(t *testing.T) {
+func TestBillingOutboxWorkerKeepsRetryableApplyFailurePendingPastAttemptLimit(t *testing.T) {
 	repo := &billingOutboxRepoStub{}
-	billing := &usageBillingRepoStub{applyFn: func(context.Context, *UsageBillingCommand) (*UsageBillingApplyResult, error) {
+	billing := &stagedUsageBillingRepoStub{stageFn: func(context.Context, *UsageBillingCommand, UsageBillingOutboxBinding) (*UsageBillingApplyResult, error) {
 		return nil, errors.New("database temporarily unavailable")
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
@@ -286,8 +340,8 @@ func TestBillingOutboxWorker_QuarantinesTransientFailureAtAttemptLimit(t *testin
 	worker.processRecord(context.Background(), record)
 
 	require.Len(t, repo.retried, 1)
-	require.True(t, repo.retried[0].terminal)
-	require.True(t, repo.retried[0].availableAt.IsZero())
+	require.False(t, repo.retried[0].terminal)
+	require.False(t, repo.retried[0].availableAt.IsZero())
 }
 
 func TestBillingOutboxWorker_RetriesTransientStagedApplyFailureWithBoundedError(t *testing.T) {

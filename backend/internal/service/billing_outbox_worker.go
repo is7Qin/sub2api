@@ -121,14 +121,21 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("claim billing outbox finalizations: %w", err)
 		}
-		for i := range finalRecords {
-			w.processFinalization(ctx, finalRecords[i], finalRepo)
+		if err := w.processFinalizationBatch(ctx, finalRecords, finalRepo); err != nil {
+			return err
 		}
 	}
 	records, err := w.repo.Claim(ctx, w.workerID, billingOutboxBatchSize, billingOutboxLease)
 	if err != nil {
 		return fmt.Errorf("claim billing outbox commands: %w", err)
 	}
+	if err := w.processApplyBatch(ctx, records); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []BillingOutboxRecord) error {
 	semaphore := make(chan struct{}, billingOutboxConcurrency)
 	var wg sync.WaitGroup
 	for i := range records {
@@ -143,6 +150,27 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { <-semaphore }()
 			w.processRecord(ctx, record)
+		}(records[i])
+	}
+	wg.Wait()
+	return nil
+}
+
+func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, records []BillingOutboxRecord, repo BillingOutboxFinalizationRepository) error {
+	semaphore := make(chan struct{}, billingOutboxConcurrency)
+	var wg sync.WaitGroup
+	for i := range records {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return ctx.Err()
+		case semaphore <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(record BillingOutboxRecord) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			w.processFinalization(ctx, record, repo)
 		}(records[i])
 	}
 	wg.Wait()
@@ -248,9 +276,8 @@ func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinal
 }
 
 func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err error, terminal bool) {
-	if record.Attempts >= billingOutboxMaxAttempts {
-		terminal = true
-	}
+	// Retryable infrastructure failures remain recoverable indefinitely; the
+	// capped backoff limits poll delay without discarding durable work.
 	retryAt := time.Now().UTC().Add(billingOutboxRetryDelay(record.Attempts + 1))
 	if terminal {
 		retryAt = time.Time{}

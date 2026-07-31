@@ -170,18 +170,19 @@ func TestBillingOutboxRepository_StatsIncludeFinalizationStates(t *testing.T) {
 	require.Equal(t, int64(1), stats.Terminal)
 }
 
-func TestBillingOutboxRepository_StatsIncludeTerminalAndLastError(t *testing.T) {
+func TestBillingOutboxHealthOldestLagExcludesTerminalRetention(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	oldest := time.Now().Add(-time.Minute)
-	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\).*billing_attempt_outbox`).WillReturnRows(
-		sqlmock.NewRows([]string{"pending", "processing", "terminal", "max_attempts", "oldest", "last_error"}).AddRow(2, 1, 1, 4, oldest, "provider failed"))
+	oldestActionable := time.Now().Add(-time.Minute)
+	mock.ExpectQuery(`(?s)MIN\(created_at\) FILTER \(WHERE status IN \('pending', 'processing', 'finalization_pending', 'finalizing'\)\).*billing_attempt_outbox`).WillReturnRows(
+		sqlmock.NewRows([]string{"pending", "processing", "terminal", "max_attempts", "oldest", "last_error"}).AddRow(2, 1, 1, 4, oldestActionable, "provider failed"))
 	repo := NewBillingOutboxRepository(db)
 	stats, err := repo.Stats(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stats.Pending)
 	require.Equal(t, int64(1), stats.Terminal)
+	require.Equal(t, oldestActionable, *stats.OldestCreatedAt)
 	require.Equal(t, "provider failed", stats.LastError)
 }
 

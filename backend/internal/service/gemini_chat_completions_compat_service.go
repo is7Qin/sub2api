@@ -293,6 +293,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 
 	return &ForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            *usage,
 		Model:            originalModel,
 		UpstreamModel:    mappedModel,

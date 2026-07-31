@@ -293,6 +293,11 @@ func TestUpstreamErrorCandidatePrecedenceAndSafety(t *testing.T) {
 	}, UpstreamCandidateGenericTransport)
 
 	require.Equal(t, UpstreamCandidateStructured, structured.Rank)
+	require.Equal(t, "rate_limit_exceeded", structured.Fact.ProviderCode)
+	require.Equal(t, "rate_limit_error", structured.Fact.ProviderType)
+	require.Equal(t, "quota exceeded", structured.Fact.SafeMessage)
+	require.Equal(t, UpstreamErrorSourceTransport, transport.Fact.Source)
+	require.Equal(t, "proxy failure", transport.Fact.SafeMessage)
 	require.Equal(t, "rate_limit_exceeded", structured.Presentation.ErrorCode)
 	require.NotContains(t, structured.Presentation.Message, "Authorization")
 	require.Equal(t, UpstreamCandidateGenericTransport, transport.Rank)

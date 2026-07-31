@@ -48,6 +48,7 @@ const (
 )
 
 type UpstreamErrorCandidate struct {
+	Fact         UpstreamErrorFact
 	Presentation UpstreamClientPresentation
 	Rank         UpstreamCandidateRank
 }
@@ -76,9 +77,9 @@ func NewUpstreamErrorCandidate(fact UpstreamErrorFact, rank UpstreamCandidateRan
 		presentation.ErrorType = "api_error"
 	}
 	if presentation.Message == "" {
-		presentation.Message = "Upstream request failed"
+		presentation.Message = genericUpstreamFailureMessage
 	}
-	return &UpstreamErrorCandidate{Presentation: presentation, Rank: rank}
+	return &UpstreamErrorCandidate{Fact: fact, Presentation: presentation, Rank: rank}
 }
 
 // RecognizedUpstreamError is a direct, safe presentation that must bypass

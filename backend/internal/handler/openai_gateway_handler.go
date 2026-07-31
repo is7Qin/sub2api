@@ -330,6 +330,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
+	reasoningFailoverState := newOpenAIResponsesReasoningFailoverState(
+		forwardBody,
+		!service.IsOpenAIRemoteCompactionRequest(c),
+	)
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -421,6 +425,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		// Forward request
+		forwardAttemptBody, bodyErr := reasoningFailoverState.bodyForAttempt(account)
+		if bodyErr != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body", streamStarted)
+			return
+		}
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		writerSizeBeforeForward := c.Writer.Size()
@@ -441,9 +453,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 			},
 		)
+		reasoningFailoverState.recordAttempt(account)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer attemptReleases.releaseTransferred()
-			return h.gatewayService.Forward(attemptCtx, c, account, forwardBody)
+			return h.gatewayService.Forward(attemptCtx, c, account, forwardAttemptBody)
 		}()
 		if handleHTTPAttemptNotAdmitted(c, err) {
 			return

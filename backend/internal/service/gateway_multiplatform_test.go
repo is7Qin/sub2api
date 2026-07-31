@@ -290,6 +290,135 @@ func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testi
 	require.True(t, IsResponseCommitted(c))
 }
 
+func TestGatewayForward_SignatureRetryRecognizedErrorBeforeFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	account := &Account{
+		ID: 902, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "test-key"},
+	}
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyRectifierSettings: `{"enabled":true,"thinking_signature_enabled":true,"thinking_budget_enabled":true,"apikey_signature_enabled":true}`,
+	}}, testConfig())
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{
+		newJSONResponse(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"Invalid signature in thinking block"}}`),
+		newJSONResponse(http.StatusUnauthorized, `{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`),
+	}}
+	svc := &GatewayService{
+		cfg: testConfig(), httpUpstream: upstream, rateLimitService: rateLimits,
+		settingService: settings,
+	}
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-3-5-sonnet-latest","max_tokens":1024,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"x","signature":"bad"}]},{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
+	require.NoError(t, err)
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Len(t, upstream.requests, 2)
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
+
+func TestGatewayForwardAnthropicAPIKeyPassthrough_RecognizedErrorBeforeFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	account := newAnthropicAPIKeyAccountForTest()
+	account.ID = 902
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	upstream := &anthropicQueuedHTTPUpstream{responses: []*http.Response{{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`))),
+	}}}
+	svc := &GatewayService{cfg: testConfig(), httpUpstream: upstream, rateLimitService: rateLimits}
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(), c, account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest", "claude-3-5-sonnet-latest", false, time.Now(),
+	)
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Equal(t, 1, upstream.calls)
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.True(t, IsResponseCommitted(c))
+}
+
+type prefixErrorReader struct {
+	prefix []byte
+	read   bool
+}
+
+func (r *prefixErrorReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, errors.New("prefix reader exhausted")
+	}
+	r.read = true
+	n := copy(p, r.prefix)
+	return n, errors.New("upstream body read failed")
+}
+
+func (r *prefixErrorReader) Close() error { return nil }
+
+func TestHandleRecognizedHTTPErrorResponse_RestoresPartialBodyOnReadError(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       &prefixErrorReader{prefix: []byte(`{"error":{"message":"partial"}}`)},
+	}
+	account := &Account{ID: 904, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, _, handled := (&GatewayService{cfg: testConfig()}).handleRecognizedHTTPErrorResponse(resp, nil, account)
+
+	require.False(t, handled)
+	restored, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, `{"error":{"message":"partial"}}`, string(restored))
+}
+
+func TestHandleRecognizedHTTPErrorResponse_CommittedStreamReturnsTypedError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	_, err := c.Writer.WriteString(": ping\n\n")
+	require.NoError(t, err)
+
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`))),
+	}
+	account := &Account{ID: 903, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, err, handled := (&GatewayService{cfg: testConfig()}).handleRecognizedHTTPErrorResponse(resp, c, account)
+
+	require.True(t, handled)
+	var recognizedErr *RecognizedUpstreamError
+	require.ErrorAs(t, err, &recognizedErr)
+	require.True(t, recognizedErr.OutputStarted)
+	require.Equal(t, ": ping\n\n", rec.Body.String())
+	require.False(t, IsResponseCommitted(c))
+}
+
 func TestGatewayHandleErrorResponse_RecognizedDirectBeforeHealthAndRules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

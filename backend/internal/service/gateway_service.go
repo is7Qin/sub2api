@@ -5309,6 +5309,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 								resp = retryResp
 								break
 							}
+							if result, recognizedErr, handled := s.handleRecognizedHTTPErrorResponse(retryResp, c, account); handled {
+								return result, recognizedErr
+							}
 
 							retryRespBody, retryReadErr := s.readUpstreamErrorBody(retryResp)
 							_ = retryResp.Body.Close()
@@ -5360,6 +5363,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 													_ = retryResp2.Body.Close()
 													return nil, err
 												}
+											} else if result, recognizedErr, handled := s.handleRecognizedHTTPErrorResponse(retryResp2, c, account); handled {
+												return result, recognizedErr
 											}
 											resp = retryResp2
 											break
@@ -5453,6 +5458,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 										_ = budgetRetryResp.Body.Close()
 										return nil, err
 									}
+								} else if result, recognizedErr, handled := s.handleRecognizedHTTPErrorResponse(budgetRetryResp, c, account); handled {
+									return result, recognizedErr
 								}
 								resp = budgetRetryResp
 								break
@@ -5870,6 +5877,14 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				},
 			})
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
+
+		// Direct recognized semantics must own this response before passthrough
+		// retry/failover handling can mutate account health.
+		if resp.StatusCode >= http.StatusBadRequest {
+			if result, recognizedErr, handled := s.handleRecognizedHTTPErrorResponse(resp, c, account); handled {
+				return result, recognizedErr
+			}
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
@@ -8057,6 +8072,8 @@ func (s *GatewayService) readUpstreamErrorBody(resp *http.Response) ([]byte, err
 func (s *GatewayService) handleRecognizedHTTPErrorResponse(resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error, bool) {
 	body, readErr := s.readUpstreamErrorBody(resp)
 	if readErr != nil {
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return nil, nil, false
 	}
 	_ = resp.Body.Close()
@@ -8089,6 +8106,12 @@ func (s *GatewayService) handleRecognizedHTTPErrorResponse(resp *http.Response, 
 		Detail:             upstreamDetail,
 		UpstreamFact:       &fact,
 	})
+
+	if c != nil && c.Writer.Written() {
+		recognizedErr := newRecognizedUpstreamError(policy, fact)
+		recognizedErr.OutputStarted = true
+		return nil, recognizedErr, true
+	}
 
 	presentation := policy.Presentation
 	MarkResponseCommitted(c)

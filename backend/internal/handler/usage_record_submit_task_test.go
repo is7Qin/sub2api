@@ -200,6 +200,7 @@ func newSaturatedUsageRecordTestPool(t *testing.T, policy string, samplePercent 
 		OverflowSamplePercent: samplePercent,
 		AutoScaleEnabled:      false,
 	})
+	require.NoError(t, pool.Start())
 	release := make(chan struct{})
 	t.Cleanup(func() {
 		select {

@@ -74,6 +74,12 @@ func ProvideAdminHandlers(
 	}
 }
 
+func ProvideOpsHandler(opsService *service.OpsService, billingOutboxWorker *service.BillingOutboxWorker) *admin.OpsHandler {
+	h := admin.NewOpsHandler(opsService)
+	h.SetBillingOutboxWorker(billingOutboxWorker)
+	return h
+}
+
 // ProvideSystemHandler creates admin.SystemHandler with UpdateService
 func ProvideSystemHandler(updateService *service.UpdateService, lockService *service.SystemOperationLockService) *admin.SystemHandler {
 	return admin.NewSystemHandler(updateService, lockService)
@@ -169,7 +175,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewRedeemHandler,
 	admin.NewPromoHandler,
 	ProvideAdminSettingHandler,
-	admin.NewOpsHandler,
+	ProvideOpsHandler,
 	ProvideSystemHandler,
 	admin.NewSubscriptionHandler,
 	admin.NewUsageHandler,

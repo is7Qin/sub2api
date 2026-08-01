@@ -194,6 +194,7 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/system-logs", h.Admin.Ops.ListSystemLogs)
 		ops.POST("/system-logs/cleanup", h.Admin.Ops.CleanupSystemLogs)
 		ops.GET("/system-logs/health", h.Admin.Ops.GetSystemLogIngestionHealth)
+		ops.GET("/billing-outbox/health", h.Admin.Ops.GetBillingOutboxHealth)
 
 		// Dashboard (vNext - raw path for MVP)
 		ops.GET("/dashboard/snapshot-v2", h.Admin.Ops.GetDashboardSnapshotV2)

@@ -168,3 +168,13 @@ func TestMigration152AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {
 	require.Contains(t, sql, "auto_pause_on_expired = TRUE")
 	require.Contains(t, sql, "expires_at IS NOT NULL")
 }
+
+func TestMigration172DoesNotSuppressGenericQuotaInvalidation(t *testing.T) {
+	content, err := FS.ReadFile("172_billing_quota_auth_invalidation.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.NotContains(t, sql, "OLD.quota_used < OLD.quota")
+	require.NotContains(t, sql, "NEW.quota_used >= NEW.quota")
+	require.Contains(t, sql, "OLD.quota IS DISTINCT FROM NEW.quota")
+}

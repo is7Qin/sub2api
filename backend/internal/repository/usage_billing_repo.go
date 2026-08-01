@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -113,6 +114,9 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
 			return nil, err
 		}
+		if err := stageQuotaAuthCacheInvalidationIfExhausted(ctx, tx, cmd, result); err != nil {
+			return nil, err
+		}
 	}
 	if cmd.UsageLog != nil {
 		prepared, err := prepareUsageLogInsert(cmd.UsageLog)
@@ -157,6 +161,24 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 	}
 	tx = nil
 	return result, nil
+}
+
+func stageQuotaAuthCacheInvalidationIfExhausted(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand, result *service.UsageBillingApplyResult) error {
+	if result == nil || !result.APIKeyQuotaExhausted {
+		return nil
+	}
+	var cacheKey string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT encode(sha256(convert_to(key, 'UTF8')), 'hex')
+		FROM api_keys
+		WHERE id = $1 AND deleted_at IS NULL
+	`, cmd.APIKeyID).Scan(&cacheKey); err != nil {
+		return err
+	}
+	return stageAuthCacheInvalidationTx(ctx, tx, AuthCacheInvalidationStage{
+		CacheKey:  cacheKey,
+		SourceKey: "billing-quota:" + cmd.RequestID + ":" + strconv.FormatInt(cmd.APIKeyID, 10),
+	})
 }
 
 func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (bool, error) {

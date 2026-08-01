@@ -360,6 +360,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 	return &ForwardResult{
 		RequestID:       requestID,
+		AttemptID:       forwardResultAttemptID(resp),
 		Usage:           usage,
 		Model:           originalModel,
 		UpstreamModel:   mappedModel,
@@ -395,6 +396,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
+	clientDisconnected := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -405,19 +407,21 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:       requestID,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ReasoningEffort: reasoningEffort,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:        requestID,
+			AttemptID:        forwardResultAttemptID(resp),
+			Usage:            usage,
+			Model:            originalModel,
+			UpstreamModel:    mappedModel,
+			ReasoningEffort:  reasoningEffort,
+			Stream:           true,
+			Duration:         time.Since(startTime),
+			FirstTokenMs:     firstTokenMs,
+			ClientDisconnect: clientDisconnected,
 		}
 	}
 
 	// processEvent handles a single parsed Anthropic SSE event.
-	processEvent := func(event *apicompat.AnthropicStreamEvent) bool {
+	processEvent := func(event *apicompat.AnthropicStreamEvent) {
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
@@ -433,42 +437,49 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			mergeAnthropicUsage(&usage, event.Message.Usage)
 		}
 
-		// Convert to Responses events
+		// Convert to Responses events even after disconnect so conversion state and usage remain complete.
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
-		for _, evt := range events {
-			sse, err := apicompat.ResponsesEventToSSE(evt)
-			if err != nil {
-				logger.L().Warn("forward_as_responses stream: failed to marshal event",
-					zap.Error(err),
-					zap.String("request_id", requestID),
-				)
-				continue
+		if !clientDisconnected {
+			for _, evt := range events {
+				sse, err := apicompat.ResponsesEventToSSE(evt)
+				if err != nil {
+					logger.L().Warn("forward_as_responses stream: failed to marshal event",
+						zap.Error(err),
+						zap.String("request_id", requestID),
+					)
+					continue
+				}
+				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+				if _, err := fmt.Fprint(c.Writer, out); err != nil {
+					clientDisconnected = true
+					logger.L().Info("forward_as_responses stream: client disconnected, continuing to drain upstream for billing",
+						zap.String("request_id", requestID),
+					)
+					break
+				}
 			}
-			out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-			if _, err := fmt.Fprint(c.Writer, out); err != nil {
-				logger.L().Info("forward_as_responses stream: client disconnected",
-					zap.String("request_id", requestID),
-				)
-				return true // client disconnected
+			if len(events) > 0 && !clientDisconnected {
+				c.Writer.Flush()
 			}
 		}
-		if len(events) > 0 {
-			c.Writer.Flush()
-		}
-		return false
 	}
 
 	finalizeStream := func() (*ForwardResult, error) {
-		if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 {
+		if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 && !clientDisconnected {
 			for _, evt := range finalEvents {
 				sse, err := apicompat.ResponsesEventToSSE(evt)
 				if err != nil {
 					continue
 				}
 				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-				fmt.Fprint(c.Writer, out) //nolint:errcheck
+				if _, err := fmt.Fprint(c.Writer, out); err != nil {
+					clientDisconnected = true
+					break
+				}
 			}
-			c.Writer.Flush()
+			if !clientDisconnected {
+				c.Writer.Flush()
+			}
 		}
 		return resultWithUsage(), nil
 	}
@@ -501,9 +512,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 
-		if processEvent(&event) {
-			return resultWithUsage(), nil
-		}
+		processEvent(&event)
 	}
 
 	if err := scanner.Err(); err != nil {

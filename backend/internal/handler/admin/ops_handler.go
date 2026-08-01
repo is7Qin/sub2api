@@ -14,7 +14,26 @@ import (
 )
 
 type OpsHandler struct {
-	opsService *service.OpsService
+	opsService    *service.OpsService
+	billingOutbox *service.BillingOutboxWorker
+}
+
+// GetBillingOutboxHealth exposes durable billing backlog health through the
+// authenticated, monitoring-gated operations surface without command data.
+func (h *OpsHandler) GetBillingOutboxHealth(c *gin.Context) {
+	if h == nil || h.billingOutbox == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Billing outbox worker not available")
+		return
+	}
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, h.billingOutbox.Health(c.Request.Context()))
 }
 
 // GetErrorLogByID returns ops error log detail.
@@ -70,6 +89,12 @@ func parseOpsViewParam(c *gin.Context) string {
 
 func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 	return &OpsHandler{opsService: opsService}
+}
+
+func (h *OpsHandler) SetBillingOutboxWorker(worker *service.BillingOutboxWorker) {
+	if h != nil {
+		h.billingOutbox = worker
+	}
 }
 
 // GetErrorLogs lists ops error logs.

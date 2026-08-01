@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,46 @@ func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, ac
 func (s *geminiCompatHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
+
+type compatFailingWriter struct {
+	gin.ResponseWriter
+	failed chan struct{}
+	once   sync.Once
+	writes int
+}
+
+func (w *compatFailingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	w.once.Do(func() { close(w.failed) })
+	return 0, errors.New("write failed: client disconnected")
+}
+
+func (w *compatFailingWriter) WriteString(p string) (int, error) {
+	return w.Write([]byte(p))
+}
+
+type barrierStreamBody struct {
+	beforeTerminal []byte
+	terminal       []byte
+	terminalGate   <-chan struct{}
+	stage          int
+}
+
+func (b *barrierStreamBody) Read(p []byte) (int, error) {
+	switch b.stage {
+	case 0:
+		b.stage++
+		return copy(p, b.beforeTerminal), nil
+	case 1:
+		<-b.terminalGate
+		b.stage++
+		return copy(p, b.terminal), nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (b *barrierStreamBody) Close() error { return nil }
 
 func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -116,6 +157,63 @@ func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(
 	require.Equal(t, float64(7), usage["prompt_tokens"])
 	require.Equal(t, float64(3), usage["completion_tokens"])
 	require.Equal(t, float64(10), usage["total_tokens"])
+}
+
+func TestGeminiForwardAsChatCompletions_ClientDisconnectDrainsTerminalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	terminalGate := make(chan struct{})
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: &barrierStreamBody{
+				beforeTerminal: []byte(`data: {"candidates":[{"content":{"parts":[{"text":"hel"}]}}]}` + "\n\n" + `data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}` + "\n\n"),
+				terminal:       []byte(`data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":19,"candidatesTokenCount":7}}` + "\n\ndata: [DONE]\n\n"),
+				terminalGate:   terminalGate,
+			},
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+	account := &Account{
+		ID:          103,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "gemini-api-key"},
+		Concurrency: 1,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	writer := &compatFailingWriter{ResponseWriter: c.Writer, failed: make(chan struct{})}
+	c.Writer = writer
+	body := []byte(`{"model":"gemini-2.5-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	type outcome struct {
+		result *ForwardResult
+		err    error
+	}
+	resultCh := make(chan outcome, 1)
+	go func() {
+		result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body)
+		resultCh <- outcome{result: result, err: err}
+	}()
+
+	<-writer.failed
+	select {
+	case got := <-resultCh:
+		t.Fatalf("returned before terminal usage was released: result=%#v err=%v", got.result, got.err)
+	default:
+	}
+	close(terminalGate)
+	got := <-resultCh
+	require.NoError(t, got.err)
+	require.NotNil(t, got.result)
+	require.Equal(t, 19, got.result.Usage.InputTokens)
+	require.Equal(t, 7, got.result.Usage.OutputTokens)
+	require.True(t, got.result.ClientDisconnect)
+	require.Equal(t, 1, writer.writes)
 }
 
 func TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE(t *testing.T) {

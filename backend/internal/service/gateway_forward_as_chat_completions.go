@@ -342,6 +342,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 	return &ForwardResult{
 		RequestID:       requestID,
+		AttemptID:       forwardResultAttemptID(resp),
 		Usage:           usage,
 		Model:           originalModel,
 		UpstreamModel:   mappedModel,
@@ -383,6 +384,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
+	clientDisconnected := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -393,32 +395,36 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:       requestID,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ReasoningEffort: reasoningEffort,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:        requestID,
+			AttemptID:        forwardResultAttemptID(resp),
+			Usage:            usage,
+			Model:            originalModel,
+			UpstreamModel:    mappedModel,
+			ReasoningEffort:  reasoningEffort,
+			Stream:           true,
+			Duration:         time.Since(startTime),
+			FirstTokenMs:     firstTokenMs,
+			ClientDisconnect: clientDisconnected,
 		}
 	}
 
-	writeChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
+	writeChunk := func(chunk apicompat.ChatCompletionsChunk) {
+		if clientDisconnected {
+			return
+		}
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
-			return false
+			return
 		}
 		// Reverse tool name mapping: fake → real, per-chunk bytes.Replace.
 		// c 可能持有请求侧注入的 ToolNameRewrite；无则仅做静态前缀还原。
 		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
 		if _, err := fmt.Fprint(c.Writer, out); err != nil {
-			return true // client disconnected
+			clientDisconnected = true
 		}
-		return false
 	}
 
-	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) bool {
+	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) {
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
@@ -439,13 +445,12 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		for _, resEvt := range responsesEvents {
 			ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
 			for _, chunk := range ccChunks {
-				if disconnected := writeChunk(chunk); disconnected {
-					return true
-				}
+				writeChunk(chunk)
 			}
 		}
-		c.Writer.Flush()
-		return false
+		if !clientDisconnected {
+			c.Writer.Flush()
+		}
 	}
 
 	for scanner.Scan() {
@@ -468,9 +473,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 			continue
 		}
 
-		if processAnthropicEvent(&event) {
-			return resultWithUsage(), nil
-		}
+		processAnthropicEvent(&event)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -495,9 +498,14 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		writeChunk(chunk) //nolint:errcheck
 	}
 
-	// Write [DONE] marker
-	fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
-	c.Writer.Flush()
+	// Write [DONE] marker only while the downstream is still writable.
+	if !clientDisconnected {
+		if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
+			clientDisconnected = true
+		} else {
+			c.Writer.Flush()
+		}
+	}
 
 	return resultWithUsage(), nil
 }

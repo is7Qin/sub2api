@@ -132,6 +132,7 @@ type BillingOutboxRepository interface {
 type BillingOutboxFinalizationRepository interface {
 	BillingOutboxRepository
 	ClaimFinalization(ctx context.Context, workerID string, limit int, lease time.Duration) ([]BillingOutboxRecord, error)
+	RenewFinalizationLease(ctx context.Context, id int64, workerID string, lease time.Duration) error
 	RetryFinalization(ctx context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error
 	AckFinalization(ctx context.Context, id int64, workerID string) error
 }

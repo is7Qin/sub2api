@@ -148,12 +148,14 @@ func (s *httpUpstreamStub) DoWithTLS(_ *http.Request, _ string, _ int64, _ int, 
 type queuedHTTPUpstreamStub struct {
 	responses     []*http.Response
 	errors        []error
+	requests      []*http.Request
 	requestBodies [][]byte
 	callCount     int
 	onCall        func(*http.Request, *queuedHTTPUpstreamStub)
 }
 
 func (s *queuedHTTPUpstreamStub) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	s.requests = append(s.requests, req)
 	if req != nil && req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		s.requestBodies = append(s.requestBodies, body)
@@ -1193,6 +1195,35 @@ func TestAntigravityGatewayService_Forward_UpstreamAccountIgnoresConfiguredProje
 	require.Empty(t, probe.paths)
 	require.Empty(t, account.GetCredential("project_id"))
 	require.Contains(t, writer.Body.String(), `"text":"ok"`)
+}
+
+func TestAntigravityGatewayService_Forward_UpstreamAccountPreservesAdmittedAttemptID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":2}}`)),
+	}}}
+	svc := &AntigravityGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID: 106, Name: "acc-forward-upstream-attempt", Platform: PlatformAntigravity,
+		Type: AccountTypeUpstream, Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "upstream-key", "base_url": "https://gateway.example.com/antigravity"},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.NotEmpty(t, HTTPAttemptID(upstream.requests[0].Context()))
+	require.Equal(t, HTTPAttemptID(upstream.requests[0].Context()), result.AttemptID)
+	require.Equal(t, 1, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
 }
 
 func TestAntigravityGatewayService_Forward_PromptTooLong(t *testing.T) {

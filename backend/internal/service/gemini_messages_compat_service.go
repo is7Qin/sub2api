@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -638,9 +639,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			if req.Stream {
 				action = "streamGenerateContent"
 			}
-			fullURL := fmt.Sprintf("%s/v1beta/models/%s:%s", strings.TrimRight(normalizedBaseURL, "/"), mappedModel, action)
-			if req.Stream {
-				fullURL += "?alt=sse"
+			fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, action, req.Stream)
+			if err != nil {
+				return nil, "", err
 			}
 
 			restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
@@ -712,9 +713,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					return nil, "", err
 				}
 
-				fullURL := fmt.Sprintf("%s/v1beta/models/%s:%s", strings.TrimRight(normalizedBaseURL, "/"), mappedModel, action)
-				if useUpstreamStream {
-					fullURL += "?alt=sse"
+				fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, action, useUpstreamStream)
+				if err != nil {
+					return nil, "", err
 				}
 
 				restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
@@ -978,6 +979,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
 				}
+				if failoverErr := s.poolModeSkippedFailoverError(c, account, resp.StatusCode, unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody), upstreamReqID); failoverErr != nil {
+					return nil, failoverErr
+				}
 				return nil, s.writeGeminiMappedError(c, account, http.StatusInternalServerError, upstreamReqID, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
 				if policy == ErrorPolicyMatched {
@@ -1102,7 +1106,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				streamErr = s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
 			} else {
 				collectedBytes, _ := json.Marshal(collected)
-				claudeResp, usageObj2 := convertGeminiToClaudeMessage(collected, originalModel, collectedBytes)
+				claudeResp, usageObj2 := convertGeminiToClaudeMessage(collected, originalModel, collectedBytes, false)
 				c.JSON(http.StatusOK, claudeResp)
 				usage = usageObj2
 				if usageObj != nil && (usageObj.InputTokens > 0 || usageObj.OutputTokens > 0) {
@@ -1117,16 +1121,16 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 	}
 
-	if usage == nil {
-		usage = &ClaudeUsage{}
-	}
-
 	// 图片生成计费
 	imageCount := 0
 	imageInputSize := s.extractImageInputSize(body)
 	imageSize := normalizeOpenAIImageSizeTier(imageInputSize)
 	if isImageGenerationModel(originalModel) {
 		imageCount = 1
+	}
+
+	if usage == nil {
+		usage = &ClaudeUsage{}
 	}
 
 	return &ForwardResult{
@@ -1218,9 +1222,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, "", err
 			}
 
-			fullURL := fmt.Sprintf("%s/v1beta/models/%s:%s", strings.TrimRight(normalizedBaseURL, "/"), mappedModel, upstreamAction)
-			if useUpstreamStream {
-				fullURL += "?alt=sse"
+			fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
+			if err != nil {
+				return nil, "", err
 			}
 
 			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
@@ -1286,9 +1290,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					return nil, "", err
 				}
 
-				fullURL := fmt.Sprintf("%s/v1beta/models/%s:%s", strings.TrimRight(normalizedBaseURL, "/"), mappedModel, upstreamAction)
-				if useUpstreamStream {
-					fullURL += "?alt=sse"
+				fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
+				if err != nil {
+					return nil, "", err
 				}
 
 				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
@@ -1522,6 +1526,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			policy := s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
 			switch policy {
 			case ErrorPolicySkipped:
+				if failoverErr := s.poolModeSkippedFailoverError(c, account, resp.StatusCode, unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody), requestID); failoverErr != nil {
+					return nil, failoverErr
+				}
 				respBody = unwrapIfNeeded(isOAuth, respBody)
 				return nil, s.writeResolvedGoogleUpstreamError(c, resp, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
@@ -1736,6 +1743,39 @@ func (s *GeminiMessagesCompatService) shouldFailoverGeminiUpstreamError(statusCo
 		return true
 	default:
 		return statusCode >= 500
+	}
+}
+
+// poolModeSkippedFailoverError classifies a skipped Gemini policy error for pool-mode failover.
+// A nil result keeps the existing local error response for ineligible accounts/statuses.
+func (s *GeminiMessagesCompatService) poolModeSkippedFailoverError(c *gin.Context, account *Account, statusCode int, responseBody []byte, upstreamRequestID string) *UpstreamFailoverError {
+	if account == nil || !account.IsPoolMode() || !s.shouldFailoverGeminiUpstreamError(statusCode) {
+		return nil
+	}
+
+	upstreamMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	upstreamDetail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		upstreamDetail = truncateString(string(responseBody), maxBytes)
+	}
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: statusCode,
+		UpstreamRequestID:  upstreamRequestID,
+		Kind:               "failover",
+		Message:            upstreamMessage,
+		Detail:             upstreamDetail,
+	})
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           responseBody,
+		RetryableOnSameAccount: account.IsPoolModeRetryableStatus(statusCode),
 	}
 }
 
@@ -2004,8 +2044,9 @@ func mapGeminiStatusToClaudeErrorType(status string) string {
 }
 
 type geminiStreamResult struct {
-	usage        *ClaudeUsage
-	firstTokenMs *int
+	usage            *ClaudeUsage
+	firstTokenMs     *int
+	clientDisconnect bool
 }
 
 func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, originalModel string) (*ClaudeUsage, error) {
@@ -2024,7 +2065,7 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
 	}
 
-	claudeResp, usage := convertGeminiToClaudeMessage(geminiResp, originalModel, unwrappedBody)
+	claudeResp, usage := convertGeminiToClaudeMessage(geminiResp, originalModel, unwrappedBody, false)
 	c.JSON(http.StatusOK, claudeResp)
 
 	return usage, nil
@@ -2374,11 +2415,23 @@ func unwrapIfNeeded(isOAuth bool, raw []byte) []byte {
 }
 
 func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsage, error) {
+	return collectGeminiSSEWithOrderedParts(body, isOAuth, false)
+}
+
+// collectGeminiChatCompletionsSSE is the Chat-only collector that retains
+// non-text output parts while preserving their order with text and tool calls.
+func collectGeminiChatCompletionsSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsage, error) {
+	return collectGeminiSSEWithOrderedParts(body, isOAuth, true)
+}
+
+func collectGeminiSSEWithOrderedParts(body io.Reader, isOAuth, orderedParts bool) (map[string]any, *ClaudeUsage, error) {
 	reader := bufio.NewReader(body)
 
 	var last map[string]any
 	var lastWithParts map[string]any
-	var collectedTextParts []string // Collect all text parts for aggregation
+	var collectedTextParts []string
+	var collectedParts []any
+	seenText := ""
 	usage := &ClaudeUsage{}
 
 	for {
@@ -2390,7 +2443,7 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 				switch payload {
 				case "", "[DONE]":
 					if payload == "[DONE]" {
-						return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, nil
+						return mergeCollectedGeminiSSEParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts, collectedParts, orderedParts), usage, nil
 					}
 				default:
 					var parsed map[string]any
@@ -2412,11 +2465,23 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 						}
 						if parts := extractGeminiParts(parsed); len(parts) > 0 {
 							lastWithParts = parsed
-							// Collect text from each part for aggregation
 							for _, part := range parts {
-								if text, ok := part["text"].(string); ok && text != "" {
-									collectedTextParts = append(collectedTextParts, text)
+								text, hasText := part["text"].(string)
+								if !orderedParts {
+									if hasText && text != "" {
+										collectedTextParts = append(collectedTextParts, text)
+									}
+									continue
 								}
+								if hasText && text != "" {
+									delta, newSeen := computeGeminiTextDelta(seenText, text)
+									seenText = newSeen
+									if delta != "" {
+										collectedParts = appendCollectedGeminiPart(collectedParts, map[string]any{"text": delta})
+									}
+									continue
+								}
+								collectedParts = appendCollectedGeminiPart(collectedParts, part)
 							}
 						}
 					}
@@ -2428,11 +2493,33 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 			break
 		}
 		if err != nil {
-			return nil, usage, err
+			partial := mergeCollectedGeminiSSEParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts, collectedParts, orderedParts)
+			return partial, usage, err
 		}
 	}
 
-	return mergeCollectedTextParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts), usage, nil
+	return mergeCollectedGeminiSSEParts(pickGeminiCollectResult(last, lastWithParts), collectedTextParts, collectedParts, orderedParts), usage, nil
+}
+
+func mergeCollectedGeminiSSEParts(response map[string]any, textParts []string, parts []any, orderedParts bool) map[string]any {
+	if orderedParts {
+		return mergeCollectedGeminiParts(response, parts)
+	}
+	return mergeCollectedTextParts(response, textParts)
+}
+
+func appendCollectedGeminiPart(parts []any, part map[string]any) []any {
+	if len(parts) > 0 {
+		if text, ok := part["text"].(string); ok {
+			if previous, ok := parts[len(parts)-1].(map[string]any); ok {
+				if previousText, ok := previous["text"].(string); ok {
+					previous["text"] = previousText + text
+					return parts
+				}
+			}
+		}
+	}
+	return append(parts, part)
 }
 
 func pickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) map[string]any {
@@ -2445,70 +2532,59 @@ func pickGeminiCollectResult(last map[string]any, lastWithParts map[string]any) 
 	return map[string]any{}
 }
 
-// mergeCollectedTextParts merges all collected text chunks into the final response.
-// This fixes the issue where non-streaming responses only returned the last chunk
-// instead of the complete aggregated text.
+// mergeCollectedTextParts retains the baseline collector behavior: aggregate
+// every text chunk while leaving only the selected response's non-text parts.
 func mergeCollectedTextParts(response map[string]any, textParts []string) map[string]any {
 	if len(textParts) == 0 {
 		return response
 	}
 
-	// Join all text parts
 	mergedText := strings.Join(textParts, "")
-
-	// Deep copy response
 	result := make(map[string]any)
 	for k, v := range response {
 		result[k] = v
 	}
 
-	// Get or create candidates
 	candidates, ok := result["candidates"].([]any)
 	if !ok || len(candidates) == 0 {
 		candidates = []any{map[string]any{}}
 	}
 
-	// Get first candidate
 	candidate, ok := candidates[0].(map[string]any)
 	if !ok {
 		candidate = make(map[string]any)
 		candidates[0] = candidate
 	}
 
-	// Get or create content
 	content, ok := candidate["content"].(map[string]any)
 	if !ok {
 		content = map[string]any{"role": "model"}
 		candidate["content"] = content
 	}
 
-	// Get existing parts
 	existingParts, ok := content["parts"].([]any)
 	if !ok {
 		existingParts = []any{}
 	}
 
-	// Find and update first text part, or create new one
 	newParts := make([]any, 0, len(existingParts)+1)
 	textUpdated := false
-
-	for _, p := range existingParts {
-		pm, ok := p.(map[string]any)
+	for _, part := range existingParts {
+		partMap, ok := part.(map[string]any)
 		if !ok {
-			newParts = append(newParts, p)
+			newParts = append(newParts, part)
 			continue
 		}
-		if _, hasText := pm["text"]; hasText && !textUpdated {
-			// Replace with merged text
+		if _, hasText := partMap["text"]; hasText && !textUpdated {
 			newPart := make(map[string]any)
-			for k, v := range pm {
+			for k, v := range partMap {
 				newPart[k] = v
 			}
 			newPart["text"] = mergedText
 			newParts = append(newParts, newPart)
 			textUpdated = true
 		} else {
-			newParts = append(newParts, pm)
+			newParts = append(newParts, partMap)
 		}
 	}
 
@@ -2517,6 +2593,53 @@ func mergeCollectedTextParts(response map[string]any, textParts []string) map[st
 	}
 
 	content["parts"] = newParts
+	result["candidates"] = candidates
+	return result
+}
+
+// mergeCollectedGeminiParts replaces the selected candidate's latest chunk
+// with the complete ordered part sequence accumulated from the upstream SSE.
+func mergeCollectedGeminiParts(response map[string]any, collectedParts []any) map[string]any {
+	if len(collectedParts) == 0 {
+		return response
+	}
+
+	result := make(map[string]any, len(response))
+	for k, v := range response {
+		result[k] = v
+	}
+
+	candidates, ok := result["candidates"].([]any)
+	if !ok || len(candidates) == 0 {
+		candidates = []any{map[string]any{}}
+	} else {
+		candidates = append([]any(nil), candidates...)
+	}
+
+	candidate, ok := candidates[0].(map[string]any)
+	if !ok {
+		candidate = make(map[string]any)
+	} else {
+		candidateCopy := make(map[string]any, len(candidate))
+		for k, v := range candidate {
+			candidateCopy[k] = v
+		}
+		candidate = candidateCopy
+	}
+	candidates[0] = candidate
+
+	content, ok := candidate["content"].(map[string]any)
+	if !ok {
+		content = map[string]any{"role": "model"}
+	} else {
+		contentCopy := make(map[string]any, len(content))
+		for k, v := range content {
+			contentCopy[k] = v
+		}
+		content = contentCopy
+	}
+	content["parts"] = collectedParts
+	candidate["content"] = content
 	result["candidates"] = candidates
 
 	return result
@@ -2734,8 +2857,11 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 	if account == nil {
 		return nil, errors.New("account is nil")
 	}
-	path = strings.TrimSpace(path)
 	if path == "" || !strings.HasPrefix(path, "/") {
+		return nil, errors.New("invalid path")
+	}
+	validatedPath, ok := sanitizedUpstreamPathSuffix(path)
+	if !ok {
 		return nil, errors.New("invalid path")
 	}
 
@@ -2744,7 +2870,11 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 	if err != nil {
 		return nil, err
 	}
-	fullURL := strings.TrimRight(normalizedBaseURL, "/") + path
+	appendableBaseURL, err := normalizedAppendableUpstreamBaseURL(normalizedBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid gemini base url: %w", err)
+	}
+	fullURL := appendableBaseURL + validatedPath
 
 	var proxyURL string
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -2805,7 +2935,7 @@ func unwrapGeminiResponse(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel string, rawData []byte) (map[string]any, *ClaudeUsage) {
+func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel string, rawData []byte, includeInlineData bool) (map[string]any, *ClaudeUsage) {
 	usage := extractGeminiUsage(rawData)
 	if usage == nil {
 		usage = &ClaudeUsage{}
@@ -2827,6 +2957,14 @@ func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel strin
 								"type": "text",
 								"text": text,
 							})
+						}
+						if includeInlineData {
+							if imageMarkdown, ok := geminiInlineImageMarkdown(pm["inlineData"]); ok {
+								contentBlocks = append(contentBlocks, map[string]any{
+									"type": "text",
+									"text": imageMarkdown,
+								})
+							}
 						}
 						if fc, ok := pm["functionCall"].(map[string]any); ok {
 							name, _ := fc["name"].(string)
@@ -2868,6 +3006,31 @@ func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel strin
 	}
 
 	return resp, usage
+}
+
+func geminiInlineImageMarkdown(value any) (string, bool) {
+	inlineData, ok := value.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	mimeType, _ := inlineData["mimeType"].(string)
+	data, _ := inlineData["data"].(string)
+	if !isGeminiInlineImageMIMEType(mimeType) || data == "" {
+		return "", false
+	}
+	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("![image](data:%s;base64,%s)", mimeType, data), true
+}
+
+func isGeminiInlineImageMIMEType(mimeType string) bool {
+	switch mimeType {
+	case "image/gif", "image/jpeg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractGeminiUsage(data []byte) *ClaudeUsage {

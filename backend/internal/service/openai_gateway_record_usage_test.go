@@ -30,6 +30,27 @@ func (s *openAIRecordUsageLogRepoStub) Create(ctx context.Context, log *UsageLog
 	return s.inserted, s.err
 }
 
+type openAIRecordUsageBillingOutboxStub struct {
+	command *BillingOutboxCommand
+	calls   int
+}
+
+func (s *openAIRecordUsageBillingOutboxStub) Enqueue(_ context.Context, command *BillingOutboxCommand) (*BillingOutboxRecord, error) {
+	s.calls++
+	s.command = command
+	return &BillingOutboxRecord{Command: *command}, nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) Claim(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) Retry(context.Context, int64, string, time.Time, string, bool) error {
+	return nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) Ack(context.Context, int64, string) error { return nil }
+func (s *openAIRecordUsageBillingOutboxStub) Stats(context.Context) (BillingOutboxStats, error) {
+	return BillingOutboxStats{}, nil
+}
+
 type openAIRecordUsageBillingRepoStub struct {
 	UsageBillingRepository
 
@@ -193,6 +214,54 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestOpenAIGatewayServiceRecordUsage_EnqueuesAttemptScopedCommand(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	outbox := &openAIRecordUsageBillingOutboxStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.SetBillingOutboxRepository(outbox)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "logical-upstream", AttemptID: "openai-attempt-a",
+			Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 4}, Model: "gpt-5.1", Duration: time.Second,
+		},
+		APIKey: &APIKey{ID: 1000, Quota: 100, Group: &Group{RateMultiplier: 1}},
+		User:   &User{ID: 2000}, Account: &Account{ID: 3000, Type: AccountTypeAPIKey},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, outbox.calls)
+	require.Zero(t, billingRepo.calls)
+	require.Equal(t, "openai-attempt-a", outbox.command.AttemptID)
+	require.Equal(t, "attempt:openai-attempt-a", outbox.command.Billing.RequestID)
+	require.Equal(t, "attempt:openai-attempt-a", outbox.command.Billing.UsageLog.RequestID)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_WSModeEnqueuesAdmittedAttemptIdentity(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	outbox := &openAIRecordUsageBillingOutboxStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.SetBillingOutboxRepository(outbox)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_ws_bridge", AttemptID: "ws-physical-attempt", OpenAIWSMode: true,
+			Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 4}, Model: "gpt-5.1", Duration: time.Second,
+		},
+		APIKey: &APIKey{ID: 1000, Quota: 100, Group: &Group{RateMultiplier: 1}},
+		User:   &User{ID: 2000}, Account: &Account{ID: 3000, Type: AccountTypeAPIKey},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, outbox.calls)
+	require.Zero(t, billingRepo.calls)
+	require.Equal(t, "ws-physical-attempt", outbox.command.AttemptID)
+	require.Equal(t, "attempt:ws-physical-attempt", outbox.command.Billing.RequestID)
+	require.Equal(t, "attempt:ws-physical-attempt", outbox.command.Billing.UsageLog.RequestID)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing.T) {

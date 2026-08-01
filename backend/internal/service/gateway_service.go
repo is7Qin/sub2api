@@ -736,6 +736,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	billingOutboxRepo     BillingOutboxRepository
 }
 
 // NewGatewayService creates a new GatewayService
@@ -803,6 +804,7 @@ func NewGatewayService(
 		resolver:              resolver,
 		balanceNotifyService:  balanceNotifyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		billingOutboxRepo:     nil,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -817,6 +819,14 @@ func NewGatewayService(
 		svc.initDebugGatewayBodyFile(path)
 	}
 	return svc
+}
+
+// SetBillingOutboxRepository injects durable billing command storage after the
+// gateway's existing constructor has completed.
+func (s *GatewayService) SetBillingOutboxRepository(repo BillingOutboxRepository) {
+	if s != nil {
+		s.billingOutboxRepo = repo
+	}
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
@@ -1536,6 +1546,42 @@ func liftInitialAnthropicSystemMessages(body []byte) ([]byte, bool) {
 		out = next
 	}
 	return out, true
+}
+
+// isProxiedClaudeCodeOAuthRequest accepts only the body evidence preserved by an
+// intermediary after direct Claude Code detection has failed. It is deliberately
+// narrow: the parsed metadata must match the raw body, and only a direct
+// top-level system text billing block can bypass OAuth mimicry.
+func isProxiedClaudeCodeOAuthRequest(parsed *ParsedRequest, body []byte) bool {
+	if parsed == nil || !gjson.ValidBytes(body) || ParseMetadataUserID(parsed.MetadataUserID) == nil {
+		return false
+	}
+	metadataUserID := gjson.GetBytes(body, "metadata.user_id")
+	if metadataUserID.Type != gjson.String || metadataUserID.String() != parsed.MetadataUserID {
+		return false
+	}
+
+	system := gjson.GetBytes(body, "system")
+	if !system.IsArray() {
+		return false
+	}
+	matched := false
+	system.ForEach(func(_, block gjson.Result) bool {
+		// Claude Code emits this only as a direct text system block. Do not
+		// search arbitrary system objects, messages, or tool payloads.
+		if !block.IsObject() || block.Get("type").String() != "text" {
+			return true
+		}
+		text := block.Get("text")
+		if text.Type == gjson.String &&
+			strings.HasPrefix(text.String(), claudeCodeBillingHeaderPrefix) &&
+			strings.Contains(text.String(), claudeCodeEntrypointMarker) {
+			matched = true
+			return false
+		}
+		return true
+	})
+	return matched
 }
 
 func normalizeNativeAnthropicOAuthRequestBody(body []byte) []byte {
@@ -5018,6 +5064,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	//
 	// 对于非 Claude Code 的第三方客户端（opencode 等），仍然走完整 mimicry。
 	isClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCode && account.IsAnthropicOAuthOrSetupToken() {
+		isClaudeCode = isProxiedClaudeCodeOAuthRequest(parsed, body)
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 	if !shouldMimicClaudeCode {
 		if err := replaceBody(normalizeNativeAnthropicRequestForAccount(account, body)); err != nil {
@@ -6736,6 +6785,7 @@ func (s *GatewayService) forwardBedrock(
 
 	return &ForwardResult{
 		RequestID:        resp.Header.Get("x-amzn-requestid"),
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            *usage,
 		Model:            reqModel,
 		UpstreamModel:    mappedModel,
@@ -9191,6 +9241,11 @@ func (s *GatewayService) replaceModelInResponseBody(body []byte, fromModel, toMo
 	return body
 }
 
+// ResolveUserGroupRateMultiplier exposes the billing-owned user/group multiplier resolution.
+func (s *GatewayService) ResolveUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
+	return s.getUserGroupRateMultiplier(ctx, userID, groupID, groupDefaultMultiplier)
+}
+
 func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
 	if s == nil {
 		return groupDefaultMultiplier
@@ -9460,13 +9515,36 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	return cmd
 }
 
-func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog, p *postUsageBillingParams, deps *billingDeps, repo UsageBillingRepository) (bool, error) {
+func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog, p *postUsageBillingParams, deps *billingDeps, repo UsageBillingRepository, outbox BillingOutboxRepository) (bool, error) {
 	if p == nil || deps == nil {
 		return false, nil
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
-	if cmd == nil || cmd.RequestID == "" || repo == nil {
+	if cmd == nil || cmd.RequestID == "" {
+		postUsageBilling(ctx, p, deps)
+		return false, nil
+	}
+	if err := cmd.Validate(); err != nil {
+		return false, err
+	}
+	if outbox != nil {
+		attemptID := strings.TrimPrefix(cmd.RequestID, "attempt:")
+		if attemptID == "" {
+			attemptID = cmd.RequestID
+		}
+		billingCtx, cancel := detachedBillingContext(ctx)
+		defer cancel()
+		if _, err := outbox.Enqueue(billingCtx, &BillingOutboxCommand{
+			AttemptID: attemptID, RequestID: cmd.RequestID, APIKeyID: cmd.APIKeyID,
+			RequestFingerprint: cmd.RequestFingerprint, Billing: *cmd,
+			PostEffects: buildBillingOutboxPostEffects(p),
+		}); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if repo == nil {
 		postUsageBilling(ctx, p, deps)
 		return false, nil
 	}
@@ -9500,6 +9578,43 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 
 	finalizePostUsageBilling(billingCtx, p, deps, result)
 	return result.UsageLogPersisted, nil
+}
+
+func buildBillingOutboxPostEffects(p *postUsageBillingParams) *BillingOutboxPostEffects {
+	if p == nil || p.Cost == nil || p.User == nil || p.APIKey == nil || p.Account == nil {
+		return nil
+	}
+	return &BillingOutboxPostEffects{
+		UserID:                         p.User.ID,
+		UserUsername:                   p.User.Username,
+		UserEmail:                      p.User.Email,
+		UserBalance:                    p.User.Balance,
+		UserTotalRecharged:             p.User.TotalRecharged,
+		BalanceNotifyEnabled:           p.User.BalanceNotifyEnabled,
+		BalanceNotifyThreshold:         p.User.BalanceNotifyThreshold,
+		BalanceNotifyThresholdType:     p.User.BalanceNotifyThresholdType,
+		BalanceNotifyExtraEmails:       append([]NotifyEmailEntry(nil), p.User.BalanceNotifyExtraEmails...),
+		APIKeyGroupID:                  p.APIKey.GroupID,
+		AccountID:                      p.Account.ID,
+		AccountName:                    p.Account.Name,
+		AccountPlatform:                p.Account.Platform,
+		AccountType:                    p.Account.Type,
+		QuotaNotifyDailyEnabled:        p.Account.GetQuotaNotifyDailyEnabled(),
+		QuotaNotifyDailyThreshold:      p.Account.GetQuotaNotifyDailyThreshold(),
+		QuotaNotifyDailyThresholdType:  p.Account.GetQuotaNotifyDailyThresholdType(),
+		QuotaNotifyWeeklyEnabled:       p.Account.GetQuotaNotifyWeeklyEnabled(),
+		QuotaNotifyWeeklyThreshold:     p.Account.GetQuotaNotifyWeeklyThreshold(),
+		QuotaNotifyWeeklyThresholdType: p.Account.GetQuotaNotifyWeeklyThresholdType(),
+		QuotaNotifyTotalEnabled:        p.Account.GetQuotaNotifyTotalEnabled(),
+		QuotaNotifyTotalThreshold:      p.Account.GetQuotaNotifyTotalThreshold(),
+		QuotaNotifyTotalThresholdType:  p.Account.GetQuotaNotifyTotalThresholdType(),
+		ActualCost:                     p.Cost.ActualCost,
+		TotalCost:                      p.Cost.TotalCost,
+		IsSubscriptionBill:             p.IsSubscriptionBill,
+		AccountRateMultiplier:          p.AccountRateMultiplier,
+		Platform:                       p.Platform,
+		PreserveAccountHealth:          p.PreserveAccountHealth,
+	}
 }
 
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
@@ -9974,9 +10089,15 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		AccountRateMultiplier: accountRateMultiplier,
 		APIKeyService:         input.APIKeyService,
 		Platform:              quotaPlatform,
-	}, s.billingDeps(), s.usageBillingRepo)
+	}, s.billingDeps(), s.usageBillingRepo, s.billingOutboxRepo)
 
 	if billingErr != nil {
+		if s.billingOutboxRepo != nil {
+			// A failed durable enqueue has not transactionally persisted the usage
+			// audit record, so retain it independently while surfacing the delivery
+			// error. Direct Apply failures retain their existing all-or-nothing path.
+			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		}
 		return billingErr
 	}
 	if !usageLogPersisted {
@@ -10371,6 +10492,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	isClaudeCodeCT := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCodeCT && account.IsAnthropicOAuthOrSetupToken() {
+		isClaudeCodeCT = isProxiedClaudeCodeOAuthRequest(parsed, body)
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 
 	if shouldMimicClaudeCode {

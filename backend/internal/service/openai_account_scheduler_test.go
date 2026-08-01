@@ -33,6 +33,17 @@ func (r schedulerTestOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (
 	return nil, errors.New("account not found")
 }
 
+func (r schedulerTestOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	// 与生产 GetByIDs 语义一致：缺失 ID 忽略，不报错。
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if acc, err := r.GetByID(ctx, id); err == nil {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
+}
+
 func (r schedulerTestOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {
@@ -543,6 +554,102 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForCapabilities_Requires
 	require.NotNil(t, selection.Account)
 	require.Equal(t, int64(36042), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestOpenAISelectionFilterStatsSummaryIsDeterministicAndLazy(t *testing.T) {
+	stats := openAISelectionFilterStats{pool: 3}
+	require.Nil(t, stats.reasons)
+	require.Equal(t, "pool=3", stats.summary(""))
+	stats.exclude("quota_auto_pause_7d")
+	stats.exclude("excluded")
+	stats.exclude("model_not_supported")
+	require.Equal(t, "pool=3, filtered: excluded=1 model_not_supported=1 quota_auto_pause_7d=1", stats.summary(""))
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_NoAvailableDiagnostics(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := withOpenAIQuotaAutoPauseSettings(context.Background(), OpsOpenAIAccountQuotaAutoPauseSettings{DefaultThreshold7d: 0.9})
+	groupID := int64(101203)
+	accounts := []Account{
+		{ID: 38121, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1,
+			Extra: map[string]any{"codex_7d_used_percent": 95.0, "codex_7d_reset_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339), "codex_usage_updated_at": time.Now().Add(-time.Minute).Format(time.RFC3339)}},
+		{ID: 38122, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1,
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o": "gpt-4o"}}},
+		{ID: 38123, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-5.4-mini", map[int64]struct{}{38123: {}}, OpenAIUpstreamTransportAny, false)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection)
+	require.EqualError(t, err, "no available OpenAI accounts supporting model: gpt-5.4-mini (pool=3, filtered: excluded=1 model_not_supported=1 quota_auto_pause_7d=1)")
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_TransportDiagnostic(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(101206)
+	account := Account{ID: 38124, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSchedulerTestOpenAIWSV2Config(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportResponsesWebsocketV2, false)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.EqualError(t, err, "no available OpenAI accounts supporting model: gpt-5.1 (pool=1, filtered: transport_incompatible=1)")
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_DiagnosticsPreserveTypedErrors(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(101204)
+	unsupported := Account{ID: 38131, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o": "gpt-4o"}}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{unsupported}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(WithPublicModelSupportMiss404(ctx), &groupID, "", "", "gpt-unknown-public", nil, OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityChatCompletions, false)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+
+	compactOnly := Account{ID: 38132, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Extra: map[string]any{"openai_compact_supported": false}}
+	svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: []Account{compactOnly}}
+	selection, _, err = svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny, true)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableCompactAccounts)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_EmptyPoolDiagnostic(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), int64PtrForTest(101205), "", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.EqualError(t, err, "no available OpenAI accounts supporting model: gpt-5.1 (pool=0)")
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPreviousResponseRouting(t *testing.T) {
@@ -2495,6 +2602,13 @@ func (r *openAIPrivacySchedulerAccountRepo) GetByID(ctx context.Context, id int6
 		return nil, r.getByIDErr
 	}
 	return r.schedulerTestOpenAIAccountRepo.GetByID(ctx, id)
+}
+
+func (r *openAIPrivacySchedulerAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	if r.getByIDErr != nil {
+		return nil, r.getByIDErr
+	}
+	return r.schedulerTestOpenAIAccountRepo.GetByIDs(ctx, ids)
 }
 
 func (r *openAIPrivacySchedulerAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {

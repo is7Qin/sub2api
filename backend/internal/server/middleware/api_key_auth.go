@@ -123,6 +123,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 
+		billingInfoRequest := c.Request.URL.Path == "/v1/sub2api/billing"
 		if cfg.RunMode == config.RunModeSimple {
 			c.Set(string(ContextKeyAPIKey), apiKey)
 			c.Set(string(ContextKeyUser), AuthSubject{
@@ -131,20 +132,22 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			})
 			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 			setGroupContext(c, apiKey.Group)
-			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+			if !billingInfoRequest {
+				_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+			}
 			c.Next()
 			return
 		}
 
-		// ── 5. 加载订阅（订阅模式时始终加载） ───────────────────────
+		// ── 5. 按端点需要加载订阅 ───────────────────────────────────
 
-		// skipBilling: /v1/usage 只需鉴权，跳过所有计费执行
-		skipBilling := c.Request.URL.Path == "/v1/usage"
+		// /v1/usage 和倍率自省只需鉴权，跳过所有计费执行。
+		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest
 
 		var subscription *service.UserSubscription
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 
-		if isSubscriptionType && subscriptionService != nil {
+		if isSubscriptionType && subscriptionService != nil && !billingInfoRequest {
 			sub, subErr := subscriptionService.GetActiveSubscription(
 				c.Request.Context(),
 				apiKey.User.ID,
@@ -229,7 +232,9 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		})
 		c.Set(string(ContextKeyUserRole), apiKey.User.Role)
 		setGroupContext(c, apiKey.Group)
-		_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+		if !billingInfoRequest {
+			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+		}
 
 		c.Next()
 	}

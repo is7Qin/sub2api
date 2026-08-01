@@ -254,8 +254,8 @@ function nonTokenPrice(m: UserSupportedModel): string {
   if (p.billing_mode === BILLING_MODE_PER_REQUEST && p.per_request_price != null) {
     return `${formatScaled(p.per_request_price, 1)} / ${t('availableChannels.pricePerRequest')}`
   }
-  if (p.billing_mode === BILLING_MODE_IMAGE && p.image_output_price != null) {
-    return `${formatScaled(p.image_output_price, 1)} / ${t('availableChannels.priceImage')}`
+  if (p.billing_mode === BILLING_MODE_IMAGE && p.per_request_price != null) {
+    return `${formatScaled(p.per_request_price, 1)} / ${t('availableChannels.pricePerRequest')}`
   }
   return props.noPricingLabel || '-'
 }

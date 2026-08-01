@@ -148,11 +148,7 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 
 		case item.Type == "function_call_output":
 			// function_call_output → user message with tool_result block
-			outputContent := item.Output
-			if outputContent == "" {
-				outputContent = "(empty)"
-			}
-			contentJSON, _ := json.Marshal(outputContent)
+			contentJSON := responsesFunctionOutputToAnthropicContent(item)
 			block := AnthropicContentBlock{
 				Type:      "tool_result",
 				ToolUseID: fromResponsesCallIDToAnthropic(item.CallID),
@@ -222,6 +218,58 @@ func marshalAnthropicSystemDirectives(directives []string) json.RawMessage {
 // functionCallArgumentsObject validates the Responses string field before it
 // becomes Anthropic's object-valued tool_use.input. Keep the original bytes so
 // arbitrary nested values pass through without lossy type conversion.
+func responsesFunctionOutputToAnthropicContent(item ResponsesInputItem) json.RawMessage {
+	if len(item.outputRaw) == 0 {
+		output := item.Output
+		if output == "" {
+			output = "(empty)"
+		}
+		content, _ := json.Marshal(output)
+		return content
+	}
+
+	var rawParts []json.RawMessage
+	if err := json.Unmarshal(item.outputRaw, &rawParts); err == nil {
+		blocks := make([]AnthropicContentBlock, 0, len(rawParts))
+		for _, rawPart := range rawParts {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(rawPart, &fields); err != nil {
+				continue
+			}
+			var partType string
+			if err := json.Unmarshal(fields["type"], &partType); err != nil {
+				continue
+			}
+			switch partType {
+			case "input_text", "output_text", "text":
+				var text string
+				if err := json.Unmarshal(fields["text"], &text); err == nil && text != "" {
+					blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: text})
+				}
+			case "input_image":
+				var imageURL string
+				if err := json.Unmarshal(fields["image_url"], &imageURL); err == nil {
+					if source := dataURIToAnthropicImageSource(imageURL); source != nil {
+						blocks = append(blocks, AnthropicContentBlock{Type: "image", Source: source})
+					}
+				}
+			}
+		}
+		if len(blocks) > 0 {
+			content, _ := json.Marshal(blocks)
+			return content
+		}
+		if len(rawParts) == 0 {
+			content, _ := json.Marshal("(empty)")
+			return content
+		}
+	}
+
+	// Preserve the prior textual fallback for malformed or unsupported output.
+	content, _ := json.Marshal(item.Output)
+	return content
+}
+
 func functionCallArgumentsObject(arguments string) (json.RawMessage, error) {
 	if arguments == "" {
 		return json.RawMessage("{}"), nil

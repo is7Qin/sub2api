@@ -484,7 +484,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			requestErr.attachUsage(usage)
 			writeAnthropicError(c, requestErr.StatusCode, requestErr.AnthropicErrorType(), requestErr.Message)
 			return &OpenAIForwardResult{
-				RequestID: requestID, ResponseID: finalResponse.ID, Usage: usage,
+				RequestID: requestID, AttemptID: forwardResultAttemptID(resp), ResponseID: finalResponse.ID, Usage: usage,
 				Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
 				Stream: false, Duration: time.Since(startTime),
 			}, requestErr
@@ -515,6 +515,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		}
 		return &OpenAIForwardResult{
 			RequestID:     requestID,
+			AttemptID:     forwardResultAttemptID(resp),
 			ResponseID:    finalResponse.ID,
 			Usage:         usage,
 			Model:         originalModel,
@@ -541,6 +542,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
+		AttemptID:     forwardResultAttemptID(resp),
 		ResponseID:    finalResponse.ID,
 		Usage:         usage,
 		Model:         originalModel,
@@ -887,6 +889,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:        requestID,
+			AttemptID:        forwardResultAttemptID(resp),
 			ResponseID:       responseID,
 			Usage:            usage,
 			Model:            originalModel,

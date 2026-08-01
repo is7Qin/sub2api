@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -488,6 +489,46 @@ func TestGeminiTransportExhaustionUsesGeneric502Message(t *testing.T) {
 	}
 }
 
+type compatFailingWriter struct {
+	gin.ResponseWriter
+	failed chan struct{}
+	once   sync.Once
+	writes int
+}
+
+func (w *compatFailingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	w.once.Do(func() { close(w.failed) })
+	return 0, errors.New("write failed: client disconnected")
+}
+
+func (w *compatFailingWriter) WriteString(p string) (int, error) {
+	return w.Write([]byte(p))
+}
+
+type barrierStreamBody struct {
+	beforeTerminal []byte
+	terminal       []byte
+	terminalGate   <-chan struct{}
+	stage          int
+}
+
+func (b *barrierStreamBody) Read(p []byte) (int, error) {
+	switch b.stage {
+	case 0:
+		b.stage++
+		return copy(p, b.beforeTerminal), nil
+	case 1:
+		<-b.terminalGate
+		b.stage++
+		return copy(p, b.terminal), nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (b *barrierStreamBody) Close() error { return nil }
+
 func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -561,6 +602,63 @@ func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(
 	require.Equal(t, float64(7), usage["prompt_tokens"])
 	require.Equal(t, float64(3), usage["completion_tokens"])
 	require.Equal(t, float64(10), usage["total_tokens"])
+}
+
+func TestGeminiForwardAsChatCompletions_ClientDisconnectDrainsTerminalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	terminalGate := make(chan struct{})
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: &barrierStreamBody{
+				beforeTerminal: []byte(`data: {"candidates":[{"content":{"parts":[{"text":"hel"}]}}]}` + "\n\n" + `data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}` + "\n\n"),
+				terminal:       []byte(`data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":19,"candidatesTokenCount":7}}` + "\n\ndata: [DONE]\n\n"),
+				terminalGate:   terminalGate,
+			},
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+	account := &Account{
+		ID:          103,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "gemini-api-key"},
+		Concurrency: 1,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	writer := &compatFailingWriter{ResponseWriter: c.Writer, failed: make(chan struct{})}
+	c.Writer = writer
+	body := []byte(`{"model":"gemini-2.5-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	type outcome struct {
+		result *ForwardResult
+		err    error
+	}
+	resultCh := make(chan outcome, 1)
+	go func() {
+		result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body)
+		resultCh <- outcome{result: result, err: err}
+	}()
+
+	<-writer.failed
+	select {
+	case got := <-resultCh:
+		t.Fatalf("returned before terminal usage was released: result=%#v err=%v", got.result, got.err)
+	default:
+	}
+	close(terminalGate)
+	got := <-resultCh
+	require.NoError(t, got.err)
+	require.NotNil(t, got.result)
+	require.Equal(t, 19, got.result.Usage.InputTokens)
+	require.Equal(t, 7, got.result.Usage.OutputTokens)
+	require.True(t, got.result.ClientDisconnect)
+	require.Equal(t, 1, writer.writes)
 }
 
 func TestGeminiForwardAsChatCompletions_StreamsOpenAIChunksFromGeminiSSE(t *testing.T) {
@@ -974,6 +1072,147 @@ func TestGeminiMessagesCompatServiceForward_PreservesRequestedModelAndMappedUpst
 	require.Equal(t, 1, httpStub.calls)
 	require.NotNil(t, httpStub.lastReq)
 	require.Contains(t, httpStub.lastReq.URL.String(), "/models/claude-sonnet-4-20250514:")
+}
+
+func TestGeminiForward_PoolModeSkippedErrorReturnsFailoverWithoutLocalResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := []byte(`{"error":{"message":"upstream failed"}}`)
+	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{"x-request-id": []string{"gemini-error-1"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}
+	rateLimitService := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, rateLimitService: rateLimitService, cfg: &config.Config{}}
+	account := &Account{
+		ID:       11,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":   "test-key",
+			"pool_mode": true,
+		},
+	}
+	body := []byte(`{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusInternalServerError, failoverErr.StatusCode)
+	require.Equal(t, upstreamBody, failoverErr.ResponseBody)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.False(t, IsResponseCommitted(c))
+	require.Empty(t, rec.Body.String())
+}
+
+func TestGeminiForwardNative_PoolModeSkippedErrorReturnsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := []byte(`{"error":{"message":"native upstream failed"}}`)
+	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{"x-request-id": []string{"gemini-native-error-1"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}
+	rateLimitService := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, rateLimitService: rateLimitService, cfg: &config.Config{}}
+	account := &Account{
+		ID:       13,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":   "test-key",
+			"pool_mode": true,
+		},
+	}
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent", bytes.NewReader(body))
+
+	result, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, body)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusInternalServerError, failoverErr.StatusCode)
+	require.Equal(t, upstreamBody, failoverErr.ResponseBody)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.False(t, IsResponseCommitted(c))
+	require.Empty(t, rec.Body.String())
+}
+
+func TestGeminiForwardAsChatCompletions_PoolModeSkippedErrorReturnsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := []byte(`{"error":{"message":"chat upstream failed"}}`)
+	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"x-request-id": []string{"gemini-chat-error-1"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}
+	rateLimitService := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, rateLimitService: rateLimitService, cfg: &config.Config{}}
+	account := &Account{
+		ID:       14,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":                    "test-key",
+			"pool_mode":                  true,
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusInternalServerError)},
+		},
+	}
+	body := []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Equal(t, upstreamBody, failoverErr.ResponseBody)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.False(t, IsResponseCommitted(c))
+	require.Empty(t, rec.Body.String())
+}
+
+func TestGeminiForward_NonPoolSkippedErrorKeepsLocal500(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := []byte(`{"error":{"message":"upstream failed"}}`)
+	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}
+	rateLimitService := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, rateLimitService: rateLimitService, cfg: &config.Config{}}
+	account := &Account{
+		ID:       12,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":                    "test-key",
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusTooManyRequests)},
+		},
+	}
+	body := []byte(`{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.Nil(t, result)
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.True(t, IsResponseCommitted(c))
+	require.Equal(t, http.StatusBadGateway, rec.Code)
 }
 
 func TestGeminiMessagesCompatServiceForward_NormalizesWebSearchToolForAIStudio(t *testing.T) {

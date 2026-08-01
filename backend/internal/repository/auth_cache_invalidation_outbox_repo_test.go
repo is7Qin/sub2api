@@ -99,6 +99,56 @@ func TestAuthCacheInvalidationOutboxRepository_StatsExposeDurableLagAndFailures(
 	require.NotNil(t, stats.OldestCreatedAt)
 }
 
+func TestBillingQuotaAuthInvalidationMigrationProvidesIdempotentSourceIdentity(t *testing.T) {
+	content, err := migrations.FS.ReadFile("172_billing_quota_auth_invalidation.sql")
+	require.NoError(t, err)
+	sqlText := string(content)
+	require.Contains(t, sqlText, "ADD COLUMN IF NOT EXISTS source_key TEXT")
+	require.Contains(t, sqlText, "UNIQUE INDEX IF NOT EXISTS idx_auth_cache_invalidation_outbox_source_key")
+	require.Contains(t, sqlText, "WHERE source_key IS NOT NULL")
+}
+
+func TestBillingQuotaAuthInvalidationBackfillMigrationMatchesRepositoryContract(t *testing.T) {
+	content, err := migrations.FS.ReadFile("173_backfill_billing_quota_auth_invalidation.sql")
+	require.NoError(t, err)
+	sqlText := string(content)
+	for _, required := range []string{
+		"INSERT INTO auth_cache_invalidation_outbox (cache_key, source_key)",
+		"JOIN api_keys AS k ON k.id = o.api_key_id",
+		"o.status IN ('finalization_pending', 'finalizing')",
+		`o.apply_result @> '{"api_key_quota_exhausted": true}'::jsonb`,
+		"encode(sha256(convert_to(k.key, 'UTF8')), 'hex')",
+		"'billing-quota:' || request_id || ':' || o.api_key_id::text",
+		"NULLIF(BTRIM(o.command ->> 'request_id'), '')",
+		"ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING",
+		"SELECT DISTINCT",
+	} {
+		require.Contains(t, sqlText, required)
+	}
+	require.NotContains(t, sqlText, "INSERT INTO auth_cache_invalidation_outbox (cache_key, source_key, key)")
+}
+
+func TestStageAuthCacheInvalidationTxTargetsPartialSourceKeyIndex(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO auth_cache_invalidation_outbox.*ON CONFLICT \(source_key\) WHERE source_key IS NOT NULL DO NOTHING`).
+		WithArgs(strings.Repeat("a", 64), "quota-source-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	require.NoError(t, stageAuthCacheInvalidationTx(context.Background(), tx, AuthCacheInvalidationStage{
+		CacheKey:  strings.Repeat("a", 64),
+		SourceKey: "quota-source-1",
+	}))
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestAuthCacheInvalidationMigration_SecurityCoverageAndNoPlaintextPayload(t *testing.T) {
 	content, err := migrations.FS.ReadFile("167_auth_cache_invalidation_outbox.sql")
 	require.NoError(t, err)

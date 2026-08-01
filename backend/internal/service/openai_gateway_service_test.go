@@ -25,6 +25,33 @@ import (
 var _ AccountRepository = (*stubOpenAIAccountRepo)(nil)
 var _ GatewayCache = (*stubGatewayCache)(nil)
 
+func TestOpenAIForwardResultFromPassthroughNonStreamingResultPreservesAttemptID(t *testing.T) {
+	attemptID := "physical-attempt-19"
+	request, err := http.NewRequestWithContext(
+		context.WithValue(context.Background(), httpAttemptIDKey{}, attemptID),
+		http.MethodPost,
+		"https://upstream.example/v1/responses",
+		nil,
+	)
+	require.NoError(t, err)
+
+	result := openAIForwardResultFromPassthroughNonStreamingResult(
+		&openaiNonStreamingResultPassthrough{responseID: "resp-19", usage: &OpenAIUsage{}},
+		&http.Response{Header: http.Header{"X-Request-Id": []string{"upstream-19"}}, Request: request},
+		time.Now().Add(-time.Second),
+		"gpt-5",
+		"gpt-5",
+		"gpt-5-upstream",
+		nil,
+		nil,
+		"",
+		"",
+		"",
+	)
+
+	require.Equal(t, attemptID, result.AttemptID)
+}
+
 type stubOpenAIAccountRepo struct {
 	AccountRepository
 	accounts []Account
@@ -126,6 +153,17 @@ func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account,
 		}
 	}
 	return nil, errors.New("account not found")
+}
+
+func (r stubOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	// 与生产 GetByIDs 语义一致：缺失 ID 忽略，不报错。
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if acc, err := r.GetByID(ctx, id); err == nil {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
 }
 
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
@@ -2526,6 +2564,21 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	}
 }
 
+func TestOpenAIValidateUpstreamBaseURLRejectsQueryAndFragment(t *testing.T) {
+	for _, cfg := range []*config.Config{
+		{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+		{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled: true, UpstreamHosts: []string{"api.openai.com"}, AllowPrivateHosts: false,
+		}}},
+	} {
+		svc := &OpenAIGatewayService{cfg: cfg}
+		for _, raw := range []string{"https://api.openai.com?tenant=x", "https://api.openai.com#fragment"} {
+			_, err := svc.validateUpstreamBaseURL(raw)
+			require.Error(t, err, raw)
+		}
+	}
+}
+
 func TestOpenAIValidateUpstreamBaseURLDisabledRequiresHTTPS(t *testing.T) {
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
@@ -2640,8 +2693,10 @@ func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	}{
 		{name: "exact v1 responses", path: "/v1/responses", want: ""},
 		{name: "compact v1 responses", path: "/v1/responses/compact", want: "/compact"},
-		{name: "compact alias responses", path: "/responses/compact/", want: "/compact"},
-		{name: "nested suffix", path: "/openai/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "trailing slash normalized", path: "/responses/compact/", want: "/compact"},
+		{name: "nested suffix", path: "/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "normalized OpenAI prefix", path: "/openai/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "unknown prefix rejected", path: "/proxy/v1/responses/compact/detail", want: ""},
 		{name: "unrelated path", path: "/v1/chat/completions", want: ""},
 	}
 

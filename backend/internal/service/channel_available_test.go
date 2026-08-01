@@ -205,107 +205,127 @@ func TestPricingNeedsFallback(t *testing.T) {
 }
 
 func TestSynthesizePricingFromLiteLLM_TokenMode(t *testing.T) {
-	lp := &LiteLLMModelPricing{
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
 		Mode:                        "chat",
 		InputCostPerToken:           3e-6,
 		OutputCostPerToken:          1.5e-5,
 		CacheCreationInputTokenCost: 3.75e-6,
 		CacheReadInputTokenCost:     3e-7,
-	}
-	got := synthesizePricingFromLiteLLM(lp, nil)
-	require.NotNil(t, got)
-	require.Equal(t, BillingModeToken, got.BillingMode)
-	require.NotNil(t, got.InputPrice)
-	require.InDelta(t, 3e-6, *got.InputPrice, 1e-12)
-	require.NotNil(t, got.CacheReadPrice)
+		OutputCostPerImageToken:     4e-5,
+	}, nil)
+
+	require.Equal(t, BillingModeToken, pricing.BillingMode)
+	require.InDelta(t, 3e-6, *pricing.InputPrice, 1e-12)
+	require.InDelta(t, 1.5e-5, *pricing.OutputPrice, 1e-12)
+	require.InDelta(t, 3.75e-6, *pricing.CacheWritePrice, 1e-12)
+	require.InDelta(t, 3e-7, *pricing.CacheReadPrice, 1e-12)
+	require.InDelta(t, 4e-5, *pricing.ImageOutputPrice, 1e-12)
+	require.Nil(t, pricing.PerRequestPrice)
 }
 
-func TestSynthesizePricingFromLiteLLM_ImageGenerationMode(t *testing.T) {
-	// LiteLLM mode=image_generation 且渠道未声明模式时，按 image 合成。
-	lp := &LiteLLMModelPricing{
-		Mode:                    "image_generation",
-		OutputCostPerImageToken: 4e-5,
-	}
-	got := synthesizePricingFromLiteLLM(lp, nil)
-	require.NotNil(t, got)
-	require.Equal(t, BillingModeImage, got.BillingMode)
-	require.Nil(t, got.PerRequestPrice)
-	require.NotNil(t, got.ImageOutputPrice)
+func TestSynthesizePricingFromLiteLLM_Image(t *testing.T) {
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
+		OutputCostPerImage:      0.08,
+		OutputCostPerImageToken: 0.00003,
+		InputCostPerToken:       0.000005,
+		OutputCostPerToken:      0.00001,
+	}, &ChannelModelPricing{BillingMode: BillingModeImage})
+
+	require.Equal(t, BillingModeImage, pricing.BillingMode)
+	require.Equal(t, 0.08, *pricing.PerRequestPrice)
+	require.Nil(t, pricing.InputPrice)
+	require.Nil(t, pricing.OutputPrice)
+	require.Nil(t, pricing.ImageOutputPrice)
+}
+
+func TestSynthesizePricingFromLiteLLM_PerRequest(t *testing.T) {
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
+		OutputCostPerImage:      0.08,
+		OutputCostPerImageToken: 0.00003,
+		InputCostPerToken:       0.000005,
+		OutputCostPerToken:      0.00001,
+	}, &ChannelModelPricing{BillingMode: BillingModePerRequest})
+
+	require.Equal(t, BillingModePerRequest, pricing.BillingMode)
+	require.Equal(t, 0.08, *pricing.PerRequestPrice)
+	require.Nil(t, pricing.InputPrice)
+	require.Nil(t, pricing.OutputPrice)
+	require.Nil(t, pricing.ImageOutputPrice)
 }
 
 func TestSynthesizePricingFromLiteLLM_RespectsExistingChannelMode(t *testing.T) {
-	// admin UI 选了 per_request 但没填价：LiteLLM 数据按 per_request 合成,
-	// 即便 LiteLLM 标的是 chat 模式也尊重渠道选择。
-	lp := &LiteLLMModelPricing{
-		Mode:               "chat",
-		InputCostPerToken:  5e-6,
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
+		Mode:               "image_generation",
 		OutputCostPerImage: 0.04,
-	}
-	existing := &ChannelModelPricing{BillingMode: BillingModePerRequest}
-	got := synthesizePricingFromLiteLLM(lp, existing)
-	require.NotNil(t, got)
-	require.Equal(t, BillingModePerRequest, got.BillingMode)
-	require.NotNil(t, got.PerRequestPrice)
-	require.InDelta(t, 0.04, *got.PerRequestPrice, 1e-12)
+	}, &ChannelModelPricing{BillingMode: BillingModePerRequest})
+
+	require.Equal(t, BillingModePerRequest, pricing.BillingMode)
+	require.InDelta(t, 0.04, *pricing.PerRequestPrice, 1e-12)
+}
+
+func TestSynthesizePricingFromLiteLLM_ImageGenerationMode(t *testing.T) {
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
+		Mode:               "image_generation",
+		OutputCostPerImage: 0.08,
+	}, nil)
+
+	require.Equal(t, BillingModeImage, pricing.BillingMode)
+	require.Equal(t, 0.08, *pricing.PerRequestPrice)
 }
 
 func TestFillGlobalPricingFallback_NilPricing(t *testing.T) {
-	pricingSvc := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
+	pricingService := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
 		"claude-opus-4-5": {Mode: "chat", InputCostPerToken: 5e-6},
 	})
-	svc := &ChannelService{pricingService: pricingSvc}
+	svc := &ChannelService{pricingService: pricingService}
+	models := []SupportedModel{{Name: "claude-opus-4-5", Platform: "anthropic"}}
 
-	models := []SupportedModel{
-		{Name: "claude-opus-4-5", Platform: "anthropic"},
-	}
 	svc.fillGlobalPricingFallback(models)
+
 	require.NotNil(t, models[0].Pricing)
-	require.NotNil(t, models[0].Pricing.InputPrice)
+	require.Equal(t, BillingModeToken, models[0].Pricing.BillingMode)
 	require.InDelta(t, 5e-6, *models[0].Pricing.InputPrice, 1e-12)
 }
 
 func TestFillGlobalPricingFallback_EmptyPricingFillsFromLiteLLM(t *testing.T) {
-	// 核心场景：admin UI 建了 pricing 条目（image 模式）但没填价，应走 LiteLLM 兜底。
-	pricingSvc := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
-		"gpt-image-1": {
-			Mode:                    "image_generation",
-			OutputCostPerImageToken: 4e-5,
+	pricingService := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"image-model": {
+			OutputCostPerImage:      0.08,
+			OutputCostPerImageToken: 0.00003,
+			InputCostPerToken:       0.000005,
+			OutputCostPerToken:      0.00001,
 		},
-	})
-	svc := &ChannelService{pricingService: pricingSvc}
+	}}
+	svc := &ChannelService{pricingService: pricingService}
+	models := []SupportedModel{{
+		Name: "image-model",
+		Pricing: &ChannelModelPricing{
+			BillingMode: BillingModeImage,
+		},
+	}}
 
-	models := []SupportedModel{
-		{
-			Name:     "gpt-image-1",
-			Platform: "openai",
-			Pricing: &ChannelModelPricing{
-				BillingMode: BillingModeImage,
-				Intervals:   []PricingInterval{{TierLabel: "1K"}, {TierLabel: "2K"}},
-			},
-		},
-	}
 	svc.fillGlobalPricingFallback(models)
-	require.NotNil(t, models[0].Pricing)
+
 	require.Equal(t, BillingModeImage, models[0].Pricing.BillingMode)
-	require.NotNil(t, models[0].Pricing.ImageOutputPrice)
-	require.InDelta(t, 4e-5, *models[0].Pricing.ImageOutputPrice, 1e-12)
+	require.Equal(t, 0.08, *models[0].Pricing.PerRequestPrice)
+	require.Nil(t, models[0].Pricing.InputPrice)
+	require.Nil(t, models[0].Pricing.OutputPrice)
+	require.Nil(t, models[0].Pricing.ImageOutputPrice)
 }
 
 func TestFillGlobalPricingFallback_KeepsExistingPrice(t *testing.T) {
-	// 渠道已经填了价格的条目不应被回落覆盖。
-	pricingSvc := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
+	pricingService := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
 		"served-model": {Mode: "chat", InputCostPerToken: 1e-6},
 	})
-	svc := &ChannelService{pricingService: pricingSvc}
-
+	svc := &ChannelService{pricingService: pricingService}
 	existing := &ChannelModelPricing{
 		BillingMode: BillingModeToken,
 		InputPrice:  testPtrFloat64(9e-9),
 	}
-	models := []SupportedModel{
-		{Name: "served-model", Platform: "anthropic", Pricing: existing},
-	}
+	models := []SupportedModel{{Name: "served-model", Platform: "anthropic", Pricing: existing}}
+
 	svc.fillGlobalPricingFallback(models)
+
 	require.Same(t, existing, models[0].Pricing)
 }
 

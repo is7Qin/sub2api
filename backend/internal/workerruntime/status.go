@@ -40,6 +40,10 @@ const (
 	LifecycleRunning  LifecycleState = "running"
 	LifecycleStopping LifecycleState = "stopping"
 	LifecycleFailed   LifecycleState = "failed"
+
+	// StateStopping and StateStartFailed are lifecycle aliases used by runtime clients.
+	StateStopping    = LifecycleStopping
+	StateStartFailed = LifecycleFailed
 )
 
 // LifecycleSnapshot describes lifecycle state that applies to every component kind.

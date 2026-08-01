@@ -129,6 +129,80 @@ func TestRuntimeStopReportsDeadlineWithoutClaimingStopped(t *testing.T) {
 	require.Eventually(t, func() bool { return component.Snapshot().Lifecycle.State == LifecycleStopped }, time.Second, time.Millisecond)
 }
 
+func TestRuntimeStopAllRetriesTimedOutStopsAfterTheyFinish(t *testing.T) {
+	runtime := NewRuntime(NewRegistry())
+	component := newBlockingStopStub("pool")
+	require.NoError(t, runtime.Register(component))
+	require.NoError(t, runtime.StartAll(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	first, err := runtime.StopAll(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, StopTimedOut, first[0].Outcome)
+
+	close(component.release)
+	second, err := runtime.StopAll(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []StopResult{{Name: "pool", Outcome: StopCompleted}}, second)
+	require.Equal(t, LifecycleStopped, component.Snapshot().Lifecycle.State)
+}
+
+type startUntilCanceledStub struct {
+	*lifecycleStub
+	entered chan struct{}
+}
+
+func newStartUntilCanceledStub(name string) *startUntilCanceledStub {
+	return &startUntilCanceledStub{
+		lifecycleStub: newLifecycleStub(name, KindPool, nil),
+		entered:       make(chan struct{}),
+	}
+}
+
+func (c *startUntilCanceledStub) Start(ctx context.Context) error {
+	close(c.entered)
+	<-ctx.Done()
+	c.mu.Lock()
+	c.startCtx = ctx
+	c.lifecycle.State = LifecycleRunning
+	c.mu.Unlock()
+	return nil
+}
+
+func TestRuntimeStopCancelsConcurrentStartWithoutDeadlock(t *testing.T) {
+	runtime := NewRuntime(NewRegistry())
+	component := newStartUntilCanceledStub("pool")
+	require.NoError(t, runtime.Register(component))
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- runtime.StartAll(context.Background()) }()
+	select {
+	case <-component.entered:
+	case <-time.After(time.Second):
+		t.Fatal("component Start was not invoked")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.StopAll(context.Background())
+		stopDone <- err
+	}()
+	select {
+	case err := <-stopDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("StopAll did not cancel a concurrent StartAll")
+	}
+	select {
+	case err := <-startDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("StartAll did not finish after root cancellation")
+	}
+	require.ErrorIs(t, component.startCtx.Err(), context.Canceled)
+}
+
 func TestRuntimeStartAllIsIdempotent(t *testing.T) {
 	events := make([]string, 0, 1)
 	runtime := NewRuntime(NewRegistry())

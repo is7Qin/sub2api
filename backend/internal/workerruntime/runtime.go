@@ -27,16 +27,37 @@ type StopResult struct {
 	StillRunning bool
 }
 
+type stopCall struct {
+	registered registeredComponent
+	once       sync.Once
+	done       chan struct{}
+	err        error
+}
+
+func (c *stopCall) start(ctx context.Context) {
+	c.once.Do(func() {
+		go func() {
+			c.err = c.registered.component.Stop(ctx)
+			close(c.done)
+		}()
+	})
+}
+
 // Runtime coordinates the lifecycle of registered worker components.
 type Runtime struct {
 	registry *Registry
 
-	mu       sync.Mutex
-	started  bool
-	stopping bool
-	stopped  bool
-	root     context.Context
-	cancel   context.CancelFunc
+	mu             sync.Mutex
+	starting       bool
+	started        bool
+	stopping       bool
+	stopped        bool
+	root           context.Context
+	cancel         context.CancelFunc
+	startDone      chan struct{}
+	stopInitiated  bool
+	stopCallsReady chan struct{}
+	stopCalls      []*stopCall
 }
 
 // NewRuntime creates a runtime backed by registry.
@@ -55,16 +76,22 @@ func (r *Runtime) Register(component Component) error {
 // StartAll freezes registration and starts pools before periodic components.
 func (r *Runtime) StartAll(ctx context.Context) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.started {
+	if r.started || r.starting {
+		r.mu.Unlock()
 		return nil
 	}
 	if r.stopping || r.stopped {
+		r.mu.Unlock()
 		return errors.New("runtime has stopped")
 	}
 	r.registry.Freeze()
 	components := startOrder(r.registry.componentCopies())
 	root, cancel := context.WithCancel(ctx)
+	r.starting = true
+	r.root = root
+	r.cancel = cancel
+	r.startDone = make(chan struct{})
+	r.mu.Unlock()
 
 	started := make([]registeredComponent, 0, len(components))
 	for _, registered := range components {
@@ -78,65 +105,142 @@ func (r *Runtime) StartAll(ctx context.Context) error {
 				}
 			}
 			rollbackCancel()
+			r.finishStart(false)
 			return errors.Join(rollbackErrs...)
 		}
 		started = append(started, registered)
 	}
 
-	r.started = true
-	r.root = root
-	r.cancel = cancel
+	r.finishStart(true)
 	return nil
+}
+
+func (r *Runtime) finishStart(succeeded bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starting = false
+	r.started = succeeded
+	close(r.startDone)
 }
 
 // StopAll cancels the root context and stops periodic components before pools.
 func (r *Runtime) StopAll(ctx context.Context) ([]StopResult, error) {
+	if err := r.waitForStart(ctx); err != nil {
+		return nil, err
+	}
+
+	calls, err := r.ensureStopCalls(ctx)
+	if err != nil || calls == nil {
+		return nil, err
+	}
+
+	results, allCompleted := collectStopResults(ctx, calls)
+	if allCompleted {
+		r.mu.Lock()
+		r.stopped = true
+		r.stopping = false
+		r.mu.Unlock()
+	}
+	return results, joinStopErrors(results)
+}
+
+func (r *Runtime) waitForStart(ctx context.Context) error {
 	r.mu.Lock()
-	if !r.started || r.stopping || r.stopped {
+	if !r.starting {
+		r.mu.Unlock()
+		return nil
+	}
+	r.stopping = true
+	cancel := r.cancel
+	done := r.startDone
+	r.mu.Unlock()
+
+	// A shutdown requested during startup must unblock components immediately.
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
+	r.mu.Lock()
+	if r.stopped || !r.started {
 		r.mu.Unlock()
 		return nil, nil
 	}
+	if r.stopInitiated {
+		ready := r.stopCallsReady
+		r.mu.Unlock()
+		select {
+		case <-ready:
+			r.mu.Lock()
+			calls := r.stopCalls
+			r.mu.Unlock()
+			return calls, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	r.stopping = true
-	r.stopped = true
+	r.stopInitiated = true
+	r.stopCallsReady = make(chan struct{})
+	ready := r.stopCallsReady
 	cancel := r.cancel
 	r.mu.Unlock()
 
 	// Cancel workers before invoking their shutdown routines so their run loops exit.
 	cancel()
 	components := stopOrder(r.registry.componentCopies())
-	results := make([]StopResult, 0, len(components))
-	errs := make([]error, 0)
-	deadlineReported := false
+	calls := make([]*stopCall, 0, len(components))
 	for _, registered := range components {
-		result := stopComponent(ctx, registered)
-		results = append(results, result)
-		if result.Outcome == StopError {
-			errs = append(errs, result.Err)
-		}
-		if result.Outcome == StopTimedOut && !deadlineReported {
-			errs = append(errs, ctx.Err())
-			deadlineReported = true
-		}
+		calls = append(calls, &stopCall{registered: registered, done: make(chan struct{})})
 	}
-	return results, errors.Join(errs...)
+
+	r.mu.Lock()
+	r.stopCalls = calls
+	close(ready)
+	r.mu.Unlock()
+	return calls, nil
 }
 
-func stopComponent(ctx context.Context, registered registeredComponent) StopResult {
-	done := make(chan error, 1)
-	go func() { done <- registered.component.Stop(ctx) }()
-
-	select {
-	case err := <-done:
-		if ctx.Err() != nil {
-			return StopResult{Name: registered.descriptor.Name, Outcome: StopTimedOut, Err: ctx.Err(), StillRunning: true}
+func collectStopResults(ctx context.Context, calls []*stopCall) ([]StopResult, bool) {
+	results := make([]StopResult, 0, len(calls))
+	allCompleted := true
+	for _, call := range calls {
+		call.start(context.Background())
+		select {
+		case <-call.done:
+			if call.err != nil {
+				results = append(results, StopResult{Name: call.registered.descriptor.Name, Outcome: StopError, Err: call.err})
+			} else {
+				results = append(results, StopResult{Name: call.registered.descriptor.Name, Outcome: StopCompleted})
+			}
+		case <-ctx.Done():
+			allCompleted = false
+			results = append(results, StopResult{Name: call.registered.descriptor.Name, Outcome: StopTimedOut, Err: ctx.Err(), StillRunning: true})
 		}
-		if err != nil {
-			return StopResult{Name: registered.descriptor.Name, Outcome: StopError, Err: err}
-		}
-		return StopResult{Name: registered.descriptor.Name, Outcome: StopCompleted}
-	case <-ctx.Done():
-		return StopResult{Name: registered.descriptor.Name, Outcome: StopTimedOut, Err: ctx.Err(), StillRunning: true}
 	}
+	return results, allCompleted
+}
+
+func joinStopErrors(results []StopResult) error {
+	errs := make([]error, 0)
+	deadlineReported := false
+	for _, result := range results {
+		switch result.Outcome {
+		case StopError:
+			errs = append(errs, result.Err)
+		case StopTimedOut:
+			if !deadlineReported {
+				errs = append(errs, result.Err)
+				deadlineReported = true
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func startOrder(components []registeredComponent) []registeredComponent {

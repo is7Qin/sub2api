@@ -807,7 +807,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				continue
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
-			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries: "+safeErr)
+			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", genericUpstreamFailureMessage)
 		}
 
 		// Special-case: signature/thought_signature validation errors are not transient, but may be fixed by
@@ -1391,7 +1391,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}, nil
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
-			return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed after retries: "+safeErr)
+			return nil, s.writeGoogleError(c, http.StatusBadGateway, genericUpstreamFailureMessage)
 		}
 
 		// 错误策略优先：匹配则跳过重试直接处理。
@@ -1585,7 +1585,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: evBody, RetryableOnSameAccount: true}
+				return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, evBody, true, fact)
 			}
 		}
 		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
@@ -1610,7 +1610,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: evBody}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, evBody, false, fact)
 		}
 
 		respBody = unwrapIfNeeded(isOAuth, respBody)
@@ -1932,10 +1932,7 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 		"type":  "error",
 		"error": gin.H{"type": errType, "message": errMsg},
 	})
-	if upstreamMsg == "" {
-		return fmt.Errorf("upstream error: %d", upstreamStatus)
-	}
-	return fmt.Errorf("upstream error: %d message=%s", upstreamStatus, upstreamMsg)
+	return fmt.Errorf("upstream error: %d", upstreamStatus)
 }
 
 type claudeErrorMapping struct {

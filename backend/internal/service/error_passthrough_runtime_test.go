@@ -360,7 +360,7 @@ func TestOpenAIHandleErrorResponse_RedactsOpsDiagnostics(t *testing.T) {
 	require.Contains(t, combined, "[codex-user-agent-redacted]")
 }
 
-func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
+func TestGeminiWriteGeminiMappedError_RecognizedInvalidArgumentPrecedesRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -375,14 +375,14 @@ func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
 
 	err := svc.writeGeminiMappedError(c, account, http.StatusUnprocessableEntity, "req-1", respBody)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusTeapot, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "upstream_error", errField["type"])
-	assert.Equal(t, "Gemini上游失败", errField["message"])
+	assert.Equal(t, "invalid_request_error", errField["type"])
+	assert.Equal(t, "Invalid schema for field messages", errField["message"])
 }
 
 func TestApplyErrorPassthroughRule_SkipMonitoringSetsContextKey(t *testing.T) {

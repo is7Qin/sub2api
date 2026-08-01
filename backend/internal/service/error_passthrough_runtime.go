@@ -1,6 +1,10 @@
 package service
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
 
 const errorPassthroughServiceContextKey = "error_passthrough_service"
 
@@ -30,7 +34,17 @@ func getBoundErrorPassthroughService(c *gin.Context) *ErrorPassthroughService {
 // NewLegacyUpstreamErrorFact creates the bounded fact used by legacy final-error
 // boundaries before any configurable rule can inspect it.
 func NewLegacyUpstreamErrorFact(platform string, upstreamStatus int, responseBody []byte) UpstreamErrorFact {
-	fact := ParseOpenAIJSONErrorFact(platform, UpstreamErrorSourceHTTP, responseBody, "")
+	var fact UpstreamErrorFact
+	if platform == PlatformGemini {
+		var resp *http.Response
+		if upstreamStatus > 0 {
+			resp = &http.Response{StatusCode: upstreamStatus}
+		}
+		// Legacy Gemini bodies carry their semantic code in error.status.
+		fact = ParseGeminiHTTPUpstreamErrorFact(resp, responseBody)
+	} else {
+		fact = ParseOpenAIJSONErrorFact(platform, UpstreamErrorSourceHTTP, responseBody, "")
+	}
 	if upstreamStatus > 0 {
 		fact.HTTPStatusKnown = true
 		fact.HTTPStatus = upstreamStatus

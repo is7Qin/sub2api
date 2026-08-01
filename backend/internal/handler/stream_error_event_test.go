@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,6 +189,107 @@ func TestGatewayHandleStreamingAwareError_ResponsesStreamingEmitsResponseFailed(
 	_, errObj := parseResponsesFailedSSE(t, w.Body.String())
 	assert.Equal(t, "upstream_error", errObj["code"])
 	assert.Equal(t, "upstream gone", errObj["message"])
+}
+
+func TestCommittedResponsesCandidatePreservesFinalErrorCode(t *testing.T) {
+	candidate := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		Provider:        service.PlatformOpenAI,
+		Source:          service.UpstreamErrorSourceSSE,
+		ProviderCode:    "server_is_overloaded",
+		ProviderType:    "service_unavailable_error",
+		SafeMessage:     "Please retry later",
+		HTTPStatusKnown: false,
+	}, service.UpstreamCandidateStructured)
+
+	tests := []struct {
+		name   string
+		handle func(*gin.Context)
+	}{
+		{
+			name: "gateway",
+			handle: func(c *gin.Context) {
+				(&GatewayHandler{}).handleResponsesCandidate(c, candidate, true)
+			},
+		},
+		{
+			name: "openai_gateway",
+			handle: func(c *gin.Context) {
+				(&OpenAIGatewayHandler{}).handleUpstreamCandidate(c, candidate, true)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := newGinContextForEndpoint(t, EndpointResponses)
+
+			tt.handle(c)
+
+			_, errObj := parseResponsesFailedSSE(t, w.Body.String())
+			require.Equal(t, "server_is_overloaded", errObj["code"])
+		})
+	}
+}
+
+func TestStreamingTerminalWritersEmitExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name       string
+		endpoint   string
+		writeTwice func(*gin.Context)
+		terminal   string
+	}{
+		{
+			name:     "gateway_responses",
+			endpoint: EndpointResponses,
+			writeTwice: func(c *gin.Context) {
+				h := &GatewayHandler{}
+				h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
+				h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
+			},
+			terminal: "event: response.failed\n",
+		},
+		{
+			name:     "openai_gateway_responses",
+			endpoint: EndpointResponses,
+			writeTwice: func(c *gin.Context) {
+				h := &OpenAIGatewayHandler{}
+				h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
+				h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", true)
+			},
+			terminal: "event: response.failed\n",
+		},
+		{
+			name:     "gateway_anthropic",
+			endpoint: EndpointMessages,
+			writeTwice: func(c *gin.Context) {
+				h := &GatewayHandler{}
+				h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "boom", true)
+				h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "boom", true)
+			},
+			terminal: "event: error\n",
+		},
+		{
+			name:     "openai_gateway_anthropic",
+			endpoint: EndpointMessages,
+			writeTwice: func(c *gin.Context) {
+				h := &OpenAIGatewayHandler{}
+				h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "boom", true)
+				h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "boom", true)
+			},
+			terminal: "event: error\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, w := newGinContextForEndpoint(t, tt.endpoint)
+
+			tt.writeTwice(c)
+
+			require.Equal(t, 1, strings.Count(w.Body.String(), tt.terminal), "body=%s", w.Body.String())
+			require.NotEmpty(t, w.Body.String(), "the first legal terminal event must be emitted")
+		})
+	}
 }
 
 // Gateway handler: /v1/messages preserves the legacy data:{type:error,...} format

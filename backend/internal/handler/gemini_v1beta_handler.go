@@ -415,7 +415,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				failoverClientGone(c)
 				return
 			default: // FailoverExhausted
-				h.handleGeminiFailoverExhausted(c, fs.LastFailoverErr)
+				if candidate, ok := fs.FinalCandidate(); ok {
+					h.handleGeminiCandidate(c, candidate)
+				} else {
+					h.handleGeminiFailoverExhausted(c, fs.LastFailoverErr)
+				}
 				return
 			}
 		}
@@ -595,7 +599,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverExhausted:
-					h.handleGeminiFailoverExhausted(c, fs.LastFailoverErr)
+					if candidate, ok := fs.FinalCandidate(); ok {
+						h.handleGeminiCandidate(c, candidate)
+					} else {
+						h.handleGeminiFailoverExhausted(c, fs.LastFailoverErr)
+					}
 					return
 				case FailoverCanceled:
 					failoverClientGone(c)
@@ -688,73 +696,30 @@ func parseGeminiModelAction(rest string) (model string, action string, err error
 	return "", "", &pathParseError{"invalid model action path"}
 }
 
-func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError) {
-	if failoverErr == nil {
+func (h *GatewayHandler) handleGeminiCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate) {
+	if candidate == nil {
 		googleError(c, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
-
-	statusCode := failoverErr.StatusCode
-	responseBody := failoverErr.ResponseBody
-
-	fact, hasFact := failoverErr.UpstreamFact()
-	if !hasFact {
-		fact = service.NewLegacyUpstreamErrorFact(service.PlatformGemini, statusCode, responseBody)
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
 	}
-	if policy, recognized := service.RecognizeUpstreamErrorFact(fact); recognized {
-		googleError(c, policy.Presentation.HTTPStatus, policy.Presentation.Message)
-		return
-	}
-
-	// Only unknown errors may use an administrator-configured passthrough rule.
-	if h.errorPassthroughService != nil {
-		if rule := h.errorPassthroughService.MatchUnknownRule(fact); rule != nil {
-			respCode := http.StatusBadGateway
-			if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
-				respCode = fact.HTTPStatus
-			}
-			if !rule.PassthroughCode && rule.ResponseCode != nil {
-				respCode = *rule.ResponseCode
-			}
-			msg := fact.SafeMessage
-			if !rule.PassthroughBody && rule.CustomMessage != nil {
-				msg = *rule.CustomMessage
-			}
-			if msg == "" {
-				msg = "Upstream request failed"
-			}
-			if rule.SkipMonitoring {
-				c.Set(service.OpsSkipPassthroughKey, true)
-			}
-			googleError(c, respCode, msg)
-			return
-		}
-	}
-
-	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
-	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
-
-	// 使用默认的错误映射
-	status, message := mapGeminiUpstreamError(statusCode)
-	googleError(c, status, message)
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
+	googleError(c, presentation.HTTPStatus, presentation.Message)
 }
 
-func mapGeminiUpstreamError(statusCode int) (int, string) {
-	switch statusCode {
-	case 401:
-		return http.StatusBadGateway, "Upstream authentication failed, please contact administrator"
-	case 403:
-		return http.StatusBadGateway, "Upstream access forbidden, please contact administrator"
-	case 429:
-		return http.StatusTooManyRequests, "Upstream rate limit exceeded, please retry later"
-	case 529:
-		return http.StatusServiceUnavailable, "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
-		return http.StatusBadGateway, "Upstream service temporarily unavailable"
-	default:
-		return http.StatusBadGateway, "Upstream request failed"
+func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError) {
+	if failoverErr == nil {
+		h.handleGeminiCandidate(c, nil)
+		return
 	}
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformGemini, failoverErr.StatusCode, failoverErr.ResponseBody)
+	}
+	h.handleGeminiCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly))
 }
 
 type pathParseError struct{ msg string }

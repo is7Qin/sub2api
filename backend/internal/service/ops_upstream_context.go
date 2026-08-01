@@ -34,8 +34,8 @@ const (
 	// ops_error_logger 中间件检查此 key，为 true 时跳过错误记录。
 	OpsSkipPassthroughKey = "ops_skip_passthrough"
 
-	// ResponseCommittedKey 由服务层错误写入器在写完完整 HTTP 响应后设置。
-	// handler 兜底错误检查此 key，避免在 JSON/Data 响应后追加第二份 SSE/JSON。
+	// ResponseCommittedKey 由服务层响应写入器或 handler 的 SSE 终止写入器设置。
+	// 它让后续兜底路径不能在已完成的 HTTP/SSE 响应后追加第二份终止响应。
 	ResponseCommittedKey = "response_committed"
 
 	// Client-side configuration denials should remain visible in ops_error_logs,
@@ -152,6 +152,10 @@ type OpsUpstreamErrorEvent struct {
 
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+
+	// UpstreamFact is a bounded, in-memory semantic fact used to make ops rule
+	// matching respect recognized direct-return errors. It is not persisted.
+	UpstreamFact *UpstreamErrorFact `json:"-"`
 }
 
 func (ev *OpsUpstreamErrorEvent) ResolvedUpstreamEndpoint() string {
@@ -173,15 +177,23 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
-	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.UpstreamEndpoint = ev.ResolvedUpstreamEndpoint()
-	ev.Message = strings.TrimSpace(ev.Message)
-	ev.Detail = strings.TrimSpace(ev.Detail)
-	if ev.Message != "" {
-		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
-	}
+	// Ops fields are a final diagnostic boundary: callers may retain raw bodies
+	// internally, but persisted diagnostics must stay bounded and redacted.
+	ev.Message = sanitizeUpstreamDiagnosticBody(
+		[]byte(strings.TrimSpace(ev.Message)),
+		upstreamErrorFactMaxMatchTextBytes,
+	)
+	ev.Detail = sanitizeUpstreamDiagnosticBody(
+		[]byte(strings.TrimSpace(ev.Detail)),
+		upstreamErrorFactMaxMatchTextBytes,
+	)
+	ev.UpstreamResponseBody = sanitizeUpstreamDiagnosticBody(
+		[]byte(strings.TrimSpace(ev.UpstreamResponseBody)),
+		upstreamErrorFactMaxMatchTextBytes,
+	)
 
 	var existing []*OpsUpstreamErrorEvent
 	if v, ok := c.Get(OpsUpstreamErrorsKey); ok {
@@ -203,7 +215,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 // failover errors (which never go through the final applyErrorPassthroughRule
 // path) can still suppress ops_error_logs recording.
 func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEvent) {
-	if ev.UpstreamStatusCode == 0 {
+	if ev == nil || (ev.UpstreamStatusCode == 0 && ev.UpstreamFact == nil) {
 		return
 	}
 
@@ -212,16 +224,16 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 		return
 	}
 
-	// Use the best available body representation for keyword matching.
-	// Even when body is empty, MatchRule can still match rules that only
-	// specify ErrorCodes (no Keywords), so we always call it.
-	body := ev.Detail
-	if body == "" {
-		body = ev.Message
+	if ev.UpstreamFact == nil {
+		return
 	}
 
-	rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, []byte(body))
-	if rule != nil && rule.SkipMonitoring {
+	// Recognized semantics own their presentation and must not be reclassified
+	// by mutable database rules for monitoring suppression.
+	if _, recognized := RecognizeUpstreamErrorFact(*ev.UpstreamFact); recognized {
+		return
+	}
+	if rule := svc.MatchUnknownRule(*ev.UpstreamFact); rule != nil && rule.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
 	}
 }
@@ -283,9 +295,9 @@ func endpointFromSafeUpstreamURL(rawURL string) string {
 		path = parsed.Path
 	}
 	for _, match := range []struct {
-		path                     string
-		endpoint                 string
-		preserveSuffix           bool
+		path                    string
+		endpoint                string
+		preserveSuffix          bool
 		allowGeminiActionSuffix bool
 	}{
 		{"/v1/chat/completions", "/v1/chat/completions", false, false},

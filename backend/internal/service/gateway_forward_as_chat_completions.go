@@ -161,6 +161,12 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, respBody)
+		if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+			presentation := policy.Presentation
+			writeGatewayCCErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message)
+			return nil, newRecognizedUpstreamError(policy, fact)
+		}
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -171,17 +177,25 @@ func (s *GatewayService) ForwardAsChatCompletions(
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
 				Kind:               "failover",
 				Message:            upstreamMsg,
+				UpstreamFact:       &fact,
 			})
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 			}
-			return nil, &UpstreamFailoverError{
-				StatusCode:   resp.StatusCode,
-				ResponseBody: respBody,
-			}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(
+				resp.StatusCode,
+				respBody,
+				account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				fact,
+			)
 		}
 
-		writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
+		resolved := ResolveFinalUpstreamError(fact, getBoundErrorPassthroughService(c))
+		if resolved.SkipMonitoring {
+			c.Set(OpsSkipPassthroughKey, true)
+		}
+		presentation := resolved.Presentation
+		writeGatewayCCErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message)
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 
@@ -513,11 +527,17 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 // writeGatewayCCError writes an error in OpenAI Chat Completions format for
 // the Anthropic-upstream CC forwarding path.
 func writeGatewayCCError(c *gin.Context, statusCode int, errType, message string) {
+	writeGatewayCCErrorWithCode(c, statusCode, errType, "", message)
+}
+
+func writeGatewayCCErrorWithCode(c *gin.Context, statusCode int, errType, code, message string) {
 	MarkResponseCommitted(c)
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	errorObject := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	if code != "" {
+		errorObject["code"] = code
+	}
+	c.JSON(statusCode, gin.H{"error": errorObject})
 }

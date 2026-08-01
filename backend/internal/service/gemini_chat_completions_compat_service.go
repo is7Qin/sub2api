@@ -137,7 +137,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			if downstreamErr := downstreamRequestContextErr(c); downstreamErr != nil {
 				return nil, downstreamErr
 			}
-			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			safeErr := sanitizeGeminiUpstreamDiagnosticText(err.Error())
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -147,12 +147,21 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				Message:            safeErr,
 			})
 			if attempt < geminiMaxRetries {
-				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini account %d: upstream request failed, retry %d/%d: %v", account.ID, attempt, geminiMaxRetries, err)
+				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini account %d: upstream request failed, retry %d/%d: %s", account.ID, attempt, geminiMaxRetries, safeErr)
 				sleepGeminiBackoff(attempt)
 				continue
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
-			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries: "+safeErr)
+			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", genericUpstreamFailureMessage)
+		}
+
+		if resp.StatusCode >= 400 {
+			respBody := s.readUpstreamErrorBody(resp)
+			fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+				break
+			}
 		}
 
 		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
@@ -182,8 +191,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
 				}
-				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+				upstreamMsg := sanitizeGeminiUpstreamDiagnosticText(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
@@ -225,6 +233,10 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+		if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+			return nil, s.writeGeminiChatCompletionsMappedError(c, account, resp.StatusCode, requestID, unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody))
+		}
 		policy := ErrorPolicyNone
 		if s.rateLimitService != nil {
 			policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
@@ -235,7 +247,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		evBody := unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody)
 
 		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
-			upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(evBody)))
+			upstreamMsg := sanitizeGeminiUpstreamDiagnosticText(strings.TrimSpace(extractUpstreamErrorMessage(evBody)))
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -245,11 +257,12 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           evBody,
-				RetryableOnSameAccount: policy == ErrorPolicySkipped && account != nil && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(
+				resp.StatusCode,
+				evBody,
+				policy == ErrorPolicySkipped && account != nil && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				fact,
+			)
 		}
 
 		return nil, s.writeGeminiChatCompletionsMappedError(c, account, resp.StatusCode, requestID, evBody)
@@ -796,7 +809,7 @@ func (s *GeminiMessagesCompatService) writeGeminiChatCompletionsMappedError(
 	upstreamRequestID string,
 	body []byte,
 ) error {
-	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	upstreamMsg := sanitizeGeminiUpstreamDiagnosticText(strings.TrimSpace(extractUpstreamErrorMessage(body)))
 	setOpsUpstreamError(c, upstreamStatus, upstreamMsg, "")
 	if account != nil {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -874,9 +887,6 @@ func (s *GeminiMessagesCompatService) writeGeminiChatCompletionsMappedError(
 		}
 	}
 
-	if upstreamMsg != "" && errMsg == "Upstream request failed" {
-		errMsg = upstreamMsg
-	}
 	return s.writeChatCompletionsError(c, statusCode, errType, errMsg)
 }
 

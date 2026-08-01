@@ -17,6 +17,32 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestApplyErrorPassthroughRule_PassthroughBodyUsesFactSafeMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"vendor_failure"}, MatchMode: model.MatchModeAny,
+		PassthroughCode: true, PassthroughBody: true,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+	body := []byte(`{"error":{"code":"vendor_failure","message":"Authorization: Bearer sk-private https://internal.example/path"}}`)
+
+	status, errType, message, matched := applyErrorPassthroughRule(
+		c, PlatformOpenAI, http.StatusBadRequest, body,
+		http.StatusBadGateway, "upstream_error", "Upstream request failed",
+	)
+
+	require.True(t, matched)
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, "upstream_error", errType)
+	require.NotContains(t, message, "sk-private")
+	require.NotContains(t, message, "internal.example")
+	require.LessOrEqual(t, len(message), upstreamErrorFactMaxScalarBytes)
+}
+
 func TestErrorPassthroughService_MatchUnknownRuleUsesBoundedFactText(t *testing.T) {
 	responseCode := http.StatusTeapot
 	customMessage := "safe unknown message"
@@ -91,7 +117,7 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 
 	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
@@ -334,7 +360,7 @@ func TestOpenAIHandleErrorResponse_RedactsOpsDiagnostics(t *testing.T) {
 	require.Contains(t, combined, "[codex-user-agent-redacted]")
 }
 
-func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
+func TestGeminiWriteGeminiMappedError_RecognizedInvalidArgumentPrecedesRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -349,14 +375,14 @@ func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
 
 	err := svc.writeGeminiMappedError(c, account, http.StatusUnprocessableEntity, "req-1", respBody)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusTeapot, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "upstream_error", errField["type"])
-	assert.Equal(t, "Gemini上游失败", errField["message"])
+	assert.Equal(t, "invalid_request_error", errField["type"])
+	assert.Equal(t, "Invalid schema for field messages", errField["message"])
 }
 
 func TestApplyErrorPassthroughRule_SkipMonitoringSetsContextKey(t *testing.T) {
@@ -414,6 +440,53 @@ func TestApplyErrorPassthroughRule_NoSkipMonitoringDoesNotSetContextKey(t *testi
 	assert.True(t, matched)
 	_, exists := c.Get(OpsSkipPassthroughKey)
 	assert.False(t, exists, "OpsSkipPassthroughKey should NOT be set when skip_monitoring=false")
+}
+
+func TestGatewayHandleErrorResponse_Unknown400UsesSafeEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"error":{"message":"bad request"},"access_token":"secret-token","debug":"internal"}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, err := (&GatewayService{}).handleErrorResponse(
+		context.Background(), resp, c,
+		&Account{ID: 902, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "secret-token")
+	require.NotContains(t, rec.Body.String(), "debug")
+	require.True(t, IsResponseCommitted(c))
+}
+
+func TestGatewayHandleErrorResponse_Unknown503UsesGeneric502(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"error":{"code":"vendor_failure","message":"private vendor detail"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, err := (&GatewayService{}).handleErrorResponse(
+		context.Background(), resp, c,
+		&Account{ID: 903, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "private vendor detail")
+	require.True(t, IsResponseCommitted(c))
 }
 
 func TestGatewayHandleErrorResponse_SetsResponseCommitted(t *testing.T) {

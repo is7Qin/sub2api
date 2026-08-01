@@ -123,6 +123,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_RetryUsesDistinctAttemptIdent
 	account := newAnthropicAPIKeyAccountForTest()
 	account.Credentials["custom_error_codes_enabled"] = true
 	account.Credentials["custom_error_codes"] = []any{float64(http.StatusServiceUnavailable)}
+	account.Credentials["pool_mode"] = true
+	account.Credentials["pool_mode_retry_count"] = float64(4)
+	account.Credentials["pool_mode_retry_status_codes"] = []any{float64(http.StatusTooManyRequests)}
 
 	result, err := svc.forwardAnthropicAPIKeyPassthrough(
 		context.Background(),
@@ -142,6 +145,80 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_RetryUsesDistinctAttemptIdent
 	require.NotEmpty(t, upstream.attemptIDs[1])
 	require.NotEqual(t, upstream.attemptIDs[0], upstream.attemptIDs[1])
 	require.Equal(t, upstream.attemptIDs[1], result.AttemptID)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_RecognizedOverloadReturnsBeforeRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	upstream := &anthropicQueuedHTTPUpstream{responses: []*http.Response{{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{"X-Request-Id": []string{"overloaded"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Please retry later"}}`)),
+	}}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["custom_error_codes_enabled"] = true
+	account.Credentials["custom_error_codes"] = []any{float64(http.StatusServiceUnavailable)}
+
+	_, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest",
+		"claude-3-5-sonnet-latest",
+		false,
+		time.Now(),
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.NotErrorAs(t, err, &failoverErr)
+	require.Equal(t, 1, upstream.calls)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Equal(t, "Please retry later", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_StructuredRateLimitUsesPolicyRetryBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	responses := make([]*http.Response, maxRetryAttempts)
+	for i := range responses {
+		responses[i] = &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"X-Request-Id": []string{"rate-limited"}},
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"quota exceeded"}}`)),
+		}
+	}
+	upstream := &anthropicQueuedHTTPUpstream{responses: responses}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["custom_error_codes_enabled"] = true
+	account.Credentials["custom_error_codes"] = []any{float64(http.StatusServiceUnavailable)}
+	account.Credentials["pool_mode"] = true
+	account.Credentials["pool_mode_retry_count"] = float64(4)
+	account.Credentials["pool_mode_retry_status_codes"] = []any{float64(http.StatusTooManyRequests)}
+
+	_, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest",
+		"claude-3-5-sonnet-latest",
+		false,
+		time.Now(),
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 2, upstream.calls, "one initial attempt plus the semantic same-account retry")
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, "rate_limit_exceeded", fact.ProviderCode)
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_RetryCancellationPreservesCompletedError(

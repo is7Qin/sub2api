@@ -981,6 +981,94 @@ func TestUpstreamRecoveryState_ConfiguredHardCapRemainsHardCap(t *testing.T) {
 	require.False(t, state.CanTransition(0))
 }
 
+func TestOpenAIDirectReturnCandidateUsesFactWithoutRetainingIt(t *testing.T) {
+	failoverErr := service.NewUpstreamFailoverErrorWithFact(
+		http.StatusServiceUnavailable,
+		true,
+		service.UpstreamErrorFact{
+			Provider:        service.PlatformOpenAI,
+			Source:          service.UpstreamErrorSourceHTTP,
+			HTTPStatusKnown: true,
+			HTTPStatus:      http.StatusServiceUnavailable,
+			ProviderCode:    "server_is_overloaded",
+			ProviderType:    "service_unavailable_error",
+			SafeMessage:     "Please retry later",
+		},
+	)
+	recovery := NewUpstreamRecoveryState()
+
+	candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr)
+
+	require.True(t, ok)
+	require.NotNil(t, candidate)
+	require.Equal(t, "server_is_overloaded", candidate.Presentation.ErrorCode)
+	_, retained := recovery.FinalCandidate()
+	require.False(t, retained, "direct-return facts must not be retained for later failover")
+}
+
+func TestHandleFailoverError_RecognizedDirectReturnHasNoRecoverySideEffects(t *testing.T) {
+	mock := &mockTempUnscheduler{}
+	fs := NewFailoverState(5, true)
+	failoverErr := service.NewUpstreamFailoverErrorWithFact(
+		http.StatusServiceUnavailable,
+		true,
+		service.UpstreamErrorFact{
+			Provider:        service.PlatformOpenAI,
+			Source:          service.UpstreamErrorSourceHTTP,
+			HTTPStatusKnown: true,
+			HTTPStatus:      http.StatusServiceUnavailable,
+			ProviderCode:    "server_is_overloaded",
+			ProviderType:    "service_unavailable_error",
+			SafeMessage:     "Please retry later",
+		},
+	)
+
+	action := fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformOpenAI, 4, failoverErr)
+
+	require.Equal(t, FailoverDirectReturn, action)
+	require.Zero(t, fs.SameAccountRetryCount[100])
+	require.Zero(t, fs.SwitchCount)
+	require.Empty(t, fs.FailedAccountIDs)
+	require.Empty(t, mock.calls)
+	require.False(t, fs.ForceCacheBilling)
+	_, ok := fs.FinalCandidate()
+	require.False(t, ok, "direct-return facts must not enter failover candidate state")
+	candidate, ok := directReturnCandidate(failoverErr)
+	require.True(t, ok)
+	require.Equal(t, "server_is_overloaded", candidate.Presentation.ErrorCode)
+	require.Equal(t, http.StatusServiceUnavailable, candidate.Presentation.HTTPStatus)
+}
+
+func TestHandleFailoverError_RecognizedRateLimitCapsConfiguredRecovery(t *testing.T) {
+	mock := &mockTempUnscheduler{}
+	fs := NewFailoverState(5, false)
+	failoverErr := service.NewUpstreamFailoverErrorWithFact(
+		http.StatusTooManyRequests,
+		true,
+		service.UpstreamErrorFact{
+			Provider:        service.PlatformOpenAI,
+			Source:          service.UpstreamErrorSourceHTTP,
+			HTTPStatusKnown: true,
+			HTTPStatus:      http.StatusTooManyRequests,
+			ProviderCode:    "rate_limit_exceeded",
+			ProviderType:    "rate_limit_error",
+			SafeMessage:     "quota exceeded",
+		},
+	)
+
+	require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformOpenAI, 4, failoverErr))
+	require.Equal(t, 1, fs.SameAccountRetryCount[100])
+	require.Zero(t, fs.SwitchCount)
+
+	require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformOpenAI, 4, failoverErr))
+	require.Equal(t, 1, fs.SameAccountRetryCount[100])
+	require.Equal(t, 1, fs.SwitchCount)
+
+	require.Equal(t, FailoverExhausted, fs.HandleFailoverError(context.Background(), mock, 200, service.PlatformOpenAI, 4, failoverErr))
+	require.Zero(t, fs.SameAccountRetryCount[200], "the semantic same-account retry budget is request-wide")
+	require.Equal(t, 1, fs.SwitchCount, "the request-wide transition budget allows only one switch")
+}
+
 func TestHandleSelectionExhausted(t *testing.T) {
 	t.Run("无LastFailoverErr时返回Exhausted", func(t *testing.T) {
 		fs := NewFailoverState(3, false)

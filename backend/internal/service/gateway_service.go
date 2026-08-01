@@ -617,6 +617,10 @@ func (e *UpstreamFailoverError) UpstreamFact() (UpstreamErrorFact, bool) {
 	return *e.upstreamFact, true
 }
 
+func NewUpstreamFailoverErrorWithFact(statusCode int, retryableOnSameAccount bool, fact UpstreamErrorFact) *UpstreamFailoverError {
+	return newHTTPUpstreamFailoverErrorWithFact(statusCode, nil, retryableOnSameAccount, fact)
+}
+
 func newHTTPUpstreamFailoverErrorWithFact(statusCode int, body []byte, retryableOnSameAccount bool, fact UpstreamErrorFact) *UpstreamFailoverError {
 	return &UpstreamFailoverError{
 		StatusCode:             statusCode,
@@ -5840,6 +5844,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var resp *http.Response
 	var completedError completedResponseSnapshot
 	retryStart := time.Now()
+	recognizedSameAccountRetries := 0
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
 		upstreamReq, wireBody, err := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, input.Body, token)
@@ -5893,15 +5898,31 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		}
 
 		// Direct recognized semantics must own this response before passthrough
-		// retry/failover handling can mutate account health.
+		// retry/failover handling can mutate account health. Recoverable recognized
+		// facts cap provider-local retries through their semantic budget.
+		var recoveryPolicy UpstreamRecoveryPolicy
+		var recoveryPolicyRecognized bool
 		if resp.StatusCode >= http.StatusBadRequest {
-			if result, recognizedErr, handled := s.handleRecognizedHTTPErrorResponse(resp, c, account); handled {
-				return result, recognizedErr
+			body, readErr := s.readUpstreamErrorBody(resp)
+			if readErr == nil {
+				_ = resp.Body.Close()
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, body)
+				recoveryPolicy, recoveryPolicyRecognized = ResolveUpstreamRecoveryPolicy(fact)
+				if recoveryPolicyRecognized && recoveryPolicy.Disposition == UpstreamAttemptDirectReturn {
+					if result, recognizedErr, handled := s.handleRecognizedHTTPErrorResponse(resp, c, account); handled {
+						return result, recognizedErr
+					}
+				}
 			}
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
+		shouldRetry := resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode)
+		if recoveryPolicyRecognized {
+			shouldRetry = shouldRetry && recognizedSameAccountRetries < recoveryPolicy.SameAccountRetryBudget
+		}
+		if shouldRetry {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= maxRetryElapsed {
@@ -5939,6 +5960,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				})
 				logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: upstream error %d, retry %d/%d after %v (elapsed=%v/%v)",
 					account.ID, resp.StatusCode, attempt, maxRetryAttempts, delay, elapsed, maxRetryElapsed)
+				if recoveryPolicyRecognized {
+					recognizedSameAccountRetries++
+				}
 				if err := sleepWithContext(ctx, delay); err != nil {
 					if restored, canceled := completedError.ifRetryCanceled(ctx); canceled {
 						resp = restored
@@ -5984,11 +6008,13 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			fact := ParseHTTPUpstreamErrorFact(account.Platform, resp, respBody)
+			return nil, newHTTPUpstreamFailoverErrorWithFact(
+				resp.StatusCode,
+				respBody,
+				account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				fact,
+			)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}

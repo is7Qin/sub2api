@@ -508,29 +508,39 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					if failoverClientGone(c) {
 						return
 					}
-					// 池模式：同账号重试
-					if failoverErr.RetryableOnSameAccount {
-						retryLimit := account.GetPoolModeRetryCount()
-						if sameAccountRetryCount[account.ID] < retryLimit {
-							sameAccountRetryCount[account.ID]++
-							reqLog.Warn("openai.pool_mode_same_account_retry",
-								zap.Int64("account_id", account.ID),
-								zap.Int("upstream_status", failoverErr.StatusCode),
-								zap.Int("retry_limit", retryLimit),
-								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-							)
-							select {
-							case <-c.Request.Context().Done():
-								return
-							case <-time.After(sameAccountRetryDelay):
-							}
-							continue
+					policy, recognized := recovery.ObserveFailoverError(failoverErr)
+					if recognized && policy.Disposition == service.UpstreamAttemptDirectReturn {
+						if candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
 						}
+						return
 					}
-					h.gatewayService.RecordOpenAIAccountSwitch()
+					// Fact-backed policies cap configured retries request-wide; factless
+					// failover errors retain their existing pool-mode behavior.
+					canRetrySameAccount := failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < account.GetPoolModeRetryCount()
+					if recognized {
+						canRetrySameAccount = canRetrySameAccount && recovery.CanRetrySameAccount()
+					}
+					if canRetrySameAccount {
+						sameAccountRetryCount[account.ID]++
+						if recognized {
+							recovery.RecordSameAccountRetry()
+						}
+						reqLog.Warn("openai.pool_mode_same_account_retry",
+							zap.Int64("account_id", account.ID),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int("retry_limit", account.GetPoolModeRetryCount()),
+							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+						)
+						select {
+						case <-c.Request.Context().Done():
+							return
+						case <-time.After(sameAccountRetryDelay):
+						}
+						continue
+					}
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
-					recovery.ObserveFailoverError(failoverErr)
 					if recovery.HasTransitionBudget() && !recovery.CanTransition(maxAccountSwitches) {
 						h.handleResponsesFailoverExhausted(c, recovery, lastFailoverErr, streamStarted)
 						return
@@ -539,17 +549,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleResponsesFailoverExhausted(c, recovery, failoverErr, streamStarted)
 						return
 					}
-					switchCount++
-					if recovery.HasTransitionBudget() {
-						recovery.RecordTransition()
-					}
-					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-						if candidate, ok := recovery.FinalCandidate(); ok {
+					nextSwitchCount := switchCount + 1
+					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, nextSwitchCount) {
+						if candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr); ok {
 							h.handleUpstreamCandidate(c, candidate, streamStarted)
 						} else {
 							h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						}
 						return
+					}
+					h.gatewayService.RecordOpenAIAccountSwitch()
+					switchCount = nextSwitchCount
+					if recovery.HasTransitionBudget() {
+						recovery.RecordTransition()
 					}
 					fields := []zap.Field{
 						zap.Int64("account_id", account.ID),
@@ -1058,28 +1070,39 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						if failoverClientGone(c) {
 							return
 						}
-						// 池模式：同账号重试
-						if failoverErr.RetryableOnSameAccount {
-							retryLimit := account.GetPoolModeRetryCount()
-							if sameAccountRetryCount[account.ID] < retryLimit {
-								sameAccountRetryCount[account.ID]++
-								reqLog.Warn("openai_messages.pool_mode_same_account_retry",
-									zap.Int64("account_id", account.ID),
-									zap.Int("upstream_status", failoverErr.StatusCode),
-									zap.Int("retry_limit", retryLimit),
-									zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-								)
-								select {
-								case <-c.Request.Context().Done():
-									return
-								case <-time.After(sameAccountRetryDelay):
-								}
-								continue
+						policy, recognized := recovery.ObserveFailoverError(failoverErr)
+						if recognized && policy.Disposition == service.UpstreamAttemptDirectReturn {
+							if candidate, ok := recovery.FinalCandidate(); ok {
+								h.handleAnthropicCandidate(c, candidate, streamStarted)
 							}
+							return
+						}
+						// Fact-backed policies cap configured retries request-wide; factless
+						// failover errors retain their existing pool-mode behavior.
+						canRetrySameAccount := failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < account.GetPoolModeRetryCount()
+						if recognized {
+							canRetrySameAccount = canRetrySameAccount && recovery.CanRetrySameAccount()
+						}
+						if canRetrySameAccount {
+							sameAccountRetryCount[account.ID]++
+							if recognized {
+								recovery.RecordSameAccountRetry()
+							}
+							reqLog.Warn("openai_messages.pool_mode_same_account_retry",
+								zap.Int64("account_id", account.ID),
+								zap.Int("upstream_status", failoverErr.StatusCode),
+								zap.Int("retry_limit", account.GetPoolModeRetryCount()),
+								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+							)
+							select {
+							case <-c.Request.Context().Done():
+								return
+							case <-time.After(sameAccountRetryDelay):
+							}
+							continue
 						}
 						failedAccountIDs[account.ID] = struct{}{}
 						lastFailoverErr = failoverErr
-						recovery.ObserveFailoverError(failoverErr)
 						anthropicStreamStarted := streamStarted || (c.Writer != nil && c.Writer.Written())
 						if recovery.HasTransitionBudget() && !recovery.CanTransition(maxAccountSwitches) {
 							if candidate, ok := recovery.FinalCandidate(); ok {

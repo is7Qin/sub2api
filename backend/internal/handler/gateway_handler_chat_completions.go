@@ -323,6 +323,11 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 						h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 					}
 					return
+				case FailoverDirectReturn:
+					if candidate, ok := directReturnCandidate(failoverErr); ok {
+						h.handleCCCandidate(c, candidate, streamStarted)
+					}
+					return
 				case FailoverCanceled:
 					failoverClientGone(c)
 					return

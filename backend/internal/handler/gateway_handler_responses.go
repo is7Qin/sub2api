@@ -293,6 +293,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 						h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 					}
 					return
+				case FailoverDirectReturn:
+					if candidate, ok := directReturnCandidate(failoverErr); ok {
+						h.handleResponsesCandidate(c, candidate, streamStarted)
+					}
+					return
 				case FailoverCanceled:
 					failoverClientGone(c)
 					return

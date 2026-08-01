@@ -175,6 +175,7 @@ func (s *GatewayService) ForwardAsResponses(
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
 				Kind:               "failover",
 				Message:            upstreamMsg,
+				UpstreamFact:       &fact,
 			})
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)

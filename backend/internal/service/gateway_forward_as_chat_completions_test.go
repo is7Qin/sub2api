@@ -44,6 +44,34 @@ func TestForwardAsChatCompletions_FailoverRetainsGeneric5xxHTTPFact(t *testing.T
 	require.Equal(t, "req_conversion_503", fact.RequestID)
 }
 
+func TestForwardAsChatCompletions_FailoverEventAttachesFactForSkipMonitoring(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rule := newNonFailoverPassthroughRule(http.StatusServiceUnavailable, "vendor marker", http.StatusTeapot, "safe custom message")
+	rule.SkipMonitoring = true
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{rule})
+	BindErrorPassthroughService(c, ruleSvc)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"vendor_failure","message":"vendor marker private detail"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, newAnthropicAPIKeyAccountForTest(), []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`), nil)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	skip, ok := c.Get(OpsSkipPassthroughKey)
+	require.True(t, ok)
+	require.Equal(t, true, skip)
+	events := c.MustGet(OpsUpstreamErrorsKey).([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].UpstreamFact)
+	require.Equal(t, "vendor_failure", events[0].UpstreamFact.ProviderType)
+}
+
 func TestForwardAsChatCompletions_UnknownHTTPErrorUsesSafeFinalPresentation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

@@ -49,6 +49,7 @@ type UpstreamRecoveryState struct {
 	sameAccountRetriesUsed int
 	transitionBudget       int
 	transitionsUsed        int
+	hasRecoveryPolicy      bool
 	bestCandidate          *service.UpstreamErrorCandidate
 }
 
@@ -60,12 +61,16 @@ func (s *UpstreamRecoveryState) AdoptPolicy(policy service.UpstreamRecoveryPolic
 	if s == nil {
 		return
 	}
-	if policy.SameAccountRetryBudget > 0 &&
-		(s.sameAccountRetryBudget == 0 || policy.SameAccountRetryBudget < s.sameAccountRetryBudget) {
+	if !s.hasRecoveryPolicy {
+		s.sameAccountRetryBudget = policy.SameAccountRetryBudget
+		s.transitionBudget = policy.AccountTransitionBudget
+		s.hasRecoveryPolicy = true
+		return
+	}
+	if policy.SameAccountRetryBudget < s.sameAccountRetryBudget {
 		s.sameAccountRetryBudget = policy.SameAccountRetryBudget
 	}
-	if policy.AccountTransitionBudget > 0 &&
-		(s.transitionBudget == 0 || policy.AccountTransitionBudget < s.transitionBudget) {
+	if policy.AccountTransitionBudget < s.transitionBudget {
 		s.transitionBudget = policy.AccountTransitionBudget
 	}
 }
@@ -106,7 +111,7 @@ func (s *UpstreamRecoveryState) RecordSameAccountRetry() {
 }
 
 func (s *UpstreamRecoveryState) HasTransitionBudget() bool {
-	return s != nil && s.transitionBudget > 0
+	return s != nil && s.hasRecoveryPolicy
 }
 
 func (s *UpstreamRecoveryState) RetainCandidate(candidate *service.UpstreamErrorCandidate) {
@@ -140,6 +145,7 @@ func (s *UpstreamRecoveryState) ClearOnSuccess() {
 	s.sameAccountRetriesUsed = 0
 	s.transitionBudget = 0
 	s.transitionsUsed = 0
+	s.hasRecoveryPolicy = false
 }
 
 func (s *UpstreamRecoveryState) FinalCandidate() (*service.UpstreamErrorCandidate, bool) {
@@ -307,7 +313,7 @@ func (s *FailoverState) HandleFailoverError(
 		return FailoverCanceled
 	}
 	s.SwitchCount++
-	if s.Recovery.transitionBudget > 0 {
+	if s.Recovery.HasTransitionBudget() {
 		s.Recovery.RecordTransition()
 	}
 	logger.FromContext(ctx).Warn("gateway.failover_switch_account",
@@ -342,6 +348,11 @@ func (s *FailoverState) HandleFailoverError(
 func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
 	if ctx != nil && ctx.Err() != nil {
 		return FailoverCanceled
+	}
+
+	if s.Recovery != nil && s.Recovery.HasTransitionBudget() &&
+		!s.Recovery.CanTransition(s.MaxSwitches) {
+		return FailoverExhausted
 	}
 
 	if s.LastFailoverErr != nil &&

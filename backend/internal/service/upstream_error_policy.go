@@ -170,7 +170,14 @@ func ResolveUpstreamRecoveryPolicy(fact UpstreamErrorFact) (UpstreamRecoveryPoli
 			Presentation:            NewUpstreamErrorCandidate(fact, UpstreamCandidateStatusOnly).Presentation,
 		}, true
 	}
-	return UpstreamRecoveryPolicy{}, false
+	// A parsed but otherwise unknown fact must terminate semantic recovery; zero
+	// budgets are authoritative and must not fall back to legacy retry limits.
+	return UpstreamRecoveryPolicy{
+		Disposition:         UpstreamAttemptGenericAbort,
+		AccountHealthAction: UpstreamHealthNone,
+		CandidateRank:       UpstreamCandidateStatusOnly,
+		Presentation:        NewUpstreamErrorCandidate(fact, UpstreamCandidateStatusOnly).Presentation,
+	}, true
 }
 
 func RecognizeUpstreamErrorFact(fact UpstreamErrorFact) (RecognizedUpstreamErrorPolicy, bool) {

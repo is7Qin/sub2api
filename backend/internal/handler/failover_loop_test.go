@@ -1069,6 +1069,74 @@ func TestHandleFailoverError_RecognizedRateLimitCapsConfiguredRecovery(t *testin
 	require.Equal(t, 1, fs.SwitchCount, "the request-wide transition budget allows only one switch")
 }
 
+func TestHandleFailoverError_UnknownFactHasNoLegacyRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		fact                   service.UpstreamErrorFact
+		retryableOnSameAccount bool
+		priorPolicy            service.UpstreamRecoveryPolicy
+	}{
+		{
+			name: "unknown structured status",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true, HTTPStatus: http.StatusBadRequest,
+				ProviderType: "vendor_failure", SafeMessage: "vendor failed",
+			},
+			retryableOnSameAccount: true,
+		},
+		{
+			name: "status unknown",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceSSE,
+				ProviderType: "vendor_stream_failure", SafeMessage: "stream failed",
+			},
+			retryableOnSameAccount: true,
+		},
+		{
+			name: "unknown closes an unused same-account retry budget",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true, HTTPStatus: http.StatusBadRequest,
+				ProviderType: "vendor_failure", SafeMessage: "vendor failed",
+			},
+			retryableOnSameAccount: true,
+			priorPolicy: service.UpstreamRecoveryPolicy{
+				SameAccountRetryBudget: 1,
+			},
+		},
+		{
+			name: "unknown closes an unused transition budget",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true, HTTPStatus: http.StatusBadRequest,
+				ProviderType: "vendor_failure", SafeMessage: "vendor failed",
+			},
+			priorPolicy: service.UpstreamRecoveryPolicy{
+				AccountTransitionBudget: 1,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockTempUnscheduler{}
+			fs := NewFailoverState(5, false)
+			if tc.priorPolicy != (service.UpstreamRecoveryPolicy{}) {
+				fs.Recovery.AdoptPolicy(tc.priorPolicy)
+			}
+			failoverErr := service.NewUpstreamFailoverErrorWithFact(tc.fact.HTTPStatus, tc.retryableOnSameAccount, tc.fact)
+
+			action := fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformAnthropic, 4, failoverErr)
+
+			require.Equal(t, FailoverExhausted, action)
+			require.Zero(t, fs.SameAccountRetryCount[100])
+			require.Zero(t, fs.SwitchCount, "fact-backed unknown errors must not inherit MaxSwitches")
+			candidate, ok := fs.FinalCandidate()
+			require.True(t, ok, "unknown fact must remain available to the safe final resolver")
+			require.Equal(t, tc.fact.ProviderType, candidate.Fact.ProviderType)
+		})
+	}
+}
+
 func TestHandleSelectionExhausted(t *testing.T) {
 	t.Run("无LastFailoverErr时返回Exhausted", func(t *testing.T) {
 		fs := NewFailoverState(3, false)
@@ -1100,6 +1168,21 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		require.Empty(t, fs.FailedAccountIDs, "应清除失败账号列表")
 		require.GreaterOrEqual(t, elapsed, 1500*time.Millisecond, "应等待约 2s")
 		require.Less(t, elapsed, 5*time.Second)
+	})
+
+	t.Run("semantic transition budget consumed preserves exclusions", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.LastFailoverErr = newTestFailoverErr(http.StatusServiceUnavailable, false, false)
+		fs.FailedAccountIDs[100] = struct{}{}
+		fs.Recovery.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+		fs.Recovery.RecordTransition()
+
+		start := time.Now()
+		action := fs.HandleSelectionExhausted(context.Background())
+
+		require.Equal(t, FailoverExhausted, action)
+		require.Contains(t, fs.FailedAccountIDs, int64(100), "consumed semantic budget must not reopen excluded accounts")
+		require.Less(t, time.Since(start), 100*time.Millisecond, "consumed semantic budget must not back off and retry")
 	})
 
 	t.Run("503但SwitchCount已超过MaxSwitches_返回Exhausted", func(t *testing.T) {

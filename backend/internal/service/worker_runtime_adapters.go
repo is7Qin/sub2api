@@ -49,6 +49,7 @@ func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime
 
 type usageRecordWorkerPoolWorkerTestHooks struct {
 	afterPoolStart func()
+	afterPoolStop  func()
 }
 
 // UsageRecordWorkerPoolWorker adapts the usage record pool to the worker runtime.
@@ -56,11 +57,12 @@ type UsageRecordWorkerPoolWorker struct {
 	pool       *UsageRecordWorkerPool
 	descriptor workerruntime.Descriptor
 
-	mu        sync.RWMutex
-	lifecycle workerruntime.LifecycleSnapshot
-	stopping  bool
-	stopDone  chan struct{}
-	testHooks *usageRecordWorkerPoolWorkerTestHooks
+	mu             sync.RWMutex
+	lifecycle      workerruntime.LifecycleSnapshot
+	stopping       bool
+	stopDone       chan struct{}
+	nativeStopDone chan struct{}
+	testHooks      *usageRecordWorkerPoolWorkerTestHooks
 }
 
 // NewUsageRecordWorkerPoolWorker returns the runtime component for pool.
@@ -133,13 +135,23 @@ func (w *UsageRecordWorkerPoolWorker) Stop(ctx context.Context) error {
 		return nil
 	}
 	w.mu.Lock()
+	if w.stopDone != nil && w.lifecycle.State == workerruntime.LifecycleStopped {
+		w.mu.Unlock()
+		return nil
+	}
 	if !w.stopping {
 		w.stopping = true
 		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
 		w.stopDone = make(chan struct{})
+		w.nativeStopDone = make(chan struct{})
 		done := w.stopDone
+		nativeDone := w.nativeStopDone
 		go func() {
 			w.pool.Stop()
+			close(nativeDone)
+			if w.testHooks != nil && w.testHooks.afterPoolStop != nil {
+				w.testHooks.afterPoolStop()
+			}
 			w.mu.Lock()
 			w.stopping = false
 			w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
@@ -148,13 +160,35 @@ func (w *UsageRecordWorkerPoolWorker) Stop(ctx context.Context) error {
 		}()
 	}
 	done := w.stopDone
+	nativeDone := w.nativeStopDone
 	w.mu.Unlock()
 
+	// Prefer completed shutdown when a caller deadline expires at the same time.
+	select {
+	case <-done:
+		return nil
+	default:
+	}
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+
+		select {
+		case <-nativeDone:
+			w.mu.Lock()
+			w.stopping = false
+			w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+			w.mu.Unlock()
+			return nil
+		default:
+			return ctx.Err()
+		}
 	}
 }
 

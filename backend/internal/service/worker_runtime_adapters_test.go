@@ -123,6 +123,62 @@ func TestUsageRecordWorkerPoolWorkerStopDeadlineKeepsStoppingSnapshot(t *testing
 	require.NoError(t, worker.Stop(context.Background()))
 }
 
+func TestUsageRecordWorkerPoolWorkerStopReturnsSuccessWhenNativeStopCompletesAtDeadline(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool).(*UsageRecordWorkerPoolWorker)
+	require.NoError(t, worker.Start(context.Background()))
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {
+		close(started)
+		<-block
+	}))
+	<-started
+
+	nativeStopComplete := make(chan struct{})
+	releaseCompletion := make(chan struct{})
+	worker.testHooks = &usageRecordWorkerPoolWorkerTestHooks{
+		afterPoolStop: func() {
+			close(nativeStopComplete)
+			<-releaseCompletion
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- worker.Stop(ctx) }()
+	require.Eventually(t, func() bool {
+		return worker.Snapshot().Lifecycle.State == workerruntime.LifecycleStopping
+	}, time.Second, time.Millisecond)
+
+	close(block)
+	<-nativeStopComplete
+	cancel()
+	require.NoError(t, <-stopErr)
+	close(releaseCompletion)
+}
+
+func TestUsageRecordWorkerPoolWorkerStopReturnsSuccessAfterCompletionWithExpiredContext(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool)
+	require.NoError(t, worker.Start(context.Background()))
+	require.NoError(t, worker.Stop(context.Background()))
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now())
+	defer cancel()
+	require.NoError(t, worker.Stop(ctx))
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+}
+
 func TestAccountExpiryWorkerPreservesImmediateRuntimeSpec(t *testing.T) {
 	worker, err := NewAccountExpiryWorker(NewAccountExpiryService(&accountExpiryRepoStub{autoPauseFn: func(context.Context, time.Time) (int64, error) {
 		return 0, nil

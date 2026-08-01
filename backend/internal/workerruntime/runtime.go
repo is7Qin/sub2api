@@ -73,6 +73,14 @@ func (r *Runtime) Register(component Component) error {
 	return r.registry.Register(component)
 }
 
+// Snapshot returns name-sorted, detached snapshots of all managed components.
+func (r *Runtime) Snapshot() []Snapshot {
+	if r == nil {
+		return nil
+	}
+	return r.registry.Snapshot()
+}
+
 // StartAll freezes registration and starts pools before periodic components.
 func (r *Runtime) StartAll(ctx context.Context) error {
 	r.mu.Lock()

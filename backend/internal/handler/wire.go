@@ -166,7 +166,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAccountHandler,
 	admin.NewAnnouncementHandler,
 	admin.NewDataManagementHandler,
-	admin.NewBackupHandler, // Backup S3 updates verify fresh TOTP through TotpService
+	ProvideBackupHandler,
 	admin.NewOAuthHandler,
 	admin.NewOpenAIOAuthHandler,
 	admin.NewGeminiOAuthHandler,
@@ -195,3 +195,9 @@ var ProviderSet = wire.NewSet(
 	ProvideAdminHandlers,
 	ProvideHandlers,
 )
+
+// ProvideBackupHandler binds the concrete TotpService to the admin-only
+// backup step-up verifier interface at the composition boundary.
+func ProvideBackupHandler(backupService *service.BackupService, userService *service.UserService, totpService *service.TotpService) *admin.BackupHandler {
+	return admin.NewBackupHandler(backupService, userService, totpService)
+}

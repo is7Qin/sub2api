@@ -132,7 +132,7 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 			return err
 		}
 	}
-	records, err := w.repo.Claim(ctx, w.workerID, billingOutboxBatchSize, billingOutboxLease)
+	records, err := w.repo.Claim(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
 	if err != nil {
 		return fmt.Errorf("claim billing outbox commands: %w", err)
 	}

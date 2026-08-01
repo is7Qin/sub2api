@@ -4517,6 +4517,7 @@ func (s *AntigravityGatewayService) forwardUpstreamAdmitted(ctx context.Context,
 	logger.LegacyPrintf("service.antigravity_gateway", "%s status=success duration_ms=%d", prefix, duration.Milliseconds())
 
 	return &ForwardResult{
+		AttemptID:        forwardResultAttemptID(resp),
 		Model:            originalModel,
 		Stream:           claudeReq.Stream,
 		Duration:         duration,

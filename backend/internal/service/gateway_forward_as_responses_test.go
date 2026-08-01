@@ -61,6 +61,60 @@ func TestHandleResponsesBufferedStreamingResponse_PreservesMessageStartCacheUsag
 	require.Contains(t, rec.Body.String(), `"cached_tokens":9`)
 }
 
+func TestHandleResponsesStreamingResponse_ClientDisconnectDrainsTerminalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	writer := &compatFailingWriter{ResponseWriter: c.Writer, failed: make(chan struct{})}
+	c.Writer = writer
+	terminalGate := make(chan struct{})
+	resp := &http.Response{
+		Header: http.Header{"x-request-id": []string{"rid_responses_disconnect"}},
+		Body: &barrierStreamBody{
+			beforeTerminal: []byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_disconnect","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4.5","usage":{"input_tokens":17}}}`,
+				``,
+			}, "\n")),
+			terminal: []byte(strings.Join([]string{
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")),
+			terminalGate: terminalGate,
+		},
+	}
+
+	type outcome struct {
+		result *ForwardResult
+		err    error
+	}
+	resultCh := make(chan outcome, 1)
+	go func() {
+		result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now())
+		resultCh <- outcome{result: result, err: err}
+	}()
+
+	<-writer.failed
+	select {
+	case got := <-resultCh:
+		t.Fatalf("returned before terminal usage was released: result=%#v err=%v", got.result, got.err)
+	default:
+	}
+	close(terminalGate)
+	got := <-resultCh
+	require.NoError(t, got.err)
+	require.NotNil(t, got.result)
+	require.Equal(t, 17, got.result.Usage.InputTokens)
+	require.Equal(t, 6, got.result.Usage.OutputTokens)
+	require.True(t, got.result.ClientDisconnect)
+	require.Equal(t, 1, writer.writes)
+}
+
 func TestHandleResponsesStreamingResponse_PreservesMessageStartCacheUsage(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

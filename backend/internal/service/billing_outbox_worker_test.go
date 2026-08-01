@@ -601,7 +601,16 @@ func TestBillingOutboxLeaseOutlivesBoundedApplyAndFinalization(t *testing.T) {
 	require.Greater(t, billingOutboxLease, 2*billingOutboxApplyTimeout)
 }
 
-func TestBillingOutboxWorker_ClaimsBoundedBatchAndReportsHealth(t *testing.T) {
+func TestBillingOutboxWorker_ClaimsOnlyRunnableApplyBatch(t *testing.T) {
+	repo := &billingOutboxRepoStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+
+	require.NoError(t, worker.processBatch(context.Background()))
+	require.Equal(t, billingOutboxConcurrency, repo.claimLimit)
+	require.NotEqual(t, billingOutboxBatchSize, repo.claimLimit)
+}
+
+func TestBillingOutboxWorker_ReportsHealth(t *testing.T) {
 	oldest := time.Now().Add(-time.Minute)
 	repo := &billingOutboxRepoStub{stats: BillingOutboxStats{
 		Pending: 12, Processing: 3, Terminal: 2, MaxAttempts: 4, OldestCreatedAt: &oldest, LastError: "prior failure",
@@ -609,7 +618,6 @@ func TestBillingOutboxWorker_ClaimsBoundedBatchAndReportsHealth(t *testing.T) {
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
 
 	require.NoError(t, worker.processBatch(context.Background()))
-	require.Equal(t, billingOutboxBatchSize, repo.claimLimit)
 	require.NotEmpty(t, repo.workerID)
 	require.Equal(t, billingOutboxLease, repo.lease)
 

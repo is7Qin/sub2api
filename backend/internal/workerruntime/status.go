@@ -88,11 +88,19 @@ func (PeriodicStatus) statusKind() Kind { return KindPeriodic }
 
 // PoolStatus is the status reported by worker-pool components.
 type PoolStatus struct {
-	MaxConcurrency int
-	RunningWorkers int64
-	WaitingTasks   uint64
-	SubmittedTasks uint64
-	CompletedTasks uint64
+	Accepting          bool
+	StillRunning       bool
+	MaxConcurrency     int
+	RunningWorkers     int64
+	WaitingTasks       uint64
+	SubmittedTasks     uint64
+	CompletedTasks     uint64
+	SuccessfulTasks    uint64
+	FailedTasks        uint64
+	DroppedTasks       uint64
+	DroppedQueueFull   uint64
+	DroppedPoolStopped uint64
+	SyncFallbackTasks  uint64
 }
 
 func (PoolStatus) statusKind() Kind { return KindPool }

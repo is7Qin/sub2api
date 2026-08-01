@@ -12,6 +12,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUsageRecordWorkerPoolWorkerStopDeadlineKeepsStoppingSnapshot(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool)
+	require.NoError(t, worker.Start(context.Background()))
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {
+		close(started)
+		<-block
+	}))
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, worker.Stop(ctx), context.DeadlineExceeded)
+
+	snapshot := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopping, snapshot.Lifecycle.State)
+	status, ok := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, ok)
+	require.True(t, status.StillRunning)
+
+	close(block)
+	require.NoError(t, worker.Stop(context.Background()))
+}
+
 func TestAccountExpiryWorkerPreservesImmediateRuntimeSpec(t *testing.T) {
 	worker, err := NewAccountExpiryWorker(NewAccountExpiryService(&accountExpiryRepoStub{autoPauseFn: func(context.Context, time.Time) (int64, error) {
 		return 0, nil

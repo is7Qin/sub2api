@@ -7,8 +7,54 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUsageRecordWorkerPoolRejectsSubmitBeforeStart(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: true,
+	})
+
+	require.Equal(t, UsageRecordSubmitModeDropped, pool.Submit(func(context.Context) {}))
+	require.NoError(t, pool.Start())
+	t.Cleanup(pool.Stop)
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {}))
+}
+
+func TestUsageRecordWorkerPoolStartsAutoscalerOnlyAfterStart(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: true,
+	})
+	t.Cleanup(pool.Stop)
+
+	require.False(t, pool.Accepting())
+	require.NoError(t, pool.Start())
+	require.True(t, pool.Accepting())
+}
+
+func TestUsageRecordWorkerPoolWorkerMapsNativeStats(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        2,
+		AutoScaleEnabled: false,
+	})
+	component := NewUsageRecordWorkerPoolWorker(pool)
+
+	require.NoError(t, component.Start(context.Background()))
+	t.Cleanup(func() { require.NoError(t, component.Stop(context.Background())) })
+
+	snapshot := component.Snapshot()
+	require.Equal(t, workerruntime.KindPool, snapshot.Descriptor.Kind)
+	poolStatus, ok := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, ok)
+	require.True(t, poolStatus.Accepting)
+	require.Equal(t, 1, poolStatus.MaxConcurrency)
+}
 
 func TestUsageRecordWorkerPool_SubmitEnqueued(t *testing.T) {
 	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
@@ -18,6 +64,7 @@ func TestUsageRecordWorkerPool_SubmitEnqueued(t *testing.T) {
 		OverflowPolicy:        config.UsageRecordOverflowPolicyDrop,
 		OverflowSamplePercent: 0,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	done := make(chan struct{})
@@ -46,6 +93,7 @@ func TestUsageRecordWorkerPool_OverflowDrop(t *testing.T) {
 		OverflowPolicy:        config.UsageRecordOverflowPolicyDrop,
 		OverflowSamplePercent: 0,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	block := make(chan struct{})
@@ -83,6 +131,7 @@ func TestUsageRecordWorkerPool_OverflowSyncUsesBoundedPoolBackpressure(t *testin
 		OverflowPolicy:        config.UsageRecordOverflowPolicySync,
 		OverflowSamplePercent: 0,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	block := make(chan struct{})
@@ -146,6 +195,7 @@ func TestUsageRecordWorkerPool_OverflowSample(t *testing.T) {
 		OverflowPolicy:        config.UsageRecordOverflowPolicySample,
 		OverflowSamplePercent: 1,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	block := make(chan struct{})
@@ -370,6 +420,7 @@ func TestUsageRecordWorkerPool_AutoScaleUpAndDown(t *testing.T) {
 		AutoScaleInterval:     20 * time.Millisecond,
 		AutoScaleCooldown:     20 * time.Millisecond,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	block := make(chan struct{})
@@ -413,6 +464,7 @@ func TestUsageRecordWorkerPool_AutoScaleDownRequiresLowRunningUtilization(t *tes
 		AutoScaleInterval:     20 * time.Millisecond,
 		AutoScaleCooldown:     20 * time.Millisecond,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	block := make(chan struct{})
@@ -444,6 +496,7 @@ func TestUsageRecordWorkerPool_SubmitNilReceiverAndNilTask(t *testing.T) {
 		OverflowSamplePercent: 0,
 		AutoScaleEnabled:      false,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	require.Equal(t, UsageRecordSubmitModeDropped, pool.Submit(nil))
@@ -466,6 +519,7 @@ func TestUsageRecordWorkerPool_AutoScaleDisabledKeepsFixedConcurrency(t *testing
 		AutoScaleInterval:     10 * time.Millisecond,
 		AutoScaleCooldown:     10 * time.Millisecond,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	require.Equal(t, 2, pool.Stats().MaxConcurrency)
@@ -517,6 +571,7 @@ func TestNewUsageRecordWorkerPool_FromConfig(t *testing.T) {
 	cfg.Gateway.UsageRecord.AutoScaleEnabled = false
 
 	pool := NewUsageRecordWorkerPool(cfg)
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	stats := pool.Stats()
@@ -647,6 +702,7 @@ func TestUsageRecordWorkerPool_ResizeAndLogDropBranches(t *testing.T) {
 		OverflowPolicy:   config.UsageRecordOverflowPolicyDrop,
 		AutoScaleEnabled: false,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 
 	// 目标值与当前值相同，应该直接返回。

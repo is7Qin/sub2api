@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/json"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/model"
@@ -164,8 +166,22 @@ func (h *ErrorPassthroughHandler) Update(c *gin.Context) {
 		return
 	}
 
+	// Keep raw fields so a JSON null can be distinguished from an omitted field.
+	// A *string alone decodes both forms as nil, but null is the UI's explicit
+	// request to clear an existing description.
+	var raw map[string]json.RawMessage
+	body, err := c.GetRawData()
+	if err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
 	var req UpdateErrorPassthroughRuleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
@@ -235,6 +251,9 @@ func (h *ErrorPassthroughHandler) Update(c *gin.Context) {
 	}
 	if req.Description != nil {
 		rule.Description = req.Description
+	} else if _, provided := raw["description"]; provided {
+		// Explicit JSON null clears the nullable database field.
+		rule.Description = nil
 	}
 	if req.SkipMonitoring != nil {
 		rule.SkipMonitoring = *req.SkipMonitoring

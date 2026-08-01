@@ -2553,6 +2553,21 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	}
 }
 
+func TestOpenAIValidateUpstreamBaseURLRejectsQueryAndFragment(t *testing.T) {
+	for _, cfg := range []*config.Config{
+		{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+		{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled: true, UpstreamHosts: []string{"api.openai.com"}, AllowPrivateHosts: false,
+		}}},
+	} {
+		svc := &OpenAIGatewayService{cfg: cfg}
+		for _, raw := range []string{"https://api.openai.com?tenant=x", "https://api.openai.com#fragment"} {
+			_, err := svc.validateUpstreamBaseURL(raw)
+			require.Error(t, err, raw)
+		}
+	}
+}
+
 func TestOpenAIValidateUpstreamBaseURLDisabledRequiresHTTPS(t *testing.T) {
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
@@ -2667,8 +2682,10 @@ func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	}{
 		{name: "exact v1 responses", path: "/v1/responses", want: ""},
 		{name: "compact v1 responses", path: "/v1/responses/compact", want: "/compact"},
-		{name: "compact alias responses", path: "/responses/compact/", want: "/compact"},
-		{name: "nested suffix", path: "/openai/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "trailing slash normalized", path: "/responses/compact/", want: "/compact"},
+		{name: "nested suffix", path: "/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "normalized OpenAI prefix", path: "/openai/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "unknown prefix rejected", path: "/proxy/v1/responses/compact/detail", want: ""},
 		{name: "unrelated path", path: "/v1/chat/completions", want: ""},
 	}
 

@@ -16,6 +16,54 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+const proxiedClaudeCodeMetadataUserID = "user_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef_account__session_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+func proxiedClaudeCodeBody(metadataUserID, billingText string) []byte {
+	return []byte(`{"model":"claude-sonnet-4-20250514","system":[{"type":"text","text":"` + billingText + `","cache_control":{"type":"ephemeral","ttl":"1h"}},{"type":"text","text":"original system instruction","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":"` + metadataUserID + `"},"messages":[{"role":"user","content":"hi"}]}`)
+}
+
+func proxiedClaudeCodeBillingText() string {
+	return claudeCodeBillingHeaderPrefix + ": cc_version=2.1.0; " + claudeCodeEntrypointMarker + "cli"
+}
+
+func TestIsProxiedClaudeCodeOAuthRequest(t *testing.T) {
+	validParsed := &ParsedRequest{MetadataUserID: proxiedClaudeCodeMetadataUserID}
+	tests := []struct {
+		name   string
+		parsed *ParsedRequest
+		body   []byte
+		want   bool
+	}{
+		{"valid direct billing block", validParsed, proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, proxiedClaudeCodeBillingText()), true},
+		{"missing parsed request", nil, proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, proxiedClaudeCodeBillingText()), false},
+		{"invalid metadata", &ParsedRequest{MetadataUserID: "not-a-claude-code-id"}, proxiedClaudeCodeBody("not-a-claude-code-id", proxiedClaudeCodeBillingText()), false},
+		{"missing metadata", &ParsedRequest{}, proxiedClaudeCodeBody("", proxiedClaudeCodeBillingText()), false},
+		{"weak marker", validParsed, proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, claudeCodeBillingHeaderPrefix+": cc_entrypoint"), false},
+		{"unrelated marker", validParsed, proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, claudeCodeBillingHeaderPrefix+": other_entrypoint=value"), false},
+		{"plain system", validParsed, []byte(`{"system":"` + proxiedClaudeCodeBillingText() + `","metadata":{"user_id":"` + proxiedClaudeCodeMetadataUserID + `"}}`), false},
+		{"nested text is not direct", validParsed, []byte(`{"system":[{"type":"text","content":{"text":"` + proxiedClaudeCodeBillingText() + `"}}],"metadata":{"user_id":"` + proxiedClaudeCodeMetadataUserID + `"}}`), false},
+		{"non-text system block is not direct", validParsed, []byte(`{"system":[{"type":"tool_result","text":"` + proxiedClaudeCodeBillingText() + `"}],"metadata":{"user_id":"` + proxiedClaudeCodeMetadataUserID + `"}}`), false},
+		{"marker in user content is not direct", validParsed, []byte(`{"system":[{"type":"text","text":"ordinary system"}],"metadata":{"user_id":"` + proxiedClaudeCodeMetadataUserID + `"},"messages":[{"role":"user","content":"` + proxiedClaudeCodeBillingText() + `"}]}`), false},
+		{"marker in tool payload is not direct", validParsed, []byte(`{"system":[{"type":"text","text":"ordinary system"}],"metadata":{"user_id":"` + proxiedClaudeCodeMetadataUserID + `"},"tools":[{"name":"search","input_schema":{"marker":"` + proxiedClaudeCodeBillingText() + `"}}]}`), false},
+		{"malformed body", validParsed, []byte(`{"system":[{"type":"text","text":"` + proxiedClaudeCodeBillingText() + `"}]`), false},
+		{"metadata only exists in body", &ParsedRequest{}, proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, proxiedClaudeCodeBillingText()), false},
+		{"parsed metadata does not match body", &ParsedRequest{MetadataUserID: proxiedClaudeCodeMetadataUserID}, proxiedClaudeCodeBody("invalid", proxiedClaudeCodeBillingText()), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isProxiedClaudeCodeOAuthRequest(tt.parsed, tt.body))
+		})
+	}
+
+	t.Run("valid JSON metadata user ID", func(t *testing.T) {
+		metadataUserID := `{"device_id":"client","account_uuid":"account","session_id":"session"}`
+		body := proxiedClaudeCodeBody(strings.ReplaceAll(metadataUserID, `"`, `\"`), proxiedClaudeCodeBillingText())
+		parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), domain.PlatformAnthropic)
+		require.NoError(t, err)
+		require.True(t, isProxiedClaudeCodeOAuthRequest(parsed, body))
+	})
+}
+
 func TestNormalizeOpenAIFunctionToolChoiceForAnthropic(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -149,4 +197,102 @@ func TestGatewayService_AnthropicOAuthAndSetupToken_NormalizesWireBody(t *testin
 			require.Equal(t, "cc_sess_Read", gjson.GetBytes(upstream.lastBody, "tools.0.name").String())
 		})
 	}
+}
+
+func TestGatewayService_ProxiedClaudeCodeOAuthAndSetupToken_PreserveSystemWireLayout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			body := proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, proxiedClaudeCodeBillingText())
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), domain.PlatformAnthropic)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			c.Request.Header.Set("User-Agent", "proxy/1.0")
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}}
+			svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+			account := &Account{ID: 302, Name: "anthropic-proxy", Platform: PlatformAnthropic, Type: accountType, Concurrency: 1, Credentials: map[string]any{"access_token": "token"}, Status: StatusActive, Schedulable: true}
+
+			_, err = svc.Forward(context.Background(), c, account, parsed)
+			require.NoError(t, err)
+			require.JSONEq(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(upstream.lastBody, "system").Raw)
+		})
+	}
+}
+
+func TestGatewayService_ProxiedClaudeCodeOAuth_InvalidEvidenceStillMimicsWireBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := proxiedClaudeCodeBody("invalid", claudeCodeBillingHeaderPrefix+": cc_entrypoint")
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), domain.PlatformAnthropic)
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "proxy/1.0")
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}}
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+	account := &Account{ID: 303, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{"access_token": "token"}, Status: StatusActive, Schedulable: true}
+
+	_, err = svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotEqual(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(upstream.lastBody, "system").Raw)
+}
+
+func TestGatewayService_ProxiedClaudeCodeOAuthAndSetupToken_CountTokensPreserveSystemWireLayout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			body := proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, proxiedClaudeCodeBillingText())
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), domain.PlatformAnthropic)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+			c.Request.Header.Set("User-Agent", "proxy/1.0")
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":42}`))}}
+			svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+			account := &Account{ID: 304, Platform: PlatformAnthropic, Type: accountType, Concurrency: 1, Credentials: map[string]any{"access_token": "token"}, Status: StatusActive, Schedulable: true}
+
+			err = svc.ForwardCountTokens(context.Background(), c, account, parsed)
+			require.NoError(t, err)
+			require.JSONEq(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(upstream.lastBody, "system").Raw)
+		})
+	}
+}
+
+func TestGatewayService_ProxiedClaudeCodeOAuth_CountTokensInvalidEvidenceStillMimics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := proxiedClaudeCodeBody("invalid", claudeCodeBillingHeaderPrefix+": cc_entrypoint")
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), domain.PlatformAnthropic)
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+	c.Request.Header.Set("User-Agent", "proxy/1.0")
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":42}`))}}
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+	account := &Account{ID: 305, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{"access_token": "token"}, Status: StatusActive, Schedulable: true}
+
+	err = svc.ForwardCountTokens(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotEqual(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(upstream.lastBody, "system").Raw)
+}
+
+func TestGatewayService_ProxiedClaudeCodeAPIKeyPassthrough_DoesNotMutateBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := proxiedClaudeCodeBody(proxiedClaudeCodeMetadataUserID, proxiedClaudeCodeBillingText())
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), domain.PlatformAnthropic)
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "proxy/1.0")
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}}
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+	account := newAnthropicAPIKeyAccountForTest()
+
+	_, err = svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.Equal(t, body, upstream.lastBody)
 }

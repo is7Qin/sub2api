@@ -16,6 +16,40 @@ import (
 	"time"
 )
 
+func TestGeminiMonitorUsesValidatedModelActionURL(t *testing.T) {
+	original := monitorHTTPClient
+	t.Cleanup(func() { monitorHTTPClient = original })
+
+	var requests atomic.Int32
+	var requestedURL string
+	monitorHTTPClient = &http.Client{Transport: channelMonitorRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		requestedURL = req.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`)),
+		}, nil
+	})}
+
+	_, _, _, err := callProvider(context.Background(), MonitorProviderGemini, "https://generativelanguage.googleapis.com", "test-key", "../unsafe", "prompt", nil)
+	if err == nil {
+		t.Fatal("unsafe Gemini monitor model was accepted")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("unsafe model sent %d upstream requests", requests.Load())
+	}
+
+	_, _, status, err := callProvider(context.Background(), MonitorProviderGemini, "https://generativelanguage.googleapis.com", "test-key", "gemini-2.5-flash", "prompt", nil)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("valid Gemini monitor call status=%d error=%v", status, err)
+	}
+	want := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+	if requestedURL != want {
+		t.Fatalf("Gemini monitor URL = %q, want %q", requestedURL, want)
+	}
+}
+
 func TestChannelMonitorValidateEndpointOrigin(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -1953,7 +1953,8 @@ func TestForwardAsAnthropic_OAuthPreservesClaudeCodeToolCallID(t *testing.T) {
 		},
 	}
 
-	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"list files"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"Bash","input":{"command":"ls"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_123","content":"ok"}]}],"tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],"stream":false}`)
+	toolCallID := "toolu_01JZY8M4D7YAHG9N3Q5R6T2V1W" + strings.Repeat("A", 40)
+	body := []byte(fmt.Sprintf(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"list files"},{"role":"assistant","content":[{"type":"tool_use","id":%q,"name":"Bash","input":{"command":"ls"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":"ok"}]}],"tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],"stream":false}`, toolCallID, toolCallID))
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
@@ -1962,8 +1963,12 @@ func TestForwardAsAnthropic_OAuthPreservesClaudeCodeToolCallID(t *testing.T) {
 	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "stable-cache-key", "gpt-5.4")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, "toolu_123", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call").call_id`).String())
-	require.Equal(t, "toolu_123", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call_output").call_id`).String())
+	upstreamCallID := gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call").call_id`).String()
+	require.Equal(t, upstreamCallID, gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call_output").call_id`).String())
+	require.Equal(t, "fc_64930a78b4d188754f5bdcf020e9b5f0b434890cf7987680e959e92183c0f", upstreamCallID)
+	require.Len(t, upstreamCallID, codexCallIDMaxLength)
+	require.True(t, strings.HasPrefix(upstreamCallID, codexCallIDPrefix))
+	require.NotEqual(t, toolCallID, upstreamCallID)
 	require.True(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
 	require.Equal(t, "medium", gjson.GetBytes(upstream.lastBody, "text.verbosity").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "tools.0.strict").Bool())

@@ -340,6 +340,122 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestPoolModeSkippedFailoverError — pool-mode accounts hitting
+// ErrorPolicySkipped must produce a typed failover error only for
+// failover-worthy statuses, with same-account retry controlled by the account.
+// ---------------------------------------------------------------------------
+
+func TestPoolModeSkippedFailoverError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &GeminiMessagesCompatService{}
+	rateLimitService := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	poolPolicyAccount := &Account{
+		ID:          302,
+		Type:        AccountTypeAPIKey,
+		Platform:    PlatformGemini,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	require.Equal(t, ErrorPolicySkipped, rateLimitService.CheckErrorPolicy(
+		context.Background(), poolPolicyAccount, http.StatusInternalServerError, []byte(`{"error":"upstream"}`),
+	))
+
+	poolAccount := func(extra map[string]any) *Account {
+		credentials := map[string]any{"pool_mode": true}
+		for key, value := range extra {
+			credentials[key] = value
+		}
+		return &Account{
+			ID:          300,
+			Type:        AccountTypeAPIKey,
+			Platform:    PlatformGemini,
+			Credentials: credentials,
+		}
+	}
+
+	tests := []struct {
+		name              string
+		account           *Account
+		statusCode        int
+		expectFailover    bool
+		expectSameAccount bool
+	}{
+		{
+			name:              "pool_default_statuses_429",
+			account:           poolAccount(nil),
+			statusCode:        http.StatusTooManyRequests,
+			expectFailover:    true,
+			expectSameAccount: true,
+		},
+		{
+			name:              "pool_default_statuses_500",
+			account:           poolAccount(nil),
+			statusCode:        http.StatusInternalServerError,
+			expectFailover:    true,
+			expectSameAccount: false,
+		},
+		{
+			name: "pool_custom_statuses_500",
+			account: poolAccount(map[string]any{
+				"pool_mode_retry_status_codes": []any{float64(http.StatusInternalServerError)},
+			}),
+			statusCode:        http.StatusInternalServerError,
+			expectFailover:    true,
+			expectSameAccount: true,
+		},
+		{
+			name: "pool_explicit_empty_statuses_429",
+			account: poolAccount(map[string]any{
+				"pool_mode_retry_status_codes": []any{},
+			}),
+			statusCode:        http.StatusTooManyRequests,
+			expectFailover:    true,
+			expectSameAccount: false,
+		},
+		{
+			name:           "pool_400_not_failover_worthy",
+			account:        poolAccount(nil),
+			statusCode:     http.StatusBadRequest,
+			expectFailover: false,
+		},
+		{
+			name: "non_pool_skipped_500",
+			account: &Account{
+				ID:          301,
+				Type:        AccountTypeAPIKey,
+				Platform:    PlatformGemini,
+				Credentials: map[string]any{"custom_error_codes_enabled": true},
+			},
+			statusCode:     http.StatusInternalServerError,
+			expectFailover: false,
+		},
+		{
+			name:           "nil_account",
+			statusCode:     http.StatusInternalServerError,
+			expectFailover: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(writer)
+			body := []byte(`{"error":{"message":"upstream failure"}}`)
+
+			failoverErr := svc.poolModeSkippedFailoverError(c, tt.account, tt.statusCode, body, "req-1")
+			if !tt.expectFailover {
+				require.Nil(t, failoverErr)
+				return
+			}
+
+			require.NotNil(t, failoverErr)
+			require.Equal(t, tt.statusCode, failoverErr.StatusCode)
+			require.Equal(t, body, failoverErr.ResponseBody)
+			require.Equal(t, tt.expectSameAccount, failoverErr.RetryableOnSameAccount)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestGeminiErrorPolicy_NilRateLimitService — verifies nil safety
 // ---------------------------------------------------------------------------
 

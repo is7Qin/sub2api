@@ -16,6 +16,13 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestBareOpenAIResponsesPathDoesNotTrimDecodedWhitespace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses%20", nil)
+	require.False(t, isBareOpenAIResponsesPath(c))
+}
+
 func TestHasOpenAICompactionTriggerInInput(t *testing.T) {
 	tests := []struct {
 		name string

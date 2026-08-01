@@ -163,13 +163,72 @@ func TestApplyCodexOAuthTransform_BoundsLongCallIDsAndPreservesPairing(t *testin
 	}
 }
 
-func TestApplyCodexOAuthTransform_PreservesLongCallIDsWhenRequested(t *testing.T) {
-	callID := "call-" + strings.Repeat("x", 70)
+func TestApplyCodexOAuthTransform_PreservesCallIDsAtOrBelowLimitWhenRequested(t *testing.T) {
+	for _, callID := range []string{
+		"toolu_123",
+		strings.Repeat("x", codexCallIDMaxLength),
+	} {
+		t.Run(fmt.Sprintf("length_%d", len(callID)), func(t *testing.T) {
+			reqBody := map[string]any{
+				"model": "gpt-5.2",
+				"input": []any{
+					map[string]any{"type": "function_call", "call_id": callID, "name": "shell"},
+					map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+				},
+			}
+
+			applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{PreserveToolCallIDs: true})
+
+			input, ok := reqBody["input"].([]any)
+			require.True(t, ok)
+			require.Equal(t, callID, input[0].(map[string]any)["call_id"])
+			require.Equal(t, callID, input[1].(map[string]any)["call_id"])
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_CompactsOverlongPreservedCallIDsDeterministically(t *testing.T) {
+	callID := "toolu_01" + strings.Repeat("x", codexCallIDMaxLength)
+	const expected = "fc_334c4394a7b54bec8574a658ba8184b6582be2c5e5ccaea52ab605a5693ef"
+	transform := func() string {
+		reqBody := map[string]any{
+			"model": "gpt-5.2",
+			"input": []any{
+				map[string]any{"type": "function_call", "call_id": callID, "name": "shell"},
+				map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+			},
+		}
+
+		applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{PreserveToolCallIDs: true})
+
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		compacted, ok := input[0].(map[string]any)["call_id"].(string)
+		require.True(t, ok)
+		require.Equal(t, expected, compacted)
+		require.Equal(t, compacted, input[1].(map[string]any)["call_id"])
+		require.Len(t, compacted, codexCallIDMaxLength)
+		require.True(t, strings.HasPrefix(compacted, codexCallIDPrefix))
+		require.NotEqual(t, callID, compacted)
+		return compacted
+	}
+
+	require.Equal(t, expected, transform())
+	require.Equal(t, expected, transform())
+}
+
+func TestApplyCodexOAuthTransform_CompactsOverlongPreservedLegacyCallReferencesOnly(t *testing.T) {
+	callID := "call_" + strings.Repeat("r", 60)
+	unrelatedID := "rs_" + strings.Repeat("s", 62)
+	const expected = "fc_6dc7b6c13987a4ab7bd293b051652e55d193950fb16fd79bfe0198ce5142b"
+	callReference := map[string]any{"type": "item_reference", "id": callID}
+	unrelatedReference := map[string]any{"type": "item_reference", "id": unrelatedID}
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
 		"input": []any{
-			map[string]any{"type": "function_call", "call_id": callID, "name": "shell"},
+			callReference,
 			map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+			unrelatedReference,
 		},
 	}
 
@@ -177,8 +236,11 @@ func TestApplyCodexOAuthTransform_PreservesLongCallIDsWhenRequested(t *testing.T
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Equal(t, callID, input[0].(map[string]any)["call_id"])
-	require.Equal(t, callID, input[1].(map[string]any)["call_id"])
+	require.Equal(t, expected, input[0].(map[string]any)["id"])
+	require.Equal(t, expected, input[1].(map[string]any)["call_id"])
+	require.Equal(t, unrelatedID, input[2].(map[string]any)["id"])
+	require.Equal(t, callID, callReference["id"], "filter must not mutate caller input")
+	require.Equal(t, unrelatedID, unrelatedReference["id"], "filter must not mutate caller input")
 }
 
 func TestApplyCodexOAuthTransform_ToolSearchOutputPreservesCallID(t *testing.T) {
@@ -529,26 +591,12 @@ func TestApplyCodexOAuthTransform_StripsClientNamespaceFromReplayedInput(t *test
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"input": []any{
-			map[string]any{
-				"type":      "function_call",
-				"call_id":   "call_1",
-				"name":      "read",
-				"namespace": "mcp",
-				"arguments": "{}",
-			},
-			map[string]any{
-				"type":      "custom_tool_call",
-				"call_id":   "call_2",
-				"name":      "shell",
-				"namespace": "tools",
-				"input":     "pwd",
-			},
-			map[string]any{
-				"type":      "message",
-				"role":      "user",
-				"content":   "keep metadata",
-				"namespace": "application-data",
-			},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "read", "namespace": "mcp", "arguments": "{}"},
+			map[string]any{"type": "custom_tool_call", "call_id": "call_2", "name": "shell", "namespace": "tools", "input": "pwd"},
+			map[string]any{"type": "function_call", "call_id": "call_3", "name": "generate", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "custom_tool_call", "call_id": "call_4", "name": "edit", "namespace": "image_gen", "input": "{}"},
+			map[string]any{"type": "mcp_tool_call", "call_id": "call_5", "name": "native_image", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "message", "role": "user", "content": "keep metadata", "namespace": "application-data"},
 		},
 	}
 
@@ -556,21 +604,21 @@ func TestApplyCodexOAuthTransform_StripsClientNamespaceFromReplayedInput(t *test
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Len(t, input, 3)
-	call, ok := input[0].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, call, "namespace")
-	require.Equal(t, "read", call["name"])
-	require.Equal(t, "fc_1", call["call_id"])
+	require.Len(t, input, 6)
+	for _, index := range []int{0, 1, 2, 3} {
+		call, ok := input[index].(map[string]any)
+		require.True(t, ok)
+		require.NotContains(t, call, "namespace")
+	}
+	require.Equal(t, "fc_1", input[0].(map[string]any)["call_id"])
+	require.Equal(t, "fc_2", input[1].(map[string]any)["call_id"])
+	require.Equal(t, "fc_3", input[2].(map[string]any)["call_id"])
+	require.Equal(t, "fc_4", input[3].(map[string]any)["call_id"])
+	mcpCall := input[4].(map[string]any)
+	require.Equal(t, "image_gen", mcpCall["namespace"], "mcp_tool_call is handled by the existing generic namespace pipeline")
+	require.Equal(t, "fc_5", mcpCall["call_id"])
 
-	customCall, ok := input[1].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, customCall, "namespace")
-	require.Equal(t, "shell", customCall["name"])
-	require.Equal(t, "fc_2", customCall["call_id"])
-
-	message, ok := input[2].(map[string]any)
-	require.True(t, ok)
+	message := input[5].(map[string]any)
 	require.Equal(t, "application-data", message["namespace"])
 }
 

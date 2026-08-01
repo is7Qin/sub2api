@@ -63,6 +63,26 @@ func TestAppendOpsUpstreamError_UnknownSSEFactUsesRulePrecedenceWithoutStatus(t 
 	require.False(t, events[0].UpstreamFact.HTTPStatusKnown)
 }
 
+func TestAppendOpsUpstreamError_FactlessEventDoesNotMatchRawDiagnosticRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformAnthropic},
+		Keywords: []string{"private diagnostic"}, MatchMode: model.MatchModeAny,
+		SkipMonitoring: true,
+	}})
+	BindErrorPassthroughService(c, rules)
+
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform: PlatformAnthropic, UpstreamStatusCode: http.StatusBadRequest,
+		Message: "private diagnostic", Detail: "private diagnostic body",
+	})
+
+	_, skipped := c.Get(OpsSkipPassthroughKey)
+	require.False(t, skipped, "factless legacy diagnostics must not authorize database rule side effects")
+}
+
 func TestAppendOpsUpstreamError_UnknownFactUsesRulePrecedence(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(nil)

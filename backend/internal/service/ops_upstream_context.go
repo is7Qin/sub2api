@@ -216,24 +216,16 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 		return
 	}
 
-	if ev.UpstreamFact != nil {
-		// Recognized semantics own their presentation and must not be reclassified
-		// by mutable database rules for monitoring suppression.
-		if _, recognized := RecognizeUpstreamErrorFact(*ev.UpstreamFact); recognized {
-			return
-		}
-		if rule := svc.MatchUnknownRule(*ev.UpstreamFact); rule != nil && rule.SkipMonitoring {
-			c.Set(OpsSkipPassthroughKey, true)
-		}
+	if ev.UpstreamFact == nil {
 		return
 	}
 
-	// Legacy events carry no semantic fact, so retain body-based matching.
-	body := ev.Detail
-	if body == "" {
-		body = ev.Message
+	// Recognized semantics own their presentation and must not be reclassified
+	// by mutable database rules for monitoring suppression.
+	if _, recognized := RecognizeUpstreamErrorFact(*ev.UpstreamFact); recognized {
+		return
 	}
-	if rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, []byte(body)); rule != nil && rule.SkipMonitoring {
+	if rule := svc.MatchUnknownRule(*ev.UpstreamFact); rule != nil && rule.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
 	}
 }

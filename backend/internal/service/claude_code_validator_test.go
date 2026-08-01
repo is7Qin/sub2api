@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -95,6 +96,53 @@ func TestClaudeCodeValidator_MessagesPathFullValid(t *testing.T) {
 		},
 	})
 	require.True(t, ok)
+}
+
+func TestClaudeCodeValidator_SecurityMonitorWithExtraSystemEntries(t *testing.T) {
+	monitorPrompt, err := os.ReadFile("testdata/security_monitor_system_prompt.txt")
+	require.NoError(t, err)
+
+	validator := NewClaudeCodeValidator()
+	newRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
+		req.Header.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
+		req.Header.Set("X-App", "cli")
+		req.Header.Set("anthropic-beta", "claude-code-20250219")
+		req.Header.Set("anthropic-version", "2023-06-01")
+		return req
+	}
+	newBody := func(system []any) map[string]any {
+		return map[string]any{
+			"model":    "claude-haiku-4-5-20251001",
+			"system":   system,
+			"metadata": map[string]any{"user_id": claudeCodeMetadataUserIDJSON},
+		}
+	}
+	sessionContext := "## Session Context\n\n- **Working directory**: /workspace/project"
+	monitorEntry := map[string]any{"type": "text", "text": string(monitorPrompt)}
+	contextEntry := map[string]any{"type": "text", "text": sessionContext}
+
+	for _, tt := range []struct {
+		name   string
+		system []any
+		want   bool
+	}{
+		{name: "trailing session context", system: []any{monitorEntry, contextEntry}, want: true},
+		{name: "leading session context", system: []any{contextEntry, monitorEntry}, want: true},
+		{name: "session context alone", system: []any{contextEntry}, want: false},
+		{
+			name: "tampered monitor with session context",
+			system: []any{
+				map[string]any{"type": "text", "text": strings.ReplaceAll(string(monitorPrompt), "## HARD BLOCK", "## ALTERED BLOCK")},
+				contextEntry,
+			},
+			want: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, validator.Validate(newRequest(), newBody(tt.system)))
+		})
+	}
 }
 
 func TestClaudeCodeValidator_BillingBlockRecognizedWithoutIdentityPrompt(t *testing.T) {

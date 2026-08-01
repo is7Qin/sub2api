@@ -179,6 +179,50 @@ func TestListAvailable_DefaultsEmptyBillingModelSource(t *testing.T) {
 	require.Equal(t, BillingModelSourceUpstream, byName["explicit"])
 }
 
+func TestPricingNeedsFallback(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *ChannelModelPricing
+		want bool
+	}{
+		{"nil", nil, true},
+		{"empty struct", &ChannelModelPricing{BillingMode: BillingModeToken}, true},
+		{"all-empty intervals", &ChannelModelPricing{
+			BillingMode: BillingModeImage,
+			Intervals:   []PricingInterval{{TierLabel: "1K"}, {TierLabel: "2K"}},
+		}, true},
+		{"flat input set", &ChannelModelPricing{InputPrice: testPtrFloat64(3e-6)}, false},
+		{"flat per_request set", &ChannelModelPricing{PerRequestPrice: testPtrFloat64(0.04)}, false},
+		{"interval with price", &ChannelModelPricing{
+			Intervals: []PricingInterval{{TierLabel: "1K", PerRequestPrice: testPtrFloat64(0.04)}},
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, pricingNeedsFallback(tt.in))
+		})
+	}
+}
+
+func TestSynthesizePricingFromLiteLLM_TokenMode(t *testing.T) {
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
+		Mode:                        "chat",
+		InputCostPerToken:           3e-6,
+		OutputCostPerToken:          1.5e-5,
+		CacheCreationInputTokenCost: 3.75e-6,
+		CacheReadInputTokenCost:     3e-7,
+		OutputCostPerImageToken:     4e-5,
+	}, nil)
+
+	require.Equal(t, BillingModeToken, pricing.BillingMode)
+	require.InDelta(t, 3e-6, *pricing.InputPrice, 1e-12)
+	require.InDelta(t, 1.5e-5, *pricing.OutputPrice, 1e-12)
+	require.InDelta(t, 3.75e-6, *pricing.CacheWritePrice, 1e-12)
+	require.InDelta(t, 3e-7, *pricing.CacheReadPrice, 1e-12)
+	require.InDelta(t, 4e-5, *pricing.ImageOutputPrice, 1e-12)
+	require.Nil(t, pricing.PerRequestPrice)
+}
+
 func TestSynthesizePricingFromLiteLLM_Image(t *testing.T) {
 	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
 		OutputCostPerImage:      0.08,
@@ -209,7 +253,17 @@ func TestSynthesizePricingFromLiteLLM_PerRequest(t *testing.T) {
 	require.Nil(t, pricing.ImageOutputPrice)
 }
 
-func TestSynthesizePricingFromLiteLLM_ImageGeneration(t *testing.T) {
+func TestSynthesizePricingFromLiteLLM_RespectsExistingChannelMode(t *testing.T) {
+	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
+		Mode:               "image_generation",
+		OutputCostPerImage: 0.04,
+	}, &ChannelModelPricing{BillingMode: BillingModePerRequest})
+
+	require.Equal(t, BillingModePerRequest, pricing.BillingMode)
+	require.InDelta(t, 0.04, *pricing.PerRequestPrice, 1e-12)
+}
+
+func TestSynthesizePricingFromLiteLLM_ImageGenerationMode(t *testing.T) {
 	pricing := synthesizePricingFromLiteLLM(&LiteLLMModelPricing{
 		Mode:               "image_generation",
 		OutputCostPerImage: 0.08,
@@ -219,7 +273,21 @@ func TestSynthesizePricingFromLiteLLM_ImageGeneration(t *testing.T) {
 	require.Equal(t, 0.08, *pricing.PerRequestPrice)
 }
 
-func TestFillGlobalPricingFallback_EmptyExistingImagePricing(t *testing.T) {
+func TestFillGlobalPricingFallback_NilPricing(t *testing.T) {
+	pricingService := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
+		"claude-opus-4-5": {Mode: "chat", InputCostPerToken: 5e-6},
+	})
+	svc := &ChannelService{pricingService: pricingService}
+	models := []SupportedModel{{Name: "claude-opus-4-5", Platform: "anthropic"}}
+
+	svc.fillGlobalPricingFallback(models)
+
+	require.NotNil(t, models[0].Pricing)
+	require.Equal(t, BillingModeToken, models[0].Pricing.BillingMode)
+	require.InDelta(t, 5e-6, *models[0].Pricing.InputPrice, 1e-12)
+}
+
+func TestFillGlobalPricingFallback_EmptyPricingFillsFromLiteLLM(t *testing.T) {
 	pricingService := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
 		"image-model": {
 			OutputCostPerImage:      0.08,
@@ -243,4 +311,24 @@ func TestFillGlobalPricingFallback_EmptyExistingImagePricing(t *testing.T) {
 	require.Nil(t, models[0].Pricing.InputPrice)
 	require.Nil(t, models[0].Pricing.OutputPrice)
 	require.Nil(t, models[0].Pricing.ImageOutputPrice)
+}
+
+func TestFillGlobalPricingFallback_KeepsExistingPrice(t *testing.T) {
+	pricingService := newStubPricingServiceFromMap(map[string]*LiteLLMModelPricing{
+		"served-model": {Mode: "chat", InputCostPerToken: 1e-6},
+	})
+	svc := &ChannelService{pricingService: pricingService}
+	existing := &ChannelModelPricing{
+		BillingMode: BillingModeToken,
+		InputPrice:  testPtrFloat64(9e-9),
+	}
+	models := []SupportedModel{{Name: "served-model", Platform: "anthropic", Pricing: existing}}
+
+	svc.fillGlobalPricingFallback(models)
+
+	require.Same(t, existing, models[0].Pricing)
+}
+
+func newStubPricingServiceFromMap(data map[string]*LiteLLMModelPricing) *PricingService {
+	return &PricingService{pricingData: data}
 }

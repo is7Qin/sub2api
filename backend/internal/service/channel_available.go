@@ -102,8 +102,9 @@ func (s *ChannelService) ListAvailable(ctx context.Context) ([]AvailableChannel,
 	return out, nil
 }
 
-// fillGlobalPricingFallback 对未命中渠道定价的支持模型，从全局 LiteLLM 数据合成一份
-// 展示用定价（按 token 计费）。仅用于「可用渠道」展示，不影响真实计费链路。
+// fillGlobalPricingFallback 对未命中渠道定价或定价条目未填写价格的支持模型，
+// 从全局 LiteLLM 数据合成一份模式相关的展示用定价。仅用于「可用渠道」展示，
+// 不影响真实计费链路。
 //
 // 当 s.pricingService 为 nil（测试场景），跳过回落。
 func (s *ChannelService) fillGlobalPricingFallback(models []SupportedModel) {

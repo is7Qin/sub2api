@@ -179,6 +179,24 @@ func openAIDirectReturnCandidate(_ *UpstreamRecoveryState, failoverErr *service.
 	return directReturnCandidate(failoverErr)
 }
 
+// openAIStoppedFailoverCandidate prefers the best bounded candidate retained
+// across attempts when an endpoint-specific guard stops further recovery.
+func openAIStoppedFailoverCandidate(recovery *UpstreamRecoveryState, failoverErr *service.UpstreamFailoverError) (*service.UpstreamErrorCandidate, bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			return candidate, true
+		}
+	}
+	if failoverErr == nil {
+		return nil, false
+	}
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		return nil, false
+	}
+	return service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), true
+}
+
 type FailoverState struct {
 	SwitchCount           int
 	MaxSwitches           int
@@ -284,7 +302,11 @@ func (s *FailoverState) HandleFailoverError(
 	}
 
 	// 同账号重试用尽，执行临时封禁
-	if failoverErr.RetryableOnSameAccount {
+	shouldTempUnschedule := failoverErr.RetryableOnSameAccount
+	if recognized {
+		shouldTempUnschedule = policy.AccountHealthAction == service.UpstreamHealthTemporarilyUnschedule
+	}
+	if shouldTempUnschedule {
 		if ctx.Err() != nil {
 			return FailoverCanceled
 		}

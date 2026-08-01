@@ -504,7 +504,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 					if failoverClientGone(c) {
 						return
 					}
@@ -515,6 +514,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						}
 						return
 					}
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 					// Fact-backed policies cap configured retries request-wide; factless
 					// failover errors retain their existing pool-mode behavior.
 					canRetrySameAccount := failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < account.GetPoolModeRetryCount()
@@ -551,7 +551,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					}
 					nextSwitchCount := switchCount + 1
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, nextSwitchCount) {
-						if candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr); ok {
+						if candidate, ok := openAIStoppedFailoverCandidate(recovery, failoverErr); ok {
 							h.handleUpstreamCandidate(c, candidate, streamStarted)
 						} else {
 							h.handleFailoverExhausted(c, failoverErr, streamStarted)
@@ -1066,17 +1066,17 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							zap.Error(err),
 						)
 					} else {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 						if failoverClientGone(c) {
 							return
 						}
 						policy, recognized := recovery.ObserveFailoverError(failoverErr)
 						if recognized && policy.Disposition == service.UpstreamAttemptDirectReturn {
-							if candidate, ok := recovery.FinalCandidate(); ok {
+							if candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr); ok {
 								h.handleAnthropicCandidate(c, candidate, streamStarted)
 							}
 							return
 						}
+						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 						// Fact-backed policies cap configured retries request-wide; factless
 						// failover errors retain their existing pool-mode behavior.
 						canRetrySameAccount := failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < account.GetPoolModeRetryCount()

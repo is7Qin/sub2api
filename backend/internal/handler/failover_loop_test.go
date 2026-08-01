@@ -1130,6 +1130,7 @@ func TestHandleFailoverError_UnknownFactHasNoLegacyRecovery(t *testing.T) {
 			require.Equal(t, FailoverExhausted, action)
 			require.Zero(t, fs.SameAccountRetryCount[100])
 			require.Zero(t, fs.SwitchCount, "fact-backed unknown errors must not inherit MaxSwitches")
+			require.Empty(t, mock.calls, "unknown facts must not mutate account health")
 			candidate, ok := fs.FinalCandidate()
 			require.True(t, ok, "unknown fact must remain available to the safe final resolver")
 			require.Equal(t, tc.fact.ProviderType, candidate.Fact.ProviderType)

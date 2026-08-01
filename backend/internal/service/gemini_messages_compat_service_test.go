@@ -34,6 +34,17 @@ type geminiCompatFreshResponseStub struct {
 	calls   int
 }
 
+type geminiCompatResponseSpec struct {
+	status  int
+	headers http.Header
+	body    []byte
+}
+
+type geminiCompatSequenceResponseStub struct {
+	responses []geminiCompatResponseSpec
+	calls     int
+}
+
 func (s *geminiCompatFreshResponseStub) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
 	s.calls++
 	return &http.Response{
@@ -45,6 +56,28 @@ func (s *geminiCompatFreshResponseStub) Do(req *http.Request, _ string, _ int64,
 }
 
 func (s *geminiCompatFreshResponseStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func (s *geminiCompatSequenceResponseStub) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	if len(s.responses) == 0 {
+		return nil, fmt.Errorf("missing stub response")
+	}
+	index := s.calls
+	if index >= len(s.responses) {
+		index = len(s.responses) - 1
+	}
+	s.calls++
+	spec := s.responses[index]
+	return &http.Response{
+		StatusCode: spec.status,
+		Header:     spec.headers.Clone(),
+		Body:       io.NopCloser(bytes.NewReader(spec.body)),
+		Request:    req,
+	}, nil
+}
+
+func (s *geminiCompatSequenceResponseStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
@@ -63,6 +96,24 @@ func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, ac
 
 func (s *geminiCompatHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func requireGeminiDiagnosticSanitized(t *testing.T, diagnostics ...string) {
+	t.Helper()
+	for _, diagnostic := range diagnostics {
+		require.NotContains(t, diagnostic, "do-not-leak")
+		require.NotContains(t, diagnostic, "internal.example")
+		require.NotContains(t, diagnostic, "Bearer secret")
+	}
+}
+
+func requireGeminiOpsEventsSanitized(t *testing.T, c *gin.Context) {
+	t.Helper()
+	events := c.MustGet(OpsUpstreamErrorsKey).([]*OpsUpstreamErrorEvent)
+	require.NotEmpty(t, events)
+	for _, event := range events {
+		requireGeminiDiagnosticSanitized(t, event.Message, event.Detail)
+	}
 }
 
 func TestGeminiUnknownUnmatchedErrorsUseGenericClientMessage(t *testing.T) {
@@ -100,6 +151,31 @@ func TestGeminiUnknownUnmatchedErrorsUseGenericClientMessage(t *testing.T) {
 	})
 }
 
+func TestGeminiMatchedPassthroughErrorDoesNotReturnPrivateUpstreamMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateMessage := "private upstream token=do-not-leak internal.example"
+	ruleStatus := http.StatusConflict
+	ruleMessage := "approved response"
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformGemini},
+		Keywords: []string{"VENDOR_FAILURE"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &ruleStatus, CustomMessage: &ruleMessage,
+	}})
+	body := []byte(fmt.Sprintf(`{"error":{"status":"VENDOR_FAILURE","message":%q}}`, privateMessage))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	BindErrorPassthroughService(c, rules)
+
+	err := (&GeminiMessagesCompatService{cfg: &config.Config{}}).writeGeminiMappedError(
+		c, &Account{ID: 405, Platform: PlatformGemini, Type: AccountTypeAPIKey}, http.StatusTeapot, "gemini-request", body,
+	)
+
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), privateMessage)
+	require.NotContains(t, err.Error(), "do-not-leak")
+}
+
 func TestGeminiMessagesLegacyPassthroughUsesGeminiStatusFact(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ruleStatus := http.StatusConflict
@@ -123,6 +199,170 @@ func TestGeminiMessagesLegacyPassthroughUsesGeminiStatusFact(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, ruleStatus, rec.Code)
 	require.Contains(t, rec.Body.String(), ruleMessage)
+}
+
+func TestGeminiMappedErrorSanitizesOpsDiagnostics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateToken := "do-not-leak"
+	body := []byte(`{"error":{"status":"VENDOR_FAILURE","message":"token=` + privateToken + ` https://internal.example/secret","metadata":{"authorization":"Bearer secret"}}}`)
+	cfg := &config.Config{Gateway: config.GatewayConfig{LogUpstreamErrorBody: true, LogUpstreamErrorBodyMaxBytes: 4096}}
+	account := &Account{ID: 406, Platform: PlatformGemini, Type: AccountTypeAPIKey}
+
+	tests := []struct {
+		name string
+		call func(*GeminiMessagesCompatService, *gin.Context) error
+	}{
+		{
+			name: "messages",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context) error {
+				return svc.writeGeminiMappedError(c, account, http.StatusTeapot, "gemini-request", body)
+			},
+		},
+		{
+			name: "chat completions",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context) error {
+				return svc.writeGeminiChatCompletionsMappedError(c, account, http.StatusTeapot, "gemini-request", body)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			_ = tt.call(&GeminiMessagesCompatService{cfg: cfg}, c)
+
+			value, ok := c.Get(OpsUpstreamErrorMessageKey)
+			require.True(t, ok)
+			diagnostic, _ := value.(string)
+			requireGeminiDiagnosticSanitized(t, diagnostic)
+
+			if value, ok := c.Get(OpsUpstreamErrorDetailKey); ok {
+				diagnostic, _ := value.(string)
+				requireGeminiDiagnosticSanitized(t, diagnostic)
+			}
+		})
+	}
+}
+
+func TestGeminiRemainingRetryAndFailoverDiagnosticsAreSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateBody := []byte(`{"error":{"status":"VENDOR_FAILURE","message":"token=do-not-leak https://internal.example/secret","metadata":{"authorization":"Bearer secret"}}}`)
+	terminalBody := []byte(`{"error":{"status":"INVALID_ARGUMENT","message":"invalid request"}}`)
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		LogUpstreamErrorBody:         true,
+		LogUpstreamErrorBodyMaxBytes: 4096,
+	}}
+
+	tests := []struct {
+		name string
+		path string
+		stub HTTPUpstream
+		call func(*GeminiMessagesCompatService, *gin.Context, *Account) error
+	}{
+		{
+			name: "messages failover",
+			path: "/v1/messages",
+			stub: &geminiCompatFreshResponseStub{
+				status: http.StatusUnauthorized, headers: http.Header{"Content-Type": []string{"application/json"}}, body: privateBody,
+			},
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+				return err
+			},
+		},
+		{
+			name: "chat completions retry",
+			path: "/v1/chat/completions",
+			stub: &geminiCompatSequenceResponseStub{responses: []geminiCompatResponseSpec{
+				{status: http.StatusServiceUnavailable, headers: http.Header{"Content-Type": []string{"application/json"}}, body: privateBody},
+				{status: http.StatusBadRequest, headers: http.Header{"Content-Type": []string{"application/json"}}, body: terminalBody},
+			}},
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &GeminiMessagesCompatService{httpUpstream: tt.stub, cfg: cfg}
+			account := &Account{ID: 408, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(`{}`))
+
+			require.Error(t, tt.call(svc, c, account))
+			requireGeminiOpsEventsSanitized(t, c)
+		})
+	}
+}
+
+func TestGeminiCompatibilityHTTPDiagnosticsAreSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const privateSuffix = " token=do-not-leak https://internal.example/secret"
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		LogUpstreamErrorBody:         true,
+		LogUpstreamErrorBodyMaxBytes: 4096,
+	}}
+
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		path   string
+		call   func(*GeminiMessagesCompatService, *gin.Context, *Account) error
+	}{
+		{
+			name:   "messages signature retry",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"invalid thought_signature` + privateSuffix + `","metadata":{"authorization":"Bearer secret"}}}`,
+			path:   "/v1/messages",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+				return err
+			},
+		},
+		{
+			name:   "messages project configuration",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"invalid project resource name` + privateSuffix + `","metadata":{"authorization":"Bearer secret"}}}`,
+			path:   "/v1/messages",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+				return err
+			},
+		},
+		{
+			name:   "native final http error",
+			status: http.StatusTeapot,
+			body:   `{"error":{"status":"VENDOR_FAILURE","message":"vendor failure` + privateSuffix + `","metadata":{"authorization":"Bearer secret"}}}`,
+			path:   "/v1beta/models/gemini:generateContent",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &geminiCompatFreshResponseStub{
+				status:  tt.status,
+				headers: http.Header{"Content-Type": []string{"application/json"}},
+				body:    []byte(tt.body),
+			}
+			svc := &GeminiMessagesCompatService{httpUpstream: stub, cfg: cfg}
+			account := &Account{ID: 407, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(`{}`))
+
+			require.Error(t, tt.call(svc, c, account))
+			requireGeminiOpsEventsSanitized(t, c)
+		})
+	}
 }
 
 func TestGeminiNativeFailoverCarriersRetainBoundedFact(t *testing.T) {
@@ -151,14 +391,18 @@ func TestGeminiNativeFailoverCarriersRetainBoundedFact(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			privateMessage := tt.messagePrefix + strings.Repeat("quota ", upstreamErrorFactMaxScalarBytes) + "https://internal.example/secret"
-			body := []byte(fmt.Sprintf(`{"error":{"code":%d,"status":%q,"message":%q}}`, tt.status, tt.providerStatus, privateMessage))
+			privateMessage := tt.messagePrefix + "token=do-not-leak " + strings.Repeat("quota ", upstreamErrorFactMaxScalarBytes) + "https://internal.example/secret"
+			body := []byte(fmt.Sprintf(`{"error":{"code":%d,"status":%q,"message":%q,"metadata":{"authorization":"Bearer secret"}}}`, tt.status, tt.providerStatus, privateMessage))
 			stub := &geminiCompatFreshResponseStub{
 				status:  tt.status,
 				headers: http.Header{"Content-Type": []string{"application/json"}},
 				body:    body,
 			}
-			svc := &GeminiMessagesCompatService{httpUpstream: stub, cfg: &config.Config{}}
+			cfg := &config.Config{Gateway: config.GatewayConfig{
+				LogUpstreamErrorBody:         true,
+				LogUpstreamErrorBodyMaxBytes: 4096,
+			}}
+			svc := &GeminiMessagesCompatService{httpUpstream: stub, cfg: cfg}
 			account := &Account{ID: 403, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-key"}}
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)
@@ -175,6 +419,8 @@ func TestGeminiNativeFailoverCarriersRetainBoundedFact(t *testing.T) {
 			require.Empty(t, fact.ProviderType)
 			require.LessOrEqual(t, len(fact.SafeMessage), upstreamErrorFactMaxScalarBytes)
 			require.NotContains(t, fact.SafeMessage, "internal.example")
+
+			requireGeminiOpsEventsSanitized(t, c)
 		})
 	}
 }
@@ -230,6 +476,13 @@ func TestGeminiTransportExhaustionUsesGeneric502Message(t *testing.T) {
 			require.Contains(t, rec.Body.String(), genericUpstreamFailureMessage)
 			require.NotContains(t, rec.Body.String(), privateTransportDetail)
 			require.NotContains(t, err.Error(), privateTransportDetail)
+			for _, key := range []string{OpsUpstreamErrorMessageKey, OpsUpstreamErrorDetailKey} {
+				if value, ok := c.Get(key); ok {
+					diagnostic, _ := value.(string)
+					require.NotContains(t, diagnostic, "do-not-leak")
+					require.NotContains(t, diagnostic, "internal.example")
+				}
+			}
 			require.Equal(t, geminiMaxRetries, stub.calls)
 		})
 	}
@@ -1457,7 +1710,7 @@ func TestGeminiForwardAsChatCompletions_RecognizedInvalidArgumentBypassesPolicyA
 
 func TestGeminiHTTPCompatibilityFailoverRetainsFactAndSemanticBudget(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	const upstreamBody = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}`
+	const upstreamBody = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted token=do-not-leak https://internal.example/secret","metadata":{"authorization":"Bearer secret"}}}`
 
 	tests := []struct {
 		name string
@@ -1498,11 +1751,15 @@ func TestGeminiHTTPCompatibilityFailoverRetainsFactAndSemanticBudget(t *testing.
 				body:    []byte(upstreamBody),
 			}
 			repo := &geminiErrorPolicyRepo{}
+			cfg := &config.Config{Gateway: config.GatewayConfig{
+				LogUpstreamErrorBody:         true,
+				LogUpstreamErrorBodyMaxBytes: 4096,
+			}}
 			svc := &GeminiMessagesCompatService{
 				accountRepo:      repo,
 				httpUpstream:     stub,
-				rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
-				cfg:              &config.Config{},
+				rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
+				cfg:              cfg,
 			}
 			account := &Account{ID: 309, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
 				"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusTooManyRequests)},
@@ -1528,6 +1785,8 @@ func TestGeminiHTTPCompatibilityFailoverRetainsFactAndSemanticBudget(t *testing.
 			require.Equal(t, UpstreamAttemptFailover, policy.Disposition)
 			require.Equal(t, 1, policy.AccountTransitionBudget)
 			require.LessOrEqual(t, policy.SameAccountRetryBudget, 1)
+
+			requireGeminiOpsEventsSanitized(t, c)
 		})
 	}
 }

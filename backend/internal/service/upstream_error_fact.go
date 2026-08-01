@@ -73,7 +73,7 @@ func ParseHTTPUpstreamErrorFact(provider string, resp *http.Response, body []byt
 
 func ParseGeminiHTTPUpstreamErrorFact(resp *http.Response, body []byte) UpstreamErrorFact {
 	fact := ParseHTTPUpstreamErrorFact(PlatformGemini, resp, body)
-	if status := sanitizeUpstreamErrorFactScalar(firstJSONScalar(body, "error.status"), upstreamErrorFactMaxScalarBytes); status != "" {
+	if status := sanitizeUpstreamErrorFactScalar(firstJSONScalar(body, "error.status", "response.error.status"), upstreamErrorFactMaxScalarBytes); status != "" {
 		fact.ProviderCode = status
 		fact.ProviderType = mapGeminiStatusToClaudeErrorType(status)
 		fact.InternalMatchText = buildUpstreamErrorFactMatchText(fact)

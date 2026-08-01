@@ -108,9 +108,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_RetryUsesDistinctAttemptIdent
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	upstream := &anthropicQueuedHTTPUpstream{responses: []*http.Response{
 		{
-			StatusCode: http.StatusTeapot,
+			StatusCode: http.StatusTooManyRequests,
 			Header:     http.Header{"X-Request-Id": []string{"retryable"}},
-			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"retryable"}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"retryable"}}`)),
 		},
 
 		{

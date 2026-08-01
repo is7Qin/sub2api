@@ -40,7 +40,7 @@ func (r *Registry) Register(component Component) error {
 	if snapshot.Descriptor.Name != descriptor.Name || snapshot.Descriptor.Kind != descriptor.Kind {
 		return fmt.Errorf("snapshot descriptor mismatch for %s", descriptor.Name)
 	}
-	if snapshot.Status == nil || snapshot.Status.statusKind() != descriptor.Kind {
+	if isNilStatus(snapshot.Status) || snapshot.Status.statusKind() != descriptor.Kind {
 		return fmt.Errorf("snapshot status kind mismatch for %s", descriptor.Name)
 	}
 
@@ -127,7 +127,27 @@ func validateDescriptor(descriptor Descriptor) error {
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
 	snapshot.Descriptor = cloneDescriptor(snapshot.Descriptor)
+	snapshot.Status = cloneStatus(snapshot.Status)
 	return snapshot
+}
+
+func cloneStatus(status Status) Status {
+	switch typed := status.(type) {
+	case *PeriodicStatus:
+		if typed == nil {
+			return typed
+		}
+		cloned := *typed
+		return &cloned
+	case *PoolStatus:
+		if typed == nil {
+			return typed
+		}
+		cloned := *typed
+		return &cloned
+	default:
+		return status
+	}
 }
 
 func cloneDescriptor(descriptor Descriptor) Descriptor {
@@ -136,13 +156,21 @@ func cloneDescriptor(descriptor Descriptor) Descriptor {
 }
 
 func isNilComponent(component Component) bool {
-	if component == nil {
+	return isNilInterface(component)
+}
+
+func isNilStatus(status Status) bool {
+	return isNilInterface(status)
+}
+
+func isNilInterface(value any) bool {
+	if value == nil {
 		return true
 	}
-	value := reflect.ValueOf(component)
-	switch value.Kind() {
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
+		return reflected.IsNil()
 	default:
 		return false
 	}

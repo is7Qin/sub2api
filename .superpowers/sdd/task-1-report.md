@@ -94,3 +94,102 @@ ok github.com/Wei-Shaw/sub2api/internal/workerruntime
 ## Concern
 
 The status payload fields are intentionally minimal Task 1 foundations. Later component-adapter tasks must populate their real operational fields through `PeriodicStatus` and `PoolStatus` without exposing mutable reference data in snapshots.
+
+## Independent Review Remediation
+
+### Scope
+
+Fixed only the two independent-review findings:
+
+- Deeply detach supported pointer status payloads (`*PeriodicStatus` and `*PoolStatus`) when cloning snapshots returned by `Get` or `Snapshot`.
+- Reject typed-nil status pointers during registration instead of invoking their promoted value-receiver method and panicking.
+
+Added focused regression tests proving:
+
+- Mutating a returned `*PeriodicStatus` from `Get` cannot affect a later `Get`.
+- Mutating a returned `*PoolStatus` from `Snapshot` cannot affect a later `Snapshot`.
+- A typed-nil `*PeriodicStatus` is rejected with the normal status-kind mismatch error.
+
+### Remediation RED
+
+After adding all three tests and before changing production code:
+
+```text
+go -C backend test -tags=unit ./internal/workerruntime -run 'TestRegistry(RegisterRejectsTypedNilStatusPointer|GetDetachesPointerPeriodicStatus|SnapshotDetachesPointerPoolStatus)' -count=1
+```
+
+Result: failed as expected. The first test exposed the typed-nil defect as a panic:
+
+```text
+panic: value method github.com/Wei-Shaw/sub2api/internal/workerruntime.PeriodicStatus.statusKind called using nil *PeriodicStatus pointer
+```
+
+A second focused run isolated both aliasing failures:
+
+```text
+go -C backend test -tags=unit ./internal/workerruntime -run 'TestRegistry(GetDetachesPointerPeriodicStatus|SnapshotDetachesPointerPoolStatus)' -count=1
+```
+
+Result: failed as expected:
+
+```text
+TestRegistryGetDetachesPointerPeriodicStatus: expected RunCount 1, actual 99
+TestRegistrySnapshotDetachesPointerPoolStatus: expected MaxConcurrency 2, actual 99
+```
+
+### Remediation GREEN
+
+Focused regressions:
+
+```text
+go -C backend test -tags=unit ./internal/workerruntime -run 'TestRegistry(RegisterRejectsTypedNilStatusPointer|GetDetachesPointerPeriodicStatus|SnapshotDetachesPointerPoolStatus)' -count=1
+```
+
+Result:
+
+```text
+ok github.com/Wei-Shaw/sub2api/internal/workerruntime
+```
+
+Required Task 1 unit command:
+
+```text
+go -C backend test -tags=unit ./internal/workerruntime -run 'TestRegistry' -count=1
+```
+
+Result:
+
+```text
+ok github.com/Wei-Shaw/sub2api/internal/workerruntime
+```
+
+Required Task 1 race command:
+
+```text
+go -C backend test -race -tags=unit ./internal/workerruntime -run 'TestRegistry' -count=1
+```
+
+Result:
+
+```text
+ok github.com/Wei-Shaw/sub2api/internal/workerruntime
+```
+
+Complete package command:
+
+```text
+go -C backend test -tags=unit ./internal/workerruntime -count=1
+```
+
+Result:
+
+```text
+ok github.com/Wei-Shaw/sub2api/internal/workerruntime
+```
+
+### Remediation Self-Review
+
+- `cloneStatus` copies only the supported periodic/pool pointer concrete types requested by the finding; value statuses remain naturally detached and no unrelated extensibility behavior was added.
+- Nil pointer checks happen before `statusKind`, preventing the observed panic and preserving the existing registration error contract.
+- Snapshot cloning remains outside registry locks; the remediation does not introduce component method calls while locks are held.
+- Both `Get` and `Snapshot` pass through `cloneSnapshot`, so the same detachment behavior applies consistently to both registry read APIs.

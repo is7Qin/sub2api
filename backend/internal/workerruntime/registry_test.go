@@ -148,6 +148,42 @@ func TestRegistryRegisterRejectsMismatchedTypedStatus(t *testing.T) {
 	require.ErrorContains(t, err, "snapshot status kind mismatch for account-expiry")
 }
 
+func TestRegistryRegisterRejectsTypedNilStatusPointer(t *testing.T) {
+	registry := NewRegistry()
+	component := newStubComponent("account-expiry", KindPeriodic)
+	component.status = (*PeriodicStatus)(nil)
+
+	require.ErrorContains(t, registry.Register(component), "snapshot status kind mismatch for account-expiry")
+}
+
+func TestRegistryGetDetachesPointerPeriodicStatus(t *testing.T) {
+	registry := NewRegistry()
+	component := newStubComponent("account-expiry", KindPeriodic)
+	component.status = &PeriodicStatus{RunCount: 1}
+	require.NoError(t, registry.Register(component))
+
+	first, ok := registry.Get("account-expiry")
+	require.True(t, ok)
+	first.Status.(*PeriodicStatus).RunCount = 99
+
+	second, ok := registry.Get("account-expiry")
+	require.True(t, ok)
+	require.Equal(t, uint64(1), second.Status.(*PeriodicStatus).RunCount)
+}
+
+func TestRegistrySnapshotDetachesPointerPoolStatus(t *testing.T) {
+	registry := NewRegistry()
+	component := newStubComponent("usage-record-pool", KindPool)
+	component.status = &PoolStatus{MaxConcurrency: 2}
+	require.NoError(t, registry.Register(component))
+
+	first := registry.Snapshot()
+	first[0].Status.(*PoolStatus).MaxConcurrency = 99
+
+	second := registry.Snapshot()
+	require.Equal(t, 2, second[0].Status.(*PoolStatus).MaxConcurrency)
+}
+
 func TestRegistrySnapshotReadsWhileComponentStateChanges(t *testing.T) {
 	registry := NewRegistry()
 	component := newStubComponent("account-expiry", KindPeriodic)

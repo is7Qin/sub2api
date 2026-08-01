@@ -203,6 +203,17 @@ func TestGetModelPricing_FallbackMatchesByFamily(t *testing.T) {
 	}
 }
 
+func TestGetModelPricing_GLM52UsesOwnPrice(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricing("glm-5.2")
+	require.NoError(t, err)
+	require.NotNil(t, pricing)
+	require.InDelta(t, 1.4e-6, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 4.4e-6, pricing.OutputPricePerToken, 1e-12)
+	require.InDelta(t, 0.26e-6, pricing.CacheReadPricePerToken, 1e-12)
+}
+
 func TestGetModelPricing_CaseInsensitive(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -497,6 +508,7 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		{name: "deepseek v4 flash", model: "deepseek-v4-flash", expectedInput: 1.4e-7, expectedOutput: floatPtr(2.8e-7), expectedCacheRead: floatPtr(2.8e-9)},
 		{name: "deepseek chat alias", model: "deepseek-chat", expectedInput: 1.4e-7, expectedOutput: floatPtr(2.8e-7), expectedCacheRead: floatPtr(2.8e-9)},
 		{name: "deepseek reasoner alias", model: "deepseek-reasoner", expectedInput: 1.4e-7, expectedOutput: floatPtr(2.8e-7), expectedCacheRead: floatPtr(2.8e-9)},
+		{name: "glm 5.2 before glm 5", model: "glm-5.2", expectedInput: 1.4e-6, expectedOutput: floatPtr(4.4e-6), expectedCacheRead: floatPtr(0.26e-6)},
 		{name: "glm 5.1 before glm 5", model: "glm-5.1", expectedInput: 1.4e-6, expectedOutput: floatPtr(4.4e-6), expectedCacheRead: floatPtr(0.26e-6)},
 		{name: "glm 5 turbo", model: "glm-5-turbo", expectedInput: 1.2e-6, expectedOutput: floatPtr(4e-6), expectedCacheRead: floatPtr(0.24e-6)},
 		{name: "glm 5", model: "glm-5", expectedInput: 1e-6, expectedOutput: floatPtr(3.2e-6), expectedCacheRead: floatPtr(0.2e-6)},

@@ -67,6 +67,16 @@ func TestPeriodicJobTimedOutCallbackDoesNotOverlap(t *testing.T) {
 	stopPeriodicJob(t, job)
 }
 
+func TestPeriodicJobClassifiesCallbackDeadlineErrorAsTimeout(t *testing.T) {
+	root := context.Background()
+	invocation, cancel := context.WithTimeout(root, time.Millisecond)
+	defer cancel()
+	<-invocation.Done()
+
+	result := classifyInvocationResult(root, invocation, invocationResult{outcome: OutcomeError, err: context.DeadlineExceeded})
+	require.Equal(t, OutcomeTimeout, result.outcome)
+}
+
 func TestNewPeriodicJobValidatesSpec(t *testing.T) {
 	valid := PeriodicJobSpec{
 		Descriptor: periodicDescriptor("account-expiry"),
@@ -187,6 +197,15 @@ func TestPeriodicJobStopDeadlineRetainsStoppingStateForIgnoringCallback(t *testi
 
 	close(release)
 	require.Eventually(t, func() bool { return job.Snapshot().Lifecycle.State == LifecycleStopped }, time.Second, time.Millisecond)
+}
+
+func TestPeriodicJobStopPreservesCompletedStateWhenContextIsAlreadyCanceled(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	require.True(t, periodicStopCompleted(ctx, done))
 }
 
 func periodicDescriptor(name string) Descriptor {

@@ -112,15 +112,35 @@ func (j *PeriodicJob) Stop(ctx context.Context) error {
 	done := j.stopDone
 	j.mu.Unlock()
 
+	if periodicStopCompleted(ctx, done) {
+		return nil
+	}
+	j.mu.Lock()
 	select {
 	case <-done:
+		j.mu.Unlock()
 		return nil
-	case <-ctx.Done():
-		j.mu.Lock()
+	default:
+		// The scheduler still owns the completion signal, so this stop timed out truthfully.
 		j.lifecycle = LifecycleSnapshot{State: StateStopping, UpdatedAt: time.Now(), LastError: ctx.Err().Error()}
 		j.status.StillRunning = true
 		j.mu.Unlock()
 		return ctx.Err()
+	}
+}
+
+// periodicStopCompleted gives a completed scheduler precedence over caller cancellation.
+func periodicStopCompleted(ctx context.Context, done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -196,6 +216,7 @@ func (j *PeriodicJob) invoke(root context.Context) {
 
 	select {
 	case result := <-done:
+		result = classifyInvocationResult(root, ctx, result)
 		cancel()
 		j.recordInvocation(startedAt, result, false)
 	case <-ctx.Done():
@@ -228,6 +249,15 @@ func (j *PeriodicJob) call(ctx context.Context) (result invocationResult) {
 		return invocationResult{outcome: OutcomeError, err: err}
 	}
 	return invocationResult{outcome: OutcomeSuccess}
+}
+
+// A callback can return its deadline error before the scheduler observes ctx.Done.
+// Preserve stop/root cancellation as an error, but record per-run expiry as timeout.
+func classifyInvocationResult(root, invocation context.Context, result invocationResult) invocationResult {
+	if result.outcome == OutcomeError && root.Err() == nil && invocation.Err() == context.DeadlineExceeded {
+		return invocationResult{outcome: OutcomeTimeout, err: context.DeadlineExceeded}
+	}
+	return result
 }
 
 func (j *PeriodicJob) recordInvocation(startedAt time.Time, result invocationResult, stillRunning bool) {

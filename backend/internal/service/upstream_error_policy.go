@@ -195,6 +195,30 @@ func RecognizeUpstreamErrorFact(fact UpstreamErrorFact) (RecognizedUpstreamError
 			}, true
 		}
 	}
+	if strings.EqualFold(fact.Provider, PlatformGemini) {
+		switch {
+		case strings.EqualFold(code, "INVALID_ARGUMENT"):
+			presentation = withUpstreamClientPresentationStatus(presentation, http.StatusBadRequest)
+			presentation.ErrorCode = "INVALID_ARGUMENT"
+			if presentation.ErrorType == "" {
+				presentation.ErrorType = "invalid_request_error"
+			}
+			if presentation.Message == "" {
+				presentation.Message = "Invalid request"
+			}
+			return RecognizedUpstreamErrorPolicy{Disposition: UpstreamAttemptDirectReturn, Presentation: presentation}, true
+		case strings.EqualFold(code, "NOT_FOUND"):
+			presentation = withUpstreamClientPresentationStatus(presentation, http.StatusNotFound)
+			presentation.ErrorCode = "NOT_FOUND"
+			if presentation.ErrorType == "" {
+				presentation.ErrorType = "not_found_error"
+			}
+			if presentation.Message == "" {
+				presentation.Message = "Resource not found"
+			}
+			return RecognizedUpstreamErrorPolicy{Disposition: UpstreamAttemptDirectReturn, Presentation: presentation}, true
+		}
+	}
 	if strings.EqualFold(code, "cyber_policy") {
 		presentation = withUpstreamClientPresentationStatus(presentation, http.StatusBadRequest)
 		if presentation.ErrorType == "" || strings.EqualFold(presentation.ErrorType, "response.failed") {

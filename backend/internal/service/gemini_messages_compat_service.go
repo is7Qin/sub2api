@@ -881,6 +881,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		// 错误策略优先：匹配则跳过重试直接处理。
+		if resp.StatusCode >= 400 {
+			respBody := s.readUpstreamErrorBody(resp)
+			fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+				break
+			}
+		}
+
 		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
 			resp = rebuilt
 			break
@@ -954,6 +963,14 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+		if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+			upstreamReqID := resp.Header.Get(requestIDHeader)
+			if upstreamReqID == "" {
+				upstreamReqID = resp.Header.Get("x-goog-request-id")
+			}
+			return nil, s.writeGeminiMappedError(c, account, resp.StatusCode, upstreamReqID, respBody)
+		}
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
 			policy := s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
@@ -992,7 +1009,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, respBody, false, ParseGeminiHTTPUpstreamErrorFact(resp, respBody))
 			}
 		}
 
@@ -1026,7 +1043,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: true}
+				return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, respBody, true, fact)
 			}
 		}
 		if s.shouldFailoverGeminiUpstreamError(resp.StatusCode) {
@@ -1054,7 +1071,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, respBody, false, ParseGeminiHTTPUpstreamErrorFact(resp, respBody))
 		}
 		upstreamReqID := resp.Header.Get(requestIDHeader)
 		if upstreamReqID == "" {
@@ -1378,6 +1395,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		// 错误策略优先：匹配则跳过重试直接处理。
+		if resp.StatusCode >= 400 {
+			respBody := s.readUpstreamErrorBody(resp)
+			fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+				break
+			}
+		}
+
 		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
 			resp = rebuilt
 			break
@@ -1490,6 +1516,12 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			}, nil
 		}
 
+		fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+		if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+			respBody = unwrapIfNeeded(isOAuth, respBody)
+			return nil, s.writeResolvedGoogleUpstreamError(c, resp, respBody)
+		}
+
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
 			policy := s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
@@ -1522,7 +1554,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, respBody, false, ParseGeminiHTTPUpstreamErrorFact(resp, respBody))
 			}
 		}
 

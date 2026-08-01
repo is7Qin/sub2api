@@ -1201,6 +1201,166 @@ func parseAnthropicContentBlockEvents(t *testing.T, raw string) []anthropicConte
 	return events
 }
 
+func TestGeminiMessagesForwardNative_RecognizedInvalidArgumentBypassesPolicyAndHealth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"invalid request"}}`),
+	}
+	repo := &geminiErrorPolicyRepo{}
+	rules := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: stub, rateLimitService: rules, cfg: &config.Config{}}
+	account := &Account{ID: 306, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusBadRequest)},
+	}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", strings.NewReader(`{"contents":[]}`))
+
+	_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 1, stub.calls)
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.setRateLimitedCalls)
+	require.Zero(t, repo.setTempCalls)
+	require.NotContains(t, rec.Body.String(), "UpstreamFailover")
+}
+
+func TestGeminiMessagesForward_RecognizedInvalidArgumentBypassesPolicyAndHealth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"invalid request"}}`),
+	}
+	repo := &geminiErrorPolicyRepo{}
+	rules := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: stub, rateLimitService: rules, cfg: &config.Config{}}
+	account := &Account{ID: 307, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusBadRequest)},
+	}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 1, stub.calls)
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.setRateLimitedCalls)
+	require.Zero(t, repo.setTempCalls)
+}
+
+func TestGeminiForwardAsChatCompletions_RecognizedInvalidArgumentBypassesPolicyAndHealth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &geminiCompatFreshResponseStub{
+		status:  http.StatusBadRequest,
+		headers: http.Header{"Content-Type": []string{"application/json"}},
+		body:    []byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"invalid request"}}`),
+	}
+	repo := &geminiErrorPolicyRepo{}
+	rules := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &GeminiMessagesCompatService{httpUpstream: stub, rateLimitService: rules, cfg: &config.Config{}}
+	account := &Account{ID: 308, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusBadRequest)},
+	}}
+	body := []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 1, stub.calls)
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.setRateLimitedCalls)
+	require.Zero(t, repo.setTempCalls)
+}
+
+func TestGeminiHTTPCompatibilityFailoverRetainsFactAndSemanticBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const upstreamBody = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}`
+
+	tests := []struct {
+		name string
+		path string
+		call func(*GeminiMessagesCompatService, *gin.Context, *Account) error
+	}{
+		{
+			name: "native",
+			path: "/v1beta/models/gemini:generateContent",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, []byte(`{"contents":[]}`))
+				return err
+			},
+		},
+		{
+			name: "messages",
+			path: "/v1/messages",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+				return err
+			},
+		},
+		{
+			name: "chat_completions",
+			path: "/v1/chat/completions",
+			call: func(svc *GeminiMessagesCompatService, c *gin.Context, account *Account) error {
+				_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &geminiCompatFreshResponseStub{
+				status:  http.StatusTooManyRequests,
+				headers: http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"gemini-request"}},
+				body:    []byte(upstreamBody),
+			}
+			repo := &geminiErrorPolicyRepo{}
+			svc := &GeminiMessagesCompatService{
+				accountRepo:      repo,
+				httpUpstream:     stub,
+				rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+				cfg:              &config.Config{},
+			}
+			account := &Account{ID: 309, Platform: PlatformGemini, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"api_key": "test-key", "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusTooManyRequests)},
+			}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(`{}`))
+
+			err := tt.call(svc, c, account)
+
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			fact, ok := failoverErr.UpstreamFact()
+			require.True(t, ok)
+			require.Equal(t, PlatformGemini, fact.Provider)
+			require.True(t, fact.HTTPStatusKnown)
+			require.Equal(t, http.StatusTooManyRequests, fact.HTTPStatus)
+			require.Equal(t, "RESOURCE_EXHAUSTED", fact.ProviderCode)
+			require.Equal(t, "rate_limit_error", fact.ProviderType)
+
+			policy, recognized := ResolveUpstreamRecoveryPolicy(fact)
+			require.True(t, recognized)
+			require.Equal(t, UpstreamAttemptFailover, policy.Disposition)
+			require.Equal(t, 1, policy.AccountTransitionBudget)
+			require.LessOrEqual(t, policy.SameAccountRetryBudget, 1)
+		})
+	}
+}
+
 func TestGeminiMessagesForwardNative_Unknown400SkippedDoesNotExposeUpstreamBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	privateBody := `{"private_metadata":"token=do-not-leak","unexpected":"internal.example"}`

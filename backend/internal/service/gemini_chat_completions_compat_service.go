@@ -155,6 +155,15 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries: "+safeErr)
 		}
 
+		if resp.StatusCode >= 400 {
+			respBody := s.readUpstreamErrorBody(resp)
+			fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+				break
+			}
+		}
+
 		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel); matched {
 			resp = rebuilt
 			break
@@ -225,6 +234,10 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		fact := ParseGeminiHTTPUpstreamErrorFact(resp, respBody)
+		if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized && policy.Disposition == UpstreamAttemptDirectReturn {
+			return nil, s.writeGeminiChatCompletionsMappedError(c, account, resp.StatusCode, requestID, unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody))
+		}
 		policy := ErrorPolicyNone
 		if s.rateLimitService != nil {
 			policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)
@@ -245,7 +258,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: evBody}
+			return nil, newHTTPUpstreamFailoverErrorWithFact(resp.StatusCode, evBody, false, fact)
 		}
 
 		return nil, s.writeGeminiChatCompletionsMappedError(c, account, resp.StatusCode, requestID, evBody)

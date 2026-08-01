@@ -403,7 +403,7 @@ func (s *RateLimitService) handleUpstreamError(ctx context.Context, account *Acc
 	case 403:
 		rawBodyForLog := truncateForLog(responseBody, 1024)
 		if account.Platform == PlatformOpenAI {
-			rawBodyForLog = sanitizeOpenAIUpstreamDiagnosticBodyForLog(responseBody, 1024)
+			rawBodyForLog = sanitizeUpstreamDiagnosticBody(responseBody, 1024)
 		}
 		logger.LegacyPrintf(
 			"service.ratelimit",
@@ -877,7 +877,14 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
 		return
 	}
-	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+	slog.Warn(
+		"account_disabled_auth_error",
+		"account_id", account.ID,
+		"error", sanitizeUpstreamDiagnosticBody(
+			[]byte(errorMsg),
+			upstreamErrorFactMaxMatchTextBytes,
+		),
+	)
 }
 
 // handleOpenAIOAuthLike401 keeps durable account state independent from best-effort
@@ -939,7 +946,7 @@ func buildOpenAIForbiddenErrorMessage(prefix string, upstreamMsg string, respons
 		return prefix + msg
 	}
 
-	if body := sanitizeOpenAIUpstreamDiagnosticBodyForLog(responseBody, 512); strings.TrimSpace(body) != "" {
+	if body := sanitizeUpstreamDiagnosticBody(responseBody, 512); strings.TrimSpace(body) != "" {
 		return prefix + body
 	}
 
@@ -1110,7 +1117,15 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "status_code", statusCode, "error", err)
 		return
 	}
-	slog.Warn("account_disabled_custom_error", "account_id", account.ID, "status_code", statusCode, "error", errorMsg)
+	slog.Warn(
+		"account_disabled_custom_error",
+		"account_id", account.ID,
+		"status_code", statusCode,
+		"error", sanitizeUpstreamDiagnosticBody(
+			[]byte(errorMsg),
+			upstreamErrorFactMaxMatchTextBytes,
+		),
+	)
 }
 
 // handle429 处理429限流错误
@@ -2434,7 +2449,7 @@ func truncateTempUnschedMessage(body []byte, maxBytes int) string {
 
 func truncateTempUnschedMessageForAccount(account *Account, body []byte, maxBytes int) string {
 	if account != nil && account.Platform == PlatformOpenAI {
-		return strings.TrimSpace(sanitizeOpenAIUpstreamDiagnosticBodyForLog(body, maxBytes))
+		return strings.TrimSpace(sanitizeUpstreamDiagnosticBody(body, maxBytes))
 	}
 	return truncateTempUnschedMessage(body, maxBytes)
 }

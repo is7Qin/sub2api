@@ -237,6 +237,21 @@ func (m *mockAccountRepoForPlatform) ResetQuotaUsed(ctx context.Context, id int6
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
 
+func TestGatewayTruncateForLogSanitizesPrivateUpstreamBody(t *testing.T) {
+	body := []byte(
+		`{"error":{"message":"token=do-not-leak https://internal.example/secret"},` +
+			`"metadata":{"authorization":"Bearer secret","request_body":"private prompt"}}`,
+	)
+
+	got := truncateForLog(body, 4096)
+
+	require.NotContains(t, got, "do-not-leak")
+	require.NotContains(t, got, "Bearer secret")
+	require.NotContains(t, got, "internal.example")
+	require.NotContains(t, got, "private prompt")
+	require.LessOrEqual(t, len(got), 4096)
+}
+
 func TestGatewayForward_HTTPFailoverCarriersRetainParsedFact(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -244,7 +259,10 @@ func TestGatewayForward_HTTPFailoverCarriersRetainParsedFact(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusServiceUnavailable,
 			Header:     http.Header{"X-Request-Id": []string{requestID}},
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"type":"vendor_failure","message":"private vendor detail"}}`))),
+			Body: io.NopCloser(bytes.NewReader([]byte(
+				`{"error":{"type":"vendor_failure","message":"token=do-not-leak https://internal.example/secret"},` +
+					`"metadata":{"authorization":"Bearer secret"}}`,
+			))),
 		}
 	}
 
@@ -296,8 +314,11 @@ func TestGatewayForward_HTTPFailoverCarriersRetainParsedFact(t *testing.T) {
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 			accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{test.account.ID: test.account}}
 			upstream := &queuedHTTPUpstream{responses: test.responses}
+			cfg := testConfig()
+			cfg.Gateway.LogUpstreamErrorBody = true
+			cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 4096
 			svc := &GatewayService{
-				cfg:              testConfig(),
+				cfg:              cfg,
 				httpUpstream:     upstream,
 				rateLimitService: NewRateLimitService(accountRepo, nil, testConfig(), nil, nil),
 			}
@@ -315,6 +336,15 @@ func TestGatewayForward_HTTPFailoverCarriersRetainParsedFact(t *testing.T) {
 			require.Equal(t, "vendor_failure", fact.ProviderType)
 			require.Equal(t, test.expectedRequestID, fact.RequestID)
 			require.Len(t, upstream.requests, test.expectedCalls)
+			rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+			require.True(t, exists)
+			events := rawEvents.([]*OpsUpstreamErrorEvent)
+			require.NotEmpty(t, events)
+			for _, event := range events {
+				require.NotContains(t, event.Detail, "do-not-leak")
+				require.NotContains(t, event.Detail, "internal.example")
+				require.NotContains(t, event.Detail, "Bearer secret")
+			}
 		})
 	}
 }
@@ -333,14 +363,20 @@ func TestGatewayHandleErrorResponse_DisablingCarrierRetainsParsedFact(t *testing
 		},
 	}
 	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	cfg := testConfig()
+	cfg.Gateway.LogUpstreamErrorBody = true
+	cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 4096
 	svc := &GatewayService{
-		cfg:              testConfig(),
+		cfg:              cfg,
 		rateLimitService: NewRateLimitService(accountRepo, nil, testConfig(), nil, nil),
 	}
 	resp := &http.Response{
 		StatusCode: http.StatusPaymentRequired,
 		Header:     http.Header{"X-Request-Id": []string{"req-disable"}},
-		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"type":"billing_error","code":"billing_required","message":"private billing detail"}}`))),
+		Body: io.NopCloser(bytes.NewReader([]byte(
+			`{"error":{"type":"billing_error","code":"billing_required","message":"token=do-not-leak https://internal.example/secret"},` +
+				`"metadata":{"authorization":"Bearer secret"}}`,
+		))),
 	}
 
 	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
@@ -354,6 +390,13 @@ func TestGatewayHandleErrorResponse_DisablingCarrierRetainsParsedFact(t *testing
 	require.Equal(t, "billing_required", fact.ProviderCode)
 	require.Equal(t, "billing_error", fact.ProviderType)
 	require.Equal(t, "req-disable", fact.RequestID)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotContains(t, events[0].Detail, "do-not-leak")
+	require.NotContains(t, events[0].Detail, "internal.example")
+	require.NotContains(t, events[0].Detail, "Bearer secret")
 }
 
 func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testing.T) {
@@ -381,9 +424,15 @@ func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testi
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{{
 		StatusCode: http.StatusUnauthorized,
 		Header:     http.Header{"x-request-id": []string{"req-policy"}},
-		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`))),
+		Body: io.NopCloser(bytes.NewReader([]byte(
+			`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"},` +
+				`"metadata":{"authorization":"Bearer secret","token":"do-not-leak","private_url":"https://internal.example/secret"}}`,
+		))),
 	}}}
-	svc := &GatewayService{cfg: testConfig(), httpUpstream: upstream, rateLimitService: rateLimits}
+	cfg := testConfig()
+	cfg.Gateway.LogUpstreamErrorBody = true
+	cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 4096
+	svc := &GatewayService{cfg: cfg, httpUpstream: upstream, rateLimitService: rateLimits}
 	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
 	require.NoError(t, err)
 
@@ -406,6 +455,9 @@ func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testi
 	require.Len(t, events, 1)
 	require.NotNil(t, events[0].UpstreamFact)
 	require.Equal(t, "cyber_policy", events[0].UpstreamFact.ProviderCode)
+	require.NotContains(t, events[0].Detail, "do-not-leak")
+	require.NotContains(t, events[0].Detail, "internal.example")
+	require.NotContains(t, events[0].Detail, "Bearer secret")
 	require.True(t, IsResponseCommitted(c))
 }
 

@@ -83,6 +83,36 @@ func TestAppendOpsUpstreamError_FactlessEventDoesNotMatchRawDiagnosticRule(t *te
 	require.False(t, skipped, "factless legacy diagnostics must not authorize database rule side effects")
 }
 
+func TestAppendOpsUpstreamError_SanitizesBoundedDiagnostics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	private := `token=do-not-leak Authorization: Bearer secret https://internal.example/secret 123e4567-e89b-12d3-a456-426614174000`
+
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform: PlatformAnthropic,
+		Message:  private,
+		Detail:   `{"metadata":{"authorization":"Bearer secret","token":"do-not-leak","private_url":"https://internal.example/secret"}}`,
+		UpstreamResponseBody: `{"session_id":"123e4567-e89b-12d3-a456-426614174000",` +
+			`"request_body":"do-not-leak"}`,
+	})
+
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	for _, diagnostic := range []string{
+		events[0].Message,
+		events[0].Detail,
+		events[0].UpstreamResponseBody,
+	} {
+		require.NotContains(t, diagnostic, "do-not-leak")
+		require.NotContains(t, diagnostic, "Bearer secret")
+		require.NotContains(t, diagnostic, "internal.example")
+		require.NotContains(t, diagnostic, "123e4567-e89b-12d3-a456-426614174000")
+		require.LessOrEqual(t, len(diagnostic), upstreamErrorFactMaxMatchTextBytes)
+	}
+}
+
 func TestAppendOpsUpstreamError_UnknownFactUsesRulePrecedence(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(nil)

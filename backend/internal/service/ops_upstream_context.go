@@ -177,15 +177,23 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
-	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.UpstreamEndpoint = ev.ResolvedUpstreamEndpoint()
-	ev.Message = strings.TrimSpace(ev.Message)
-	ev.Detail = strings.TrimSpace(ev.Detail)
-	if ev.Message != "" {
-		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
-	}
+	// Ops fields are a final diagnostic boundary: callers may retain raw bodies
+	// internally, but persisted diagnostics must stay bounded and redacted.
+	ev.Message = sanitizeUpstreamDiagnosticBody(
+		[]byte(strings.TrimSpace(ev.Message)),
+		upstreamErrorFactMaxMatchTextBytes,
+	)
+	ev.Detail = sanitizeUpstreamDiagnosticBody(
+		[]byte(strings.TrimSpace(ev.Detail)),
+		upstreamErrorFactMaxMatchTextBytes,
+	)
+	ev.UpstreamResponseBody = sanitizeUpstreamDiagnosticBody(
+		[]byte(strings.TrimSpace(ev.UpstreamResponseBody)),
+		upstreamErrorFactMaxMatchTextBytes,
+	)
 
 	var existing []*OpsUpstreamErrorEvent
 	if v, ok := c.Get(OpsUpstreamErrorsKey); ok {

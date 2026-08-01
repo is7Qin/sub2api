@@ -3,6 +3,7 @@ package handler
 import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 
 	"github.com/google/wire"
 )
@@ -74,9 +75,10 @@ func ProvideAdminHandlers(
 	}
 }
 
-func ProvideOpsHandler(opsService *service.OpsService, billingOutboxWorker *service.BillingOutboxWorker) *admin.OpsHandler {
+func ProvideOpsHandler(opsService *service.OpsService, billingOutboxWorker *service.BillingOutboxWorker, runtime *workerruntime.Runtime) *admin.OpsHandler {
 	h := admin.NewOpsHandler(opsService)
 	h.SetBillingOutboxWorker(billingOutboxWorker)
+	h.SetWorkerRuntime(runtime)
 	return h
 }
 

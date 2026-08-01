@@ -10,12 +10,32 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 	"github.com/gin-gonic/gin"
 )
 
 type OpsHandler struct {
 	opsService    *service.OpsService
 	billingOutbox *service.BillingOutboxWorker
+	workerRuntime *workerruntime.Runtime
+}
+
+// GetWorkerRuntimeStatus exposes this process's managed worker snapshots through
+// the authenticated, monitoring-gated operations surface.
+func (h *OpsHandler) GetWorkerRuntimeStatus(c *gin.Context) {
+	if h == nil || h.workerRuntime == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Worker runtime not available")
+		return
+	}
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"scope": "process", "workers": h.workerRuntime.Snapshot()})
 }
 
 // GetBillingOutboxHealth exposes durable billing backlog health through the
@@ -94,6 +114,13 @@ func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 func (h *OpsHandler) SetBillingOutboxWorker(worker *service.BillingOutboxWorker) {
 	if h != nil {
 		h.billingOutbox = worker
+	}
+}
+
+// SetWorkerRuntime injects the process-local managed worker runtime for Ops status.
+func (h *OpsHandler) SetWorkerRuntime(runtime *workerruntime.Runtime) {
+	if h != nil {
+		h.workerRuntime = runtime
 	}
 }
 

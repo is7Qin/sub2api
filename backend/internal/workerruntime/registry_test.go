@@ -23,6 +23,7 @@ func newStubComponent(name string, kind Kind) *stubComponent {
 		descriptor: Descriptor{
 			Name:             name,
 			Kind:             kind,
+			Group:            "maintenance",
 			CoordinationMode: CoordinationPerInstance,
 			Tags:             []string{"initial"},
 		},
@@ -74,6 +75,12 @@ func (c *stubComponent) setTag(tag string) {
 	c.descriptor.Tags[0] = tag
 }
 
+func (c *stubComponent) setGroup(group string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.descriptor.Group = group
+}
+
 func TestRegistryRegisterRejectsDuplicateName(t *testing.T) {
 	registry := NewRegistry()
 	require.NoError(t, registry.Register(newStubComponent("account-expiry", KindPeriodic)))
@@ -92,10 +99,12 @@ func TestRegistrySnapshotIsSortedAndDetached(t *testing.T) {
 		snapshots[1].Descriptor.Name,
 	})
 	snapshots[0].Descriptor.Name = "mutated"
+	snapshots[0].Descriptor.Group = "mutated"
 	snapshots[0].Descriptor.Tags[0] = "mutated"
 	stored, ok := registry.Get("account-expiry")
 	require.True(t, ok)
 	require.Equal(t, "account-expiry", stored.Descriptor.Name)
+	require.Equal(t, "maintenance", stored.Descriptor.Group)
 	require.Equal(t, []string{"initial"}, stored.Descriptor.Tags)
 }
 
@@ -110,9 +119,11 @@ func TestRegistryRetainsDetachedDescriptor(t *testing.T) {
 	component := newStubComponent("account-expiry", KindPeriodic)
 	require.NoError(t, registry.Register(component))
 
+	component.setGroup("mutated")
 	component.setTag("mutated")
 	stored, ok := registry.Get("account-expiry")
 	require.True(t, ok)
+	require.Equal(t, "maintenance", stored.Descriptor.Group)
 	require.Equal(t, []string{"initial"}, stored.Descriptor.Tags)
 }
 

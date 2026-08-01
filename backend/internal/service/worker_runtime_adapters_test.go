@@ -21,6 +21,7 @@ func TestAccountExpiryWorkerPreservesImmediateRuntimeSpec(t *testing.T) {
 	snapshot := worker.Snapshot()
 	require.Equal(t, "account-expiry", snapshot.Descriptor.Name)
 	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
 	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
 }
 
@@ -31,6 +32,7 @@ func TestIdempotencyCleanupWorkerPreservesImmediateRuntimeSpec(t *testing.T) {
 	snapshot := worker.Snapshot()
 	require.Equal(t, "idempotency-cleanup", snapshot.Descriptor.Name)
 	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
 	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
 }
 

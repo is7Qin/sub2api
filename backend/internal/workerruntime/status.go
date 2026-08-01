@@ -26,6 +26,7 @@ const (
 type Descriptor struct {
 	Name             string
 	Kind             Kind
+	Group            string
 	CoordinationMode CoordinationMode
 	Description      string
 	Tags             []string

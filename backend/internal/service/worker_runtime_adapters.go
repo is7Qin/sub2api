@@ -16,6 +16,7 @@ func NewAccountExpiryWorker(svc *AccountExpiryService) (*workerruntime.PeriodicJ
 		Descriptor: workerruntime.Descriptor{
 			Name:             "account-expiry",
 			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
 			CoordinationMode: workerruntime.CoordinationPerInstance,
 		},
 		Interval:       svc.Interval(),
@@ -34,6 +35,7 @@ func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime
 		Descriptor: workerruntime.Descriptor{
 			Name:             "idempotency-cleanup",
 			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
 			CoordinationMode: workerruntime.CoordinationPerInstance,
 		},
 		Interval:       svc.Interval(),

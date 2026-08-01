@@ -155,3 +155,99 @@ func TestBuildPlatformSections_GroupsByPlatform(t *testing.T) {
 	require.Len(t, sections[0].SupportedModels, 1)
 	require.Equal(t, "claude-sonnet-4-6", sections[0].SupportedModels[0].Name)
 }
+
+func TestToUserPricing_Image(t *testing.T) {
+	input, output, cacheWrite, cacheRead, image := 0.001, 0.002, 0.003, 0.004, 0.005
+	request, requestHD := 0.08, 0.12
+	maxTokens := 100
+	pricing := toUserPricing(&service.ChannelModelPricing{
+		BillingMode:      service.BillingModeImage,
+		InputPrice:       &input,
+		OutputPrice:      &output,
+		CacheWritePrice:  &cacheWrite,
+		CacheReadPrice:   &cacheRead,
+		ImageOutputPrice: &image,
+		PerRequestPrice:  &request,
+		Intervals: []service.PricingInterval{
+			{
+				MinTokens:       1,
+				MaxTokens:       &maxTokens,
+				TierLabel:       "SD",
+				InputPrice:      &input,
+				OutputPrice:     &output,
+				CacheWritePrice: &cacheWrite,
+				CacheReadPrice:  &cacheRead,
+				PerRequestPrice: &request,
+			},
+			{
+				MinTokens:       101,
+				TierLabel:       "HD",
+				InputPrice:      &input,
+				OutputPrice:     &output,
+				CacheWritePrice: &cacheWrite,
+				CacheReadPrice:  &cacheRead,
+				PerRequestPrice: &requestHD,
+			},
+		},
+	})
+
+	require.Equal(t, string(service.BillingModeImage), pricing.BillingMode)
+	require.Equal(t, &request, pricing.PerRequestPrice)
+	require.Nil(t, pricing.InputPrice)
+	require.Nil(t, pricing.OutputPrice)
+	require.Nil(t, pricing.CacheWritePrice)
+	require.Nil(t, pricing.CacheReadPrice)
+	require.Nil(t, pricing.ImageOutputPrice)
+	require.Len(t, pricing.Intervals, 2)
+	require.Equal(t, 1, pricing.Intervals[0].MinTokens)
+	require.Equal(t, &maxTokens, pricing.Intervals[0].MaxTokens)
+	require.Equal(t, "SD", pricing.Intervals[0].TierLabel)
+	require.Equal(t, &request, pricing.Intervals[0].PerRequestPrice)
+	require.Equal(t, 101, pricing.Intervals[1].MinTokens)
+	require.Nil(t, pricing.Intervals[1].MaxTokens)
+	require.Equal(t, "HD", pricing.Intervals[1].TierLabel)
+	require.Equal(t, &requestHD, pricing.Intervals[1].PerRequestPrice)
+	for _, interval := range pricing.Intervals {
+		require.Nil(t, interval.InputPrice)
+		require.Nil(t, interval.OutputPrice)
+		require.Nil(t, interval.CacheWritePrice)
+		require.Nil(t, interval.CacheReadPrice)
+	}
+}
+
+func TestToUserPricing_PerRequest(t *testing.T) {
+	input, output, image, request, tierRequest := 0.001, 0.002, 0.005, 0.08, 0.12
+	maxTokens := 200
+	pricing := toUserPricing(&service.ChannelModelPricing{
+		BillingMode:      service.BillingModePerRequest,
+		InputPrice:       &input,
+		OutputPrice:      &output,
+		ImageOutputPrice: &image,
+		PerRequestPrice:  &request,
+		Intervals: []service.PricingInterval{{
+			MinTokens:       10,
+			MaxTokens:       &maxTokens,
+			TierLabel:       "premium",
+			InputPrice:      &input,
+			OutputPrice:     &output,
+			CacheWritePrice: &input,
+			CacheReadPrice:  &output,
+			PerRequestPrice: &tierRequest,
+		}},
+	})
+
+	require.Equal(t, string(service.BillingModePerRequest), pricing.BillingMode)
+	require.Equal(t, &request, pricing.PerRequestPrice)
+	require.Nil(t, pricing.InputPrice)
+	require.Nil(t, pricing.OutputPrice)
+	require.Nil(t, pricing.ImageOutputPrice)
+	require.Len(t, pricing.Intervals, 1)
+	require.Equal(t, 10, pricing.Intervals[0].MinTokens)
+	require.Equal(t, &maxTokens, pricing.Intervals[0].MaxTokens)
+	require.Equal(t, "premium", pricing.Intervals[0].TierLabel)
+	require.Equal(t, &tierRequest, pricing.Intervals[0].PerRequestPrice)
+	require.Nil(t, pricing.Intervals[0].InputPrice)
+	require.Nil(t, pricing.Intervals[0].OutputPrice)
+	require.Nil(t, pricing.Intervals[0].CacheWritePrice)
+	require.Nil(t, pricing.Intervals[0].CacheReadPrice)
+}

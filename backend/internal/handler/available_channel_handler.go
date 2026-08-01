@@ -253,31 +253,43 @@ func toUserPricing(p *service.ChannelModelPricing) *userSupportedModelPricing {
 	if p == nil {
 		return nil
 	}
+	billingMode := p.BillingMode
+	if billingMode == "" {
+		billingMode = service.BillingModeToken
+	}
+
 	intervals := make([]userPricingIntervalDTO, 0, len(p.Intervals))
 	for _, iv := range p.Intervals {
-		intervals = append(intervals, userPricingIntervalDTO{
-			MinTokens:       iv.MinTokens,
-			MaxTokens:       iv.MaxTokens,
-			TierLabel:       iv.TierLabel,
-			InputPrice:      iv.InputPrice,
-			OutputPrice:     iv.OutputPrice,
-			CacheWritePrice: iv.CacheWritePrice,
-			CacheReadPrice:  iv.CacheReadPrice,
-			PerRequestPrice: iv.PerRequestPrice,
-		})
+		interval := userPricingIntervalDTO{
+			MinTokens: iv.MinTokens,
+			MaxTokens: iv.MaxTokens,
+			TierLabel: iv.TierLabel,
+		}
+		switch billingMode {
+		case service.BillingModeImage, service.BillingModePerRequest:
+			interval.PerRequestPrice = iv.PerRequestPrice
+		default:
+			interval.InputPrice = iv.InputPrice
+			interval.OutputPrice = iv.OutputPrice
+			interval.CacheWritePrice = iv.CacheWritePrice
+			interval.CacheReadPrice = iv.CacheReadPrice
+		}
+		intervals = append(intervals, interval)
 	}
-	billingMode := string(p.BillingMode)
-	if billingMode == "" {
-		billingMode = string(service.BillingModeToken)
+
+	pricing := &userSupportedModelPricing{
+		BillingMode: string(billingMode),
+		Intervals:   intervals,
 	}
-	return &userSupportedModelPricing{
-		BillingMode:      billingMode,
-		InputPrice:       p.InputPrice,
-		OutputPrice:      p.OutputPrice,
-		CacheWritePrice:  p.CacheWritePrice,
-		CacheReadPrice:   p.CacheReadPrice,
-		ImageOutputPrice: p.ImageOutputPrice,
-		PerRequestPrice:  p.PerRequestPrice,
-		Intervals:        intervals,
+	switch billingMode {
+	case service.BillingModeImage, service.BillingModePerRequest:
+		pricing.PerRequestPrice = p.PerRequestPrice
+	default:
+		pricing.InputPrice = p.InputPrice
+		pricing.OutputPrice = p.OutputPrice
+		pricing.CacheWritePrice = p.CacheWritePrice
+		pricing.CacheReadPrice = p.CacheReadPrice
+		pricing.ImageOutputPrice = p.ImageOutputPrice
 	}
+	return pricing
 }

@@ -1539,7 +1539,7 @@ func TestOpenAIGatewayService_Forward_WSv2InvalidEncryptedContentRecoversOnce(t 
 		},
 	}
 
-	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_encrypted","input":[{"type":"reasoning","encrypted_content":"gAAA"},{"type":"input_text","text":"hello"}]}`)
+	body := []byte(`{"model":"gpt-5.3-codex","stream":false,"previous_response_id":"resp_prev_encrypted","input":[{"type":"reasoning","encrypted_content":"gAAA"},{"type":"compaction","encrypted_content":"cAAA"},{"type":"compaction","content":"keep"},{"type":"input_text","text":"hello"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -1555,9 +1555,11 @@ func TestOpenAIGatewayService_Forward_WSv2InvalidEncryptedContentRecoversOnce(t 
 	require.Len(t, requests, 2)
 	require.True(t, gjson.GetBytes(requests[0], "previous_response_id").Exists(), "首轮请求应保留 previous_response_id")
 	require.True(t, gjson.GetBytes(requests[0], `input.0.encrypted_content`).Exists(), "首轮请求应保留 encrypted reasoning")
+	require.True(t, gjson.GetBytes(requests[0], `input.1.encrypted_content`).Exists(), "首轮请求应保留 encrypted compaction")
 	require.False(t, gjson.GetBytes(requests[1], "previous_response_id").Exists(), "恢复重试应移除 previous_response_id")
-	require.False(t, gjson.GetBytes(requests[1], `input.0.encrypted_content`).Exists(), "恢复重试应移除 encrypted reasoning item")
-	require.Equal(t, "input_text", gjson.GetBytes(requests[1], `input.0.type`).String())
+	require.Equal(t, "compaction", gjson.GetBytes(requests[1], `input.0.type`).String(), "恢复重试应保留 unencrypted compaction")
+	require.Equal(t, "input_text", gjson.GetBytes(requests[1], `input.1.type`).String())
+	require.False(t, gjson.GetBytes(requests[1], `input.2`).Exists(), "恢复重试应移除 encrypted reasoning 和 compaction")
 }
 
 func TestOpenAIGatewayService_Forward_WSv2InvalidEncryptedContentSkipsRecoveryWithoutReasoningItem(t *testing.T) {

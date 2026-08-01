@@ -8228,7 +8228,12 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
-	case "reasoning", "compaction":
+	case "compaction", "compaction_summary":
+		if _, encrypted := inputItem["encrypted_content"]; encrypted {
+			return nil, true, false
+		}
+		return item, false, true
+	case "reasoning":
 		return nil, true, false
 	default:
 		return item, false, true

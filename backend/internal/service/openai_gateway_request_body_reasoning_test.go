@@ -8,6 +8,44 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestTrimOpenAIEncryptedReasoningItems_Compaction(t *testing.T) {
+	tests := []struct {
+		name      string
+		itemType  string
+		encrypted bool
+		changed   bool
+	}{
+		{name: "encrypted compaction", itemType: "compaction", encrypted: true, changed: true},
+		{name: "encrypted compaction summary", itemType: "compaction_summary", encrypted: true, changed: true},
+		{name: "unencrypted compaction", itemType: "compaction", encrypted: false, changed: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := map[string]any{"type": tt.itemType, "id": "cmp_stale"}
+			if tt.encrypted {
+				item["encrypted_content"] = "gAAA"
+			}
+			reqBody := map[string]any{"input": []any{
+				item,
+				map[string]any{"type": "message", "content": "hi"},
+			}}
+
+			changed := trimOpenAIEncryptedReasoningItems(reqBody)
+			require.Equal(t, tt.changed, changed)
+			input, ok := reqBody["input"].([]any)
+			require.True(t, ok)
+			if tt.changed {
+				require.Len(t, input, 1)
+				require.Equal(t, "message", input[0].(map[string]any)["type"])
+				return
+			}
+			require.Len(t, input, 2)
+			require.Equal(t, tt.itemType, input[0].(map[string]any)["type"])
+		})
+	}
+}
+
 func TestSanitizeOpenAICrossModeFailoverReasoning(t *testing.T) {
 	t.Run("removes only encrypted reasoning array items", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-5","input":[{"type":"reasoning","encrypted_content":null,"summary":[{"type":"summary_text","text":"secret"}]},{"type":"message","role":"user","content":"hello <world>"},{"type":"compaction","encrypted_content":"keep-compaction"},{"type":"reasoning","summary":"keep-reasoning"},{"type":"function_call","name":"lookup","arguments":"{}"}],"metadata":{"sequence":90071992547409931234567890}}`)

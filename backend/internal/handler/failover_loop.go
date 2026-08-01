@@ -28,6 +28,8 @@ const (
 	FailoverExhausted
 	// FailoverCanceled context 已取消（调用方应直接 return）
 	FailoverCanceled
+	// FailoverDirectReturn recognized policy owns the safe client presentation.
+	FailoverDirectReturn
 )
 
 const (
@@ -43,9 +45,12 @@ const (
 
 // FailoverState 跨循环迭代共享的 failover 状态
 type UpstreamRecoveryState struct {
-	transitionBudget int
-	transitionsUsed  int
-	bestCandidate    *service.UpstreamErrorCandidate
+	sameAccountRetryBudget int
+	sameAccountRetriesUsed int
+	transitionBudget       int
+	transitionsUsed        int
+	hasRecoveryPolicy      bool
+	bestCandidate          *service.UpstreamErrorCandidate
 }
 
 func NewUpstreamRecoveryState() *UpstreamRecoveryState {
@@ -53,37 +58,60 @@ func NewUpstreamRecoveryState() *UpstreamRecoveryState {
 }
 
 func (s *UpstreamRecoveryState) AdoptPolicy(policy service.UpstreamRecoveryPolicy) {
-	if s == nil || policy.AccountTransitionBudget <= 0 {
+	if s == nil {
 		return
 	}
-	if s.transitionBudget == 0 || policy.AccountTransitionBudget < s.transitionBudget {
+	if !s.hasRecoveryPolicy {
+		s.sameAccountRetryBudget = policy.SameAccountRetryBudget
+		s.transitionBudget = policy.AccountTransitionBudget
+		s.hasRecoveryPolicy = true
+		return
+	}
+	if policy.SameAccountRetryBudget < s.sameAccountRetryBudget {
+		s.sameAccountRetryBudget = policy.SameAccountRetryBudget
+	}
+	if policy.AccountTransitionBudget < s.transitionBudget {
 		s.transitionBudget = policy.AccountTransitionBudget
 	}
 }
 
 // ObserveFailoverError retains only bounded client presentation data and, when
 // available, adopts the request-wide recovery budget attached to the fact.
-func (s *UpstreamRecoveryState) ObserveFailoverError(failoverErr *service.UpstreamFailoverError) {
+func (s *UpstreamRecoveryState) ObserveFailoverError(failoverErr *service.UpstreamFailoverError) (service.UpstreamRecoveryPolicy, bool) {
 	if s == nil || failoverErr == nil {
-		return
+		return service.UpstreamRecoveryPolicy{}, false
 	}
 	if fact, ok := failoverErr.UpstreamFact(); ok {
 		if policy, recognized := service.ResolveUpstreamRecoveryPolicy(fact); recognized {
+			if policy.Disposition == service.UpstreamAttemptDirectReturn {
+				return policy, true
+			}
 			s.AdoptPolicy(policy)
 			s.RetainCandidate(service.NewUpstreamErrorCandidate(fact, policy.CandidateRank))
-			return
+			return policy, true
 		}
 		s.RetainCandidate(service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly))
-		return
+		return service.UpstreamRecoveryPolicy{}, false
 	}
 	s.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
 		HTTPStatusKnown: failoverErr.StatusCode > 0,
 		HTTPStatus:      failoverErr.StatusCode,
 	}, service.UpstreamCandidateStatusOnly))
+	return service.UpstreamRecoveryPolicy{}, false
+}
+
+func (s *UpstreamRecoveryState) CanRetrySameAccount() bool {
+	return s != nil && s.sameAccountRetriesUsed < s.sameAccountRetryBudget
+}
+
+func (s *UpstreamRecoveryState) RecordSameAccountRetry() {
+	if s != nil {
+		s.sameAccountRetriesUsed++
+	}
 }
 
 func (s *UpstreamRecoveryState) HasTransitionBudget() bool {
-	return s != nil && s.transitionBudget > 0
+	return s != nil && s.hasRecoveryPolicy
 }
 
 func (s *UpstreamRecoveryState) RetainCandidate(candidate *service.UpstreamErrorCandidate) {
@@ -113,8 +141,11 @@ func (s *UpstreamRecoveryState) ClearOnSuccess() {
 		return
 	}
 	s.bestCandidate = nil
+	s.sameAccountRetryBudget = 0
+	s.sameAccountRetriesUsed = 0
 	s.transitionBudget = 0
 	s.transitionsUsed = 0
+	s.hasRecoveryPolicy = false
 }
 
 func (s *UpstreamRecoveryState) FinalCandidate() (*service.UpstreamErrorCandidate, bool) {
@@ -123,6 +154,47 @@ func (s *UpstreamRecoveryState) FinalCandidate() (*service.UpstreamErrorCandidat
 	}
 	copy := *s.bestCandidate
 	return &copy, true
+}
+
+// directReturnCandidate renders the current fact without retaining it in
+// request-wide failover candidate state.
+func directReturnCandidate(failoverErr *service.UpstreamFailoverError) (*service.UpstreamErrorCandidate, bool) {
+	if failoverErr == nil {
+		return nil, false
+	}
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		return nil, false
+	}
+	policy, recognized := service.ResolveUpstreamRecoveryPolicy(fact)
+	if !recognized || policy.Disposition != service.UpstreamAttemptDirectReturn {
+		return nil, false
+	}
+	return service.NewUpstreamErrorCandidate(fact, policy.CandidateRank), true
+}
+
+// openAIDirectReturnCandidate mirrors the OpenAI handler's direct-return
+// boundary while keeping the fact out of request-wide failover retention.
+func openAIDirectReturnCandidate(_ *UpstreamRecoveryState, failoverErr *service.UpstreamFailoverError) (*service.UpstreamErrorCandidate, bool) {
+	return directReturnCandidate(failoverErr)
+}
+
+// openAIStoppedFailoverCandidate prefers the best bounded candidate retained
+// across attempts when an endpoint-specific guard stops further recovery.
+func openAIStoppedFailoverCandidate(recovery *UpstreamRecoveryState, failoverErr *service.UpstreamFailoverError) (*service.UpstreamErrorCandidate, bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			return candidate, true
+		}
+	}
+	if failoverErr == nil {
+		return nil, false
+	}
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		return nil, false
+	}
+	return service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), true
 }
 
 type FailoverState struct {
@@ -141,6 +213,17 @@ func (s *FailoverState) FinalCandidate() (*service.UpstreamErrorCandidate, bool)
 		return nil, false
 	}
 	return s.Recovery.FinalCandidate()
+}
+
+// Candidate presentation may normalize the client status; ops must retain only
+// the status actually observed from upstream.
+func setOpsUpstreamCandidateError(c *gin.Context, fact service.UpstreamErrorFact, message string) {
+	if !fact.HTTPStatusKnown {
+		c.Set(service.OpsUpstreamStatusCodeKey, 0)
+		service.SetOpsUpstreamError(c, 0, message, "")
+		return
+	}
+	service.SetOpsUpstreamError(c, fact.HTTPStatus, message, "")
 }
 
 // NewFailoverState 创建 failover 状态
@@ -177,8 +260,11 @@ func (s *FailoverState) HandleFailoverError(
 	if ctx.Err() != nil {
 		return FailoverCanceled
 	}
+	policy, recognized := s.Recovery.ObserveFailoverError(failoverErr)
+	if recognized && policy.Disposition == service.UpstreamAttemptDirectReturn {
+		return FailoverDirectReturn
+	}
 	s.LastFailoverErr = failoverErr
-	s.Recovery.ObserveFailoverError(failoverErr)
 
 	// 缓存计费判断
 	if needForceCacheBilling(s.hasBoundSession, failoverErr) {
@@ -188,12 +274,20 @@ func (s *FailoverState) HandleFailoverError(
 		s.ForceCacheBilling = true
 	}
 
-	// 同账号重试：对 RetryableOnSameAccount 的临时性错误，先在同一账号上重试
-	if failoverErr.RetryableOnSameAccount && s.SameAccountRetryCount[accountID] < retryLimit {
+	// Fact-backed policies cap configured retries request-wide; factless legacy
+	// carriers retain their established per-account configured behavior.
+	canRetrySameAccount := failoverErr.RetryableOnSameAccount && s.SameAccountRetryCount[accountID] < retryLimit
+	if recognized {
+		canRetrySameAccount = canRetrySameAccount && s.Recovery.CanRetrySameAccount()
+	}
+	if canRetrySameAccount {
 		if ctx.Err() != nil {
 			return FailoverCanceled
 		}
 		s.SameAccountRetryCount[accountID]++
+		if recognized {
+			s.Recovery.RecordSameAccountRetry()
+		}
 		logger.FromContext(ctx).Warn("gateway.failover_same_account_retry",
 			zap.Int64("account_id", accountID),
 			zap.Int("upstream_status", failoverErr.StatusCode),
@@ -208,7 +302,11 @@ func (s *FailoverState) HandleFailoverError(
 	}
 
 	// 同账号重试用尽，执行临时封禁
-	if failoverErr.RetryableOnSameAccount {
+	shouldTempUnschedule := failoverErr.RetryableOnSameAccount
+	if recognized {
+		shouldTempUnschedule = policy.AccountHealthAction == service.UpstreamHealthTemporarilyUnschedule
+	}
+	if shouldTempUnschedule {
 		if ctx.Err() != nil {
 			return FailoverCanceled
 		}
@@ -237,7 +335,7 @@ func (s *FailoverState) HandleFailoverError(
 		return FailoverCanceled
 	}
 	s.SwitchCount++
-	if s.Recovery.transitionBudget > 0 {
+	if s.Recovery.HasTransitionBudget() {
 		s.Recovery.RecordTransition()
 	}
 	logger.FromContext(ctx).Warn("gateway.failover_switch_account",
@@ -272,6 +370,11 @@ func (s *FailoverState) HandleFailoverError(
 func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
 	if ctx != nil && ctx.Err() != nil {
 		return FailoverCanceled
+	}
+
+	if s.Recovery != nil && s.Recovery.HasTransitionBudget() &&
+		!s.Recovery.CanTransition(s.MaxSwitches) {
+		return FailoverExhausted
 	}
 
 	if s.LastFailoverErr != nil &&

@@ -70,7 +70,7 @@ func TestForwardAIStudioGETValidatesSuffixAtSink(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro", stub.lastReq.URL.String())
 
-	for _, suffix := range []string{"/v1beta/models/../x", "/v1beta/models/gemini?x=1", "/v1beta/models/gemini#x", "/v1beta/models//x"} {
+	for _, suffix := range []string{"/v1beta/models/../x", "/v1beta/models/gemini?x=1", "/v1beta/models/gemini#x", "/v1beta/models//x", "/v1beta/models/gemini-2.5-pro "} {
 		stub.lastReq = nil
 		_, err := svc.ForwardAIStudioGET(context.Background(), account, suffix)
 		require.Error(t, err, suffix)

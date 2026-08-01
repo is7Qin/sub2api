@@ -192,7 +192,9 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				failoverClientGone(c)
 				return
 			default:
-				if fs.LastFailoverErr != nil {
+				if candidate, ok := fs.FinalCandidate(); ok {
+					h.handleCCCandidate(c, candidate, streamStarted)
+				} else if fs.LastFailoverErr != nil {
 					h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 				} else {
 					h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "server_error", "All available accounts exhausted")
@@ -315,7 +317,16 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverExhausted:
-					h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					if candidate, ok := fs.FinalCandidate(); ok {
+						h.handleCCCandidate(c, candidate, streamStarted)
+					} else {
+						h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					}
+					return
+				case FailoverDirectReturn:
+					if candidate, ok := directReturnCandidate(failoverErr); ok {
+						h.handleCCCandidate(c, candidate, streamStarted)
+					}
 					return
 				case FailoverCanceled:
 					failoverClientGone(c)
@@ -380,19 +391,50 @@ func (h *GatewayHandler) chatCompletionsErrorResponse(c *gin.Context, status int
 	})
 }
 
-// handleCCFailoverExhausted writes a failover-exhausted error in CC format.
-func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
-	if streamStarted {
+func (h *GatewayHandler) handleCCCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		if streamStarted {
+			h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", true)
+			return
+		}
+		h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 		return
 	}
-	statusCode := http.StatusBadGateway
-	if lastErr != nil && lastErr.StatusCode > 0 {
-		statusCode = lastErr.StatusCode
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
 	}
-	if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
-		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
+	if streamStarted {
+		h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true)
+		return
+	}
+	errType := presentation.ErrorType
+	if errType == "" {
+		errType = "server_error"
+	}
+	h.chatCompletionsErrorResponse(c, presentation.HTTPStatus, errType, presentation.Message)
+}
+
+// handleCCFailoverExhausted writes a failover-exhausted error in CC format.
+func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
+	if lastErr == nil {
+		h.handleCCCandidate(c, nil, streamStarted)
+		return
+	}
+	if service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
+		service.SetOpsUpstreamError(c, lastErr.StatusCode, service.OpenAISilentRefusalClientMessage(), "")
+		if streamStarted {
+			h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage(), true)
+			return
+		}
 		h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage())
 		return
 	}
-	h.chatCompletionsErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+	fact, ok := lastErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, lastErr.StatusCode, lastErr.ResponseBody)
+	}
+	h.handleCCCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }

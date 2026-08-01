@@ -31,7 +31,20 @@ func newOpsSystemLogTestRouter(handler *OpsHandler, withUser bool) *gin.Engine {
 	r.GET("/logs", handler.ListSystemLogs)
 	r.POST("/logs/cleanup", handler.CleanupSystemLogs)
 	r.GET("/logs/health", handler.GetSystemLogIngestionHealth)
+	r.GET("/billing-outbox/health", handler.GetBillingOutboxHealth)
 	return r
+}
+
+func TestOpsHandlerBillingOutboxHealthUnavailable(t *testing.T) {
+	h := NewOpsHandler(nil)
+	r := newOpsSystemLogTestRouter(h, false)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/billing-outbox/health", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503", w.Code)
+	}
 }
 
 func TestOpsSystemLogHandler_ListUnavailable(t *testing.T) {

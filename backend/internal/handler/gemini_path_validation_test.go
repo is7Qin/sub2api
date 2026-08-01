@@ -13,29 +13,38 @@ import (
 
 func TestGeminiV1BetaGetModelRejectsUnsafeModelAtHandlerEdge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodGet, "/v1beta/models/unsafe", nil)
-	c.Params = gin.Params{{Key: "model", Value: "../unsafe"}}
-	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{Platform: service.PlatformGemini}})
+	for _, model := range []string{"../unsafe", " gemini-2.5-pro "} {
+		t.Run(model, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1beta/models/unsafe", nil)
+			c.Params = gin.Params{{Key: "model", Value: model}}
+			c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{Platform: service.PlatformGemini}})
+			c.Set(string(middleware.ContextKeyForcePlatform), service.PlatformAntigravity)
 
-	(&GatewayHandler{}).GeminiV1BetaGetModel(c)
+			(&GatewayHandler{}).GeminiV1BetaGetModel(c)
 
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Contains(t, rec.Body.String(), "Invalid model in URL")
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), "Invalid model in URL")
+		})
+	}
 }
 
 func TestGeminiV1BetaModelsRejectsUnsafeModelAtHandlerEdge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/unsafe:generateContent", nil)
-	c.Params = gin.Params{{Key: "modelAction", Value: "/../unsafe:generateContent"}}
-	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{Platform: service.PlatformGemini}})
-	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1})
+	for _, modelAction := range []string{"/../unsafe:generateContent", "/ gemini-2.5-pro:generateContent "} {
+		t.Run(modelAction, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/unsafe:generateContent", nil)
+			c.Params = gin.Params{{Key: "modelAction", Value: modelAction}}
+			c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{Platform: service.PlatformGemini}})
+			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1})
 
-	(&GatewayHandler{}).GeminiV1BetaModels(c)
+			(&GatewayHandler{}).GeminiV1BetaModels(c)
 
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Contains(t, rec.Body.String(), "Invalid model in URL")
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), "Invalid model in URL")
+		})
+	}
 }

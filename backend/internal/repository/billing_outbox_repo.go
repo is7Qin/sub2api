@@ -257,6 +257,29 @@ func (r *billingOutboxRepository) ClaimFinalization(ctx context.Context, workerI
 	return records, rows.Err()
 }
 
+func (r *billingOutboxRepository) RenewFinalizationLease(ctx context.Context, id int64, workerID string, lease time.Duration) error {
+	leaseSeconds := int64(lease / time.Second)
+	if leaseSeconds < 1 {
+		leaseSeconds = 30
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE billing_attempt_outbox
+		SET lease_until = NOW() + ($3 * INTERVAL '1 second'), updated_at = NOW()
+		WHERE id = $1 AND status = 'finalizing' AND leased_by = $2 AND lease_until > NOW()
+	`, id, workerID, leaseSeconds)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: %d", service.ErrBillingOutboxClaimLost, id)
+	}
+	return nil
+}
+
 func (r *billingOutboxRepository) RetryFinalization(ctx context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error {
 	lastError = boundedBillingOutboxError(lastError)
 	status := "finalization_pending"
@@ -271,14 +294,14 @@ func (r *billingOutboxRepository) RetryFinalization(ctx context.Context, id int6
 		result, err = r.db.ExecContext(ctx, `
 			UPDATE billing_attempt_outbox
 			SET status = $4, last_error = $3, lease_until = NULL, leased_by = NULL, updated_at = NOW()
-			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing'
+			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing' AND lease_until > NOW()
 		`, id, workerID, lastError, status)
 	} else {
 		result, err = r.db.ExecContext(ctx, `
 			UPDATE billing_attempt_outbox
 			SET status = $5, available_at = $3, last_error = $4,
 				lease_until = NULL, leased_by = NULL, updated_at = NOW()
-			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing'
+			WHERE id = $1 AND leased_by = $2 AND status = 'finalizing' AND lease_until > NOW()
 		`, id, workerID, availableAt, lastError, status)
 	}
 	if err != nil {
@@ -298,7 +321,7 @@ func (r *billingOutboxRepository) AckFinalization(ctx context.Context, id int64,
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE billing_attempt_outbox
 		SET status = 'succeeded', lease_until = NULL, leased_by = NULL, last_error = NULL, updated_at = NOW()
-		WHERE id = $1 AND leased_by = $2 AND status = 'finalizing'
+		WHERE id = $1 AND leased_by = $2 AND status = 'finalizing' AND lease_until > NOW()
 	`, id, workerID)
 	if err != nil {
 		return err
@@ -377,7 +400,7 @@ func (r *billingOutboxRepository) Stats(ctx context.Context) (service.BillingOut
 		SELECT COUNT(*) FILTER (WHERE status IN ('pending', 'finalization_pending')),
 			COUNT(*) FILTER (WHERE status IN ('processing', 'finalizing')),
 			COUNT(*) FILTER (WHERE status = 'terminal'), COALESCE(MAX(attempts), 0),
-			MIN(created_at) FILTER (WHERE status IN ('pending', 'processing', 'finalization_pending', 'finalizing', 'terminal')),
+			MIN(created_at) FILTER (WHERE status IN ('pending', 'processing', 'finalization_pending', 'finalizing')),
 			(SELECT last_error FROM billing_attempt_outbox WHERE last_error IS NOT NULL ORDER BY updated_at DESC, id DESC LIMIT 1)
 		FROM billing_attempt_outbox
 	`).Scan(&stats.Pending, &stats.Processing, &stats.Terminal, &stats.MaxAttempts, &oldest, &lastError)

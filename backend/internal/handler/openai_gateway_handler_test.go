@@ -2080,6 +2080,90 @@ func TestOpenAIMessages_ContextFailedDoesNotSwitchOrRateLimitAccount(t *testing.
 	}
 }
 
+func TestOpenAIResponses_RecognizedOverloadReturnsWithoutSchedulerMutation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(4250)
+	accountRepo := &openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{{
+		ID: 9920, Name: "responses-overload", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "sk-test"},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceResponses)},
+	}}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
+	concurrencySvc := service.NewConcurrencyService(nil)
+	upstreamBody := "event: response.failed\n" + `data: {"type":"response.failed","response":{"id":"resp_overload","status":"failed","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Please retry later"}}}` + "\n\n"
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","input":"hello","stream":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 1810, GroupID: &groupID, User: &service.User{ID: 1710, Status: service.StatusActive}, Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive}})
+	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1710})
+
+	h.Responses(c)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Equal(t, "server_is_overloaded", gjson.Get(rec.Body.String(), "error.code").String())
+	require.Empty(t, accountRepo.rateLimitedIDs)
+	metrics := gatewaySvc.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, metrics.AccountSwitchTotal)
+	require.Zero(t, metrics.RuntimeStatsAccountCount, "direct overload must not report a scheduler outcome")
+}
+
+func TestOpenAIMessages_RecognizedOverloadReturnsWithoutSchedulerMutation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(4251)
+	accountRepo := &openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{{
+		ID: 9921, Name: "messages-overload", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "sk-test"},
+	}}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
+	concurrencySvc := service.NewConcurrencyService(nil)
+	upstreamBody := `data: {"type":"response.failed","response":{"id":"resp_overload","status":"failed","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Please retry later"}}}` + "\n\n"
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"gpt-5.4","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 1811, GroupID: &groupID, User: &service.User{ID: 1711, Status: service.StatusActive}, Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, AllowMessagesDispatch: true}})
+	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1711})
+
+	h.Messages(c)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Equal(t, "service_unavailable_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "retry")
+	require.Empty(t, accountRepo.rateLimitedIDs)
+	metrics := gatewaySvc.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, metrics.AccountSwitchTotal)
+	require.Zero(t, metrics.RuntimeStatsAccountCount, "direct overload must not report a scheduler outcome")
+}
+
+func TestOpenAIStoppedFailoverCandidatePrefersRetainedBestCandidate(t *testing.T) {
+	recovery := NewUpstreamRecoveryState()
+	retainedFact := service.UpstreamErrorFact{
+		Provider: service.PlatformOpenAI, Source: service.UpstreamErrorSourceHTTP,
+		HTTPStatusKnown: true, HTTPStatus: http.StatusTooManyRequests,
+		ProviderCode: "rate_limit_exceeded", ProviderType: "rate_limit_error", SafeMessage: "Rate limited",
+	}
+	recovery.RetainCandidate(service.NewUpstreamErrorCandidate(retainedFact, service.UpstreamCandidateStructured))
+	current := &service.UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+
+	candidate, ok := openAIStoppedFailoverCandidate(recovery, current)
+
+	require.True(t, ok)
+	require.Equal(t, "rate_limit_exceeded", candidate.Presentation.ErrorCode)
+}
+
 func TestOpenAIResponses_PostOutputResponseFailedRecordsUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

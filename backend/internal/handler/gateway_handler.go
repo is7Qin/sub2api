@@ -332,7 +332,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
-					if candidate, ok := fs.FinalCandidate(); ok && candidate.Rank == service.UpstreamCandidateStructured {
+					if candidate, ok := fs.FinalCandidate(); ok {
 						h.handleUpstreamCandidate(c, candidate, streamStarted)
 					} else if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
@@ -502,7 +502,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					case FailoverContinue:
 						continue
 					case FailoverExhausted:
-						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+						if candidate, ok := fs.FinalCandidate(); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
+						} else {
+							h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+						}
+						return
+					case FailoverDirectReturn:
+						if candidate, ok := directReturnCandidate(failoverErr); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
+						}
 						return
 					case FailoverCanceled:
 						failoverClientGone(c)
@@ -663,7 +672,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
-					if fs.LastFailoverErr != nil {
+					if candidate, ok := fs.FinalCandidate(); ok {
+						h.handleUpstreamCandidate(c, candidate, streamStarted)
+					} else if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
 					} else {
 						h.handleFailoverExhaustedSimple(c, 502, streamStarted)
@@ -966,7 +977,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					case FailoverContinue:
 						continue
 					case FailoverExhausted:
-						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
+						if candidate, ok := fs.FinalCandidate(); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
+						} else {
+							h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
+						}
+						return
+					case FailoverDirectReturn:
+						if candidate, ok := directReturnCandidate(failoverErr); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
+						}
 						return
 					case FailoverCanceled:
 						failoverClientGone(c)
@@ -1573,57 +1593,20 @@ func (h *GatewayHandler) responsesConcurrencyErrorResponse(c *gin.Context, err e
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
-	statusCode := failoverErr.StatusCode
-	responseBody := failoverErr.ResponseBody
-	if service.IsOpenAISilentRefusalErrorBody(responseBody) {
-		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
+	if failoverErr == nil {
+		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
+		return
+	}
+	if service.IsOpenAISilentRefusalErrorBody(failoverErr.ResponseBody) {
+		service.SetOpsUpstreamError(c, failoverErr.StatusCode, service.OpenAISilentRefusalClientMessage(), "")
 		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage(), streamStarted)
 		return
 	}
-
-	fact, hasFact := failoverErr.UpstreamFact()
-	if !hasFact {
-		fact = service.NewLegacyUpstreamErrorFact(platform, statusCode, responseBody)
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(platform, failoverErr.StatusCode, failoverErr.ResponseBody)
 	}
-	if policy, recognized := service.RecognizeUpstreamErrorFact(fact); recognized {
-		presentation := policy.Presentation
-		service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
-		h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
-		return
-	}
-
-	// Only unknown errors may use an administrator-configured passthrough rule.
-	if h.errorPassthroughService != nil {
-		if rule := h.errorPassthroughService.MatchUnknownRule(fact); rule != nil {
-			respCode := http.StatusBadGateway
-			if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
-				respCode = fact.HTTPStatus
-			}
-			if !rule.PassthroughCode && rule.ResponseCode != nil {
-				respCode = *rule.ResponseCode
-			}
-			msg := fact.SafeMessage
-			if !rule.PassthroughBody && rule.CustomMessage != nil {
-				msg = *rule.CustomMessage
-			}
-			if msg == "" {
-				msg = "Upstream request failed"
-			}
-			if rule.SkipMonitoring {
-				c.Set(service.OpsSkipPassthroughKey, true)
-			}
-			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
-			return
-		}
-	}
-
-	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
-	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
-
-	// 使用默认的错误映射
-	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleUpstreamCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
@@ -1633,15 +1616,18 @@ func (h *GatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCod
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
-// handleUpstreamCandidate renders a retained, bounded semantic candidate rather
-// than re-reading the legacy failover response body after recovery is exhausted.
+// handleUpstreamCandidate renders a retained candidate through the final resolver.
 func (h *GatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
 	if candidate == nil {
 		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
 		return
 	}
-	presentation := candidate.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
 
@@ -1664,12 +1650,16 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) 
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted)
+}
+
+func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
 	if streamStarted {
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
 		// response.completed/failed/incomplete/cancelled 集合。
 		// Anthropic-backed Responses 路径同样会因为通用 error 帧被拒。
 		if inboundIsResponses(c) {
-			if writeResponsesFailedSSE(c, errType, message) {
+			if writeResponsesFailedSSE(c, errType, code, message) {
 				return
 			}
 		}
@@ -1693,7 +1683,8 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 func (h *GatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
 		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
+		if ok && !service.IsResponseCommitted(c) {
+			service.MarkResponseCommitted(c)
 			errPayload, _ := json.Marshal(gin.H{
 				"type": "error",
 				"error": gin.H{

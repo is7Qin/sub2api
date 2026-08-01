@@ -47,6 +47,20 @@ func TestParseHTTPUpstreamErrorFactPreservesActualStatus(t *testing.T) {
 	require.Equal(t, "30", fact.RetryAfter)
 }
 
+func TestParseGeminiHTTPUpstreamErrorFactExtractsNestedResponseStatus(t *testing.T) {
+	body := []byte(`{"response":{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}}`)
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}}
+
+	fact := ParseGeminiHTTPUpstreamErrorFact(resp, body)
+
+	require.Equal(t, "RESOURCE_EXHAUSTED", fact.ProviderCode)
+	require.Equal(t, "rate_limit_error", fact.ProviderType)
+	policy, recognized := ResolveUpstreamRecoveryPolicy(fact)
+	require.True(t, recognized)
+	require.Equal(t, UpstreamAttemptFailover, policy.Disposition)
+	require.Equal(t, 1, policy.AccountTransitionBudget)
+}
+
 func TestParseAnthropicSSEErrorFactDoesNotInventHTTPStatus(t *testing.T) {
 	fact := ParseAnthropicSSEErrorFact(PlatformAnthropic, []byte(`{
 		"type": "error",
@@ -126,15 +140,17 @@ func TestUpstreamFailoverErrorFactDoesNotOverwriteCompatibilityStatus(t *testing
 	require.Zero(t, attached.HTTPStatus)
 }
 
-func TestNewAnthropicSSEFailoverErrorKeepsLegacySynthetic403(t *testing.T) {
+func TestNewAnthropicSSEFailoverErrorKeepsStatusUnknown(t *testing.T) {
 	body := []byte(`{"error":{"type":"invalid_request_error","message":"Invalid request"}}`)
 	err := newAnthropicSSEFailoverError(&Account{Platform: PlatformAnthropic}, body, "req_123")
 
 	attached, ok := err.UpstreamFact()
 	require.True(t, ok)
-	require.Equal(t, http.StatusForbidden, err.StatusCode)
+	require.Zero(t, err.StatusCode)
 	require.Equal(t, body, err.ResponseBody)
 	require.False(t, attached.HTTPStatusKnown)
+	require.Zero(t, attached.HTTPStatus)
+	require.Equal(t, UpstreamErrorSourceSSE, attached.Source)
 	require.Equal(t, "invalid_request_error", attached.ProviderType)
 	require.Equal(t, "Invalid request", attached.SafeMessage)
 }

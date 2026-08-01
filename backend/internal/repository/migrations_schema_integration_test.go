@@ -122,6 +122,42 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "user_allowed_groups", "created_at", "timestamp with time zone", 0, false)
 }
 
+func TestMigration172_AdminQuotaLoweringEnqueuesGenericAuthInvalidation(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	content, err := migrations.FS.ReadFile("172_billing_quota_auth_invalidation.sql")
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err)
+
+	var userID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `
+INSERT INTO users (email, password_hash, role, status, balance, concurrency)
+VALUES ($1, 'hash', 'user', 'active', 0, 1)
+RETURNING id
+`, "migration-172-quota-lowering@example.com").Scan(&userID))
+
+	var apiKeyID int64
+	const apiKey = "sk-migration-172-quota-lowering"
+	require.NoError(t, tx.QueryRowContext(ctx, `
+INSERT INTO api_keys (user_id, key, name, quota, quota_used)
+VALUES ($1, $2, 'migration-172-quota-lowering', 100, 75)
+RETURNING id
+`, userID, apiKey).Scan(&apiKeyID))
+
+	_, err = tx.ExecContext(ctx, "UPDATE api_keys SET quota = 50 WHERE id = $1", apiKeyID)
+	require.NoError(t, err)
+
+	var count int
+	require.NoError(t, tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM auth_cache_invalidation_outbox
+WHERE cache_key = encode(sha256(convert_to($1, 'UTF8')), 'hex')
+  AND source_key IS NULL
+`, apiKey).Scan(&count))
+	require.Equal(t, 1, count)
+}
+
 func TestMigrationsRunner_UsageLogAccountRelationship(t *testing.T) {
 	tx := testTx(t)
 	content, err := migrations.FS.ReadFile("169_preserve_usage_logs_on_account_delete.sql")

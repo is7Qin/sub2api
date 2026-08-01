@@ -48,6 +48,7 @@ const (
 )
 
 type UpstreamErrorCandidate struct {
+	Fact         UpstreamErrorFact
 	Presentation UpstreamClientPresentation
 	Rank         UpstreamCandidateRank
 }
@@ -76,9 +77,9 @@ func NewUpstreamErrorCandidate(fact UpstreamErrorFact, rank UpstreamCandidateRan
 		presentation.ErrorType = "api_error"
 	}
 	if presentation.Message == "" {
-		presentation.Message = "Upstream request failed"
+		presentation.Message = genericUpstreamFailureMessage
 	}
-	return &UpstreamErrorCandidate{Presentation: presentation, Rank: rank}
+	return &UpstreamErrorCandidate{Fact: fact, Presentation: presentation, Rank: rank}
 }
 
 // RecognizedUpstreamError is a direct, safe presentation that must bypass
@@ -169,7 +170,14 @@ func ResolveUpstreamRecoveryPolicy(fact UpstreamErrorFact) (UpstreamRecoveryPoli
 			Presentation:            NewUpstreamErrorCandidate(fact, UpstreamCandidateStatusOnly).Presentation,
 		}, true
 	}
-	return UpstreamRecoveryPolicy{}, false
+	// A parsed but otherwise unknown fact must terminate semantic recovery; zero
+	// budgets are authoritative and must not fall back to legacy retry limits.
+	return UpstreamRecoveryPolicy{
+		Disposition:         UpstreamAttemptGenericAbort,
+		AccountHealthAction: UpstreamHealthNone,
+		CandidateRank:       UpstreamCandidateStatusOnly,
+		Presentation:        NewUpstreamErrorCandidate(fact, UpstreamCandidateStatusOnly).Presentation,
+	}, true
 }
 
 func RecognizeUpstreamErrorFact(fact UpstreamErrorFact) (RecognizedUpstreamErrorPolicy, bool) {
@@ -192,6 +200,30 @@ func RecognizeUpstreamErrorFact(fact UpstreamErrorFact) (RecognizedUpstreamError
 				Disposition:  UpstreamAttemptDirectReturn,
 				Presentation: presentation,
 			}, true
+		}
+	}
+	if strings.EqualFold(fact.Provider, PlatformGemini) {
+		switch {
+		case strings.EqualFold(code, "INVALID_ARGUMENT"):
+			presentation = withUpstreamClientPresentationStatus(presentation, http.StatusBadRequest)
+			presentation.ErrorCode = "INVALID_ARGUMENT"
+			if presentation.ErrorType == "" {
+				presentation.ErrorType = "invalid_request_error"
+			}
+			if presentation.Message == "" {
+				presentation.Message = "Invalid request"
+			}
+			return RecognizedUpstreamErrorPolicy{Disposition: UpstreamAttemptDirectReturn, Presentation: presentation}, true
+		case strings.EqualFold(code, "NOT_FOUND"):
+			presentation = withUpstreamClientPresentationStatus(presentation, http.StatusNotFound)
+			presentation.ErrorCode = "NOT_FOUND"
+			if presentation.ErrorType == "" {
+				presentation.ErrorType = "not_found_error"
+			}
+			if presentation.Message == "" {
+				presentation.Message = "Resource not found"
+			}
+			return RecognizedUpstreamErrorPolicy{Disposition: UpstreamAttemptDirectReturn, Presentation: presentation}, true
 		}
 	}
 	if strings.EqualFold(code, "cyber_policy") {

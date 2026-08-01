@@ -19,6 +19,28 @@ func NewAuthCacheInvalidationOutboxRepository(db *sql.DB) service.AuthCacheInval
 	return &authCacheInvalidationOutboxRepository{db: db}
 }
 
+// AuthCacheInvalidationStage contains the only durable data needed to replay an
+// auth cache invalidation: a SHA-256 cache key and an idempotency source key.
+type AuthCacheInvalidationStage struct {
+	CacheKey  string
+	SourceKey string
+}
+
+func stageAuthCacheInvalidationTx(ctx context.Context, tx *sql.Tx, event AuthCacheInvalidationStage) error {
+	if tx == nil {
+		return errors.New("nil auth cache invalidation outbox transaction")
+	}
+	if strings.TrimSpace(event.CacheKey) == "" || strings.TrimSpace(event.SourceKey) == "" {
+		return errors.New("auth cache invalidation cache key and source key are required")
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO auth_cache_invalidation_outbox (cache_key, source_key)
+		VALUES ($1, $2)
+		ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING
+	`, event.CacheKey, event.SourceKey)
+	return err
+}
+
 func (r *authCacheInvalidationOutboxRepository) Claim(ctx context.Context, workerID string, limit int, lease time.Duration) ([]service.AuthCacheInvalidationEvent, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("nil auth cache invalidation outbox database")

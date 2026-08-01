@@ -828,18 +828,39 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 ) (*AccountSelectionResult, bool, error) {
 	compactBlocked := false
 	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
-	for i := 0; i < len(selectionOrder); i++ {
-		candidate := selectionOrder[i]
+
+	// 先做快照级廉价过滤，再对幸存候选做一次批量 DB 刷新，
+	// 避免大账号池下对每个候选各执行一次 GetByID。
+	survivors := make([]*Account, 0, len(selectionOrder))
+	for _, candidate := range selectionOrder {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+		survivors = append(survivors, fresh)
+	}
+	dbFresh := s.service.refreshOpenAICandidatesFromDB(ctx, survivors)
+
+	for _, acc := range survivors {
+		fresh := acc
+		if dbFresh != nil {
+			latest := dbFresh[acc.ID]
+			if latest == nil {
+				continue
+			}
+			if !isOpenAIAccountEligibleForRequest(ctx, latest, req.RequestedModel, false, req.RequiredCapability) {
+				continue
+			}
+			if s.service.isOpenAIAccountRuntimeBlocked(latest) {
+				continue
+			}
+			fresh = latest
+		}
+		if !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
 		var ok bool
-		fresh, ok = s.service.resolveOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
+		fresh, ok = s.service.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
 		if !ok {
 			continue
 		}
@@ -1039,17 +1060,38 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
+	// 先做快照级廉价过滤，再对幸存候选做一次批量 DB 刷新，
+	// 避免大账号池下对每个候选各执行一次 GetByID。
+	survivors := make([]*Account, 0, len(selectionOrder))
 	for _, candidate := range selectionOrder {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+		survivors = append(survivors, fresh)
+	}
+	dbFresh := s.service.refreshOpenAICandidatesFromDB(ctx, survivors)
+
+	for _, acc := range survivors {
+		fresh := acc
+		if dbFresh != nil {
+			latest := dbFresh[acc.ID]
+			if latest == nil {
+				continue
+			}
+			if !isOpenAIAccountEligibleForRequest(ctx, latest, req.RequestedModel, false, req.RequiredCapability) {
+				continue
+			}
+			if s.service.isOpenAIAccountRuntimeBlocked(latest) {
+				continue
+			}
+			fresh = latest
+		}
+		if !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
 		var ok bool
-		fresh, ok = s.service.resolveOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
+		fresh, ok = s.service.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
 		if !ok {
 			continue
 		}

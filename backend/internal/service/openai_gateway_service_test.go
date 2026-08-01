@@ -155,6 +155,17 @@ func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account,
 	return nil, errors.New("account not found")
 }
 
+func (r stubOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	// 与生产 GetByIDs 语义一致：缺失 ID 忽略，不报错。
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if acc, err := r.GetByID(ctx, id); err == nil {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
+}
+
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {

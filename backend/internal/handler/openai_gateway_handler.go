@@ -406,7 +406,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			h.handleResponsesAccountSelectionExhausted(c, recovery, streamStarted)
 			return
 		}
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
@@ -517,33 +517,43 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 					if failoverClientGone(c) {
 						return
 					}
-					// 池模式：同账号重试
-					if failoverErr.RetryableOnSameAccount {
-						retryLimit := account.GetPoolModeRetryCount()
-						if sameAccountRetryCount[account.ID] < retryLimit {
-							sameAccountRetryCount[account.ID]++
-							reqLog.Warn("openai.pool_mode_same_account_retry",
-								zap.Int64("account_id", account.ID),
-								zap.Int("upstream_status", failoverErr.StatusCode),
-								zap.Int("retry_limit", retryLimit),
-								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-							)
-							select {
-							case <-c.Request.Context().Done():
-								return
-							case <-time.After(sameAccountRetryDelay):
-							}
-							continue
+					policy, recognized := recovery.ObserveFailoverError(failoverErr)
+					if recognized && policy.Disposition == service.UpstreamAttemptDirectReturn {
+						if candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
 						}
+						return
 					}
-					h.gatewayService.RecordOpenAIAccountSwitch()
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					// Fact-backed policies cap configured retries request-wide; factless
+					// failover errors retain their existing pool-mode behavior.
+					canRetrySameAccount := failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < account.GetPoolModeRetryCount()
+					if recognized {
+						canRetrySameAccount = canRetrySameAccount && recovery.CanRetrySameAccount()
+					}
+					if canRetrySameAccount {
+						sameAccountRetryCount[account.ID]++
+						if recognized {
+							recovery.RecordSameAccountRetry()
+						}
+						reqLog.Warn("openai.pool_mode_same_account_retry",
+							zap.Int64("account_id", account.ID),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int("retry_limit", account.GetPoolModeRetryCount()),
+							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+						)
+						select {
+						case <-c.Request.Context().Done():
+							return
+						case <-time.After(sameAccountRetryDelay):
+						}
+						continue
+					}
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
-					recovery.ObserveFailoverError(failoverErr)
 					if recovery.HasTransitionBudget() && !recovery.CanTransition(maxAccountSwitches) {
 						h.handleResponsesFailoverExhausted(c, recovery, lastFailoverErr, streamStarted)
 						return
@@ -552,13 +562,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleResponsesFailoverExhausted(c, recovery, failoverErr, streamStarted)
 						return
 					}
-					switchCount++
+					nextSwitchCount := switchCount + 1
+					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, nextSwitchCount) {
+						if candidate, ok := openAIStoppedFailoverCandidate(recovery, failoverErr); ok {
+							h.handleUpstreamCandidate(c, candidate, streamStarted)
+						} else {
+							h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						}
+						return
+					}
+					h.gatewayService.RecordOpenAIAccountSwitch()
+					switchCount = nextSwitchCount
 					if recovery.HasTransitionBudget() {
 						recovery.RecordTransition()
-					}
-					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						return
 					}
 					fields := []zap.Field{
 						zap.Int64("account_id", account.ID),
@@ -957,7 +973,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
-			h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			h.handleMessagesAccountSelectionExhausted(c, recovery, streamStarted)
 			return
 		}
 		account := selection.Account
@@ -1063,32 +1079,43 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							zap.Error(err),
 						)
 					} else {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 						if failoverClientGone(c) {
 							return
 						}
-						// 池模式：同账号重试
-						if failoverErr.RetryableOnSameAccount {
-							retryLimit := account.GetPoolModeRetryCount()
-							if sameAccountRetryCount[account.ID] < retryLimit {
-								sameAccountRetryCount[account.ID]++
-								reqLog.Warn("openai_messages.pool_mode_same_account_retry",
-									zap.Int64("account_id", account.ID),
-									zap.Int("upstream_status", failoverErr.StatusCode),
-									zap.Int("retry_limit", retryLimit),
-									zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-								)
-								select {
-								case <-c.Request.Context().Done():
-									return
-								case <-time.After(sameAccountRetryDelay):
-								}
-								continue
+						policy, recognized := recovery.ObserveFailoverError(failoverErr)
+						if recognized && policy.Disposition == service.UpstreamAttemptDirectReturn {
+							if candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr); ok {
+								h.handleAnthropicCandidate(c, candidate, streamStarted)
 							}
+							return
+						}
+						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+						// Fact-backed policies cap configured retries request-wide; factless
+						// failover errors retain their existing pool-mode behavior.
+						canRetrySameAccount := failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < account.GetPoolModeRetryCount()
+						if recognized {
+							canRetrySameAccount = canRetrySameAccount && recovery.CanRetrySameAccount()
+						}
+						if canRetrySameAccount {
+							sameAccountRetryCount[account.ID]++
+							if recognized {
+								recovery.RecordSameAccountRetry()
+							}
+							reqLog.Warn("openai_messages.pool_mode_same_account_retry",
+								zap.Int64("account_id", account.ID),
+								zap.Int("upstream_status", failoverErr.StatusCode),
+								zap.Int("retry_limit", account.GetPoolModeRetryCount()),
+								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+							)
+							select {
+							case <-c.Request.Context().Done():
+								return
+							case <-time.After(sameAccountRetryDelay):
+							}
+							continue
 						}
 						failedAccountIDs[account.ID] = struct{}{}
 						lastFailoverErr = failoverErr
-						recovery.ObserveFailoverError(failoverErr)
 						anthropicStreamStarted := streamStarted || (c.Writer != nil && c.Writer.Written())
 						if recovery.HasTransitionBudget() && !recovery.CanTransition(maxAccountSwitches) {
 							if candidate, ok := recovery.FinalCandidate(); ok {
@@ -1099,12 +1126,20 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							return
 						}
 						if switchCount >= maxAccountSwitches {
-							h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							if candidate, ok := recovery.FinalCandidate(); ok {
+								h.handleAnthropicCandidate(c, candidate, anthropicStreamStarted)
+							} else {
+								h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							}
 							return
 						}
 						nextSwitchCount := switchCount + 1
 						if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, nextSwitchCount) {
-							h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							if candidate, ok := recovery.FinalCandidate(); ok {
+								h.handleAnthropicCandidate(c, candidate, anthropicStreamStarted)
+							} else {
+								h.handleAnthropicFailoverExhausted(c, failoverErr, anthropicStreamStarted)
+							}
 							return
 						}
 						h.gatewayService.RecordOpenAIAccountSwitch()
@@ -1245,7 +1280,8 @@ func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int
 func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
 		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
+		if ok && !service.IsResponseCommitted(c) {
+			service.MarkResponseCommitted(c)
 			errPayload, _ := json.Marshal(gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -1261,10 +1297,17 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, stat
 	h.anthropicErrorResponse(c, status, errType, message)
 }
 
-// handleAnthropicFailoverExhausted maps upstream failover errors to Anthropic format.
+// handleAnthropicFailoverExhausted maps a bounded upstream fact to Anthropic format.
 func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
-	status, errType, errMsg := h.mapUpstreamError(failoverErr.StatusCode)
-	h.anthropicStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	if failoverErr == nil {
+		h.handleAnthropicCandidate(c, nil, streamStarted)
+		return
+	}
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, failoverErr.StatusCode, failoverErr.ResponseBody)
+	}
+	h.handleAnthropicCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }
 
 // ensureAnthropicErrorResponse writes a fallback Anthropic error when the
@@ -2120,6 +2163,29 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
 }
 
+// handleResponsesAccountSelectionExhausted preserves the final structured
+// candidate after an upstream attempt, while initial routing failure keeps its
+// established no-accounts response.
+func (h *OpenAIGatewayHandler) handleResponsesAccountSelectionExhausted(c *gin.Context, recovery *UpstreamRecoveryState, streamStarted bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			h.handleUpstreamCandidate(c, candidate, streamStarted)
+			return
+		}
+	}
+	h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleMessagesAccountSelectionExhausted(c *gin.Context, recovery *UpstreamRecoveryState, streamStarted bool) {
+	if recovery != nil {
+		if candidate, ok := recovery.FinalCandidate(); ok {
+			h.handleAnthropicCandidate(c, candidate, streamStarted)
+			return
+		}
+	}
+	h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+}
+
 // handleResponsesFailoverExhausted prefers the bounded fact-derived candidate
 // over legacy raw-body compatibility rendering.
 func (h *OpenAIGatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, recovery *UpstreamRecoveryState, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
@@ -2137,8 +2203,12 @@ func (h *OpenAIGatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate
 		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
 		return
 	}
-	presentation := candidate.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
 }
 
@@ -2147,8 +2217,12 @@ func (h *OpenAIGatewayHandler) handleAnthropicCandidate(c *gin.Context, candidat
 		h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
 		return
 	}
-	presentation := candidate.Presentation
-	service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
 	h.anthropicStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, streamStarted)
 }
 
@@ -2183,48 +2257,11 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 
-	fact, hasFact := failoverErr.UpstreamFact()
-	if !hasFact {
+	fact, ok := failoverErr.UpstreamFact()
+	if !ok {
 		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, statusCode, responseBody)
 	}
-	if policy, recognized := service.RecognizeUpstreamErrorFact(fact); recognized {
-		presentation := policy.Presentation
-		service.SetOpsUpstreamError(c, presentation.HTTPStatus, presentation.Message, "")
-		h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
-		return
-	}
-
-	// Only unknown errors may use an administrator-configured passthrough rule.
-	if h.errorPassthroughService != nil {
-		if rule := h.errorPassthroughService.MatchUnknownRule(fact); rule != nil {
-			respCode := http.StatusBadGateway
-			if fact.HTTPStatusKnown && fact.HTTPStatus > 0 {
-				respCode = fact.HTTPStatus
-			}
-			if !rule.PassthroughCode && rule.ResponseCode != nil {
-				respCode = *rule.ResponseCode
-			}
-			msg := fact.SafeMessage
-			if !rule.PassthroughBody && rule.CustomMessage != nil {
-				msg = *rule.CustomMessage
-			}
-			if msg == "" {
-				msg = "Upstream request failed"
-			}
-			if rule.SkipMonitoring {
-				c.Set(service.OpsSkipPassthroughKey, true)
-			}
-			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
-			return
-		}
-	}
-	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
-	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
-
-	// 使用默认的错误映射
-	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleUpstreamCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
@@ -2270,7 +2307,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		// 通用 `event: error` 帧不被识别为终止事件，会导致
 		// "stream closed before response.completed"。
 		if inboundIsResponses(c) {
-			if writeResponsesFailedSSE(c, errType, message) {
+			if writeResponsesFailedSSE(c, errType, code, message) {
 				return
 			}
 		}

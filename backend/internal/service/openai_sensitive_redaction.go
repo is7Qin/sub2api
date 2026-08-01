@@ -21,6 +21,9 @@ var (
 		"prompt_cache_key",
 		"session_id",
 		"conversation_id",
+		"request_body",
+		"request-body",
+		"raw_request_body",
 		"raw_user_agent",
 		"user_agent",
 		"user-agent",
@@ -707,6 +710,16 @@ func sanitizeOpenAIUpstreamDiagnosticBodyForLog(body []byte, maxBytes int) strin
 	// Keep diagnostic bodies single-line for logs/support details after redaction.
 	text = strings.ReplaceAll(text, "\r", " ")
 	text = strings.ReplaceAll(text, "\n", " ")
+	return truncateString(text, maxBytes)
+}
+
+func sanitizeUpstreamDiagnosticBody(body []byte, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = 2048
+	}
+	text := sanitizeOpenAIUpstreamDiagnosticBodyForLog(body, maxBytes)
+	text = upstreamErrorFactURLPattern.ReplaceAllString(text, "[url-redacted]")
+	text = upstreamErrorFactNetworkPattern.ReplaceAllString(text, "[network-redacted]")
 	return truncateString(text, maxBytes)
 }
 

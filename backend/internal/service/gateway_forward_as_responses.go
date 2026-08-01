@@ -188,7 +188,16 @@ func (s *GatewayService) ForwardAsResponses(
 		}
 
 		// Non-failover error: return Responses-formatted error to client
-		writeResponsesError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
+		resolved := ResolveFinalUpstreamError(fact, getBoundErrorPassthroughService(c))
+		if resolved.SkipMonitoring {
+			c.Set(OpsSkipPassthroughKey, true)
+		}
+		presentation := resolved.Presentation
+		code := presentation.ErrorCode
+		if code == "" {
+			code = presentation.ErrorType
+		}
+		writeResponsesError(c, presentation.HTTPStatus, code, presentation.Message)
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 

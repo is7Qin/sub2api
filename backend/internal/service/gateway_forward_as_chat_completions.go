@@ -189,7 +189,12 @@ func (s *GatewayService) ForwardAsChatCompletions(
 			)
 		}
 
-		writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
+		resolved := ResolveFinalUpstreamError(fact, getBoundErrorPassthroughService(c))
+		if resolved.SkipMonitoring {
+			c.Set(OpsSkipPassthroughKey, true)
+		}
+		presentation := resolved.Presentation
+		writeGatewayCCErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message)
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 

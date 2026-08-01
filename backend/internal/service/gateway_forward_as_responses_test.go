@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -42,6 +43,54 @@ func TestForwardAsResponses_FailoverRetainsStructuredHTTPFact(t *testing.T) {
 	require.Equal(t, "rate_limit_exceeded", fact.ProviderCode)
 	require.Equal(t, "rate_limit_error", fact.ProviderType)
 	require.Equal(t, "req_conversion_rate_limit", fact.RequestID)
+}
+
+func TestForwardAsResponses_UnknownHTTPErrorUsesSafeFinalPresentation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"model":"claude-sonnet-4-5","input":"hello"}`)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"X-Request-Id": []string{"req_conversion_unknown"}},
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"vendor_failure","message":"private detail https://internal.example.test/secret"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsResponses(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, nil)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "private detail")
+}
+
+func TestForwardAsResponses_UnknownRuleAppliesSkipMonitoring(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rule := newNonFailoverPassthroughRule(http.StatusBadRequest, "vendor marker", http.StatusTeapot, "safe custom message")
+	rule.SkipMonitoring = true
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{rule})
+	BindErrorPassthroughService(c, ruleSvc)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"vendor_failure","message":"vendor marker private detail"}}`)),
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	_, err := svc.ForwardAsResponses(context.Background(), c, newAnthropicAPIKeyAccountForTest(), []byte(`{"model":"claude-sonnet-4-5","input":"hello"}`), nil)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusTeapot, rec.Code)
+	require.Equal(t, "safe custom message", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	skip, ok := c.Get(OpsSkipPassthroughKey)
+	require.True(t, ok)
+	require.Equal(t, true, skip)
 }
 
 func TestForwardAsResponses_RecognizedHTTPErrorBypassesFailover(t *testing.T) {

@@ -47,6 +47,10 @@ func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime
 	})
 }
 
+type usageRecordWorkerPoolWorkerTestHooks struct {
+	afterPoolStart func()
+}
+
 // UsageRecordWorkerPoolWorker adapts the usage record pool to the worker runtime.
 type UsageRecordWorkerPoolWorker struct {
 	pool       *UsageRecordWorkerPool
@@ -56,6 +60,7 @@ type UsageRecordWorkerPoolWorker struct {
 	lifecycle workerruntime.LifecycleSnapshot
 	stopping  bool
 	stopDone  chan struct{}
+	testHooks *usageRecordWorkerPoolWorkerTestHooks
 }
 
 // NewUsageRecordWorkerPoolWorker returns the runtime component for pool.
@@ -100,15 +105,26 @@ func (w *UsageRecordWorkerPoolWorker) Start(context.Context) error {
 	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
 	w.mu.Unlock()
 
-	if err := w.pool.Start(); err != nil {
-		w.mu.Lock()
+	err := w.pool.Start()
+	if w.testHooks != nil && w.testHooks.afterPoolStart != nil {
+		w.testHooks.afterPoolStart()
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// Stop owns lifecycle state from the moment shutdown begins; a concurrent
+	// Start must not resurrect Running or Failed while native shutdown drains.
+	if w.stopping || w.lifecycle.State != workerruntime.LifecycleStarting {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("usage record worker pool is stopping")
+	}
+	if err != nil {
 		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
-		w.mu.Unlock()
 		return err
 	}
-	w.mu.Lock()
 	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
-	w.mu.Unlock()
 	return nil
 }
 
@@ -117,10 +133,6 @@ func (w *UsageRecordWorkerPoolWorker) Stop(ctx context.Context) error {
 		return nil
 	}
 	w.mu.Lock()
-	if w.lifecycle.State == workerruntime.LifecycleStopped {
-		w.mu.Unlock()
-		return nil
-	}
 	if !w.stopping {
 		w.stopping = true
 		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}

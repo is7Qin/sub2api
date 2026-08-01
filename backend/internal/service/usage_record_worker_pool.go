@@ -65,6 +65,7 @@ type UsageRecordWorkerPoolOptions struct {
 }
 
 type usageRecordWorkerPoolTestHooks struct {
+	beforeStartAccepting   func()
 	beforeSubmit           func()
 	beforeSampleFallback   func()
 	beforeSyncBackpressure func()
@@ -177,6 +178,12 @@ func (p *UsageRecordWorkerPool) Start() error {
 	}
 	if p.autoScaleEnabled {
 		p.startAutoScaler()
+	}
+	if p.testHooks != nil && p.testHooks.beforeStartAccepting != nil {
+		p.testHooks.beforeStartAccepting()
+	}
+	if p.pool.Stopped() || p.stopping.Load() {
+		return fmt.Errorf("usage record worker pool is stopped")
 	}
 	p.started.Store(true)
 	p.accepting.Store(true)

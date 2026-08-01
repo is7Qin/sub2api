@@ -37,6 +37,40 @@ func TestUsageRecordWorkerPoolStartsAutoscalerOnlyAfterStart(t *testing.T) {
 	require.True(t, pool.Accepting())
 }
 
+func TestUsageRecordWorkerPoolConcurrentStartStopNeverReopensAcceptance(t *testing.T) {
+	startReady := make(chan struct{})
+	releaseStart := make(chan struct{})
+	pool := newUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	}, &usageRecordWorkerPoolTestHooks{
+		beforeStartAccepting: func() {
+			close(startReady)
+			<-releaseStart
+		},
+	})
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- pool.Start() }()
+	<-startReady
+
+	stopDone := make(chan struct{})
+	go func() {
+		pool.Stop()
+		close(stopDone)
+	}()
+	require.Eventually(t, pool.stopping.Load, time.Second, time.Millisecond)
+	close(releaseStart)
+
+	require.Error(t, <-startErr)
+	<-stopDone
+	require.False(t, pool.Accepting())
+	require.Equal(t, UsageRecordSubmitModeDropped, pool.Submit(func(context.Context) {}))
+	require.Error(t, pool.Start())
+	require.False(t, pool.Accepting())
+}
+
 func TestUsageRecordWorkerPoolWorkerMapsNativeStats(t *testing.T) {
 	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
 		WorkerCount:      1,
@@ -260,6 +294,7 @@ func TestUsageRecordWorkerPool_SubmitMandatoryUnsampledFallbackExactlyOnce(t *te
 			<-releaseSampled
 		},
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(func() {
 		select {
 		case <-releaseSampled:
@@ -318,6 +353,7 @@ func TestUsageRecordWorkerPool_SubmitMandatorySyncBackpressureExecutesExactlyOnc
 			<-releaseBackpressure
 		},
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(func() {
 		select {
 		case <-releaseBackpressure:
@@ -372,6 +408,7 @@ func TestUsageRecordWorkerPool_SubmitMandatoryStopInterleavingFallsBackExactlyOn
 			<-releaseSubmit
 		},
 	})
+	require.NoError(t, pool.Start())
 
 	var calls atomic.Int32
 	mode := make(chan UsageRecordSubmitMode, 1)

@@ -12,6 +12,86 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUsageRecordWorkerPoolWorkerStartDoesNotOverwriteStopping(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool).(*UsageRecordWorkerPoolWorker)
+	poolStarted := make(chan struct{})
+	releaseStart := make(chan struct{})
+	worker.testHooks = &usageRecordWorkerPoolWorkerTestHooks{
+		afterPoolStart: func() {
+			close(poolStarted)
+			<-releaseStart
+		},
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- worker.Start(context.Background()) }()
+	<-poolStarted
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {
+		close(started)
+		<-block
+	}))
+	<-started
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, worker.Stop(stopCtx), context.DeadlineExceeded)
+	require.Equal(t, workerruntime.LifecycleStopping, worker.Snapshot().Lifecycle.State)
+
+	close(releaseStart)
+	require.Error(t, <-startErr)
+	require.Equal(t, workerruntime.LifecycleStopping, worker.Snapshot().Lifecycle.State)
+	close(block)
+	require.NoError(t, worker.Stop(context.Background()))
+}
+
+func TestUsageRecordWorkerPoolWorkerStartDoesNotOverwriteStoppedAfterConcurrentStop(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool).(*UsageRecordWorkerPoolWorker)
+	poolStarted := make(chan struct{})
+	releaseStart := make(chan struct{})
+	worker.testHooks = &usageRecordWorkerPoolWorkerTestHooks{
+		afterPoolStart: func() {
+			close(poolStarted)
+			<-releaseStart
+		},
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- worker.Start(context.Background()) }()
+	<-poolStarted
+	require.NoError(t, worker.Stop(context.Background()))
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+
+	close(releaseStart)
+	require.Error(t, <-startErr)
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+}
+
+func TestUsageRecordWorkerPoolWorkerStopBeforeStartStopsNativePool(t *testing.T) {
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool)
+
+	require.NoError(t, worker.Stop(context.Background()))
+	require.True(t, pool.pool.Stopped())
+	require.False(t, pool.Accepting())
+	require.Error(t, worker.Start(context.Background()))
+}
+
 func TestUsageRecordWorkerPoolWorkerStopDeadlineKeepsStoppingSnapshot(t *testing.T) {
 	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
 		WorkerCount:      1,

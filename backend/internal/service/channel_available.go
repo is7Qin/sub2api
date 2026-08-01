@@ -144,7 +144,8 @@ func pricingNeedsFallback(p *ChannelModelPricing) bool {
 }
 
 // synthesizePricingFromLiteLLM 把 LiteLLM 的定价数据转成 ChannelModelPricing 形态，
-// 仅用于展示。已有定价选择的计费模式优先，否则按 token 模式合成。
+// 仅用于展示。已有定价选择的计费模式优先；否则图片生成模型按 image，
+// 其余模型按 token 模式合成。
 //
 // LiteLLM 中字段 0 视为未配置，不带入展示。
 func synthesizePricingFromLiteLLM(lp *LiteLLMModelPricing, existing *ChannelModelPricing) *ChannelModelPricing {

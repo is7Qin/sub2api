@@ -33,6 +33,17 @@ func (r schedulerTestOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (
 	return nil, errors.New("account not found")
 }
 
+func (r schedulerTestOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	// 与生产 GetByIDs 语义一致：缺失 ID 忽略，不报错。
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if acc, err := r.GetByID(ctx, id); err == nil {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
+}
+
 func (r schedulerTestOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {
@@ -2591,6 +2602,13 @@ func (r *openAIPrivacySchedulerAccountRepo) GetByID(ctx context.Context, id int6
 		return nil, r.getByIDErr
 	}
 	return r.schedulerTestOpenAIAccountRepo.GetByID(ctx, id)
+}
+
+func (r *openAIPrivacySchedulerAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	if r.getByIDErr != nil {
+		return nil, r.getByIDErr
+	}
+	return r.schedulerTestOpenAIAccountRepo.GetByIDs(ctx, ids)
 }
 
 func (r *openAIPrivacySchedulerAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {

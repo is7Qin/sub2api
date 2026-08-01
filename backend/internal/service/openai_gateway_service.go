@@ -2511,6 +2511,9 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
 
+	// 先做廉价的快照级过滤，再对幸存候选做一次批量 DB 刷新，
+	// 避免大账号池下对每个候选各执行一次 GetByID。
+	survivors := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
 
@@ -2520,16 +2523,29 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability)
-		if fresh == nil {
-			continue
+		if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
+			survivors = append(survivors, fresh)
 		}
-		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, false, requiredCapability)
-		if fresh == nil {
-			continue
+	}
+	dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+
+	for _, acc := range survivors {
+		fresh := acc
+		if dbFresh != nil {
+			latest := dbFresh[acc.ID]
+			if latest == nil {
+				continue
+			}
+			if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, false, requiredCapability) {
+				continue
+			}
+			if s.isOpenAIAccountRuntimeBlocked(latest) {
+				continue
+			}
+			fresh = latest
 		}
 		var ok bool
-		fresh, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
+		fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
 		if !ok {
 			continue
 		}
@@ -2829,17 +2845,33 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			selectionOrder = append(selectionOrder, available...)
 		}
 
+		// 先做快照级廉价过滤，再对幸存候选做一次批量 DB 刷新，
+		// 避免大账号池下对每个候选各执行一次 GetByID。
+		survivors := make([]*Account, 0, len(selectionOrder))
 		for _, item := range selectionOrder {
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, false, requiredCapability)
-			if fresh == nil {
-				continue
+			if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, false, requiredCapability); fresh != nil {
+				survivors = append(survivors, fresh)
 			}
-			fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability)
-			if fresh == nil {
-				continue
+		}
+		dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+
+		for _, acc := range survivors {
+			fresh := acc
+			if dbFresh != nil {
+				latest := dbFresh[acc.ID]
+				if latest == nil {
+					continue
+				}
+				if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
+					continue
+				}
+				if s.isOpenAIAccountRuntimeBlocked(latest) {
+					continue
+				}
+				fresh = latest
 			}
 			var ok bool
-			fresh, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
+			fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
 			if !ok {
 				continue
 			}
@@ -2868,17 +2900,31 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if requireCompact {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
 		}
+		survivors := make([]*Account, 0, len(ordered))
 		for _, acc := range ordered {
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability)
-			if fresh == nil {
-				continue
+			if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
+				survivors = append(survivors, fresh)
 			}
-			fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability)
-			if fresh == nil {
-				continue
+		}
+		dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+
+		for _, acc := range survivors {
+			fresh := acc
+			if dbFresh != nil {
+				latest := dbFresh[acc.ID]
+				if latest == nil {
+					continue
+				}
+				if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
+					continue
+				}
+				if s.isOpenAIAccountRuntimeBlocked(latest) {
+					continue
+				}
+				fresh = latest
 			}
 			var ok bool
-			fresh, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
+			fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
 			if !ok {
 				continue
 			}
@@ -2918,17 +2964,31 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if requireCompact {
 		candidates = prioritizeOpenAICompactAccounts(candidates)
 	}
+	survivors := make([]*Account, 0, len(candidates))
 	for _, acc := range candidates {
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability)
-		if fresh == nil {
-			continue
+		if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
+			survivors = append(survivors, fresh)
 		}
-		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability)
-		if fresh == nil {
-			continue
+	}
+	dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+
+	for _, acc := range survivors {
+		fresh := acc
+		if dbFresh != nil {
+			latest := dbFresh[acc.ID]
+			if latest == nil {
+				continue
+			}
+			if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
+				continue
+			}
+			if s.isOpenAIAccountRuntimeBlocked(latest) {
+				continue
+			}
+			fresh = latest
 		}
 		var ok bool
-		fresh, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
+		fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
 		if !ok {
 			continue
 		}
@@ -3011,6 +3071,39 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	return latest
+}
+
+// refreshOpenAICandidatesFromDB 以一次批量查询刷新候选账号的最新状态，
+// 替代对每个候选各执行一次 GetByID：大账号池下把 N 次数据库往返收敛为一次。
+// 返回 nil 表示无需刷新（快照未启用 / 仓库缺失 / 批量查询失败），调用方沿用快照账号；
+// 返回非 nil map 时，未被覆盖的 ID 视为数据库已不存在，应跳过该候选。
+func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context, candidates []*Account) map[int64]*Account {
+	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil || s.accountRepo == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(candidates))
+	seen := make(map[int64]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if _, ok := seen[candidate.ID]; ok {
+			continue
+		}
+		seen[candidate.ID] = struct{}{}
+		ids = append(ids, candidate.ID)
+	}
+	refreshed, err := s.accountRepo.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil
+	}
+	out := make(map[int64]*Account, len(refreshed))
+	for _, account := range refreshed {
+		if account != nil {
+			out[account.ID] = account
+		}
+	}
+	return out
 }
 
 func (s *OpenAIGatewayService) recheckOpenAIAccountEligibility(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {

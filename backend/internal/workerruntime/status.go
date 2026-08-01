@@ -58,11 +58,29 @@ type Status interface {
 	statusKind() Kind
 }
 
+// Outcome identifies the result of a periodic invocation.
+type Outcome string
+
+const (
+	OutcomeSuccess Outcome = "success"
+	OutcomeError   Outcome = "error"
+	OutcomePanic   Outcome = "panic"
+	OutcomeTimeout Outcome = "timeout"
+)
+
 // PeriodicStatus is the status reported by periodic components.
 type PeriodicStatus struct {
-	LastRunAt time.Time
-	NextRunAt time.Time
-	RunCount  uint64
+	LastRunAt    time.Time
+	NextRunAt    time.Time
+	LastDuration time.Duration
+	LastOutcome  Outcome
+	LastError    string
+	RunCount     uint64
+	SuccessCount uint64
+	ErrorCount   uint64
+	PanicCount   uint64
+	TimeoutCount uint64
+	StillRunning bool
 }
 
 func (PeriodicStatus) statusKind() Kind { return KindPeriodic }

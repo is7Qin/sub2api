@@ -160,7 +160,7 @@ Application schema migrations are forward-only and tracked in `schema_migrations
 | `sub2api.service` | Systemd unit template consumed by `install.sh` |
 | `config.example.yaml` | Binary/systemd configuration example |
 
-Legacy `docker-compose*.yml` files remain for one compatibility release. They are frozen historical definitions, not wrappers or the primary deployment path, because redirecting an old command to the new topology could unexpectedly change volumes or PostgreSQL ownership. New installs and the canonical bootstrap use `compose.yaml` and the compact `compose.*.yaml` variants only.
+The legacy `docker-compose*.yml` files served one compatibility release after the compose refactor and have been removed. Use `compose.yaml` and the compact `compose.*.yaml` variants only.
 
 ## Binary/systemd installation
 

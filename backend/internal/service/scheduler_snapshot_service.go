@@ -60,13 +60,24 @@ type SchedulerSnapshotService struct {
 	decodeCache sync.Map // bucket.String() -> *snapshotDecodeCacheEntry
 }
 
-// snapshotDecodeCacheTTL 是快照解码缓存的保留时间。快照本身秒级更新，
-// 5 秒内的过期由候选 freshness recheck 兜底，不影响正确性。
+// snapshotDecodeCacheTTL 是版本不可用（接口缺失或版本读取失败）时快照解码缓存
+// 的保留时间。5 秒内的过期由候选 freshness recheck 兜底，不影响正确性。
 const snapshotDecodeCacheTTL = 5 * time.Second
+
+// snapshotDecodeVersionedTTL 是版本可用的快照解码缓存保留时间。重建后 active
+// 版本立即递增使缓存失效，TTL 只是版本丢失时的兜底上限，不再承担主要失效职责。
+const snapshotDecodeVersionedTTL = 30 * time.Second
 
 type snapshotDecodeCacheEntry struct {
 	accounts []*Account
+	version  string
 	exp      time.Time
+}
+
+// snapshotVersionReader 是可选接口：解码缓存通过它读取分桶激活版本，重建后立即
+// 失效本地条目。cache 未实现时（仅测试 stub 或第三方实现）退化为 TTL 兜底。
+type snapshotVersionReader interface {
+	GetSnapshotVersion(ctx context.Context, bucket SchedulerBucket) (string, error)
 }
 
 func NewSchedulerSnapshotService(
@@ -167,20 +178,35 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 
 	if s.cache != nil {
 		cacheKey := bucket.String()
-		// 先查解码缓存：同一桶的 GetSnapshot 解码结果在 TTL 内复用，
+		// 先读激活版本：重建后 active 版本立即递增，据此失效本地解码缓存，
+		// 避免 rebuild 后 TTL 内仍返回旧账号集合。版本不可用（接口缺失/
+		// 读取失败）时退化为纯 TTL 兜底。
+		version := s.readSnapshotVersion(ctx, bucket)
+		// 再查解码缓存：同一桶的 GetSnapshot 解码结果在 TTL 内复用，
 		// 避免每个网关请求对全桶账号重新 JSON 解码。
 		if entry, ok := s.decodeCache.Load(cacheKey); ok {
-			if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
-				return derefAccounts(e.accounts), useMixed, nil
+			if e, ok := entry.(*snapshotDecodeCacheEntry); ok {
+				if version == "" {
+					if time.Now().Before(e.exp) {
+						return derefAccounts(e.accounts), useMixed, nil
+					}
+				} else if e.version == version && time.Now().Before(e.exp) {
+					return derefAccounts(e.accounts), useMixed, nil
+				}
 			}
 		}
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
+			ttl := snapshotDecodeCacheTTL
+			if version != "" {
+				ttl = snapshotDecodeVersionedTTL
+			}
 			s.decodeCache.Store(cacheKey, &snapshotDecodeCacheEntry{
 				accounts: cached,
-				exp:      time.Now().Add(snapshotDecodeCacheTTL),
+				version:  version,
+				exp:      time.Now().Add(ttl),
 			})
 			return derefAccounts(cached), useMixed, nil
 		}
@@ -205,6 +231,22 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	}
 
 	return accounts, useMixed, nil
+}
+
+// readSnapshotVersion 通过可选接口读取分桶激活版本；cache 未实现
+// snapshotVersionReader 或读取失败时返回空串，由调用方退化为 TTL 兜底。
+// 读取失败只记 debug：随后 GetSnapshot 失败会记录完整错误，避免重复告警。
+func (s *SchedulerSnapshotService) readSnapshotVersion(ctx context.Context, bucket SchedulerBucket) string {
+	reader, ok := s.cache.(snapshotVersionReader)
+	if !ok {
+		return ""
+	}
+	version, err := reader.GetSnapshotVersion(ctx, bucket)
+	if err != nil {
+		slog.Debug("[Scheduler] snapshot version read failed", "bucket", bucket.String(), "err", err)
+		return ""
+	}
+	return version
 }
 
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {

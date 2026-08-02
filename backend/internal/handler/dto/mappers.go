@@ -197,19 +197,23 @@ func groupFromServiceBase(g *service.Group) Group {
 		RequirePrivacySet:               g.RequirePrivacySet,
 		OpenAILongContextBillingEnabled: g.OpenAILongContextBillingEnabled,
 		RPMLimit:                        g.RPMLimit,
-		CreatedAt:                       timePtrIfNotZero(g.CreatedAt),
-		UpdatedAt:                       timePtrIfNotZero(g.UpdatedAt),
+		CreatedAt:                       g.CreatedAt,
+		UpdatedAt:                       g.UpdatedAt,
 	}
 }
 
-// timePtrIfNotZero 仅当时间非零时返回指针；零值时间返回 nil，
-// 配合 json omitempty 从响应省略（time.Time 的 omitempty 对零值无效）。
-func timePtrIfNotZero(t time.Time) *time.Time {
-	if t.IsZero() {
+// GroupLiteFromService 把 service Group 投影为列表专用轻量视图（5 字段）。
+func GroupLiteFromService(g *service.Group) *GroupLite {
+	if g == nil {
 		return nil
 	}
-	v := t
-	return &v
+	return &GroupLite{
+		ID:               g.ID,
+		Name:             g.Name,
+		Platform:         g.Platform,
+		SubscriptionType: g.SubscriptionType,
+		RateMultiplier:   g.RateMultiplier,
+	}
 }
 
 func AccountFromServiceShallow(a *service.Account) *Account {
@@ -393,9 +397,9 @@ func AccountFromService(a *service.Account) *Account {
 		}
 	}
 	if len(a.Groups) > 0 {
-		out.Groups = make([]*Group, 0, len(a.Groups))
+		out.Groups = make([]*GroupLite, 0, len(a.Groups))
 		for _, g := range a.Groups {
-			out.Groups = append(out.Groups, GroupFromServiceShallow(g))
+			out.Groups = append(out.Groups, GroupLiteFromService(g))
 		}
 	}
 	return out

@@ -238,9 +238,22 @@ func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
 	for _, call := range calls {
 		started := call.start(context.Background())
 		if started != nil {
-			// Runtime-owned components publish entry at the first line of Stop;
-			// external components fall back to launch-and-proceed semantics.
-			<-started
+			// Preserve actual Stop-entry ordering while it is observable, but do
+			// not let a broken external notifier bypass the caller's deadline.
+			select {
+			case <-started:
+				continue
+			default:
+			}
+			select {
+			case <-started:
+			case <-ctx.Done():
+				// An entry observed with cancellation still establishes ordering.
+				select {
+				case <-started:
+				default:
+				}
+			}
 		}
 	}
 	return calls, nil

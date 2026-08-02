@@ -101,6 +101,30 @@ func (c *blockingStopStub) Stop(context.Context) error {
 	return nil
 }
 
+type neverClosingNotifierStopStub struct {
+	*lifecycleStub
+	entered  chan struct{}
+	release  chan struct{}
+	notifier chan struct{}
+}
+
+func newNeverClosingNotifierStopStub(name string) *neverClosingNotifierStopStub {
+	return &neverClosingNotifierStopStub{
+		lifecycleStub: newLifecycleStub(name, KindPeriodic, nil),
+		entered:       make(chan struct{}),
+		release:       make(chan struct{}),
+		notifier:      make(chan struct{}),
+	}
+}
+
+func (c *neverClosingNotifierStopStub) StopInitiated() <-chan struct{} { return c.notifier }
+
+func (c *neverClosingNotifierStopStub) Stop(context.Context) error {
+	close(c.entered)
+	<-c.release
+	return nil
+}
+
 func TestRuntimeStartsPoolsBeforePeriodicJobs(t *testing.T) {
 	events := make([]string, 0, 4)
 	runtime := NewRuntime(NewRegistry())
@@ -138,6 +162,38 @@ func TestRuntimeStopReportsDeadlineWithoutClaimingStopped(t *testing.T) {
 	require.Equal(t, StateStopping, component.Snapshot().Lifecycle.State)
 	close(component.release)
 	require.Eventually(t, func() bool { return component.Snapshot().Lifecycle.State == LifecycleStopped }, time.Second, time.Millisecond)
+}
+
+func TestRuntimeStopAllContinuesAfterNotifierWaitExpires(t *testing.T) {
+	runtime := NewRuntime(NewRegistry())
+	periodic := newNeverClosingNotifierStopStub("periodic")
+	pool := newBlockingStopStub("pool")
+	require.NoError(t, runtime.Register(periodic))
+	require.NoError(t, runtime.Register(pool))
+	require.NoError(t, runtime.StartAll(context.Background()))
+	t.Cleanup(func() {
+		close(periodic.release)
+		close(pool.release)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	results, err := runtime.StopAll(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, []StopResult{
+		{Name: "periodic", Outcome: StopTimedOut, Err: context.DeadlineExceeded, StillRunning: true},
+		{Name: "pool", Outcome: StopTimedOut, Err: context.DeadlineExceeded, StillRunning: true},
+	}, results)
+	select {
+	case <-periodic.entered:
+	case <-time.After(time.Second):
+		t.Fatal("periodic stop was not launched")
+	}
+	select {
+	case <-pool.entered:
+	case <-time.After(time.Second):
+		t.Fatal("pool stop was not launched after notifier wait expired")
+	}
 }
 
 func TestRuntimeStopAllStartsPoolStopWhilePeriodicStopBlocks(t *testing.T) {

@@ -35,7 +35,126 @@ func (h *OpsHandler) GetWorkerRuntimeStatus(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"scope": "process", "workers": h.workerRuntime.Snapshot()})
+	response.Success(c, workerRuntimeStatusResponse{
+		Scope:   "process",
+		Workers: projectWorkerRuntimeSnapshots(h.workerRuntime.Snapshot()),
+	})
+}
+
+type workerRuntimeStatusResponse struct {
+	Scope   string                          `json:"scope"`
+	Workers []workerRuntimeSnapshotResponse `json:"workers"`
+}
+
+// workerRuntimeSnapshotResponse intentionally contains only the monitoring-safe
+// portion of a runtime snapshot. Runtime error strings originate in worker callbacks
+// and must not cross this authenticated handler boundary.
+type workerRuntimeSnapshotResponse struct {
+	Descriptor workerRuntimeDescriptorResponse `json:"Descriptor"`
+	Lifecycle  workerRuntimeLifecycleResponse  `json:"Lifecycle"`
+	Status     any                             `json:"Status"`
+}
+
+type workerRuntimeDescriptorResponse struct {
+	Name             string                         `json:"Name"`
+	Kind             workerruntime.Kind             `json:"Kind"`
+	Group            string                         `json:"Group"`
+	CoordinationMode workerruntime.CoordinationMode `json:"CoordinationMode"`
+	Description      string                         `json:"Description"`
+	Tags             []string                       `json:"Tags"`
+}
+
+type workerRuntimeLifecycleResponse struct {
+	State     workerruntime.LifecycleState `json:"State"`
+	UpdatedAt time.Time                    `json:"UpdatedAt"`
+}
+
+type workerRuntimePeriodicStatusResponse struct {
+	LastRunAt    time.Time             `json:"LastRunAt"`
+	NextRunAt    time.Time             `json:"NextRunAt"`
+	LastDuration time.Duration         `json:"LastDuration"`
+	LastOutcome  workerruntime.Outcome `json:"LastOutcome"`
+	RunCount     uint64                `json:"RunCount"`
+	SuccessCount uint64                `json:"SuccessCount"`
+	ErrorCount   uint64                `json:"ErrorCount"`
+	PanicCount   uint64                `json:"PanicCount"`
+	TimeoutCount uint64                `json:"TimeoutCount"`
+	StillRunning bool                  `json:"StillRunning"`
+}
+
+type workerRuntimePoolStatusResponse struct {
+	Accepting          bool   `json:"Accepting"`
+	StillRunning       bool   `json:"StillRunning"`
+	MaxConcurrency     int    `json:"MaxConcurrency"`
+	RunningWorkers     int64  `json:"RunningWorkers"`
+	WaitingTasks       uint64 `json:"WaitingTasks"`
+	SubmittedTasks     uint64 `json:"SubmittedTasks"`
+	CompletedTasks     uint64 `json:"CompletedTasks"`
+	SuccessfulTasks    uint64 `json:"SuccessfulTasks"`
+	FailedTasks        uint64 `json:"FailedTasks"`
+	DroppedTasks       uint64 `json:"DroppedTasks"`
+	DroppedQueueFull   uint64 `json:"DroppedQueueFull"`
+	DroppedPoolStopped uint64 `json:"DroppedPoolStopped"`
+	SyncFallbackTasks  uint64 `json:"SyncFallbackTasks"`
+}
+
+func projectWorkerRuntimeSnapshots(snapshots []workerruntime.Snapshot) []workerRuntimeSnapshotResponse {
+	workers := make([]workerRuntimeSnapshotResponse, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		workers = append(workers, projectWorkerRuntimeSnapshot(snapshot))
+	}
+	return workers
+}
+
+func projectWorkerRuntimeSnapshot(snapshot workerruntime.Snapshot) workerRuntimeSnapshotResponse {
+	descriptor := snapshot.Descriptor
+	worker := workerRuntimeSnapshotResponse{
+		Descriptor: workerRuntimeDescriptorResponse{
+			Name:             descriptor.Name,
+			Kind:             descriptor.Kind,
+			Group:            descriptor.Group,
+			CoordinationMode: descriptor.CoordinationMode,
+			Description:      descriptor.Description,
+			Tags:             append([]string(nil), descriptor.Tags...),
+		},
+		Lifecycle: workerRuntimeLifecycleResponse{
+			State:     snapshot.Lifecycle.State,
+			UpdatedAt: snapshot.Lifecycle.UpdatedAt,
+		},
+	}
+
+	switch status := snapshot.Status.(type) {
+	case workerruntime.PeriodicStatus:
+		worker.Status = workerRuntimePeriodicStatusResponse{
+			LastRunAt:    status.LastRunAt,
+			NextRunAt:    status.NextRunAt,
+			LastDuration: status.LastDuration,
+			LastOutcome:  status.LastOutcome,
+			RunCount:     status.RunCount,
+			SuccessCount: status.SuccessCount,
+			ErrorCount:   status.ErrorCount,
+			PanicCount:   status.PanicCount,
+			TimeoutCount: status.TimeoutCount,
+			StillRunning: status.StillRunning,
+		}
+	case workerruntime.PoolStatus:
+		worker.Status = workerRuntimePoolStatusResponse{
+			Accepting:          status.Accepting,
+			StillRunning:       status.StillRunning,
+			MaxConcurrency:     status.MaxConcurrency,
+			RunningWorkers:     status.RunningWorkers,
+			WaitingTasks:       status.WaitingTasks,
+			SubmittedTasks:     status.SubmittedTasks,
+			CompletedTasks:     status.CompletedTasks,
+			SuccessfulTasks:    status.SuccessfulTasks,
+			FailedTasks:        status.FailedTasks,
+			DroppedTasks:       status.DroppedTasks,
+			DroppedQueueFull:   status.DroppedQueueFull,
+			DroppedPoolStopped: status.DroppedPoolStopped,
+			SyncFallbackTasks:  status.SyncFallbackTasks,
+		}
+	}
+	return worker
 }
 
 // GetBillingOutboxHealth exposes durable billing backlog health through the

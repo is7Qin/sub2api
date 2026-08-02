@@ -50,6 +50,42 @@ func TestOpsHandlerWorkerRuntimeStatusMonitoringDisabled(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, response.Code)
 }
 
+func TestOpsHandlerWorkerRuntimeStatusOmitsRawRuntimeErrors(t *testing.T) {
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	require.NoError(t, runtime.Register(workerRuntimeSnapshotFixture{snapshot: workerruntime.Snapshot{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "error-bearing-worker",
+			Kind:             workerruntime.KindPeriodic,
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+		},
+		Lifecycle: workerruntime.LifecycleSnapshot{
+			State:     workerruntime.LifecycleFailed,
+			UpdatedAt: time.Date(2026, time.August, 2, 3, 4, 5, 0, time.UTC),
+			LastError: "lifecycle-secret-token=do-not-serialize stack=raw-stack payload=raw-payload",
+		},
+		Status: workerruntime.PeriodicStatus{
+			LastOutcome: workerruntime.OutcomeError,
+			LastError:   "periodic-secret-token=do-not-serialize upstream-response=raw-content",
+			RunCount:    7,
+			ErrorCount:  1,
+		},
+	}}))
+
+	h := NewOpsHandler(newMonitoringEnabledOpsService())
+	h.SetWorkerRuntime(runtime)
+	r := newOpsSystemLogTestRouter(h, true)
+
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/workers/status", nil))
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NotContains(t, response.Body.String(), "lifecycle-secret-token=do-not-serialize")
+	require.NotContains(t, response.Body.String(), "periodic-secret-token=do-not-serialize")
+	require.NotContains(t, response.Body.String(), "raw-stack")
+	require.NotContains(t, response.Body.String(), "raw-payload")
+	require.NotContains(t, response.Body.String(), "raw-content")
+}
+
 func TestOpsHandlerWorkerRuntimeStatusReturnsProcessLocalSnapshots(t *testing.T) {
 	runtime := newStartedRuntimeForHandler(t)
 	h := NewOpsHandler(newMonitoringEnabledOpsService())
@@ -90,6 +126,17 @@ func TestOpsHandlerWorkerRuntimeStatusReturnsProcessLocalSnapshots(t *testing.T)
 	require.NotContains(t, response.Body.String(), "payload")
 	require.NotContains(t, response.Body.String(), "pid")
 }
+
+type workerRuntimeSnapshotFixture struct {
+	snapshot workerruntime.Snapshot
+}
+
+func (f workerRuntimeSnapshotFixture) Descriptor() workerruntime.Descriptor {
+	return f.snapshot.Descriptor
+}
+func (f workerRuntimeSnapshotFixture) Start(context.Context) error      { return nil }
+func (f workerRuntimeSnapshotFixture) Stop(context.Context) error       { return nil }
+func (f workerRuntimeSnapshotFixture) Snapshot() workerruntime.Snapshot { return f.snapshot }
 
 func newMonitoringEnabledOpsService() *service.OpsService {
 	return service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)

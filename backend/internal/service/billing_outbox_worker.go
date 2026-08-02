@@ -202,8 +202,8 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 	var err error
 	if staged, ok := w.billing.(UsageBillingFinalizationRepository); ok {
 		unlock := w.lockUserApply(command.Billing.UserID)
+		defer unlock()
 		result, err = staged.ApplyAndStageOutboxFinalization(applyCtx, &command.Billing, UsageBillingOutboxBinding{OutboxID: record.ID, WorkerID: w.workerID})
-		unlock()
 		applyCancel()
 		if err != nil {
 			terminal := billingOutboxIsTerminalError(err)
@@ -285,6 +285,9 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 // lockUserApply 按用户分片串行化同一用户的扣费事务。固定 256 个分片互斥，
 // 无动态 map 增长；分片冲突只会让不同用户的事务偶发排队，不影响正确性。
 // userID <= 0 的指令不触碰 users 余额行，无需加锁。
+// 注意：分片互斥为进程内机制，多副本下同一用户跨进程仍可能并发触碰
+// users 行，残余竞争由行锁串行化（最坏并发数 = 副本数，改造前为
+// 副本数 × worker 并发数）。
 func (w *BillingOutboxWorker) lockUserApply(userID int64) func() {
 	if w == nil || userID <= 0 {
 		return func() {}

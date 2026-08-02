@@ -3077,6 +3077,9 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Co
 // 替代对每个候选各执行一次 GetByID：大账号池下把 N 次数据库往返收敛为一次。
 // 返回 nil 表示无需刷新（快照未启用 / 仓库缺失 / 批量查询失败），调用方沿用快照账号；
 // 返回非 nil map 时，未被覆盖的 ID 视为数据库已不存在，应跳过该候选。
+// 注意：批量查询失败时沿用快照账号属于 fail-open 回退（逐候选 GetByID 语义是
+// fail-closed 跳过）。DB 故障为瞬时窗口，且候选仍经内存态运行时屏蔽与
+// 兼容性复检兜底，实际差异极小；有意与快照未启用的既有行为保持一致。
 func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context, candidates []*Account) map[int64]*Account {
 	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil || s.accountRepo == nil {
 		return nil

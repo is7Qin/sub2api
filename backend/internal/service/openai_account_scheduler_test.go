@@ -3003,3 +3003,41 @@ func TestDefaultOpenAIAccountScheduler_IsAccountTransportCompatible_Branches(t *
 func int64PtrForTest(v int64) *int64 {
 	return &v
 }
+
+type getByIDsFailOpenAIAccountRepo struct {
+	schedulerTestOpenAIAccountRepo
+}
+
+func (r getByIDsFailOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	return nil, errors.New("db unavailable")
+}
+
+// GetByIDs 批量刷新失败时沿用快照账号（fail-open 回退），选择必须仍然成功。
+func TestDefaultOpenAIAccountScheduler_GetByIDsFailureFallsBackToSnapshot(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10194)
+	setupToken := Account{
+		ID:          9133,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		GroupIDs:    []int64{groupID},
+	}
+	repo := getByIDsFailOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{accounts: []Account{setupToken}}}
+	snapshot := NewSchedulerSnapshotService(nil, nil, repo, nil, nil)
+	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{
+		accountRepo:       repo,
+		schedulerSnapshot: snapshot,
+	}}
+
+	selection, decision, err := scheduler.Select(ctx, OpenAIAccountScheduleRequest{GroupID: &groupID, RequestedModel: "gpt-5.4"})
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, setupToken.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}

@@ -1295,6 +1295,11 @@ func clampRateLimit429CooldownSeconds(seconds int) int {
 // calculateOpenAI429ResetTime 从 OpenAI 429 响应头计算正确的重置时间
 // 返回 nil 表示无法从响应头中确定重置时间
 func calculateOpenAI429ResetTime(headers http.Header) *time.Time {
+	now := time.Now()
+	if retryAfter := parseRetryAfterResetTime(headers, now); retryAfter != nil && retryAfter.After(now) {
+		return retryAfter
+	}
+
 	snapshot := ParseCodexRateLimitHeaders(headers)
 	if snapshot == nil {
 		return nil
@@ -1304,8 +1309,6 @@ func calculateOpenAI429ResetTime(headers http.Header) *time.Time {
 	if normalized == nil {
 		return nil
 	}
-
-	now := time.Now()
 
 	// 判断哪个限制被触发（used_percent >= 100）
 	is7dExhausted := normalized.Used7dPercent != nil && *normalized.Used7dPercent >= 100

@@ -2209,6 +2209,9 @@ func (h *OpenAIGatewayHandler) handleUpstreamCandidate(c *gin.Context, candidate
 	}
 	presentation := resolved.Presentation
 	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
+	if !streamStarted && presentation.HTTPStatus == http.StatusTooManyRequests && candidate.Fact.RetryAfter != "" {
+		c.Header("Retry-After", candidate.Fact.RetryAfter)
+	}
 	h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, streamStarted)
 }
 

@@ -2738,7 +2738,9 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 	}
 	// 通用 ListWithFilters 契约返回完整凭据；admin 列表专用投影变体
 	// （ListWithFiltersProjected）排除 credentials。repo 未实现投影变体时
-	// 降级到全量契约（仅测试 stub 场景，凭据随后被子集回填覆盖）。
+	// 降级到全量契约，仅测试环境触发（生产 repo 必然实现投影变体）。
+	// "凭据随后被子集回填覆盖"仅在 repo 同时实现 accountCredentialSubsetReader
+	// 且回填成功时成立。
 	var (
 		accounts []Account
 		result   *pagination.PaginationResult
@@ -2806,8 +2808,8 @@ func accountListGroupLite(groups []*Group) []*Group {
 	return out
 }
 
-// accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFilters 投影后，
-// 通过它批量回填列表 UI 消费的 credentials 子字段。测试 stub 无需实现。
+// accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFiltersProjected
+// 后，通过它批量回填列表 UI 消费的 credentials 子字段。测试 stub 无需实现。
 type accountCredentialSubsetReader interface {
 	ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error)
 }

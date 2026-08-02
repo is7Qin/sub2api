@@ -831,9 +831,6 @@ func (r *accountRepository) ListWithFiltersProjected(ctx context.Context, params
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
 }
 
-// ListWithFiltersFull 与 ListWithFilters 相同，但不做 credentials 投影：
-// 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
-// 主列表 UI 必须使用投影版 ListWithFiltersProjected，避免敏感凭据进入列表响应。
 // MaxAccountUpdatedAt 返回 accounts 表最大 updated_at，作为账号列表缓存的
 // 失效版本：任何账号变更都会推进该值，列表缓存据此立即失效。
 // 26K 行规模下 max(updated_at) 毫秒级完成。
@@ -863,31 +860,13 @@ func (r *accountRepository) MaxAccountUpdatedAt(ctx context.Context) (*time.Time
 	return &v, nil
 }
 
+// ListWithFiltersFull 与 ListWithFilters 相同，均返回全量 credentials
+// （JSONB 全量解码），供导出等需要完整凭据（id_token/access_token 等）
+// 的路径使用。admin 列表专用投影见 ListWithFiltersProjected，避免敏感
+// 凭据进入列表响应。
 func (r *accountRepository) ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.buildListWithFiltersQuery(filters)
-
-	total, err := q.Clone().Count(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	accountsQuery := q.
-		Offset(params.Offset()).
-		Limit(params.Limit())
-	for _, order := range accountListOrder(params) {
-		accountsQuery = accountsQuery.Order(order)
-	}
-
-	accounts, err := accountsQuery.All(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	outAccounts, err := r.accountsToService(ctx, accounts)
-	if err != nil {
-		return nil, nil, err
-	}
-	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+	// 内部委托：两版契约当前逐字节相同，实现体收敛到 ListWithFilters。
+	return r.ListWithFilters(ctx, params, filters)
 }
 
 // accountListProjectionFields 是 admin 账号列表查询的字段白名单：

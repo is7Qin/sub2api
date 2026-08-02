@@ -63,6 +63,7 @@ type UsageRecordWorkerPoolWorker struct {
 	stopDone       chan struct{}
 	nativeStopDone chan struct{}
 	testHooks      *usageRecordWorkerPoolWorkerTestHooks
+	stopStarted    chan struct{}
 }
 
 // NewUsageRecordWorkerPoolWorker returns the runtime component for pool.
@@ -130,11 +131,25 @@ func (w *UsageRecordWorkerPoolWorker) Start(context.Context) error {
 	return nil
 }
 
+func (w *UsageRecordWorkerPoolWorker) stopInitiation() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopStarted == nil {
+		w.stopStarted = make(chan struct{})
+	}
+	return w.stopStarted
+}
+
 func (w *UsageRecordWorkerPoolWorker) Stop(ctx context.Context) error {
 	if w == nil || w.pool == nil {
 		return nil
 	}
 	w.mu.Lock()
+	if w.stopStarted == nil {
+		w.stopStarted = make(chan struct{})
+	}
+	close(w.stopStarted)
+	w.stopStarted = nil
 	if w.stopDone != nil && w.lifecycle.State == workerruntime.LifecycleStopped {
 		w.mu.Unlock()
 		return nil

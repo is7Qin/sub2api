@@ -72,8 +72,9 @@ func (c *lifecycleStub) Snapshot() Snapshot {
 
 type blockingStopStub struct {
 	*lifecycleStub
-	entered chan struct{}
-	release chan struct{}
+	entered     chan struct{}
+	release     chan struct{}
+	stopStarted chan struct{}
 }
 
 func newBlockingStopStub(name string) *blockingStopStub {
@@ -81,10 +82,14 @@ func newBlockingStopStub(name string) *blockingStopStub {
 		lifecycleStub: newLifecycleStub(name, KindPool, nil),
 		entered:       make(chan struct{}),
 		release:       make(chan struct{}),
+		stopStarted:   make(chan struct{}),
 	}
 }
 
+func (c *blockingStopStub) stopInitiation() <-chan struct{} { return c.stopStarted }
+
 func (c *blockingStopStub) Stop(context.Context) error {
+	close(c.stopStarted)
 	close(c.entered)
 	c.mu.Lock()
 	c.lifecycle.State = StateStopping

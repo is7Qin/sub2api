@@ -27,22 +27,28 @@ type StopResult struct {
 	StillRunning bool
 }
 
+type stopInitiationNotifier interface {
+	stopInitiation() <-chan struct{}
+}
+
 type stopCall struct {
 	registered registeredComponent
 	once       sync.Once
 	done       chan struct{}
-	started    chan struct{}
 	err        error
 }
 
-func (c *stopCall) start(ctx context.Context) {
+func (c *stopCall) start(ctx context.Context) (started <-chan struct{}) {
 	c.once.Do(func() {
+		if notifier, ok := c.registered.component.(stopInitiationNotifier); ok {
+			started = notifier.stopInitiation()
+		}
 		go func() {
-			close(c.started)
 			c.err = c.registered.component.Stop(ctx)
 			close(c.done)
 		}()
 	})
+	return started
 }
 
 // Runtime coordinates the lifecycle of registered worker components.
@@ -215,7 +221,7 @@ func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
 	components := stopOrder(r.registry.componentCopies())
 	calls := make([]*stopCall, 0, len(components))
 	for _, registered := range components {
-		calls = append(calls, &stopCall{registered: registered, done: make(chan struct{}), started: make(chan struct{})})
+		calls = append(calls, &stopCall{registered: registered, done: make(chan struct{})})
 	}
 
 	r.mu.Lock()
@@ -227,9 +233,12 @@ func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
 	// established periodic-before-pool order, but each runs independently so a
 	// blocking periodic stop cannot delay a pool from rejecting new work.
 	for _, call := range calls {
-		call.start(context.Background())
-		// Keep invocation order deterministic without serializing completion.
-		<-call.started
+		started := call.start(context.Background())
+		if started != nil {
+			// Runtime-owned components publish entry at the first line of Stop;
+			// external components fall back to launch-and-proceed semantics.
+			<-started
+		}
 	}
 	return calls, nil
 }

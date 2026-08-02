@@ -35,6 +35,7 @@ type PeriodicJob struct {
 	stopDone     chan struct{}
 	rootCancel   context.CancelFunc
 	activeCancel context.CancelFunc
+	stopStarted  chan struct{}
 }
 
 // NewPeriodicJob validates spec and returns a periodic component.
@@ -92,8 +93,22 @@ func (j *PeriodicJob) Start(ctx context.Context) error {
 	return nil
 }
 
+func (j *PeriodicJob) stopInitiation() <-chan struct{} {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.stopStarted == nil {
+		j.stopStarted = make(chan struct{})
+	}
+	return j.stopStarted
+}
+
 func (j *PeriodicJob) Stop(ctx context.Context) error {
 	j.mu.Lock()
+	if j.stopStarted == nil {
+		j.stopStarted = make(chan struct{})
+	}
+	close(j.stopStarted)
+	j.stopStarted = nil
 	if !j.started {
 		j.lifecycle = LifecycleSnapshot{State: LifecycleStopped, UpdatedAt: time.Now()}
 		j.mu.Unlock()

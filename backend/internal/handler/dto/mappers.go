@@ -197,9 +197,19 @@ func groupFromServiceBase(g *service.Group) Group {
 		RequirePrivacySet:               g.RequirePrivacySet,
 		OpenAILongContextBillingEnabled: g.OpenAILongContextBillingEnabled,
 		RPMLimit:                        g.RPMLimit,
-		CreatedAt:                       g.CreatedAt,
-		UpdatedAt:                       g.UpdatedAt,
+		CreatedAt:                       timePtrIfNotZero(g.CreatedAt),
+		UpdatedAt:                       timePtrIfNotZero(g.UpdatedAt),
 	}
+}
+
+// timePtrIfNotZero 仅当时间非零时返回指针；零值时间返回 nil，
+// 配合 json omitempty 从响应省略（time.Time 的 omitempty 对零值无效）。
+func timePtrIfNotZero(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	v := t
+	return &v
 }
 
 func AccountFromServiceShallow(a *service.Account) *Account {

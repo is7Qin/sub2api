@@ -105,9 +105,9 @@ type Group struct {
 	AllowImageGeneration bool     `json:"allow_image_generation,omitempty"`
 	ImageRateIndependent bool     `json:"image_rate_independent,omitempty"`
 	ImageRateMultiplier  float64  `json:"image_rate_multiplier,omitempty"`
-	ImagePrice1K         *float64 `json:"image_price_1k"`
-	ImagePrice2K         *float64 `json:"image_price_2k"`
-	ImagePrice4K         *float64 `json:"image_price_4k"`
+	ImagePrice1K         *float64 `json:"image_price_1k,omitempty"`
+	ImagePrice2K         *float64 `json:"image_price_2k,omitempty"`
+	ImagePrice4K         *float64 `json:"image_price_4k,omitempty"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only,omitempty"`
@@ -126,8 +126,8 @@ type Group struct {
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
 	RPMLimit int `json:"rpm_limit,omitempty"`
 
-	CreatedAt time.Time `json:"created_at,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
@@ -143,12 +143,12 @@ type AdminGroup struct {
 	MCPXMLInject bool `json:"mcp_xml_inject,omitempty"`
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	DefaultMappedModel          string                                   `json:"default_mapped_model"`
-	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config"`
+	DefaultMappedModel          string                                   `json:"default_mapped_model,omitempty"`
+	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
+	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config,omitempty"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
-	SupportedModelScopes    []string       `json:"supported_model_scopes"`
+	SupportedModelScopes    []string       `json:"supported_model_scopes,omitempty"`
 	AccountGroups           []AccountGroup `json:"account_groups,omitempty"`
 	AccountCount            int64          `json:"account_count,omitempty"`
 	ActiveAccountCount      int64          `json:"active_account_count,omitempty"`

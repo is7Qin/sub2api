@@ -30,7 +30,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "payment-order-expiry", "pricing-remote-sync", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
@@ -39,8 +39,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[1].Status)
 	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[2].Status)
 	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[3].Status)
-	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[4].Status)
-	require.IsType(t, workerruntime.PoolStatus{}, snapshots[5].Status)
+	require.IsType(t, workerruntime.PoolStatus{}, snapshots[4].Status)
 	require.True(t, usagePool.Accepting())
 }
 

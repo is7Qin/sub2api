@@ -49,6 +49,8 @@ func NewSubscriptionExpiryWorker(svc *SubscriptionExpiryService) (*workerruntime
 	})
 }
 
+const paymentOrderExpiryWorkerTimeout = paymentOrderExpiryLockAcquireTimeout + 2*expiryCheckTimeout + time.Second
+
 // NewPaymentOrderExpiryWorker adapts payment-order expiry maintenance to the worker runtime.
 func NewPaymentOrderExpiryWorker(svc *PaymentOrderExpiryService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {
@@ -64,7 +66,7 @@ func NewPaymentOrderExpiryWorker(svc *PaymentOrderExpiryService) (*workerruntime
 			Tags:             []string{"payments", "expiry", "reconciliation"},
 		},
 		Interval:       svc.Interval(),
-		Timeout:        62 * time.Second,
+		Timeout:        paymentOrderExpiryWorkerTimeout,
 		RunImmediately: true,
 		Run:            svc.Run,
 	})
@@ -77,8 +79,7 @@ func NewPricingRemoteSyncWorker(svc *PricingService) (*workerruntime.PeriodicJob
 	}
 	interval := svc.RemoteSyncInterval()
 	if interval <= 0 {
-		// The disabled scheduler remains a managed, visible component without invoking remote work.
-		interval = time.Hour
+		return nil, nil
 	}
 	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
 		Descriptor: workerruntime.Descriptor{
@@ -91,7 +92,7 @@ func NewPricingRemoteSyncWorker(svc *PricingService) (*workerruntime.PeriodicJob
 		},
 		Interval:       interval,
 		Timeout:        30 * time.Second,
-		RunImmediately: svc.RemoteSyncInterval() > 0,
+		RunImmediately: false,
 		Run:            svc.RunRemoteSync,
 	})
 }

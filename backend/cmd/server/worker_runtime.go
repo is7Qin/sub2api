@@ -39,15 +39,19 @@ func provideWorkerRuntime(
 		return nil, err
 	}
 
-	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
-	for _, component := range []workerruntime.Component{
+	components := []workerruntime.Component{
 		accountExpiryWorker,
 		idempotencyCleanupWorker,
 		subscriptionExpiryWorker,
 		paymentOrderExpiryWorker,
-		pricingRemoteSyncWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
-	} {
+	}
+	if pricingRemoteSyncWorker != nil {
+		components = append(components, pricingRemoteSyncWorker)
+	}
+
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	for _, component := range components {
 		if err := runtime.Register(component); err != nil {
 			return nil, err
 		}

@@ -18,7 +18,8 @@ const (
 	paymentOrderExpiryLeaderLockKey = "payment:order:expiry:leader"
 	// paymentOrderExpiryLeaderLockTTL must exceed the combined reconcile + expiry
 	// timeouts (2 * expiryCheckTimeout) so the lock never expires mid-run.
-	paymentOrderExpiryLeaderLockTTL = 3 * time.Minute
+	paymentOrderExpiryLeaderLockTTL      = 3 * time.Minute
+	paymentOrderExpiryLockAcquireTimeout = 2 * time.Second
 )
 
 // PaymentOrderExpiryService periodically expires timed-out payment orders.
@@ -69,7 +70,7 @@ func (s *PaymentOrderExpiryService) Run(ctx context.Context) error {
 	}
 	// Multi-instance guard: only the leader reconciles/expires orders per cycle,
 	// avoiding N× upstream payment-provider API calls and update races.
-	lockCtx, lockCancel := context.WithTimeout(ctx, 2*time.Second)
+	lockCtx, lockCancel := context.WithTimeout(ctx, paymentOrderExpiryLockAcquireTimeout)
 	release, ok := tryAcquireSingletonLeaderLock(lockCtx, s.lockCache, s.db, paymentOrderExpiryLeaderLockKey, s.instanceID, paymentOrderExpiryLeaderLockTTL)
 	lockCancel()
 	if !ok {

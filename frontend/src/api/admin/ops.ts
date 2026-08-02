@@ -271,6 +271,14 @@ export interface OpsSystemMetricsSnapshot {
   goroutine_count?: number | null
   concurrency_queue_depth?: number | null
   account_switch_count?: number | null
+
+  // Go runtime memory / GC (process-internal, not cgroup).
+  heap_alloc_mb?: number | null
+  heap_sys_mb?: number | null
+  gc_num_cycles?: number | null
+  gc_total_pause_ms?: number | null
+  gc_cpu_fraction?: number | null
+  alloc_bytes_per_sec?: number | null
 }
 
 export interface OpsJobHeartbeat {

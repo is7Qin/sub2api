@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -578,6 +579,7 @@ type adminServiceImpl struct {
 	privacyClientFactory PrivacyClientFactory
 	runtimeBlocker       AccountRuntimeBlocker
 	rateLimitService     *RateLimitService
+	accountsListCache    *accountsListTTLCache
 }
 
 type userGroupRateBatchReader interface {
@@ -626,6 +628,7 @@ func NewAdminService(
 		privacyClientFactory: privacyClientFactory,
 		runtimeBlocker:       runtimeBlocker,
 		rateLimitService:     rateLimitService,
+		accountsListCache:    newAccountsListTTLCache(),
 	}
 }
 
@@ -2643,6 +2646,26 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 
 // Account management implementations
 func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
+	// 短 TTL 缓存：外部面板/前端可能高频轮询账号列表（实测每 5 秒全量
+	// 拉取全部页），每次全量 ListWithFilters 都会解码所有账号的
+	// extra/credentials JSONB 并产生 800KB/页 响应，是 CPU/DB 压力主源。
+	// 3 秒 TTL 让轮询大部分命中缓存，同时账号变更在 3 秒内可见。
+	if cache := s.accountsListCache; cache != nil {
+		key := accountsListCacheKey(page, pageSize, filters, sortBy, sortOrder)
+		if accounts, total, ok := cache.get(key); ok {
+			return accounts, total, nil
+		}
+		accounts, total, err := s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+		if err != nil {
+			return nil, 0, err
+		}
+		cache.set(key, accounts, total)
+		return accounts, total, nil
+	}
+	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+}
+
+func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
 	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, AccountListFilters{
 		Platform:    filters.Platform,
@@ -2656,7 +2679,89 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 	if err != nil {
 		return nil, 0, err
 	}
+	// 列表查询已投影排除 credentials；这里批量回填列表 UI 需要的
+	// 少量子字段（email/plan_type/model_mapping 等），避免全量 JSONB
+	// 解码。best-effort：子集查询失败不影响列表主数据。
+	if len(accounts) > 0 {
+		if reader, ok := s.accountRepo.(accountCredentialSubsetReader); ok {
+			ids := make([]int64, 0, len(accounts))
+			for i := range accounts {
+				ids = append(ids, accounts[i].ID)
+			}
+			subsets, err := reader.ListAccountCredentialSubset(ctx, ids)
+			if err == nil {
+				for i := range accounts {
+					if subset, ok := subsets[accounts[i].ID]; ok {
+						accounts[i].Credentials = subset
+					}
+				}
+			} else {
+				slog.Warn("account credential subset fill failed", "error", err)
+			}
+		}
+	}
 	return accounts, result.Total, nil
+}
+
+// accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFilters 投影后，
+// 通过它批量回填列表 UI 消费的 credentials 子字段。测试 stub 无需实现。
+type accountCredentialSubsetReader interface {
+	ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error)
+}
+
+// accountsListCacheTTL 是 admin 账号列表缓存的保留时间。
+// 选择 3 秒：低于外部面板的 5 秒轮询间隔（缓存基本全命中），
+// 又足够短使账号变更延迟可接受。
+const accountsListCacheTTL = 3 * time.Second
+
+// accountsListTTLCache 是 admin 账号列表的进程内短 TTL 缓存。
+// 返回时浅拷贝切片，避免调用方修改污染缓存条目。
+type accountsListTTLCache struct {
+	mu    sync.Mutex
+	items map[string]accountsListCacheEntry
+}
+
+type accountsListCacheEntry struct {
+	accounts []Account
+	total    int64
+	exp      time.Time
+}
+
+func newAccountsListTTLCache() *accountsListTTLCache {
+	return &accountsListTTLCache{items: make(map[string]accountsListCacheEntry)}
+}
+
+func (c *accountsListTTLCache) get(key string) ([]Account, int64, bool) {
+	if c == nil {
+		return nil, 0, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.items[key]
+	if !ok || time.Now().After(entry.exp) {
+		delete(c.items, key)
+		return nil, 0, false
+	}
+	return append([]Account(nil), entry.accounts...), entry.total, true
+}
+
+func (c *accountsListTTLCache) set(key string, accounts []Account, total int64) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items[key] = accountsListCacheEntry{
+		accounts: append([]Account(nil), accounts...),
+		total:    total,
+		exp:      time.Now().Add(accountsListCacheTTL),
+	}
+}
+
+func accountsListCacheKey(page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) string {
+	return fmt.Sprintf("%d|%d|%s|%s|%s|%s|%d|%s|%s|%s",
+		page, pageSize, filters.Platform, filters.AccountType, filters.Status,
+		filters.Search, filters.GroupID, filters.PrivacyMode, sortBy, sortOrder)
 }
 
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {

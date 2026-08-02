@@ -61,6 +61,16 @@ type openAITestSettingRepo struct {
 	values map[string]string
 }
 
+type openAIStreamRateLimitAccountRepo struct {
+	AccountRepository
+	rateLimitResets []time.Time
+}
+
+func (r *openAIStreamRateLimitAccountRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
+	r.rateLimitResets = append(r.rateLimitResets, resetAt)
+	return nil
+}
+
 func (s *openAITestSettingRepo) Get(ctx context.Context, key string) (*Setting, error) {
 	panic("unexpected Get call")
 }
@@ -1550,6 +1560,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
 	require.Contains(t, string(failoverErr.ResponseBody), "An error occurred while processing your request")
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
@@ -1586,14 +1597,190 @@ func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t
 		Header: http.Header{"X-Request-Id": []string{"rid-capacity-failed"}},
 	}
 
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "pool-account",
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.Contains(t, string(failoverErr.ResponseBody), "Selected model is at capacity")
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIStreamingResponseFailedBeforeOutputRateLimitUsesPoolRetryPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_rate_limit"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_rate_limit","status":"failed","error":{"code":"rate_limit_exceeded","type":"invalid_request_error","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{
+			"X-Request-Id": []string{"rid-rate-limit-failed"},
+			"Retry-After":  []string{"1"},
+		},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "pool-account",
+		Credentials: map[string]any{
+			"pool_mode":                    true,
+			"pool_mode_retry_status_codes": []any{float64(http.StatusTooManyRequests)},
+		},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, "1", failoverErr.ResponseHeaders.Get("Retry-After"))
+	require.Equal(t, "rate_limit_error", gjson.GetBytes(failoverErr.ResponseBody, "error.type").String())
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.True(t, fact.HTTPStatusKnown)
+	require.Equal(t, http.StatusTooManyRequests, fact.HTTPStatus)
+	require.Equal(t, "1", fact.RetryAfter)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIStreamingResponseFailedRateLimitDoesNotBlockAccountScheduling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_rate_limit"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_rate_limit","status":"failed","error":{"code":"rate_limit_exceeded","type":"invalid_request_error","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{
+			"X-Codex-Primary-Used-Percent":        []string{"12"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"604800"},
+			"Retry-After":                         []string{"1"},
+		},
+	}
+	account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "oauth-account"}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIStreamingResponseFailedRateLimitRecordsOAuthDynamicSignalWithoutSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &modelNotFoundAccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled:        true,
+		WindowSeconds:  60,
+		MinSamples:     2,
+		Min429:         1,
+		RatioThreshold: 0.5,
+		BlockSeconds:   12,
+	})
+	rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	svc := &OpenAIGatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		rateLimitService: rateLimitSvc,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_rate_limit"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_rate_limit","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{
+			"X-Codex-Primary-Used-Percent":        []string{"100"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"604800"},
+			"Retry-After":                         []string{"1"},
+		},
+	}
+	account := &Account{ID: 12, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "oauth-account"}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+
+	rateLimitSvc.openAIOAuth429DynamicMu.Lock()
+	stat := rateLimitSvc.openAIOAuth429DynamicStat[account.ID]
+	rateLimitSvc.openAIOAuth429DynamicMu.Unlock()
+	require.NotNil(t, stat)
+	require.Equal(t, 1, stat.total)
+	require.Equal(t, 1, stat.count429)
+	require.Nil(t, stat.usage5h)
+	require.Nil(t, stat.usage7d)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIStreamingResponseFailedRateLimitPersistsAPIKeyCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &openAIStreamRateLimitAccountRepo{}
+	svc := &OpenAIGatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"Retry-After": []string{"1"}},
+	}
+	account := &Account{ID: 13, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Name: "api-key-account"}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+	require.Len(t, repo.rateLimitResets, 1)
+	require.WithinDuration(t, time.Now().Add(time.Second), repo.rateLimitResets[0], time.Second)
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsDirectRequestError(t *testing.T) {

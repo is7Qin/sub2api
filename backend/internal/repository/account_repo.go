@@ -768,6 +768,11 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	}
 
 	accountsQuery := q.
+		// 列表投影：排除 credentials 列（平均 3.2KB/账号，最大 27KB），
+		// 列表不需要完整凭据。前端需要的少量 credentials 字段由
+		// ListAccountCredentialSubset 单独批量提取，避免 ent 全量解码
+		// JSONB 造成的 CPU 风暴与 800KB/页 的响应膨胀。
+		Select(accountListProjectionFields...).
 		Offset(params.Offset()).
 		Limit(params.Limit())
 	for _, order := range accountListOrder(params) {
@@ -784,6 +789,141 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		return nil, nil, err
 	}
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+// accountListProjectionFields 是 admin 账号列表查询的字段白名单：
+// 除 credentials 外的全部列。credentials 是列表响应的体积大头
+// （含 token/refresh_token 等真实凭据），列表 UI 只需要其中少量字段
+// （见 ListAccountCredentialSubset），不应全量加载与解码。
+var accountListProjectionFields = []string{
+	dbaccount.FieldID,
+	dbaccount.FieldCreatedAt,
+	dbaccount.FieldUpdatedAt,
+	dbaccount.FieldDeletedAt,
+	dbaccount.FieldName,
+	dbaccount.FieldNotes,
+	dbaccount.FieldPlatform,
+	dbaccount.FieldType,
+	dbaccount.FieldExtra,
+	dbaccount.FieldProxyID,
+	dbaccount.FieldConcurrency,
+	dbaccount.FieldLoadFactor,
+	dbaccount.FieldPriority,
+	dbaccount.FieldRateMultiplier,
+	dbaccount.FieldStatus,
+	dbaccount.FieldErrorMessage,
+	dbaccount.FieldLastUsedAt,
+	dbaccount.FieldExpiresAt,
+	dbaccount.FieldAutoPauseOnExpired,
+	dbaccount.FieldSchedulable,
+	dbaccount.FieldRateLimitedAt,
+	dbaccount.FieldRateLimitResetAt,
+	dbaccount.FieldOverloadUntil,
+	dbaccount.FieldTempUnschedulableUntil,
+	dbaccount.FieldTempUnschedulableReason,
+	dbaccount.FieldSessionWindowStart,
+	dbaccount.FieldSessionWindowEnd,
+	dbaccount.FieldSessionWindowStatus,
+}
+
+// ListAccountCredentialSubset 批量提取列表 UI 实际消费的 credentials 子字段，
+// 替代全量 JSONB 解码。统一使用 credentials->'field'（保留 JSON 类型），
+// 标量与布尔字段（email/plan_type/temp_unschedulable_enabled 等）反序列化
+// 后保持 string/bool 语义。返回 map[accountID]子集 map；查询失败返回错误。
+// 注意：必须用原生 SQL（ent 的 Select 不接受任意 SQL 表达式列，scan 会错位）。
+func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error) {
+	if r == nil || r.sql == nil || len(ids) == 0 {
+		return map[int64]map[string]any{}, nil
+	}
+	uniqueIDs := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return map[int64]map[string]any{}, nil
+	}
+
+	subFieldNames := accountCredentialSubsetFieldNames()
+	jsonColumns := accountCredentialSubsetJSONColumns()
+	selectList := "id"
+	for _, name := range subFieldNames {
+		selectList += ", credentials->'" + name + "'"
+	}
+
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT `+selectList+`
+		FROM accounts
+		WHERE id = ANY($1)
+	`, uniqueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[int64]map[string]any, len(uniqueIDs))
+	for rows.Next() {
+		var id int64
+		values := make([]sql.NullString, len(subFieldNames))
+		dest := make([]any, 0, len(subFieldNames)+1)
+		dest = append(dest, &id)
+		for i := range values {
+			dest = append(dest, &values[i])
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		subset := make(map[string]any, len(subFieldNames))
+		for i, name := range subFieldNames {
+			if !values[i].Valid {
+				continue
+			}
+			if jsonColumns[name] {
+				// JSON 值字段：反序列化保留类型（object/array/bool/number）。
+				var v any
+				if err := json.Unmarshal([]byte(values[i].String), &v); err == nil {
+					subset[name] = v
+					continue
+				}
+			}
+			// 标量字段（email/plan_type 等）或 JSON 解析失败的兜底：原样字符串。
+			subset[name] = values[i].String
+		}
+		out[id] = subset
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func accountCredentialSubsetFieldNames() []string {
+	return []string{
+		"email", "plan_type", "subscription_expires_at", "project_id",
+		"antigravity_project_id", "openai_capabilities", "model_mapping",
+		"compact_model_mapping", "temp_unschedulable_rules",
+		"temp_unschedulable_enabled", "model_whitelist",
+		"intercept_warmup_requests", "api_key",
+	}
+}
+
+// accountCredentialSubsetJSONColumns 标记子集字段中需要保留 JSON 类型
+// （object/array/bool/number）的字段；其余为标量字符串字段。
+func accountCredentialSubsetJSONColumns() map[string]bool {
+	return map[string]bool{
+		"openai_capabilities":     true,
+		"model_mapping":           true,
+		"compact_model_mapping":   true,
+		"temp_unschedulable_rules": true,
+		"model_whitelist":          true,
+	}
 }
 
 // ListOpsAccountsForStats loads only the account fields consumed by the realtime

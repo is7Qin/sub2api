@@ -221,8 +221,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
 	subscriptionExpiryService := service.ProvideSubscriptionExpiryService(userSubscriptionRepository, settingRepository, notificationEmailService, leaderLockCache, db)
 	paymentOrderExpiryService := service.ProvidePaymentOrderExpiryService(paymentService, leaderLockCache, db)
+	outboxCleanupService := service.ProvideOutboxCleanupService(billingOutboxRepository, schedulerOutboxRepository, schedulerCache, leaderLockCache, db, configConfig)
 	tokenRefreshService := service.ProvideTokenRefreshService(accountRepository, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, compositeTokenCacheInvalidator, schedulerCache, configConfig, tempUnschedCache, privacyClientFactory, proxyRepository, oAuthRefreshAPI, openAIGatewayService)
-	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, tokenRefreshService)
+	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService)
 	if err != nil {
 		return nil, err
 	}

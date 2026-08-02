@@ -17,6 +17,7 @@ func provideWorkerRuntime(
 	subscriptionExpiry *service.SubscriptionExpiryService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	pricing *service.PricingService,
+	outboxCleanup *service.OutboxCleanupService,
 	tokenRefresh *service.TokenRefreshService,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
@@ -39,6 +40,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	outboxCleanupWorker, err := service.NewOutboxCleanupWorker(outboxCleanup)
+	if err != nil {
+		return nil, err
+	}
 	tokenRefreshWorker, err := service.NewTokenRefreshWorker(tokenRefresh)
 	if err != nil {
 		return nil, err
@@ -49,6 +54,7 @@ func provideWorkerRuntime(
 		idempotencyCleanupWorker,
 		subscriptionExpiryWorker,
 		paymentOrderExpiryWorker,
+		outboxCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 	}
 	if pricingRemoteSyncWorker != nil {

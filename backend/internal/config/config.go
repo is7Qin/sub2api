@@ -88,6 +88,7 @@ type Config struct {
 	Dashboard               DashboardCacheConfig          `mapstructure:"dashboard_cache"`
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
+	OutboxCleanup           OutboxCleanupConfig           `mapstructure:"outbox_cleanup"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -558,6 +559,7 @@ type ServerConfig struct {
 	TrustedProxies           []string  `mapstructure:"trusted_proxies"`       // 可信代理列表（CIDR/IP）
 	TrustedProxiesConfigured bool      `mapstructure:"-" json:"-" yaml:"-"`   // 是否显式配置了可信代理列表
 	MaxRequestBodySize       int64     `mapstructure:"max_request_body_size"` // 全局最大请求体限制
+	PprofEnabled             bool      `mapstructure:"pprof_enabled"`          // 是否暴露 /debug/pprof（仅 admin 鉴权可访问，默认关闭）
 	H2C                      H2CConfig `mapstructure:"h2c"`                   // HTTP/2 Cleartext 配置
 }
 
@@ -1373,6 +1375,15 @@ type DashboardAggregationRetentionConfig struct {
 	DailyDays             int `mapstructure:"daily_days"`
 }
 
+// OutboxCleanupConfig outbox 保留期清理配置
+//
+// 环境变量：OUTBOX_CLEANUP_TERMINAL_RETENTION_DAYS（viper 自动映射）。
+type OutboxCleanupConfig struct {
+	// TerminalRetentionDays: billing_attempt_outbox 终态行（succeeded/terminal）
+	// 保留天数（0 表示禁用该清理目标）。默认 30 天，对齐月度计费对账窗口。
+	TerminalRetentionDays int `mapstructure:"terminal_retention_days"`
+}
+
 // UsageCleanupConfig 使用记录清理任务配置
 type UsageCleanupConfig struct {
 	// Enabled: 是否启用清理任务执行器
@@ -1610,6 +1621,7 @@ func setDefaults() {
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.port", 8080)
 	viper.SetDefault("server.mode", "release")
+	viper.SetDefault("server.pprof_enabled", false)
 	viper.SetDefault("server.frontend_url", "")
 	viper.SetDefault("server.read_header_timeout", 30) // 30秒读取请求头
 	viper.SetDefault("server.idle_timeout", 120)       // 120秒空闲超时
@@ -1873,6 +1885,9 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.batch_size", 5000)
 	viper.SetDefault("usage_cleanup.worker_interval_seconds", 10)
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
+
+	// Outbox cleanup
+	viper.SetDefault("outbox_cleanup.terminal_retention_days", 30)
 
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)

@@ -5362,7 +5362,36 @@ func openAIStreamingPassthroughResultShouldExposeOnError(result *openaiStreaming
 	return true
 }
 
+func openAIStreamFailureStatus(payload []byte) int {
+	fact := ParseOpenAIJSONErrorFact(PlatformOpenAI, UpstreamErrorSourceSSE, payload, "")
+	if strings.EqualFold(fact.ProviderCode, "rate_limit_exceeded") ||
+		strings.EqualFold(fact.ProviderType, "rate_limit_error") {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusBadGateway
+}
+
+// handleOpenAIStreamRateLimit applies the semantic 429 without treating quota
+// headers on the successful SSE transport response as a 429 usage snapshot.
+func (s *OpenAIGatewayService) handleOpenAIStreamRateLimit(c *gin.Context, account *Account, headers http.Header, payload []byte) {
+	if s == nil || account == nil {
+		return
+	}
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	semanticHeaders := make(http.Header)
+	if retryAfter := strings.TrimSpace(headers.Get("Retry-After")); retryAfter != "" {
+		semanticHeaders.Set("Retry-After", retryAfter)
+	}
+	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, semanticHeaders, payload)
+}
+
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
+	if openAIStreamFailureStatus(payload) == http.StatusTooManyRequests {
+		return true
+	}
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
 	}
@@ -5402,10 +5431,16 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 	upstreamRequestID string,
 	payload []byte,
 	message string,
+	responseHeaders ...http.Header,
 ) *UpstreamFailoverError {
 	message = sanitizeOpenAIUpstreamDiagnosticText(strings.TrimSpace(message))
 	if message == "" {
 		message = "OpenAI stream disconnected before completion"
+	}
+	statusCode := openAIStreamFailureStatus(payload)
+	var headers http.Header
+	if len(responseHeaders) > 0 && responseHeaders[0] != nil {
+		headers = responseHeaders[0].Clone()
 	}
 	diagnosticPayload := sanitizeOpenAIStreamFailoverDiagnosticPayload(payload)
 	detail := ""
@@ -5417,10 +5452,10 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		detail = sanitizeOpenAIUpstreamDiagnosticBodyForLog(diagnosticPayload, maxBytes)
 	}
 	if c != nil {
-		setOpsUpstreamError(c, http.StatusBadGateway, message, detail)
+		setOpsUpstreamError(c, statusCode, message, detail)
 		event := OpsUpstreamErrorEvent{
 			Platform:           PlatformOpenAI,
-			UpstreamStatusCode: http.StatusBadGateway,
+			UpstreamStatusCode: statusCode,
 			UpstreamRequestID:  strings.TrimSpace(upstreamRequestID),
 			Passthrough:        passthrough,
 			Kind:               "failover",
@@ -5434,27 +5469,39 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		}
 		appendOpsUpstreamError(c, event)
 	}
+	errType := "upstream_error"
+	if statusCode == http.StatusTooManyRequests {
+		errType = "rate_limit_error"
+	}
 	body, _ := json.Marshal(gin.H{
 		"error": gin.H{
-			"type":    "upstream_error",
+			"type":    errType,
 			"message": message,
 		},
 	})
-	retryableOnSameAccount := false
-	if account != nil && account.IsPoolMode() {
-		// Stream failover errors are synthesized as 502s; same-account retry should
-		// still honor the pool-mode status-code policy, including an explicit empty list.
-		retryableOnSameAccount = account.IsPoolModeRetryableStatus(http.StatusBadGateway)
+	// HTTP 200 stream failures do not carry a transport status for capacity and
+	// other transient processing errors, so evaluate their semantic payload too.
+	retryableOnSameAccount := account != nil && account.IsPoolMode() &&
+		(account.IsPoolModeRetryableStatus(statusCode) ||
+			isOpenAITransientProcessingError(http.StatusBadRequest, message, payload))
+	if statusCode == http.StatusTooManyRequests {
+		s.handleOpenAIStreamRateLimit(c, account, headers, payload)
 	}
 	fact := ParseOpenAIJSONErrorFact(PlatformOpenAI, UpstreamErrorSourceSSE, payload, upstreamRequestID)
+	// The failed event is transported inside HTTP 200 SSE, but its explicit
+	// rate-limit code is the status used by the failover policy and final client response.
+	fact.HTTPStatusKnown = true
+	fact.HTTPStatus = statusCode
+	fact.RetryAfter = headers.Get("Retry-After")
 	if len(payload) == 0 {
 		fact.Source = UpstreamErrorSourceStreamTermination
 		fact.SafeMessage = boundedUpstreamErrorFactScalar(message, upstreamErrorFactMaxScalarBytes)
 		fact.InternalMatchText = buildUpstreamErrorFactMatchText(fact)
 	}
 	return &UpstreamFailoverError{
-		StatusCode:             http.StatusBadGateway,
+		StatusCode:             statusCode,
 		ResponseBody:           body,
+		ResponseHeaders:        headers,
 		RetryableOnSameAccount: retryableOnSameAccount,
 		upstreamFact:           &fact,
 	}
@@ -5617,7 +5664,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					forceFlushFailedEvent = !suppressClientOutput
 				} else if !outputStarted && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
 					return resultWithUsage(),
-						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, openAIResponseFailedPayloadForDiagnostic(dataBytes, eventType), failedMessage)
+						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, openAIResponseFailedPayloadForDiagnostic(dataBytes, eventType), failedMessage, resp.Header)
 				} else {
 					forceFlushFailedEvent = true
 				}
@@ -6650,7 +6697,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithNamespaceRestorer(ctx 
 					sawFailedEvent = true
 				} else if !outputStarted && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
 					sawFailedEvent = true
-					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, openAIResponseFailedPayloadForDiagnostic(dataBytes, eventType), failedMessage)
+					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, openAIResponseFailedPayloadForDiagnostic(dataBytes, eventType), failedMessage, resp.Header)
 					return
 				} else {
 					forceFlushFailedEvent = true

@@ -2865,3 +2865,36 @@ func idsOfAccounts(accounts []service.Account) []int64 {
 	}
 	return out
 }
+
+func (s *AccountRepoSuite) TestListAccountCredentialSubset() {
+	client := testEntClient(s.T())
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	ctx := s.ctx
+
+	account := &service.Account{
+		Name:     "cred-subset-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email":         "subset@example.com",
+			"plan_type":     "plus",
+			"model_mapping": map[string]any{"gpt-5": "gpt-5-upstream"},
+			"access_token":  "secret-token-must-not-leak",
+		},
+	}
+	s.Require().NoError(repo.Create(ctx, account))
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, "DELETE FROM accounts WHERE id = $1", account.ID)
+	})
+
+	subsets, err := repo.ListAccountCredentialSubset(ctx, []int64{account.ID})
+	s.Require().NoError(err)
+	subset := subsets[account.ID]
+	s.Require().NotNil(subset)
+	s.Require().Equal("subset@example.com", subset["email"])
+	s.Require().Equal("plus", subset["plan_type"])
+	s.Require().Equal(map[string]any{"gpt-5": "gpt-5-upstream"}, subset["model_mapping"])
+	// 安全关键：真实凭据不得出现在列表子集里。
+	s.Require().NotContains(subset, "access_token")
+	s.Require().NotContains(subset, "refresh_token")
+}

@@ -226,7 +226,9 @@ func Relay(
 		return upstreamConn.WriteFrame(writeCtx, msgType, payload)
 	}
 	writeClient := func(msgType coderws.MessageType, payload []byte) error {
-		writeCtx, cancel := context.WithTimeout(relayCtx, writeTimeout)
+		// Downstream writes must not inherit relay cancellation: an external
+		// cancellation can otherwise abort a pending close frame before it is sent.
+		writeCtx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 		defer cancel()
 		return clientConn.WriteFrame(writeCtx, msgType, payload)
 	}

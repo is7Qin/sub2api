@@ -34,6 +34,29 @@ func TestOpenAIResponsesNilSelectionPrefersPriorRecoveryCandidate(t *testing.T) 
 	require.Equal(t, "quota exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 }
 
+func TestOpenAIHandleUpstreamCandidateNormalizesRateLimitPresentation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	candidate := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		Provider:        service.PlatformOpenAI,
+		Source:          service.UpstreamErrorSourceSSE,
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusTooManyRequests,
+		ProviderCode:    "rate_limit_exceeded",
+		ProviderType:    "invalid_request_error",
+		SafeMessage:     "quota exceeded",
+		RetryAfter:      "30",
+	}, service.UpstreamCandidateStructured)
+
+	(&OpenAIGatewayHandler{}).handleUpstreamCandidate(c, candidate, false)
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "rate_limit_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "rate_limit_exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "30", rec.Header().Get("Retry-After"))
+}
+
 func TestOpenAIMessagesNilSelectionPrefersPriorRecoveryCandidate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

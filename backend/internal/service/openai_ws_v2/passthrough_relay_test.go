@@ -425,6 +425,30 @@ func TestRelay_ClientDisconnect(t *testing.T) {
 	require.Equal(t, "gpt-4o", result.RequestModel)
 }
 
+func TestRelay_ParentCancellationDoesNotAbortInFlightDownstreamWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: []byte(`{"type":"response.created","response":{"id":"resp_cancel_race"}}`)},
+	}, true)
+
+	_, _ = Relay(ctx, clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-4o","input":[]}`), RelayOptions{
+		BeforeWriteClient: func(_ coderws.MessageType, _ []byte, _ bool) error {
+			// Model an external relay cancellation after an upstream frame has been
+			// accepted but immediately before it is written to the client.
+			cancel()
+			return nil
+		},
+	})
+
+	writes := clientConn.Writes()
+	require.Len(t, writes, 1, "a downstream write already in progress must outlive relay cancellation")
+	require.Equal(t, coderws.MessageText, writes[0].msgType)
+	require.JSONEq(t, `{"type":"response.created","response":{"id":"resp_cancel_race"}}`, string(writes[0].payload))
+}
+
 func TestRelay_ParentCancellationCleansUpBeforeAnyWorkerExit(t *testing.T) {
 	upstreamConn := newGatedReadFrameConn(nil, nil, make(chan struct{}))
 	ctx, cancel := context.WithCancel(context.Background())

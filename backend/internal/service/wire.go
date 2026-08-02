@@ -173,6 +173,23 @@ func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *Timing
 	return svc
 }
 
+// ProvideOutboxCleanupService 构造 outbox 保留期清理服务。
+// 生命周期由 server worker runtime 统一管理（见 NewOutboxCleanupWorker）；
+// Run 内部按周期选举 leader，避免多副本同时删除 outbox 行。
+func ProvideOutboxCleanupService(
+	billingRepo BillingOutboxRepository,
+	schedulerRepo SchedulerOutboxRepository,
+	schedulerCache SchedulerCache,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+	cfg *config.Config,
+) *OutboxCleanupService {
+	svc := NewOutboxCleanupService(billingRepo, schedulerRepo, schedulerCache,
+		time.Duration(cfg.OutboxCleanup.TerminalRetentionDays)*24*time.Hour)
+	svc.SetLeaderLock(lockCache, db)
+	return svc
+}
+
 // ProvideAccountExpiryService constructs AccountExpiryService.
 // Its lifecycle is owned by the server worker runtime.
 func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
@@ -612,6 +629,7 @@ var ProviderSet = wire.NewSet(
 	ProvideTimingWheelService,
 	ProvideDashboardAggregationService,
 	ProvideUsageCleanupService,
+	ProvideOutboxCleanupService,
 	ProvideDeferredService,
 	NewAntigravityQuotaFetcher,
 	NewUserAttributeService,

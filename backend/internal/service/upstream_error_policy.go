@@ -152,13 +152,15 @@ func ResolveUpstreamRecoveryPolicy(fact UpstreamErrorFact) (UpstreamRecoveryPoli
 
 	if strings.EqualFold(strings.TrimSpace(fact.ProviderCode), "rate_limit_exceeded") ||
 		strings.EqualFold(strings.TrimSpace(fact.ProviderType), "rate_limit_error") {
+		presentation := NewUpstreamErrorCandidate(fact, UpstreamCandidateStructured).Presentation
+		presentation.ErrorType = "rate_limit_error"
 		return UpstreamRecoveryPolicy{
 			Disposition:             UpstreamAttemptFailover,
 			SameAccountRetryBudget:  1,
 			AccountTransitionBudget: 1,
 			AccountHealthAction:     UpstreamHealthApplyRateLimit,
 			CandidateRank:           UpstreamCandidateStructured,
-			Presentation:            NewUpstreamErrorCandidate(fact, UpstreamCandidateStructured).Presentation,
+			Presentation:            presentation,
 		}, true
 	}
 	if fact.HTTPStatusKnown && fact.HTTPStatus >= http.StatusInternalServerError {

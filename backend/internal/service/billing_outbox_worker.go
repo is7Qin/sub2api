@@ -27,6 +27,9 @@ const (
 	billingOutboxFinalizationRenewInterval = 20 * time.Second
 	billingOutboxFinalizationDBTimeout     = 2 * time.Second
 	billingOutboxMaxAttempts               = 10
+	// 同一用户的扣费事务按分片互斥串行化，避免多个 apply worker 同时
+	// UPDATE 同一 users 余额行形成行锁链（热点用户下可阻塞整轮 worker）。
+	billingApplyUserShardCount = 256
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -66,6 +69,7 @@ type BillingOutboxWorker struct {
 	processed                      atomic.Uint64
 	failures                       atomic.Uint64
 	lastError                      atomic.Value
+	applyUserLocks                 [billingApplyUserShardCount]sync.Mutex
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -197,7 +201,9 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 	var result *UsageBillingApplyResult
 	var err error
 	if staged, ok := w.billing.(UsageBillingFinalizationRepository); ok {
+		unlock := w.lockUserApply(command.Billing.UserID)
 		result, err = staged.ApplyAndStageOutboxFinalization(applyCtx, &command.Billing, UsageBillingOutboxBinding{OutboxID: record.ID, WorkerID: w.workerID})
+		unlock()
 		applyCancel()
 		if err != nil {
 			terminal := billingOutboxIsTerminalError(err)
@@ -274,6 +280,18 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 	}
 	w.processed.Add(1)
 	w.lastError.Store("")
+}
+
+// lockUserApply 按用户分片串行化同一用户的扣费事务。固定 256 个分片互斥，
+// 无动态 map 增长；分片冲突只会让不同用户的事务偶发排队，不影响正确性。
+// userID <= 0 的指令不触碰 users 余额行，无需加锁。
+func (w *BillingOutboxWorker) lockUserApply(userID int64) func() {
+	if w == nil || userID <= 0 {
+		return func() {}
+	}
+	shard := &w.applyUserLocks[uint64(userID)%billingApplyUserShardCount]
+	shard.Lock()
+	return shard.Unlock
 }
 
 // renewFinalizationLease fences finalization state transitions while Finalize is

@@ -110,14 +110,8 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 		return nil, err
 	}
 	result := &service.UsageBillingApplyResult{Applied: applied}
-	if applied {
-		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
-			return nil, err
-		}
-		if err := stageQuotaAuthCacheInvalidationIfExhausted(ctx, tx, cmd, result); err != nil {
-			return nil, err
-		}
-	}
+	// usage_logs 插入（含多索引维护）先于余额/配额等行更新执行，
+	// 使 users/api_keys 行锁只在事务尾部短暂持有，缩短热点行锁竞争窗口。
 	if cmd.UsageLog != nil {
 		prepared, err := prepareUsageLogInsert(cmd.UsageLog)
 		if err != nil {
@@ -127,6 +121,14 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 			return nil, err
 		}
 		result.UsageLogPersisted = true
+	}
+	if applied {
+		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
+			return nil, err
+		}
+		if err := stageQuotaAuthCacheInvalidationIfExhausted(ctx, tx, cmd, result); err != nil {
+			return nil, err
+		}
 	}
 	if !applied {
 		if err := tx.Commit(); err != nil {

@@ -98,6 +98,15 @@ type windowStatsCache struct {
 	timestamp time.Time
 }
 
+// openAIWindowStatsCacheEntry 缓存 OpenAI 5h/7d 窗口聚合（1 分钟 TTL），
+// 与 Anthropic 路径的 windowStatsCache 对齐，避免账号页刷新风暴重复扫描 usage_logs。
+// start 记录查询所用的窗口起点：窗口翻转（起点变化）时自动失效重查。
+type openAIWindowStatsCacheEntry struct {
+	stats     *usagestats.AccountStats
+	start     time.Time
+	timestamp time.Time
+}
+
 // antigravityUsageCache 缓存 Antigravity 额度数据
 type antigravityUsageCache struct {
 	usageInfo *UsageInfo
@@ -126,6 +135,8 @@ type UsageCache struct {
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
+	// "accountID:5h|7d" -> *openAIWindowStatsCacheEntry
+	openAIWindowStatsCache sync.Map
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -618,14 +629,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		return usage, shouldRefreshPlanType, nil
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now)); err == nil {
+	if stats := s.openAIAccountWindowStats(ctx, account.ID, "5h", codexWindowStatsStart(usage.FiveHour, 5*time.Hour, now), force); stats != nil {
 		if usage.FiveHour == nil {
 			usage.FiveHour = &UsageProgress{Utilization: 0}
 		}
 		usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
-	if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now)); err == nil {
+	if stats := s.openAIAccountWindowStats(ctx, account.ID, "7d", codexWindowStatsStart(usage.SevenDay, 7*24*time.Hour, now), force); stats != nil {
 		if usage.SevenDay == nil {
 			usage.SevenDay = &UsageProgress{Utilization: 0}
 		}
@@ -633,6 +644,33 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	return usage, shouldRefreshPlanType, nil
+}
+
+// openAIAccountWindowStats 返回账号窗口聚合统计，带 1 分钟进程内缓存。
+// force 为 true 时绕过缓存（手动刷新场景）；窗口起点变化时自动失效重查。
+func (s *AccountUsageService) openAIAccountWindowStats(ctx context.Context, accountID int64, windowType string, start time.Time, force bool) *usagestats.AccountStats {
+	if s == nil || s.usageLogRepo == nil {
+		return nil
+	}
+	key := fmt.Sprintf("%d:%s", accountID, windowType)
+	if s.cache != nil && !force {
+		if cached, ok := s.cache.openAIWindowStatsCache.Load(key); ok {
+			if entry, ok := cached.(*openAIWindowStatsCacheEntry); ok &&
+				time.Since(entry.timestamp) < windowStatsCacheTTL && entry.start.Equal(start) {
+				return entry.stats
+			}
+		}
+	}
+	stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, accountID, start)
+	if err != nil {
+		return nil
+	}
+	if s.cache != nil {
+		s.cache.openAIWindowStatsCache.Store(key, &openAIWindowStatsCacheEntry{
+			stats: stats, start: start, timestamp: time.Now(),
+		})
+	}
+	return stats
 }
 
 func (s *AccountUsageService) RefreshOpenAIPlanType(ctx context.Context, account *Account) error {

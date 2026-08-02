@@ -184,12 +184,21 @@ func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
 		r.mu.Unlock()
 		select {
 		case <-ready:
-			r.mu.Lock()
-			calls := r.stopCalls
-			r.mu.Unlock()
-			return calls, nil
+			return r.stopCallsSnapshot(), nil
+		default:
+		}
+		select {
+		case <-ready:
+			return r.stopCallsSnapshot(), nil
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// Stop calls may have become available concurrently with cancellation.
+			// Prefer inspecting their completed state over reporting a stale timeout.
+			select {
+			case <-ready:
+				return r.stopCallsSnapshot(), nil
+			default:
+				return nil, ctx.Err()
+			}
 		}
 	}
 	r.stopping = true
@@ -214,24 +223,53 @@ func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
 	return calls, nil
 }
 
+func (r *Runtime) stopCallsSnapshot() []*stopCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopCalls
+}
+
 func collectStopResults(ctx context.Context, calls []*stopCall) ([]StopResult, bool) {
 	results := make([]StopResult, 0, len(calls))
 	allCompleted := true
 	for _, call := range calls {
 		call.start(context.Background())
+		if result, completed := completedStopResult(call); completed {
+			results = append(results, result)
+			continue
+		}
+
 		select {
 		case <-call.done:
-			if call.err != nil {
-				results = append(results, StopResult{Name: call.registered.descriptor.Name, Outcome: StopError, Err: call.err})
-			} else {
-				results = append(results, StopResult{Name: call.registered.descriptor.Name, Outcome: StopCompleted})
-			}
+			results = append(results, stopResultForCompletedCall(call))
 		case <-ctx.Done():
+			// Completion wins if it raced with the caller deadline. This second
+			// non-blocking observation also handles already-expired retry contexts.
+			if result, completed := completedStopResult(call); completed {
+				results = append(results, result)
+				continue
+			}
 			allCompleted = false
 			results = append(results, StopResult{Name: call.registered.descriptor.Name, Outcome: StopTimedOut, Err: ctx.Err(), StillRunning: true})
 		}
 	}
 	return results, allCompleted
+}
+
+func completedStopResult(call *stopCall) (StopResult, bool) {
+	select {
+	case <-call.done:
+		return stopResultForCompletedCall(call), true
+	default:
+		return StopResult{}, false
+	}
+}
+
+func stopResultForCompletedCall(call *stopCall) StopResult {
+	if call.err != nil {
+		return StopResult{Name: call.registered.descriptor.Name, Outcome: StopError, Err: call.err}
+	}
+	return StopResult{Name: call.registered.descriptor.Name, Outcome: StopCompleted}
 }
 
 func joinStopErrors(results []StopResult) error {

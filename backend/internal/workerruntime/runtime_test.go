@@ -129,6 +129,56 @@ func TestRuntimeStopReportsDeadlineWithoutClaimingStopped(t *testing.T) {
 	require.Eventually(t, func() bool { return component.Snapshot().Lifecycle.State == LifecycleStopped }, time.Second, time.Millisecond)
 }
 
+func TestRuntimeStopAllPrefersCompletedCallsWithExpiredContext(t *testing.T) {
+	runtime := NewRuntime(NewRegistry())
+	periodic := newBlockingStopStub("periodic")
+	periodic.descriptor.Kind = KindPeriodic
+	pool := newLifecycleStub("pool", KindPool, nil)
+	require.NoError(t, runtime.Register(periodic))
+	require.NoError(t, runtime.Register(pool))
+	require.NoError(t, runtime.StartAll(context.Background()))
+
+	// Set up a real Runtime stop attempt in deterministic component order: the
+	// periodic component remains running while the later pool stop has completed.
+	calls, err := runtime.ensureStopCalls(context.Background())
+	require.NoError(t, err)
+	calls[0].start(context.Background())
+	require.Eventually(t, func() bool {
+		return periodic.Snapshot().Lifecycle.State == StateStopping
+	}, time.Second, time.Millisecond)
+	calls[1].start(context.Background())
+	select {
+	case <-calls[1].done:
+	case <-time.After(time.Second):
+		t.Fatal("later stop call did not complete")
+	}
+
+	exhausted, cancel := context.WithCancel(context.Background())
+	cancel()
+	first, err := runtime.StopAll(exhausted)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, []StopResult{
+		{Name: "periodic", Outcome: StopTimedOut, Err: context.Canceled, StillRunning: true},
+		{Name: "pool", Outcome: StopCompleted},
+	}, first)
+
+	close(periodic.release)
+	select {
+	case <-calls[0].done:
+	case <-time.After(time.Second):
+		t.Fatal("earlier stop call did not complete")
+	}
+
+	exhaustedRetry, retryCancel := context.WithCancel(context.Background())
+	retryCancel()
+	second, err := runtime.StopAll(exhaustedRetry)
+	require.NoError(t, err)
+	require.Equal(t, []StopResult{
+		{Name: "periodic", Outcome: StopCompleted},
+		{Name: "pool", Outcome: StopCompleted},
+	}, second)
+}
+
 func TestRuntimeStopAllRetriesTimedOutStopsAfterTheyFinish(t *testing.T) {
 	runtime := NewRuntime(NewRegistry())
 	component := newBlockingStopStub("pool")

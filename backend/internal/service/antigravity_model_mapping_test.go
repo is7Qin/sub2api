@@ -5,6 +5,7 @@ package service
 import (
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -292,7 +293,7 @@ func TestMapAntigravityModel_WildcardTargetEqualsRequest(t *testing.T) {
 			name:           "customtools alias falls back to normalized preview mapping",
 			modelMapping:   map[string]any{"gemini-3.1-pro-preview": "gemini-3.1-pro-high"},
 			requestedModel: "gemini-3.1-pro-preview-customtools",
-			expected:       "gemini-3.1-pro-high",
+			expected:       domain.AntigravityGemini31ProAgentModel,
 		},
 	}
 

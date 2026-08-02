@@ -552,11 +552,34 @@ func (r *groupRepository) GetAccountCount(ctx context.Context, groupID int64) (t
 
 func (r *groupRepository) DeleteAccountGroupsByGroupID(ctx context.Context, groupID int64) (int64, error) {
 	exec := r.sqlFromContext(ctx)
-	res, err := exec.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", groupID)
+	// 解绑同样推进受影响账号的 updated_at（列表缓存失效版本），参见
+	// BindAccountsToGroup 的说明；RETURNING 保留受影响账号数这一返回值契约。
+	rows, err := exec.QueryContext(ctx, "DELETE FROM account_groups WHERE group_id = $1 RETURNING account_id", groupID)
 	if err != nil {
 		return 0, err
 	}
-	affected, _ := res.RowsAffected()
+	var affectedAccountIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		affectedAccountIDs = append(affectedAccountIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	affected := int64(len(affectedAccountIDs))
+	if affected > 0 {
+		if _, err := exec.ExecContext(ctx, "UPDATE accounts SET updated_at = clock_timestamp() WHERE id = ANY($1)", affectedAccountIDs); err != nil {
+			return 0, err
+		}
+	}
 	if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group account clear failed: group=%d err=%v", groupID, err)
 	}
@@ -644,9 +667,32 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 		return nil, err
 	}
 
-	// 3. Delete account_groups join rows.
-	if _, err := exec.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", id); err != nil {
+	// 3. Delete account_groups join rows, and advance the affected accounts'
+	// updated_at (account list cache version, see BindAccountsToGroup).
+	rows, err = exec.QueryContext(ctx, "DELETE FROM account_groups WHERE group_id = $1 RETURNING account_id", id)
+	if err != nil {
 		return nil, err
+	}
+	var orphanedAccountIDs []int64
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		orphanedAccountIDs = append(orphanedAccountIDs, accountID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(orphanedAccountIDs) > 0 {
+		if _, err := exec.ExecContext(ctx, "UPDATE accounts SET updated_at = clock_timestamp() WHERE id = ANY($1)", orphanedAccountIDs); err != nil {
+			return nil, err
+		}
 	}
 
 	// 4. Soft-delete group itself.
@@ -779,12 +825,20 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 	}
 
 	exec := r.sqlFromContext(ctx)
-	// 使用 INSERT ... ON CONFLICT DO NOTHING 忽略已存在的绑定
+	// 使用 INSERT ... ON CONFLICT DO NOTHING 忽略已存在的绑定，仅对实际新绑定
+	// 的账号推进 updated_at：账号列表缓存以 max(accounts.updated_at) 为失效
+	// 版本，绑定变更不推进版本会导致分组列表缓存返回陈旧数据。用
+	// clock_timestamp() 而非 NOW()（NOW() 固定为事务开始时间，长事务内推进无效）。
 	_, err := exec.ExecContext(
 		ctx,
-		`INSERT INTO account_groups (account_id, group_id, priority, created_at)
-		 SELECT unnest($1::bigint[]), $2, 50, NOW()
-		 ON CONFLICT (account_id, group_id) DO NOTHING`,
+		`WITH inserted AS (
+			INSERT INTO account_groups (account_id, group_id, priority, created_at)
+			SELECT unnest($1::bigint[]), $2, 50, NOW()
+			ON CONFLICT (account_id, group_id) DO NOTHING
+			RETURNING account_id
+		)
+		UPDATE accounts SET updated_at = clock_timestamp()
+		WHERE id IN (SELECT account_id FROM inserted)`,
 		accountIDs,
 		groupID,
 	)

@@ -2868,9 +2868,9 @@ func (c *accountsListTTLCache) set(key string, accounts []Account, total int64, 
 }
 
 func accountsListCacheKey(page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) string {
-	return fmt.Sprintf("%d|%d|%s|%s|%s|%s|%d|%s|%s|%s",
+	return fmt.Sprintf("%d|%d|%s|%s|%s|%s|%d|%s|%s|%s|%s",
 		page, pageSize, filters.Platform, filters.AccountType, filters.Status,
-		filters.Search, filters.GroupID, filters.PrivacyMode, sortBy, sortOrder)
+		filters.Search, filters.GroupID, filters.PrivacyMode, filters.PlanType, sortBy, sortOrder)
 }
 
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {

@@ -48,6 +48,28 @@ func TestAdminServiceImpl_ListAccountsCacheKeyedByParams(t *testing.T) {
 	require.Equal(t, int32(3), repo.listCalls.Load(), "different page/filters must not share cache entries")
 }
 
+func TestAdminServiceImpl_ListAccountsCacheKeyedByPlanType(t *testing.T) {
+	repo := &accountsListCacheRepoStub{}
+	svc := &adminServiceImpl{accountRepo: repo, accountsListCache: newAccountsListTTLCache()}
+
+	ctx := context.Background()
+	_, _, err := svc.ListAccounts(ctx, 1, 200, AccountListFilters{PlanType: "plus"}, "created_at", "desc")
+	require.NoError(t, err)
+	_, _, err = svc.ListAccounts(ctx, 1, 200, AccountListFilters{PlanType: "pro"}, "created_at", "desc")
+	require.NoError(t, err)
+	require.Equal(t, int32(2), repo.listCalls.Load(), "different PlanType must not share cache entries")
+}
+
+func TestAccountsListCacheKeyIncludesPlanType(t *testing.T) {
+	base := AccountListFilters{Platform: "openai", AccountType: "oauth", Status: "active", Search: "s", GroupID: 3, PrivacyMode: "cf", PlanType: "plus"}
+	withPlus := accountsListCacheKey(1, 20, base, "created_at", "desc")
+	base.PlanType = "pro"
+	withPro := accountsListCacheKey(1, 20, base, "created_at", "desc")
+	require.NotEqual(t, withPlus, withPro, "PlanType must be part of the cache key")
+	require.Contains(t, withPlus, "plus")
+	require.Contains(t, withPro, "pro")
+}
+
 func TestAdminServiceImpl_ListAccountsCacheExpires(t *testing.T) {
 	repo := &accountsListCacheRepoStub{}
 	svc := &adminServiceImpl{accountRepo: repo, accountsListCache: newAccountsListTTLCache()}

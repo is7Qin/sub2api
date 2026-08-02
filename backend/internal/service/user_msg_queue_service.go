@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -43,8 +42,6 @@ type UserMessageQueueService struct {
 	cache    UserMsgQueueCache
 	rpmCache RPMCache
 	cfg      *config.UserMessageQueueConfig
-	stopCh   chan struct{} // graceful shutdown
-	stopOnce sync.Once     // 确保 Stop() 并发安全
 }
 
 // NewUserMessageQueueService 创建用户消息串行队列服务
@@ -53,7 +50,6 @@ func NewUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg 
 		cache:    cache,
 		rpmCache: rpmCache,
 		cfg:      cfg,
-		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -246,60 +242,52 @@ func (s *UserMessageQueueService) CalculateRPMAwareDelay(ctx context.Context, ac
 	return applyJitter(baseDelay, 0.15)
 }
 
-// StartCleanupWorker 启动孤儿锁清理 worker
-// 定期 SCAN umq:*:lock 并清理 PTTL == -1 的异常锁（PTTL 检查在 cache.ScanLockKeys 内完成）
-func (s *UserMessageQueueService) StartCleanupWorker(interval time.Duration) {
-	if s == nil || s.cache == nil || interval <= 0 {
-		return
+// CleanupInterval returns the configured orphan-lock cleanup interval.
+func (s *UserMessageQueueService) CleanupInterval() time.Duration {
+	if s == nil || s.cfg == nil || s.cfg.CleanupIntervalSeconds <= 0 {
+		return 0
 	}
-
-	runCleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		accountIDs, err := s.cache.ScanLockKeys(ctx, 1000)
-		if err != nil {
-			logger.LegacyPrintf("service.umq", "Cleanup scan failed: %v", err)
-			return
-		}
-
-		cleaned := 0
-		for _, accountID := range accountIDs {
-			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if err := s.cache.ForceReleaseLock(cleanCtx, accountID); err != nil {
-				logger.LegacyPrintf("service.umq", "Cleanup force release failed for account %d: %v", accountID, err)
-			} else {
-				cleaned++
-			}
-			cleanCancel()
-		}
-
-		if cleaned > 0 {
-			logger.LegacyPrintf("service.umq", "Cleanup completed: released %d orphaned locks", cleaned)
-		}
-	}
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-s.stopCh:
-				return
-			case <-ticker.C:
-				runCleanup()
-			}
-		}
-	}()
+	return time.Duration(s.cfg.CleanupIntervalSeconds) * time.Second
 }
 
-// Stop 停止后台 cleanup worker
-func (s *UserMessageQueueService) Stop() {
-	if s != nil && s.stopCh != nil {
-		s.stopOnce.Do(func() {
-			close(s.stopCh)
-		})
+// CleanupEnabled reports whether orphan-lock cleanup can run.
+func (s *UserMessageQueueService) CleanupEnabled() bool {
+	return s != nil && s.cache != nil && s.CleanupInterval() > 0
+}
+
+// RunCleanup performs one orphan-lock cleanup cycle.
+func (s *UserMessageQueueService) RunCleanup(ctx context.Context) error {
+	if !s.CleanupEnabled() {
+		return nil
 	}
+
+	scanCtx, scanCancel := context.WithTimeout(ctx, 10*time.Second)
+	accountIDs, err := s.cache.ScanLockKeys(scanCtx, 1000)
+	scanCancel()
+	if err != nil {
+		logger.LegacyPrintf("service.umq", "Cleanup scan failed: %v", err)
+		return err
+	}
+
+	cleaned := 0
+	for _, accountID := range accountIDs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		cleanCtx, cleanCancel := context.WithTimeout(ctx, 2*time.Second)
+		err := s.cache.ForceReleaseLock(cleanCtx, accountID)
+		cleanCancel()
+		if err != nil {
+			logger.LegacyPrintf("service.umq", "Cleanup force release failed for account %d: %v", accountID, err)
+			continue
+		}
+		cleaned++
+	}
+
+	if cleaned > 0 {
+		logger.LegacyPrintf("service.umq", "Cleanup completed: released %d orphaned locks", cleaned)
+	}
+	return nil
 }
 
 // applyJitter 对延迟值施加 ±jitterPct 的随机抖动

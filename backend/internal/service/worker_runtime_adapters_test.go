@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -440,6 +441,162 @@ func TestTokenRefreshWorkerRunsEnabledServiceImmediately(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("token refresh worker did not run immediately")
 	}
+}
+
+func TestProvideUserMessageQueueServiceConstructionDoesNotStartCleanup(t *testing.T) {
+	cache := &userMessageQueueCacheSpy{scanCalls: make(chan context.Context, 1)}
+	cfg := &config.Config{}
+	cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds = 1
+
+	_ = ProvideUserMessageQueueService(cache, nil, cfg)
+
+	require.Never(t, func() bool { return len(cache.scanCalls) > 0 }, 50*time.Millisecond, time.Millisecond)
+}
+
+func TestUserMessageQueueCleanupWorkerUsesDelayedPeriodicRuntimeSpec(t *testing.T) {
+	cfg := &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60}
+	worker, err := NewUserMessageQueueCleanupWorker(NewUserMessageQueueService(&userMessageQueueCacheSpy{}, nil, cfg))
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "user-message-queue-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Releases orphaned user-message queue locks", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"user-message-queue", "orphan-lock-cleanup"}, snapshot.Descriptor.Tags)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestUserMessageQueueCleanupWorkerIsOmittedWhenDisabled(t *testing.T) {
+	for _, svc := range []*UserMessageQueueService{
+		NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60}),
+		NewUserMessageQueueService(&userMessageQueueCacheSpy{}, nil, &config.UserMessageQueueConfig{}),
+	} {
+		worker, err := NewUserMessageQueueCleanupWorker(svc)
+		require.NoError(t, err)
+		require.Nil(t, worker)
+	}
+}
+
+func TestUserMessageQueueCleanupWorkerWaitsForFirstInterval(t *testing.T) {
+	cache := &userMessageQueueCacheSpy{scanCalls: make(chan context.Context, 1)}
+	worker, err := NewUserMessageQueueCleanupWorker(NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60}))
+	require.NoError(t, err)
+	require.NoError(t, worker.Start(context.Background()))
+	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
+
+	require.Never(t, func() bool { return len(cache.scanCalls) > 0 }, 50*time.Millisecond, time.Millisecond)
+}
+
+func TestUserMessageQueueCleanupPropagatesCancellationToScan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cache := &userMessageQueueCacheSpy{scanFn: func(scanCtx context.Context) ([]int64, error) {
+		cancel()
+		<-scanCtx.Done()
+		return nil, scanCtx.Err()
+	}}
+	svc := NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60})
+
+	require.ErrorIs(t, svc.RunCleanup(ctx), context.Canceled)
+}
+
+func TestUserMessageQueueCleanupPropagatesCallbackContextToScanAndRelease(t *testing.T) {
+	cache := &userMessageQueueCacheSpy{lockIDs: []int64{1}, scanCalls: make(chan context.Context, 1), releaseCalls: make(chan context.Context, 1)}
+	svc := NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	parentDeadline, ok := ctx.Deadline()
+	require.True(t, ok)
+
+	require.NoError(t, svc.RunCleanup(ctx))
+	scanCtx := <-cache.scanCalls
+	scanDeadline, ok := scanCtx.Deadline()
+	require.True(t, ok)
+	require.False(t, scanDeadline.After(parentDeadline))
+	releaseCtx := <-cache.releaseCalls
+	releaseDeadline, ok := releaseCtx.Deadline()
+	require.True(t, ok)
+	require.False(t, releaseDeadline.After(parentDeadline))
+}
+
+func TestUserMessageQueueCleanupCapsReleaseContextAtTwoSeconds(t *testing.T) {
+	cache := &userMessageQueueCacheSpy{lockIDs: []int64{1}, releaseCalls: make(chan context.Context, 1)}
+	svc := NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60})
+
+	require.NoError(t, svc.RunCleanup(context.Background()))
+	releaseCtx := <-cache.releaseCalls
+	deadline, ok := releaseCtx.Deadline()
+	require.True(t, ok)
+	require.LessOrEqual(t, deadline.Sub(time.Now()), 2*time.Second)
+	require.Greater(t, deadline.Sub(time.Now()), time.Second)
+}
+
+func TestUserMessageQueueCleanupCancellationPreventsLaterReleases(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cache := &userMessageQueueCacheSpy{lockIDs: []int64{1, 2}, releaseFn: func(_ context.Context, accountID int64) error {
+		if accountID == 1 {
+			cancel()
+		}
+		return nil
+	}}
+	svc := NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60})
+
+	require.ErrorIs(t, svc.RunCleanup(ctx), context.Canceled)
+	require.Equal(t, []int64{1}, cache.releasedIDs)
+}
+
+func TestUserMessageQueueCleanupContinuesAfterPerKeyFailure(t *testing.T) {
+	cache := &userMessageQueueCacheSpy{lockIDs: []int64{1, 2}, releaseFn: func(_ context.Context, accountID int64) error {
+		if accountID == 1 {
+			return errors.New("release failed")
+		}
+		return nil
+	}}
+	svc := NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60})
+
+	require.NoError(t, svc.RunCleanup(context.Background()))
+	require.Equal(t, []int64{1, 2}, cache.releasedIDs)
+}
+
+type userMessageQueueCacheSpy struct {
+	lockIDs      []int64
+	scanCalls    chan context.Context
+	releaseCalls chan context.Context
+	releasedIDs  []int64
+	releaseFn    func(context.Context, int64) error
+	scanFn       func(context.Context) ([]int64, error)
+}
+
+func (s *userMessageQueueCacheSpy) AcquireLock(context.Context, int64, string, int) (bool, error) {
+	return false, nil
+}
+func (s *userMessageQueueCacheSpy) ReleaseLock(context.Context, int64, string) (bool, error) {
+	return false, nil
+}
+func (s *userMessageQueueCacheSpy) GetLastCompletedMs(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+func (s *userMessageQueueCacheSpy) GetCurrentTimeMs(context.Context) (int64, error) { return 0, nil }
+func (s *userMessageQueueCacheSpy) ScanLockKeys(ctx context.Context, _ int) ([]int64, error) {
+	if s.scanCalls != nil {
+		s.scanCalls <- ctx
+	}
+	if s.scanFn != nil {
+		return s.scanFn(ctx)
+	}
+	return s.lockIDs, nil
+}
+func (s *userMessageQueueCacheSpy) ForceReleaseLock(ctx context.Context, accountID int64) error {
+	if s.releaseCalls != nil {
+		s.releaseCalls <- ctx
+	}
+	s.releasedIDs = append(s.releasedIDs, accountID)
+	if s.releaseFn != nil {
+		return s.releaseFn(ctx, accountID)
+	}
+	return nil
 }
 
 type tokenRefreshRuntimeRepo struct {

@@ -235,13 +235,9 @@ func ProvideConcurrencyService(cache ConcurrencyCache, accountRepo AccountReposi
 	return svc
 }
 
-// ProvideUserMessageQueueService 创建用户消息串行队列服务并启动清理 worker
+// ProvideUserMessageQueueService constructs the user-message queue service.
 func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg *config.Config) *UserMessageQueueService {
-	svc := NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
-	if cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds > 0 {
-		svc.StartCleanupWorker(time.Duration(cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds) * time.Second)
-	}
-	return svc
+	return NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
 }
 
 // ProvideSchedulerSnapshotService creates and starts SchedulerSnapshotService.

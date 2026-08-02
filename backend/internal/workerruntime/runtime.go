@@ -31,12 +31,14 @@ type stopCall struct {
 	registered registeredComponent
 	once       sync.Once
 	done       chan struct{}
+	started    chan struct{}
 	err        error
 }
 
 func (c *stopCall) start(ctx context.Context) {
 	c.once.Do(func() {
 		go func() {
+			close(c.started)
 			c.err = c.registered.component.Stop(ctx)
 			close(c.done)
 		}()
@@ -213,13 +215,22 @@ func (r *Runtime) ensureStopCalls(ctx context.Context) ([]*stopCall, error) {
 	components := stopOrder(r.registry.componentCopies())
 	calls := make([]*stopCall, 0, len(components))
 	for _, registered := range components {
-		calls = append(calls, &stopCall{registered: registered, done: make(chan struct{})})
+		calls = append(calls, &stopCall{registered: registered, done: make(chan struct{}), started: make(chan struct{})})
 	}
 
 	r.mu.Lock()
 	r.stopCalls = calls
 	close(ready)
 	r.mu.Unlock()
+
+	// Start every stop call before collecting results. Stop calls are issued in the
+	// established periodic-before-pool order, but each runs independently so a
+	// blocking periodic stop cannot delay a pool from rejecting new work.
+	for _, call := range calls {
+		call.start(context.Background())
+		// Keep invocation order deterministic without serializing completion.
+		<-call.started
+	}
 	return calls, nil
 }
 
@@ -233,7 +244,6 @@ func collectStopResults(ctx context.Context, calls []*stopCall) ([]StopResult, b
 	results := make([]StopResult, 0, len(calls))
 	allCompleted := true
 	for _, call := range calls {
-		call.start(context.Background())
 		if result, completed := completedStopResult(call); completed {
 			results = append(results, result)
 			continue

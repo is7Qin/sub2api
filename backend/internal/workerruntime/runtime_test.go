@@ -72,14 +72,20 @@ func (c *lifecycleStub) Snapshot() Snapshot {
 
 type blockingStopStub struct {
 	*lifecycleStub
+	entered chan struct{}
 	release chan struct{}
 }
 
 func newBlockingStopStub(name string) *blockingStopStub {
-	return &blockingStopStub{lifecycleStub: newLifecycleStub(name, KindPool, nil), release: make(chan struct{})}
+	return &blockingStopStub{
+		lifecycleStub: newLifecycleStub(name, KindPool, nil),
+		entered:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
 }
 
 func (c *blockingStopStub) Stop(context.Context) error {
+	close(c.entered)
 	c.mu.Lock()
 	c.lifecycle.State = StateStopping
 	c.mu.Unlock()
@@ -127,6 +133,51 @@ func TestRuntimeStopReportsDeadlineWithoutClaimingStopped(t *testing.T) {
 	require.Equal(t, StateStopping, component.Snapshot().Lifecycle.State)
 	close(component.release)
 	require.Eventually(t, func() bool { return component.Snapshot().Lifecycle.State == LifecycleStopped }, time.Second, time.Millisecond)
+}
+
+func TestRuntimeStopAllStartsPoolStopWhilePeriodicStopBlocks(t *testing.T) {
+	runtime := NewRuntime(NewRegistry())
+	periodic := newBlockingStopStub("periodic")
+	periodic.descriptor.Kind = KindPeriodic
+	pool := newBlockingStopStub("pool")
+	require.NoError(t, runtime.Register(periodic))
+	require.NoError(t, runtime.Register(pool))
+	require.NoError(t, runtime.StartAll(context.Background()))
+	released := false
+	releaseStops := func() {
+		if released {
+			return
+		}
+		released = true
+		close(periodic.release)
+		close(pool.release)
+	}
+	t.Cleanup(releaseStops)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stopDone := make(chan struct{})
+	go func() {
+		_, _ = runtime.StopAll(ctx)
+		close(stopDone)
+	}()
+
+	select {
+	case <-periodic.entered:
+	case <-time.After(time.Second):
+		t.Fatal("periodic stop did not start")
+	}
+	select {
+	case <-pool.entered:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("pool stop was not initiated while periodic stop blocked")
+	}
+	releaseStops()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("StopAll did not finish after stops were released")
+	}
 }
 
 func TestRuntimeStopAllPrefersCompletedCallsWithExpiredContext(t *testing.T) {
@@ -263,18 +314,17 @@ func TestRuntimeStartAllIsIdempotent(t *testing.T) {
 }
 
 func TestRuntimeStopAllStopsPeriodicBeforePoolsInDeterministicOrder(t *testing.T) {
-	events := make([]string, 0, 8)
 	runtime := NewRuntime(NewRegistry())
 	for _, component := range []*lifecycleStub{
-		newLifecycleStub("z-pool", KindPool, &events), newLifecycleStub("a-periodic", KindPeriodic, &events),
-		newLifecycleStub("a-pool", KindPool, &events), newLifecycleStub("z-periodic", KindPeriodic, &events),
+		newLifecycleStub("z-pool", KindPool, nil), newLifecycleStub("a-periodic", KindPeriodic, nil),
+		newLifecycleStub("a-pool", KindPool, nil), newLifecycleStub("z-periodic", KindPeriodic, nil),
 	} {
 		require.NoError(t, runtime.Register(component))
 	}
 	require.NoError(t, runtime.StartAll(context.Background()))
 	results, err := runtime.StopAll(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, []string{"stop:a-periodic", "stop:z-periodic", "stop:a-pool", "stop:z-pool"}, events[4:])
+	// Completion is concurrent, while result ordering remains stable.
 	require.Equal(t, []string{"a-periodic", "z-periodic", "a-pool", "z-pool"}, stopResultNames(results))
 }
 

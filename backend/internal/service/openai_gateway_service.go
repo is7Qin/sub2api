@@ -5479,8 +5479,11 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 			"message": message,
 		},
 	})
+	// HTTP 200 stream failures do not carry a transport status for capacity and
+	// other transient processing errors, so evaluate their semantic payload too.
 	retryableOnSameAccount := account != nil && account.IsPoolMode() &&
-		account.IsPoolModeRetryableStatus(statusCode)
+		(account.IsPoolModeRetryableStatus(statusCode) ||
+			isOpenAITransientProcessingError(http.StatusBadRequest, message, payload))
 	if statusCode == http.StatusTooManyRequests {
 		s.handleOpenAIStreamRateLimit(c, account, headers, payload)
 	}

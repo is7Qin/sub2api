@@ -2679,7 +2679,34 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 	if err != nil {
 		return nil, 0, err
 	}
+	// 列表查询已投影排除 credentials；这里批量回填列表 UI 需要的
+	// 少量子字段（email/plan_type/model_mapping 等），避免全量 JSONB
+	// 解码。best-effort：子集查询失败不影响列表主数据。
+	if len(accounts) > 0 {
+		if reader, ok := s.accountRepo.(accountCredentialSubsetReader); ok {
+			ids := make([]int64, 0, len(accounts))
+			for i := range accounts {
+				ids = append(ids, accounts[i].ID)
+			}
+			subsets, err := reader.ListAccountCredentialSubset(ctx, ids)
+			if err == nil {
+				for i := range accounts {
+					if subset, ok := subsets[accounts[i].ID]; ok {
+						accounts[i].Credentials = subset
+					}
+				}
+			} else {
+				slog.Warn("account credential subset fill failed", "error", err)
+			}
+		}
+	}
 	return accounts, result.Total, nil
+}
+
+// accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFilters 投影后，
+// 通过它批量回填列表 UI 消费的 credentials 子字段。测试 stub 无需实现。
+type accountCredentialSubsetReader interface {
+	ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error)
 }
 
 // accountsListCacheTTL 是 admin 账号列表缓存的保留时间。

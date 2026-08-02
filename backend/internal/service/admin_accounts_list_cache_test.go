@@ -86,3 +86,28 @@ func TestAdminServiceImpl_ListAccountsCacheReturnsCopies(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "acc-1", accounts2[0].Name)
 }
+
+type accountsListCacheRepoWithSubsetStub struct {
+	accountsListCacheRepoStub
+	subsets map[int64]map[string]any
+}
+
+func (s *accountsListCacheRepoWithSubsetStub) ListAccountCredentialSubset(_ context.Context, ids []int64) (map[int64]map[string]any, error) {
+	return s.subsets, nil
+}
+
+func TestAdminServiceImpl_ListAccountsFillsCredentialSubset(t *testing.T) {
+	repo := &accountsListCacheRepoWithSubsetStub{
+		subsets: map[int64]map[string]any{
+			1: {"email": "a@example.com", "plan_type": "plus", "model_mapping": map[string]any{"gpt-5": "gpt-5-upstream"}},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo, accountsListCache: newAccountsListTTLCache()}
+
+	accounts, _, err := svc.ListAccounts(context.Background(), 1, 200, AccountListFilters{}, "created_at", "desc")
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, "a@example.com", accounts[0].Credentials["email"])
+	require.Equal(t, "plus", accounts[0].Credentials["plan_type"])
+	require.NotNil(t, accounts[0].Credentials["model_mapping"])
+}

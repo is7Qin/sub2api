@@ -56,3 +56,4 @@ func TestSchedulerOutboxRepository_CleanupConsumedSkipsNonPositiveWatermark(t *t
 	require.Equal(t, int64(0), deleted)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+

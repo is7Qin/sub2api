@@ -224,8 +224,11 @@ func TestConcurrencySlotCleanupWorkerRunsImmediatelyAndUsesFixedDelay(t *testing
 	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
 
 	require.Eventually(t, func() bool { return cache.calls.Load() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		status, ok := worker.Snapshot().Status.(workerruntime.PeriodicStatus)
+		return ok && status.RunCount == 1
+	}, time.Second, time.Millisecond)
 	status := worker.Snapshot().Status.(workerruntime.PeriodicStatus)
-	require.Equal(t, uint64(1), status.RunCount)
 	require.Equal(t, workerruntime.OutcomeSuccess, status.LastOutcome)
 	require.False(t, status.NextRunAt.IsZero())
 }

@@ -47,7 +47,7 @@ func (s *outboxCleanupCacheStub) GetOutboxWatermark(ctx context.Context) (int64,
 
 func TestOutboxCleanupService_LeaderCleansBillingInBatches(t *testing.T) {
 	billing := &outboxCleanupBillingRepoStub{deleted: 5000}
-	svc := NewOutboxCleanupService(billing, nil, nil)
+	svc := NewOutboxCleanupService(billing, nil, nil, 30*24*time.Hour)
 	svc.SetLeaderLock(&fakeLeaderLockCache{}, nil)
 
 	before := time.Now()
@@ -55,7 +55,7 @@ func TestOutboxCleanupService_LeaderCleansBillingInBatches(t *testing.T) {
 
 	require.Equal(t, int32(outboxCleanupMaxBatches), billing.cleanupCalls.Load(),
 		"full batches must continue until fewer than batchSize rows remain")
-	require.WithinDuration(t, before.Add(-outboxTerminalRetention), billing.lastCutoff, time.Second,
+	require.WithinDuration(t, before.Add(-30*24*time.Hour), billing.lastCutoff, time.Second,
 		"cutoff must be now minus the retention window")
 
 	// 剩余不足一批时提前结束
@@ -68,7 +68,7 @@ func TestOutboxCleanupService_LeaderCleansBillingInBatches(t *testing.T) {
 func TestOutboxCleanupService_LeaderCleansSchedulerConsumedRows(t *testing.T) {
 	scheduler := &outboxCleanupSchedulerRepoStub{deleted: 3}
 	cache := &outboxCleanupCacheStub{watermark: 123456}
-	svc := NewOutboxCleanupService(nil, scheduler, cache)
+	svc := NewOutboxCleanupService(nil, scheduler, cache, 30*24*time.Hour)
 	svc.SetLeaderLock(&fakeLeaderLockCache{}, nil)
 
 	require.NoError(t, svc.Run(context.Background()))
@@ -80,7 +80,7 @@ func TestOutboxCleanupService_LeaderCleansSchedulerConsumedRows(t *testing.T) {
 func TestOutboxCleanupService_SkipsSchedulerWhenWatermarkMissing(t *testing.T) {
 	scheduler := &outboxCleanupSchedulerRepoStub{deleted: 3}
 	cache := &outboxCleanupCacheStub{watermark: 0}
-	svc := NewOutboxCleanupService(nil, scheduler, cache)
+	svc := NewOutboxCleanupService(nil, scheduler, cache, 30*24*time.Hour)
 	svc.SetLeaderLock(&fakeLeaderLockCache{}, nil)
 
 	require.NoError(t, svc.Run(context.Background()))
@@ -96,14 +96,14 @@ func TestOutboxCleanupService_NonLeaderSkipsCleanup(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, held)
 
-	peer := NewOutboxCleanupService(billing, nil, nil)
+	peer := NewOutboxCleanupService(billing, nil, nil, 30*24*time.Hour)
 	peer.SetLeaderLock(lock, nil)
 	require.NoError(t, peer.Run(context.Background()))
 	require.Equal(t, int32(0), billing.cleanupCalls.Load(), "non-leader must not run cleanup")
 }
 
 func TestOutboxCleanupService_IntervalAndAdapter(t *testing.T) {
-	svc := NewOutboxCleanupService(nil, nil, nil)
+	svc := NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour)
 	require.Equal(t, outboxCleanupInterval, svc.Interval())
 
 	job, err := NewOutboxCleanupWorker(svc)

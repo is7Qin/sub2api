@@ -183,8 +183,10 @@ func ProvideOutboxCleanupService(
 	schedulerCache SchedulerCache,
 	lockCache LeaderLockCache,
 	db *sql.DB,
+	cfg *config.Config,
 ) *OutboxCleanupService {
-	svc := NewOutboxCleanupService(billingRepo, schedulerRepo, schedulerCache)
+	svc := NewOutboxCleanupService(billingRepo, schedulerRepo, schedulerCache,
+		time.Duration(cfg.OutboxCleanup.TerminalRetentionDays)*24*time.Hour)
 	svc.SetLeaderLock(lockCache, db)
 	return svc
 }

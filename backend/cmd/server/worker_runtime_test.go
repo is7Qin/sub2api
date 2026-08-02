@@ -25,7 +25,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewSubscriptionExpiryService(nil, time.Hour),
 		service.NewPaymentOrderExpiryService(nil, time.Hour),
 		service.NewPricingService(&config.Config{}, nil),
-		service.NewOutboxCleanupService(nil, nil, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })

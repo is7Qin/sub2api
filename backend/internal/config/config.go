@@ -88,6 +88,7 @@ type Config struct {
 	Dashboard               DashboardCacheConfig          `mapstructure:"dashboard_cache"`
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
+	OutboxCleanup           OutboxCleanupConfig           `mapstructure:"outbox_cleanup"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -1373,6 +1374,15 @@ type DashboardAggregationRetentionConfig struct {
 	DailyDays             int `mapstructure:"daily_days"`
 }
 
+// OutboxCleanupConfig outbox 保留期清理配置
+//
+// 环境变量：OUTBOX_CLEANUP_TERMINAL_RETENTION_DAYS（viper 自动映射）。
+type OutboxCleanupConfig struct {
+	// TerminalRetentionDays: billing_attempt_outbox 终态行（succeeded/terminal）
+	// 保留天数（0 表示禁用该清理目标）。默认 30 天，对齐月度计费对账窗口。
+	TerminalRetentionDays int `mapstructure:"terminal_retention_days"`
+}
+
 // UsageCleanupConfig 使用记录清理任务配置
 type UsageCleanupConfig struct {
 	// Enabled: 是否启用清理任务执行器
@@ -1873,6 +1883,9 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.batch_size", 5000)
 	viper.SetDefault("usage_cleanup.worker_interval_seconds", 10)
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
+
+	// Outbox cleanup
+	viper.SetDefault("outbox_cleanup.terminal_retention_days", 30)
 
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)

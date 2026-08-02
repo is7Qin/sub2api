@@ -9,12 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// outboxTerminalRetention 是 billing_attempt_outbox 终态行（succeeded/terminal）
-// 的保留期：表注释明确这些行"retained for reconciliation"，对账窗口按月度
-// 计费周期取 30 天。超过保留期后由清理服务批量删除；计费幂等由
-// usage_billing_dedup / usage_billing_dedup_archive 独立兜底，不依赖 outbox 行。
-const outboxTerminalRetention = 30 * 24 * time.Hour
-
 const (
 	outboxCleanupInterval = time.Minute
 	// 单周期超时需小于 leader 锁 TTL，避免锁到期后仍有清理在跑。
@@ -32,24 +26,29 @@ const outboxCleanupLeaderLockKey = "outbox-cleanup"
 //   - scheduler_outbox：id <= Redis watermark 的已消费行（watermark 仅在整批
 //     事件全部成功后才推进，删除不丢事件）。
 //
+// terminalRetention 为 billing 终态行保留期（表注释明确这些行"retained for
+// reconciliation"）；<= 0 表示禁用该清理目标。计费幂等由
+// usage_billing_dedup / usage_billing_dedup_archive 独立兜底，不依赖 outbox 行。
 // 生命周期由 server worker runtime 统一管理（见 NewOutboxCleanupWorker）；
 // Run 内部通过 Redis 单例 leader 锁保证多副本下每周期只有一个实例执行，
 // Redis 故障时回退 PostgreSQL advisory lock。
 type OutboxCleanupService struct {
-	billingRepo    BillingOutboxRepository
-	schedulerRepo  SchedulerOutboxRepository
-	schedulerCache SchedulerCache
-	lockCache      LeaderLockCache
-	db             *sql.DB
-	instanceID     string
+	billingRepo       BillingOutboxRepository
+	schedulerRepo     SchedulerOutboxRepository
+	schedulerCache    SchedulerCache
+	lockCache         LeaderLockCache
+	db                *sql.DB
+	instanceID        string
+	terminalRetention time.Duration
 }
 
-func NewOutboxCleanupService(billingRepo BillingOutboxRepository, schedulerRepo SchedulerOutboxRepository, schedulerCache SchedulerCache) *OutboxCleanupService {
+func NewOutboxCleanupService(billingRepo BillingOutboxRepository, schedulerRepo SchedulerOutboxRepository, schedulerCache SchedulerCache, terminalRetention time.Duration) *OutboxCleanupService {
 	return &OutboxCleanupService{
-		billingRepo:    billingRepo,
-		schedulerRepo:  schedulerRepo,
-		schedulerCache: schedulerCache,
-		instanceID:     uuid.NewString(),
+		billingRepo:       billingRepo,
+		schedulerRepo:     schedulerRepo,
+		schedulerCache:    schedulerCache,
+		instanceID:        uuid.NewString(),
+		terminalRetention: terminalRetention,
 	}
 }
 
@@ -84,7 +83,14 @@ func (s *OutboxCleanupService) Run(ctx context.Context) error {
 	}
 	defer release()
 
-	cutoff := time.Now().UTC().Add(-outboxTerminalRetention)
+	if s.terminalRetention <= 0 {
+		// 保留期配置为 0 时禁用 billing 终态行清理（scheduler 清理不受影响）。
+		if s.schedulerRepo == nil {
+			return nil
+		}
+		return s.cleanupScheduler(ctx)
+	}
+	cutoff := time.Now().UTC().Add(-s.terminalRetention)
 	if s.billingRepo != nil {
 		for i := 0; i < outboxCleanupMaxBatches; i++ {
 			deleted, err := s.billingRepo.CleanupTerminal(ctx, cutoff, outboxCleanupBatchSize)
@@ -97,21 +103,27 @@ func (s *OutboxCleanupService) Run(ctx context.Context) error {
 			}
 		}
 	}
-	if s.schedulerRepo != nil && s.schedulerCache != nil {
-		watermark, err := s.schedulerCache.GetOutboxWatermark(ctx)
+	return s.cleanupScheduler(ctx)
+}
+
+// cleanupScheduler 删除 id <= Redis watermark 的已消费行。
+func (s *OutboxCleanupService) cleanupScheduler(ctx context.Context) error {
+	if s.schedulerRepo == nil || s.schedulerCache == nil {
+		return nil
+	}
+	watermark, err := s.schedulerCache.GetOutboxWatermark(ctx)
+	if err != nil {
+		slog.Warn("outbox cleanup scheduler watermark read failed", "error", err)
+		return err
+	}
+	for i := 0; i < outboxCleanupMaxBatches && watermark > 0; i++ {
+		deleted, err := s.schedulerRepo.CleanupConsumed(ctx, watermark, outboxCleanupBatchSize)
 		if err != nil {
-			slog.Warn("outbox cleanup scheduler watermark read failed", "error", err)
+			slog.Warn("outbox cleanup scheduler failed", "error", err)
 			return err
 		}
-		for i := 0; i < outboxCleanupMaxBatches && watermark > 0; i++ {
-			deleted, err := s.schedulerRepo.CleanupConsumed(ctx, watermark, outboxCleanupBatchSize)
-			if err != nil {
-				slog.Warn("outbox cleanup scheduler failed", "error", err)
-				return err
-			}
-			if deleted < outboxCleanupBatchSize {
-				break
-			}
+		if deleted < outboxCleanupBatchSize {
+			break
 		}
 	}
 	return nil

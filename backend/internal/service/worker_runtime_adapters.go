@@ -134,7 +134,6 @@ func NewTokenRefreshWorker(svc *TokenRefreshService) (*workerruntime.PeriodicJob
 	})
 }
 
-// NewIdempotencyCleanupWorker adapts idempotency cleanup maintenance to the worker runtime.
 // The legacy cycle allowed a ten-second scan plus up to 1000 sequential two-second
 // releases. Keep the runtime deadline above that maximum so it only governs shutdown.
 const userMessageQueueCleanupWorkerTimeout = 10*time.Second + 1000*2*time.Second + time.Second
@@ -163,6 +162,7 @@ func NewUserMessageQueueCleanupWorker(svc *UserMessageQueueService) (*workerrunt
 	})
 }
 
+// NewIdempotencyCleanupWorker adapts idempotency cleanup maintenance to the worker runtime.
 func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {
 		return nil, fmt.Errorf("idempotency cleanup service is required")

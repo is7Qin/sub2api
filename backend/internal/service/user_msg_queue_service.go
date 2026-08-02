@@ -277,6 +277,9 @@ func (s *UserMessageQueueService) RunCleanup(ctx context.Context) error {
 		cleanCtx, cleanCancel := context.WithTimeout(ctx, 2*time.Second)
 		err := s.cache.ForceReleaseLock(cleanCtx, accountID)
 		cleanCancel()
+		if parentErr := ctx.Err(); parentErr != nil {
+			return parentErr
+		}
 		if err != nil {
 			logger.LegacyPrintf("service.umq", "Cleanup force release failed for account %d: %v", accountID, err)
 			continue

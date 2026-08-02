@@ -482,12 +482,13 @@ func TestUserMessageQueueCleanupWorkerIsOmittedWhenDisabled(t *testing.T) {
 
 func TestUserMessageQueueCleanupWorkerWaitsForFirstInterval(t *testing.T) {
 	cache := &userMessageQueueCacheSpy{scanCalls: make(chan context.Context, 1)}
-	worker, err := NewUserMessageQueueCleanupWorker(NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60}))
+	worker, err := NewUserMessageQueueCleanupWorker(NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 1}))
 	require.NoError(t, err)
 	require.NoError(t, worker.Start(context.Background()))
 	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
 
-	require.Never(t, func() bool { return len(cache.scanCalls) > 0 }, 50*time.Millisecond, time.Millisecond)
+	require.Never(t, func() bool { return len(cache.scanCalls) > 0 }, 100*time.Millisecond, time.Millisecond)
+	require.Eventually(t, func() bool { return len(cache.scanCalls) == 1 }, 3*time.Second, 10*time.Millisecond)
 }
 
 func TestUserMessageQueueCleanupPropagatesCancellationToScan(t *testing.T) {
@@ -531,6 +532,18 @@ func TestUserMessageQueueCleanupCapsReleaseContextAtTwoSeconds(t *testing.T) {
 	require.True(t, ok)
 	require.LessOrEqual(t, deadline.Sub(time.Now()), 2*time.Second)
 	require.Greater(t, deadline.Sub(time.Now()), time.Second)
+}
+
+func TestUserMessageQueueCleanupFinalReleaseCancellationIsNotReportedAsSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cache := &userMessageQueueCacheSpy{lockIDs: []int64{1}, releaseFn: func(releaseCtx context.Context, _ int64) error {
+		cancel()
+		<-releaseCtx.Done()
+		return releaseCtx.Err()
+	}}
+	svc := NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: 60})
+
+	require.ErrorIs(t, svc.RunCleanup(ctx), context.Canceled)
 }
 
 func TestUserMessageQueueCleanupCancellationPreventsLaterReleases(t *testing.T) {

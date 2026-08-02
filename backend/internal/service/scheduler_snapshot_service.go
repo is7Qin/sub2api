@@ -54,6 +54,19 @@ type SchedulerSnapshotService struct {
 	dirtyRebuildLatched     bool
 	dirtyListFailures       int
 	dirtyListRebuildLatched bool
+	// 快照解码缓存：GetSnapshot 每次调用都对整个桶的账号做 JSON 解码
+	// （大账号池下 O(N) 且与请求成功率无关），高频网关请求下是 CPU 主源。
+	// 短 TTL 缓存解码结果，命中时免解码；调度器对快照账号只读使用。
+	decodeCache sync.Map // bucket.String() -> *snapshotDecodeCacheEntry
+}
+
+// snapshotDecodeCacheTTL 是快照解码缓存的保留时间。快照本身秒级更新，
+// 5 秒内的过期由候选 freshness recheck 兜底，不影响正确性。
+const snapshotDecodeCacheTTL = 5 * time.Second
+
+type snapshotDecodeCacheEntry struct {
+	accounts []*Account
+	exp      time.Time
 }
 
 func NewSchedulerSnapshotService(
@@ -153,10 +166,22 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	bucket := s.bucketFor(groupID, platform, mode)
 
 	if s.cache != nil {
+		cacheKey := bucket.String()
+		// 先查解码缓存：同一桶的 GetSnapshot 解码结果在 TTL 内复用，
+		// 避免每个网关请求对全桶账号重新 JSON 解码。
+		if entry, ok := s.decodeCache.Load(cacheKey); ok {
+			if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
+				return derefAccounts(e.accounts), useMixed, nil
+			}
+		}
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
+			s.decodeCache.Store(cacheKey, &snapshotDecodeCacheEntry{
+				accounts: cached,
+				exp:      time.Now().Add(snapshotDecodeCacheTTL),
+			})
 			return derefAccounts(cached), useMixed, nil
 		}
 	}

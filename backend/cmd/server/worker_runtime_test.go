@@ -25,21 +25,21 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewSubscriptionExpiryService(nil, time.Hour),
 		service.NewPaymentOrderExpiryService(nil, time.Hour),
 		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
 	// Status is the public kind-specific runtime API; do not depend on obsolete snapshot fields.
-	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[0].Status)
-	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[1].Status)
-	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[2].Status)
-	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[3].Status)
-	require.IsType(t, workerruntime.PoolStatus{}, snapshots[4].Status)
+	for i := 0; i < 5; i++ {
+		require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[i].Status)
+	}
+	require.IsType(t, workerruntime.PoolStatus{}, snapshots[5].Status)
 	require.True(t, usagePool.Accepting())
 }
 

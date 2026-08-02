@@ -79,6 +79,9 @@ func (s *gatewayRecordUsageBillingOutboxStub) Ack(context.Context, int64, string
 func (s *gatewayRecordUsageBillingOutboxStub) Stats(context.Context) (BillingOutboxStats, error) {
 	return BillingOutboxStats{}, nil
 }
+func (s *gatewayRecordUsageBillingOutboxStub) CleanupTerminal(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
+}
 
 type openAIRecordUsageBestEffortLogRepoStub struct {
 	UsageLogRepository

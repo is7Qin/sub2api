@@ -93,6 +93,10 @@ func (r *outboxPollRepo) MaxID(context.Context) (int64, error) {
 	return maxID, nil
 }
 
+func (r *outboxPollRepo) CleanupConsumed(context.Context, int64, int) (int64, error) {
+	return 0, nil
+}
+
 func TestSchedulerSnapshotServicePollOutboxAdvancesWatermarkAfterHandling(t *testing.T) {
 	cache := &outboxPollCache{}
 	repo := &outboxPollRepo{

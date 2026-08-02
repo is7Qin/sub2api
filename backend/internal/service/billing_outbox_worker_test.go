@@ -102,6 +102,10 @@ func (r *billingOutboxRepoStub) Stats(context.Context) (BillingOutboxStats, erro
 	return r.stats, r.statsErr
 }
 
+func (r *billingOutboxRepoStub) CleanupTerminal(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
+}
+
 type finalizationLeaseRepoStub struct {
 	billingOutboxRepoStub
 	finalizationRecord BillingOutboxRecord

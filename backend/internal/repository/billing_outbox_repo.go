@@ -392,6 +392,36 @@ func (r *billingOutboxRepository) Ack(ctx context.Context, id int64, workerID st
 	return nil
 }
 
+// CleanupTerminal 批量删除超过保留期的终态行（succeeded/terminal）。
+// 走 (updated_at, id) retention 索引（migration 171），小批次避免长事务。
+// 已终态行不再参与 claim/重放，删除仅影响 enqueue 幂等检查（重新入队会
+// 插入新行，由 usage_billing_dedup 的 apply 幂等兜底，不会重复计费）。
+func (r *billingOutboxRepository) CleanupTerminal(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("billing outbox database is nil")
+	}
+	if limit <= 0 {
+		limit = 5000
+	}
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM billing_attempt_outbox
+		WHERE id IN (
+			SELECT id FROM billing_attempt_outbox
+			WHERE status IN ('succeeded', 'terminal') AND updated_at < $1
+			ORDER BY updated_at, id
+			LIMIT $2
+		)
+	`, cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
 func (r *billingOutboxRepository) Stats(ctx context.Context) (service.BillingOutboxStats, error) {
 	var stats service.BillingOutboxStats
 	var oldest sql.NullTime

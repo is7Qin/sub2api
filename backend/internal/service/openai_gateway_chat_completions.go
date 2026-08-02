@@ -499,7 +499,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		}
 		rawMessage := openAICompatFailedResponseMessage(finalResponse)
 		if openAIStreamFailedEventShouldFailover(payload, rawMessage) {
-			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, rawMessage)
+			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, rawMessage, resp.Header)
 		}
 		message := boundOpenAIMessagesErrorMessage(rawMessage)
 		s.recordOpenAIMessagesStreamUpstreamError(c, account, requestID, upstreamURLFromResponse(resp), "stream_failed", message)
@@ -684,7 +684,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			rawMessage := extractOpenAISSEErrorMessage(payloadBytes)
 			if openAIStreamFailedEventShouldFailover(payloadBytes, rawMessage) {
-				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, rawMessage)
+				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, rawMessage, resp.Header)
 				return true
 			}
 			message := boundOpenAIMessagesErrorMessage(rawMessage)

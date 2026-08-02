@@ -491,7 +491,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		}
 		if openAIStreamFailedEventShouldFailover(payload, rawMessage) {
 			message := boundOpenAIMessagesErrorMessage(rawMessage)
-			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message)
+			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message, resp.Header)
 		}
 		message := boundOpenAIMessagesErrorMessage(rawMessage)
 		s.recordOpenAIMessagesStreamUpstreamError(c, account, requestID, upstreamURLFromResponse(resp), "stream_failed", message)
@@ -952,7 +952,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			}
 			if !clientDisconnected && !clientOutputStarted && openAIStreamFailedEventShouldFailover(payloadBytes, rawMessage) {
 				message := boundOpenAIMessagesErrorMessage(rawMessage)
-				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message)
+				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message, resp.Header)
 				return true
 			}
 			message := boundOpenAIMessagesErrorMessage(rawMessage)

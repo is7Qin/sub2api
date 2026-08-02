@@ -88,46 +88,57 @@ type APIKey struct {
 }
 
 type Group struct {
-	ID             int64   `json:"id,omitempty"`
-	Name           string  `json:"name,omitempty"`
-	Description    string  `json:"description,omitempty"`
-	Platform       string  `json:"platform,omitempty"`
-	RateMultiplier float64 `json:"rate_multiplier,omitempty"`
-	IsExclusive    bool    `json:"is_exclusive,omitempty"`
-	Status         string  `json:"status,omitempty"`
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	Description    string  `json:"description"`
+	Platform       string  `json:"platform"`
+	RateMultiplier float64 `json:"rate_multiplier"`
+	IsExclusive    bool    `json:"is_exclusive"`
+	Status         string  `json:"status"`
 
-	SubscriptionType string   `json:"subscription_type,omitempty"`
-	DailyLimitUSD    *float64 `json:"daily_limit_usd,omitempty"`
-	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd,omitempty"`
-	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd,omitempty"`
+	SubscriptionType string   `json:"subscription_type"`
+	DailyLimitUSD    *float64 `json:"daily_limit_usd"`
+	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd"`
+	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
-	AllowImageGeneration bool     `json:"allow_image_generation,omitempty"`
-	ImageRateIndependent bool     `json:"image_rate_independent,omitempty"`
-	ImageRateMultiplier  float64  `json:"image_rate_multiplier,omitempty"`
-	ImagePrice1K         *float64 `json:"image_price_1k,omitempty"`
-	ImagePrice2K         *float64 `json:"image_price_2k,omitempty"`
-	ImagePrice4K         *float64 `json:"image_price_4k,omitempty"`
+	AllowImageGeneration bool     `json:"allow_image_generation"`
+	ImageRateIndependent bool     `json:"image_rate_independent"`
+	ImageRateMultiplier  float64  `json:"image_rate_multiplier"`
+	ImagePrice1K         *float64 `json:"image_price_1k"`
+	ImagePrice2K         *float64 `json:"image_price_2k"`
+	ImagePrice4K         *float64 `json:"image_price_4k"`
 
 	// Claude Code 客户端限制
-	ClaudeCodeOnly  bool   `json:"claude_code_only,omitempty"`
-	FallbackGroupID *int64 `json:"fallback_group_id,omitempty"`
+	ClaudeCodeOnly  bool   `json:"claude_code_only"`
+	FallbackGroupID *int64 `json:"fallback_group_id"`
 	// 无效请求兜底分组
-	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request,omitempty"`
+	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request"`
 
 	// OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
-	AllowMessagesDispatch bool `json:"allow_messages_dispatch,omitempty"`
+	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
-	RequireOAuthOnly                bool `json:"require_oauth_only,omitempty"`
-	RequirePrivacySet               bool `json:"require_privacy_set,omitempty"`
-	OpenAILongContextBillingEnabled bool `json:"openai_long_context_billing_enabled,omitempty"`
+	RequireOAuthOnly                bool `json:"require_oauth_only"`
+	RequirePrivacySet               bool `json:"require_privacy_set"`
+	OpenAILongContextBillingEnabled bool `json:"openai_long_context_billing_enabled"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
-	RPMLimit int `json:"rpm_limit,omitempty"`
+	RPMLimit int `json:"rpm_limit"`
 
-	CreatedAt *time.Time `json:"created_at,omitempty"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// GroupLite 是账号列表/详情响应中 groups 的轻量投影（仅列表 UI 消费的字段）。
+// 与全局 Group DTO 解耦：Group 保持全量序列化契约（非 admin 接口不变），
+// 列表路径经 GroupLite 只输出 5 个字段、零值经 omitempty 省略。
+type GroupLite struct {
+	ID               int64   `json:"id,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	Platform         string  `json:"platform,omitempty"`
+	SubscriptionType string  `json:"subscription_type,omitempty"`
+	RateMultiplier   float64 `json:"rate_multiplier,omitempty"`
 }
 
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
@@ -260,8 +271,8 @@ type Account struct {
 	Proxy         *Proxy         `json:"proxy,omitempty"`
 	AccountGroups []AccountGroup `json:"account_groups,omitempty"`
 
-	GroupIDs []int64  `json:"group_ids,omitempty"`
-	Groups   []*Group `json:"groups,omitempty"`
+	GroupIDs []int64      `json:"group_ids,omitempty"`
+	Groups   []*GroupLite `json:"groups,omitempty"`
 }
 
 type AccountGroup struct {

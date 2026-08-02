@@ -18,7 +18,8 @@ const (
 	paymentOrderExpiryLeaderLockKey = "payment:order:expiry:leader"
 	// paymentOrderExpiryLeaderLockTTL must exceed the combined reconcile + expiry
 	// timeouts (2 * expiryCheckTimeout) so the lock never expires mid-run.
-	paymentOrderExpiryLeaderLockTTL = 3 * time.Minute
+	paymentOrderExpiryLeaderLockTTL      = 3 * time.Minute
+	paymentOrderExpiryLockAcquireTimeout = 2 * time.Second
 )
 
 // PaymentOrderExpiryService periodically expires timed-out payment orders.
@@ -54,6 +55,52 @@ func (s *PaymentOrderExpiryService) SetLeaderLock(lockCache LeaderLockCache, db 
 	s.db = db
 }
 
+// Interval returns the configured worker interval.
+func (s *PaymentOrderExpiryService) Interval() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.interval
+}
+
+// Run reconciles and expires payment orders once while retaining its leader lock.
+func (s *PaymentOrderExpiryService) Run(ctx context.Context) error {
+	if s == nil || s.paymentSvc == nil {
+		return nil
+	}
+	// Multi-instance guard: only the leader reconciles/expires orders per cycle,
+	// avoiding N× upstream payment-provider API calls and update races.
+	lockCtx, lockCancel := context.WithTimeout(ctx, paymentOrderExpiryLockAcquireTimeout)
+	release, ok := tryAcquireSingletonLeaderLock(lockCtx, s.lockCache, s.db, paymentOrderExpiryLeaderLockKey, s.instanceID, paymentOrderExpiryLeaderLockTTL)
+	lockCancel()
+	if !ok {
+		return nil
+	}
+	defer release()
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, expiryCheckTimeout)
+	recovered, err := s.paymentSvc.ReconcilePendingWxpayOrders(reconcileCtx)
+	cancel()
+	if err != nil {
+		slog.Warn("[PaymentOrderExpiry] failed to reconcile pending wxpay orders", "error", err)
+	} else if recovered > 0 {
+		slog.Info("[PaymentOrderExpiry] reconciled paid wxpay orders", "count", recovered)
+	}
+
+	expireCtx, cancel := context.WithTimeout(ctx, expiryCheckTimeout)
+	defer cancel()
+	expired, err := s.paymentSvc.ExpireTimedOutOrders(expireCtx)
+	if err != nil {
+		slog.Error("[PaymentOrderExpiry] failed to expire orders", "error", err)
+		return err
+	}
+	if expired > 0 {
+		slog.Info("[PaymentOrderExpiry] expired timed-out orders", "count", expired)
+	}
+	return nil
+}
+
+// Start is retained for compatibility; runtime owns this worker's lifecycle.
 func (s *PaymentOrderExpiryService) Start() {
 	if s == nil || s.paymentSvc == nil || s.interval <= 0 {
 		return
@@ -87,33 +134,5 @@ func (s *PaymentOrderExpiryService) Stop() {
 }
 
 func (s *PaymentOrderExpiryService) runOnce() {
-	// Multi-instance guard: only the leader reconciles/expires orders per cycle,
-	// avoiding N× upstream payment-provider API calls and update races.
-	lockCtx, lockCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	release, ok := tryAcquireSingletonLeaderLock(lockCtx, s.lockCache, s.db, paymentOrderExpiryLeaderLockKey, s.instanceID, paymentOrderExpiryLeaderLockTTL)
-	lockCancel()
-	if !ok {
-		return
-	}
-	defer release()
-
-	reconcileCtx, cancel := context.WithTimeout(context.Background(), expiryCheckTimeout)
-	recovered, err := s.paymentSvc.ReconcilePendingWxpayOrders(reconcileCtx)
-	cancel()
-	if err != nil {
-		slog.Warn("[PaymentOrderExpiry] failed to reconcile pending wxpay orders", "error", err)
-	} else if recovered > 0 {
-		slog.Info("[PaymentOrderExpiry] reconciled paid wxpay orders", "count", recovered)
-	}
-
-	expireCtx, cancel := context.WithTimeout(context.Background(), expiryCheckTimeout)
-	defer cancel()
-	expired, err := s.paymentSvc.ExpireTimedOutOrders(expireCtx)
-	if err != nil {
-		slog.Error("[PaymentOrderExpiry] failed to expire orders", "error", err)
-		return
-	}
-	if expired > 0 {
-		slog.Info("[PaymentOrderExpiry] expired timed-out orders", "count", expired)
-	}
+	_ = s.Run(context.Background())
 }

@@ -14,6 +14,9 @@ func provideWorkerRuntime(
 	accountExpiry *service.AccountExpiryService,
 	idempotencyCleanup *service.IdempotencyCleanupService,
 	usagePool *service.UsageRecordWorkerPool,
+	subscriptionExpiry *service.SubscriptionExpiryService,
+	paymentOrderExpiry *service.PaymentOrderExpiryService,
+	pricing *service.PricingService,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -23,13 +26,32 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	subscriptionExpiryWorker, err := service.NewSubscriptionExpiryWorker(subscriptionExpiry)
+	if err != nil {
+		return nil, err
+	}
+	paymentOrderExpiryWorker, err := service.NewPaymentOrderExpiryWorker(paymentOrderExpiry)
+	if err != nil {
+		return nil, err
+	}
+	pricingRemoteSyncWorker, err := service.NewPricingRemoteSyncWorker(pricing)
+	if err != nil {
+		return nil, err
+	}
 
-	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
-	for _, component := range []workerruntime.Component{
+	components := []workerruntime.Component{
 		accountExpiryWorker,
 		idempotencyCleanupWorker,
+		subscriptionExpiryWorker,
+		paymentOrderExpiryWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
-	} {
+	}
+	if pricingRemoteSyncWorker != nil {
+		components = append(components, pricingRemoteSyncWorker)
+	}
+
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	for _, component := range components {
 		if err := runtime.Register(component); err != nil {
 			return nil, err
 		}

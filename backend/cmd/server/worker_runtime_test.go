@@ -22,19 +22,24 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewAccountExpiryService(nil, time.Hour),
 		service.NewIdempotencyCleanupService(nil, &config.Config{}),
 		usagePool,
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
 	// Status is the public kind-specific runtime API; do not depend on obsolete snapshot fields.
 	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[0].Status)
 	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[1].Status)
-	require.IsType(t, workerruntime.PoolStatus{}, snapshots[2].Status)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[2].Status)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[3].Status)
+	require.IsType(t, workerruntime.PoolStatus{}, snapshots[4].Status)
 	require.True(t, usagePool.Accepting())
 }
 
@@ -62,6 +67,8 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	serviceWire := string(content)
 	require.NotContains(t, functionSource(serviceWire, "ProvideAccountExpiryService"), ".Start()")
 	require.NotContains(t, functionSource(serviceWire, "ProvideIdempotencyCleanupService"), ".Start()")
+	require.NotContains(t, functionSource(serviceWire, "ProvideSubscriptionExpiryService"), ".Start()")
+	require.NotContains(t, functionSource(serviceWire, "ProvidePaymentOrderExpiryService"), ".Start()")
 
 	serverWire, err := os.ReadFile("wire.go")
 	require.NoError(t, err)
@@ -69,6 +76,9 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, legacyCleanup, "accountExpiry.Stop()")
 	require.NotContains(t, legacyCleanup, "idempotencyCleanup.Stop()")
 	require.NotContains(t, legacyCleanup, "usageRecordWorkerPool.Stop()")
+	require.NotContains(t, legacyCleanup, "subscriptionExpiry.Stop()")
+	require.NotContains(t, legacyCleanup, "paymentOrderExpiry.Stop()")
+	require.NotContains(t, legacyCleanup, "pricing.Stop()")
 }
 
 type cleanupRuntimeSpy struct {

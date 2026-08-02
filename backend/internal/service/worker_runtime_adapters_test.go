@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -261,6 +262,139 @@ func TestIdempotencyCleanupWorkerCreationDoesNotStartWork(t *testing.T) {
 		t.Fatal("adapter creation started idempotency cleanup work")
 	case <-time.After(25 * time.Millisecond):
 	}
+}
+
+func TestSubscriptionExpiryWorkerPreservesPeriodicRuntimeSpec(t *testing.T) {
+	worker, err := NewSubscriptionExpiryWorker(NewSubscriptionExpiryService(nil, time.Minute))
+
+	require.NoError(t, err)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "subscription-expiry", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+}
+
+func TestPaymentOrderExpiryWorkerPreservesPeriodicRuntimeSpec(t *testing.T) {
+	worker, err := NewPaymentOrderExpiryWorker(NewPaymentOrderExpiryService(nil, time.Minute))
+
+	require.NoError(t, err)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "payment-order-expiry", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationSingletonRun, snapshot.Descriptor.CoordinationMode)
+}
+
+func TestPricingRemoteSyncWorkerIsNotRegisteredWithoutRemoteURL(t *testing.T) {
+	worker, err := NewPricingRemoteSyncWorker(NewPricingService(&config.Config{}, nil))
+
+	require.NoError(t, err)
+	require.Nil(t, worker)
+}
+
+func TestPricingRemoteSyncWorkerWaitsForItsFirstInterval(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RemoteURL = "https://pricing.example/models.json"
+	cfg.Pricing.HashCheckIntervalMinutes = 60
+	worker, err := NewPricingRemoteSyncWorker(NewPricingService(cfg, nil))
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	require.NoError(t, worker.Start(context.Background()))
+	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
+	require.Never(t, func() bool {
+		return worker.Snapshot().Status.(workerruntime.PeriodicStatus).RunCount > 0
+	}, 50*time.Millisecond, time.Millisecond)
+}
+
+func TestPricingRemoteSyncCapsEachRemoteOperationAtThirtySeconds(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RemoteURL = "https://pricing.example/models.json"
+	cfg.Pricing.HashURL = "https://pricing.example/models.sha256"
+	cfg.Pricing.DataDir = t.TempDir()
+	pricingFile := cfg.Pricing.DataDir + "/model_pricing.json"
+	require.NoError(t, os.WriteFile(pricingFile, []byte(`{"test":{"input_cost_per_token":1}}`), 0600))
+	client := &pricingRemoteClientContextSpy{}
+	svc := NewPricingService(cfg, client)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	require.NoError(t, svc.RunRemoteSync(ctx))
+	assertDeadlineDurationNear(t, client.hashObservedAt, client.hashDeadline, 30*time.Second)
+	assertDeadlineDurationNear(t, client.downloadObservedAt, client.downloadDeadline, 30*time.Second)
+}
+
+func TestPricingRemoteSyncRetainsEarlierParentDeadlineForEachOperation(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RemoteURL = "https://pricing.example/models.json"
+	cfg.Pricing.HashURL = "https://pricing.example/models.sha256"
+	cfg.Pricing.DataDir = t.TempDir()
+	pricingFile := cfg.Pricing.DataDir + "/model_pricing.json"
+	require.NoError(t, os.WriteFile(pricingFile, []byte(`{"test":{"input_cost_per_token":1}}`), 0600))
+	client := &pricingRemoteClientContextSpy{}
+	svc := NewPricingService(cfg, client)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	parentDeadline, ok := ctx.Deadline()
+	require.True(t, ok)
+
+	require.NoError(t, svc.RunRemoteSync(ctx))
+	require.False(t, client.hashDeadline.After(parentDeadline))
+	require.False(t, client.downloadDeadline.After(parentDeadline))
+}
+
+func assertDeadlineDurationNear(t *testing.T, observedAt, deadline time.Time, expected time.Duration) {
+	t.Helper()
+	require.False(t, deadline.IsZero())
+	remaining := deadline.Sub(observedAt)
+	require.GreaterOrEqual(t, remaining, expected-time.Second)
+	require.LessOrEqual(t, remaining, expected)
+}
+
+func TestPricingRemoteSyncPropagatesWorkerDeadlineToHashAndDownload(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RemoteURL = "https://pricing.example/models.json"
+	cfg.Pricing.HashURL = "https://pricing.example/models.sha256"
+	cfg.Pricing.DataDir = t.TempDir()
+	pricingFile := cfg.Pricing.DataDir + "/model_pricing.json"
+	require.NoError(t, os.WriteFile(pricingFile, []byte(`{"test":{"input_cost_per_token":1}}`), 0600))
+	client := &pricingRemoteClientContextSpy{}
+	svc := NewPricingService(cfg, client)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	workerDeadline, ok := ctx.Deadline()
+	require.True(t, ok)
+
+	require.NoError(t, svc.RunRemoteSync(ctx))
+	require.False(t, client.hashDeadline.IsZero())
+	require.False(t, client.downloadDeadline.IsZero())
+	require.False(t, client.hashDeadline.After(workerDeadline))
+	require.False(t, client.downloadDeadline.After(workerDeadline))
+}
+
+func TestPaymentOrderExpiryWorkerTimeoutExceedsLockAndOperationBudgets(t *testing.T) {
+	require.Greater(t, paymentOrderExpiryWorkerTimeout,
+		paymentOrderExpiryLockAcquireTimeout+2*expiryCheckTimeout)
+}
+
+type pricingRemoteClientContextSpy struct {
+	hashDeadline       time.Time
+	downloadDeadline   time.Time
+	hashObservedAt     time.Time
+	downloadObservedAt time.Time
+}
+
+func (s *pricingRemoteClientContextSpy) FetchPricingJSON(ctx context.Context, _ string) ([]byte, error) {
+	s.downloadObservedAt = time.Now()
+	s.downloadDeadline, _ = ctx.Deadline()
+	return []byte(`{"test":{"input_cost_per_token":1}}`), nil
+}
+
+func (s *pricingRemoteClientContextSpy) FetchHashText(ctx context.Context, _ string) (string, error) {
+	s.hashObservedAt = time.Now()
+	s.hashDeadline, _ = ctx.Deadline()
+	return "different", nil
 }
 
 func TestRuntimeStopAllWaitsForPeriodicEntryBeforeRealUsagePoolStop(t *testing.T) {

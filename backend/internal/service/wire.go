@@ -180,13 +180,12 @@ func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpirySe
 	return NewAccountExpiryService(accountRepo, time.Minute)
 }
 
-// ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
+// ProvideSubscriptionExpiryService configures SubscriptionExpiryService.
 func ProvideSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
 	svc.SetSettingRepository(settingRepo)
 	svc.SetNotificationEmailService(notificationEmailService)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
 	return svc
 }
 
@@ -669,11 +668,10 @@ func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, 
 	return svc
 }
 
-// ProvidePaymentOrderExpiryService creates and starts PaymentOrderExpiryService.
+// ProvidePaymentOrderExpiryService configures PaymentOrderExpiryService.
 func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache LeaderLockCache, db *sql.DB) *PaymentOrderExpiryService {
 	svc := NewPaymentOrderExpiryService(paymentSvc, 60*time.Second)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
 	return svc
 }
 

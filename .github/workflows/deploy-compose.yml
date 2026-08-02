@@ -43,8 +43,8 @@ permissions:
   contents: read
 
 env:
-  COMPOSE_VERSION: 2.24.7
-  COMPOSE_SHA256: 19c9deb6f4d3915f5c93441b8d2da751a09af82df62d55eab097c2cbfebd519f
+  COMPOSE_VERSION: 2.35.0
+  COMPOSE_SHA256: dba1915cf2f282527f5df0cd7a94b9503047ed200317801853abe8f22c8cd493
 
 jobs:
   contract:

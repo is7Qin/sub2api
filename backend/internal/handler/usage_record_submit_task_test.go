@@ -22,6 +22,7 @@ func newUsageRecordTestPool(t *testing.T) *service.UsageRecordWorkerPool {
 		OverflowSamplePercent: 0,
 		AutoScaleEnabled:      false,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 	return pool
 }
@@ -199,6 +200,7 @@ func newSaturatedUsageRecordTestPool(t *testing.T, policy string, samplePercent 
 		OverflowSamplePercent: samplePercent,
 		AutoScaleEnabled:      false,
 	})
+	require.NoError(t, pool.Start())
 	release := make(chan struct{})
 	t.Cleanup(func() {
 		select {
@@ -280,6 +282,7 @@ func TestOpenAIGatewayHandlerSubmitMandatoryUsageRecordTask_DroppedTaskSyncFallb
 		OverflowSamplePercent: 0,
 		AutoScaleEnabled:      false,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
 
@@ -324,6 +327,7 @@ func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_ImageResultUsesMandator
 		OverflowSamplePercent: 0,
 		AutoScaleEnabled:      false,
 	})
+	require.NoError(t, pool.Start())
 	t.Cleanup(pool.Stop)
 	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
 

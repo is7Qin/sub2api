@@ -174,11 +174,10 @@ func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *Timing
 	return svc
 }
 
-// ProvideAccountExpiryService creates and starts AccountExpiryService.
+// ProvideAccountExpiryService constructs AccountExpiryService.
+// Its lifecycle is owned by the server worker runtime.
 func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
-	svc := NewAccountExpiryService(accountRepo, time.Minute)
-	svc.Start()
-	return svc
+	return NewAccountExpiryService(accountRepo, time.Minute)
 }
 
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
@@ -371,10 +370,10 @@ func ProvideSystemOperationLockService(repo IdempotencyRepository, cfg *config.C
 	return NewSystemOperationLockService(repo, buildIdempotencyConfig(cfg))
 }
 
+// ProvideIdempotencyCleanupService constructs the cleanup service.
+// Its lifecycle is owned by the server worker runtime.
 func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
-	svc := NewIdempotencyCleanupService(repo, cfg)
-	svc.Start()
-	return svc
+	return NewIdempotencyCleanupService(repo, cfg)
 }
 
 // ProvideScheduledTestService creates ScheduledTestService.

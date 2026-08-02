@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ type idempotencyCleanupRepoStub struct {
 	deleteCalls int
 	lastLimit   int
 	deleteErr   error
+	deleteFn    func(context.Context, time.Time, int) (int64, error)
 }
 
 func (r *idempotencyCleanupRepoStub) CreateProcessing(context.Context, *IdempotencyRecord) (bool, error) {
@@ -33,9 +35,12 @@ func (r *idempotencyCleanupRepoStub) MarkSucceeded(context.Context, int64, int, 
 func (r *idempotencyCleanupRepoStub) MarkFailedRetryable(context.Context, int64, string, time.Time, time.Time) error {
 	return nil
 }
-func (r *idempotencyCleanupRepoStub) DeleteExpired(_ context.Context, _ time.Time, limit int) (int64, error) {
+func (r *idempotencyCleanupRepoStub) DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
 	r.deleteCalls++
 	r.lastLimit = limit
+	if r.deleteFn != nil {
+		return r.deleteFn(ctx, now, limit)
+	}
 	if r.deleteErr != nil {
 		return 0, r.deleteErr
 	}
@@ -55,15 +60,44 @@ func TestNewIdempotencyCleanupService_UsesConfig(t *testing.T) {
 	require.Equal(t, 321, svc.batch)
 }
 
-func TestIdempotencyCleanupService_CleanupOnce(t *testing.T) {
-	repo := &idempotencyCleanupRepoStub{}
-	svc := NewIdempotencyCleanupService(repo, &config.Config{
-		Idempotency: config.IdempotencyConfig{
-			CleanupBatchSize: 99,
-		},
-	})
+func TestIdempotencyCleanupRunPreservesConfiguredBatchAndDeadline(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Idempotency.CleanupBatchSize = 37
+	svc := NewIdempotencyCleanupService(&idempotencyCleanupRepoStub{deleteFn: func(ctx context.Context, _ time.Time, batch int) (int64, error) {
+		require.Equal(t, 37, batch)
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		require.WithinDuration(t, time.Now().Add(10*time.Second), deadline, 200*time.Millisecond)
+		return 1, nil
+	}}, cfg)
 
-	svc.cleanupOnce()
-	require.Equal(t, 1, repo.deleteCalls)
-	require.Equal(t, 99, repo.lastLimit)
+	require.NoError(t, svc.Run(context.Background()))
+}
+
+func TestIdempotencyCleanupRunReturnsRepositoryError(t *testing.T) {
+	repoErr := errors.New("cleanup failed")
+	svc := NewIdempotencyCleanupService(&idempotencyCleanupRepoStub{deleteErr: repoErr}, nil)
+
+	require.ErrorIs(t, svc.Run(context.Background()), repoErr)
+}
+
+func TestNewIdempotencyCleanupServiceUsesDefaults(t *testing.T) {
+	svc := NewIdempotencyCleanupService(&idempotencyCleanupRepoStub{}, nil)
+
+	require.Equal(t, 60*time.Second, svc.Interval())
+	require.Equal(t, 500, svc.BatchSize())
+}
+
+func TestNewIdempotencyCleanupServiceDoesNotStartWork(t *testing.T) {
+	called := make(chan struct{}, 1)
+	NewIdempotencyCleanupService(&idempotencyCleanupRepoStub{deleteFn: func(context.Context, time.Time, int) (int64, error) {
+		called <- struct{}{}
+		return 0, nil
+	}}, nil)
+
+	select {
+	case <-called:
+		t.Fatal("constructor started idempotency cleanup work")
+	case <-time.After(25 * time.Millisecond):
+	}
 }

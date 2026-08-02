@@ -2,22 +2,17 @@ package service
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
-// IdempotencyCleanupService 定期清理已过期的幂等记录，避免表无限增长。
+// IdempotencyCleanupService cleans expired idempotency records to prevent unbounded table growth.
 type IdempotencyCleanupService struct {
 	repo     IdempotencyRepository
 	interval time.Duration
 	batch    int
-
-	startOnce sync.Once
-	stopOnce  sync.Once
-	stopCh    chan struct{}
 }
 
 func NewIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
@@ -35,57 +30,40 @@ func NewIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config
 		repo:     repo,
 		interval: interval,
 		batch:    batch,
-		stopCh:   make(chan struct{}),
 	}
 }
 
-func (s *IdempotencyCleanupService) Start() {
-	if s == nil || s.repo == nil {
-		return
-	}
-	s.startOnce.Do(func() {
-		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] started interval=%s batch=%d", s.interval, s.batch)
-		go s.runLoop()
-	})
-}
-
-func (s *IdempotencyCleanupService) Stop() {
+// Interval returns the configured worker interval.
+func (s *IdempotencyCleanupService) Interval() time.Duration {
 	if s == nil {
-		return
+		return 0
 	}
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] stopped")
-	})
+	return s.interval
 }
 
-func (s *IdempotencyCleanupService) runLoop() {
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-
-	// 启动后先清理一轮，防止重启后积压。
-	s.cleanupOnce()
-
-	for {
-		select {
-		case <-ticker.C:
-			s.cleanupOnce()
-		case <-s.stopCh:
-			return
-		}
+// BatchSize returns the configured cleanup batch size.
+func (s *IdempotencyCleanupService) BatchSize() int {
+	if s == nil {
+		return 0
 	}
+	return s.batch
 }
 
-func (s *IdempotencyCleanupService) cleanupOnce() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// Start is retained as a no-op while runtime lifecycle ownership is introduced.
+func (s *IdempotencyCleanupService) Start() {}
+
+// Run deletes one batch of expired idempotency records.
+func (s *IdempotencyCleanupService) Run(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	deleted, err := s.repo.DeleteExpired(ctx, time.Now(), s.batch)
 	if err != nil {
 		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] cleanup failed err=%v", err)
-		return
+		return err
 	}
 	if deleted > 0 {
 		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] cleaned expired records count=%d", deleted)
 	}
+	return nil
 }

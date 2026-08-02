@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"net/http/pprof"
 	"sync/atomic"
 	"time"
 
@@ -90,7 +91,25 @@ func SetupRouter(
 	// 注册路由
 	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
 
+	// /debug/pprof：默认关闭；开启后仅 admin 鉴权可访问。
+	// 用于抓取生产 heap/goroutine profile 定位内存去向与 GC 压力。
+	if cfg != nil && cfg.Server.PprofEnabled {
+		registerPprofRoutes(r, adminAuth)
+	}
+
 	return r
+}
+
+// registerPprofRoutes 注册受 admin 鉴权保护的 pprof 端点。
+// pprof 会暴露内部符号与堆/goroutine 快照，绝不能无鉴权暴露。
+func registerPprofRoutes(r *gin.Engine, adminAuth middleware2.AdminAuthMiddleware) {
+	group := r.Group("/debug/pprof", gin.HandlerFunc(adminAuth))
+	group.GET("/", gin.WrapF(pprof.Index))
+	group.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+	group.GET("/profile", gin.WrapF(pprof.Profile))
+	group.GET("/symbol", gin.WrapF(pprof.Symbol))
+	group.GET("/trace", gin.WrapF(pprof.Trace))
+	group.GET("/:profile", gin.WrapF(pprof.Index))
 }
 
 // registerRoutes 注册所有 HTTP 路由

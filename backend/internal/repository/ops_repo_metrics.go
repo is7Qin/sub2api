@@ -77,7 +77,14 @@ INSERT INTO ops_system_metrics (
   db_conn_waiting,
 
   goroutine_count,
-  concurrency_queue_depth
+  concurrency_queue_depth,
+
+  heap_alloc_mb,
+  heap_sys_mb,
+  gc_num_cycles,
+  gc_total_pause_ms,
+  gc_cpu_fraction,
+  alloc_bytes_per_sec
 ) VALUES (
   $1,$2,$3,$4,
   $5,$6,$7,$8,
@@ -89,7 +96,8 @@ INSERT INTO ops_system_metrics (
   $32,$33,
   $34,$35,
   $36,$37,$38,
-  $39,$40
+  $39,$40,
+  $41,$42,$43,$44,$45,$46
 )`
 
 	_, err := r.db.ExecContext(
@@ -145,6 +153,13 @@ INSERT INTO ops_system_metrics (
 
 		opsNullInt(input.GoroutineCount),
 		opsNullInt(input.ConcurrencyQueueDepth),
+
+		opsNullFloat64(input.HeapAllocMB),
+		opsNullFloat64(input.HeapSysMB),
+		opsNullInt64(input.GCNumCycles),
+		opsNullFloat64(input.GCTotalPauseMs),
+		opsNullFloat64(input.GCCPUFraction),
+		opsNullFloat64(input.AllocBytesPerSec),
 	)
 	return err
 }

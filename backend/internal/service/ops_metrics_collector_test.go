@@ -58,3 +58,27 @@ func TestOpsMetricsCollectorQueryErrorCountsExcludesCountTokens(t *testing.T) {
 	require.NoError(t, db.Close())
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestOpsMetricsCollector_ApplyRuntimeStats(t *testing.T) {
+	collector := &OpsMetricsCollector{}
+	input := &OpsInsertSystemMetricsInput{}
+	now := time.Now()
+
+	// 首次采样：填充当前值，alloc rate 为 nil（无上一次基线）
+	collector.applyRuntimeStats(input, now)
+	require.NotNil(t, input.HeapAllocMB)
+	require.Greater(t, *input.HeapAllocMB, float64(0), "heap alloc must be positive")
+	require.NotNil(t, input.HeapSysMB)
+	require.NotNil(t, input.GCNumCycles)
+	require.NotNil(t, input.GCTotalPauseMs)
+	require.NotNil(t, input.GCCPUFraction)
+	require.Nil(t, input.AllocBytesPerSec, "first sample has no allocation-rate baseline")
+
+	// 第二次采样（模拟分配发生后）：alloc rate 应被计算且非负
+	first := *input.HeapAllocMB
+	_ = first
+	time.Sleep(10 * time.Millisecond)
+	collector.applyRuntimeStats(input, now.Add(10*time.Second))
+	require.NotNil(t, input.AllocBytesPerSec)
+	require.GreaterOrEqual(t, *input.AllocBytesPerSec, float64(0))
+}

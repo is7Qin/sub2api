@@ -838,7 +838,7 @@ func (r *accountRepository) MaxAccountUpdatedAt(ctx context.Context) (*time.Time
 	if r == nil || r.sql == nil {
 		return nil, nil
 	}
-	rows, err := r.sql.QueryContext(ctx, `SELECT max(updated_at) FROM accounts WHERE deleted_at IS NULL`)
+	rows, err := r.sqlFromContext(ctx).QueryContext(ctx, `SELECT max(updated_at) FROM accounts WHERE deleted_at IS NULL`)
 	if err != nil {
 		return nil, err
 	}
@@ -938,7 +938,7 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 		selectList += ", credentials->'" + name + "'"
 	}
 
-	rows, err := r.sql.QueryContext(ctx, `
+	rows, err := r.sqlFromContext(ctx).QueryContext(ctx, `
 		SELECT `+selectList+`
 		FROM accounts
 		WHERE id = ANY($1)

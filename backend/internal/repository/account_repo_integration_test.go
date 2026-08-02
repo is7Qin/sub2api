@@ -2898,3 +2898,66 @@ func (s *AccountRepoSuite) TestListAccountCredentialSubset() {
 	s.Require().NotContains(subset, "access_token")
 	s.Require().NotContains(subset, "refresh_token")
 }
+
+// TestListAccountCredentialSubset_RespectsTxContext 验证子集查询在事务上下文下
+// 走事务连接（sqlFromContext），而不是基础连接 r.sql：事务内未提交的账号行
+// 必须可见，否则事务内先建号再读取子集的路径会拿到空结果。
+func (s *AccountRepoSuite) TestListAccountCredentialSubset_RespectsTxContext() {
+	client := testEntClient(s.T())
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	tx, err := client.Tx(s.ctx)
+	s.Require().NoError(err)
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(s.ctx, tx)
+
+	account := &service.Account{
+		Name:     "cred-subset-tx-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email":     "tx-subset@example.com",
+			"plan_type": "pro",
+		},
+	}
+	s.Require().NoError(repo.Create(txCtx, account))
+	s.Require().Positive(account.ID)
+
+	// 行尚未提交：只有事务感知的执行器（sqlFromContext -> tx.Client()）能看到它。
+	subsets, err := repo.ListAccountCredentialSubset(txCtx, []int64{account.ID})
+	s.Require().NoError(err)
+	subset := subsets[account.ID]
+	s.Require().NotNil(subset)
+	s.Require().Equal("tx-subset@example.com", subset["email"])
+	s.Require().Equal("pro", subset["plan_type"])
+}
+
+// TestMaxAccountUpdatedAt_RespectsTxContext 验证缓存版本查询在事务上下文下走
+// 事务连接：事务内推进的 updated_at 必须立即可见，否则同一事务内先写后读
+// 会得到陈旧缓存版本。
+func (s *AccountRepoSuite) TestMaxAccountUpdatedAt_RespectsTxContext() {
+	client := testEntClient(s.T())
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	tx, err := client.Tx(s.ctx)
+	s.Require().NoError(err)
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(s.ctx, tx)
+
+	account := &service.Account{
+		Name:     "max-updated-at-tx-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	}
+	s.Require().NoError(repo.Create(txCtx, account))
+	s.Require().Positive(account.ID)
+
+	// 把该账号 updated_at 推进到远超任何已提交行的值（仍未提交）。
+	bump := time.Now().UTC().Add(24 * time.Hour)
+	_, err = tx.Client().ExecContext(txCtx, `UPDATE accounts SET updated_at = $1 WHERE id = $2`, bump, account.ID)
+	s.Require().NoError(err)
+
+	latest, err := repo.MaxAccountUpdatedAt(txCtx)
+	s.Require().NoError(err)
+	s.Require().NotNil(latest)
+	// PG timestamptz 微秒精度，返回值与 bump 允许 1ms 容差。
+	s.Require().WithinDuration(bump, *latest, time.Millisecond)
+}

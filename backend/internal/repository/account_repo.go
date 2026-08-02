@@ -1481,6 +1481,14 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 	if err != nil {
 		return err
 	}
+	// 与 BindGroups 一致：新增绑定也推进受影响账号的 updated_at（列表缓存版本，
+	// clock_timestamp() 理由同上）。
+	if _, err := r.sqlFromContext(ctx).ExecContext(ctx,
+		"UPDATE accounts SET updated_at = clock_timestamp() WHERE id = $1",
+		accountID,
+	); err != nil {
+		return err
+	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
 	if err := enqueueSchedulerOutbox(ctx, r.sqlFromContext(ctx), service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue add to group failed: account=%d group=%d err=%v", accountID, groupID, err)
@@ -1497,6 +1505,14 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 		).
 		Exec(ctx)
 	if err != nil {
+		return err
+	}
+	// 与 BindGroups 一致：解除绑定也推进受影响账号的 updated_at（列表缓存版本，
+	// clock_timestamp() 理由同上）。
+	if _, err := r.sqlFromContext(ctx).ExecContext(ctx,
+		"UPDATE accounts SET updated_at = clock_timestamp() WHERE id = $1",
+		accountID,
+	); err != nil {
 		return err
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
@@ -1565,6 +1581,18 @@ func (r *accountRepository) bindGroupsWithClient(ctx context.Context, client *db
 		if _, err := client.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
 			return err
 		}
+	}
+
+	// 成员替换即账号变更：推进受影响账号的 updated_at（账号列表缓存以
+	// max(accounts.updated_at) 为失效版本，仅改分组的批量编辑在 BulkUpdate 无字段
+	// 变更提前返回后不推进版本，分组过滤的列表缓存会返回陈旧成员）。用
+	// clock_timestamp() 而非 NOW()（NOW() 固定为事务开始时间，长事务内推进无效），
+	// 经 sqlFromContext 与成员替换复用同一事务，回滚时一并撤销。
+	if _, err := r.sqlFromContext(ctx).ExecContext(ctx,
+		"UPDATE accounts SET updated_at = clock_timestamp() WHERE id = $1",
+		accountID,
+	); err != nil {
+		return err
 	}
 
 	payload := buildSchedulerGroupPayload(mergeGroupIDs(existingGroupIDs, groupIDs))

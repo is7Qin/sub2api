@@ -881,6 +881,124 @@ func (s *AccountRepoSuite) TestBindGroups_EmptyList() {
 	s.Require().Empty(groups, "expected 0 groups after binding empty list")
 }
 
+// --- 版本推进：ent 侧 membership 写入必须推进受影响账号的 updated_at ---
+// 账号列表缓存以 max(accounts.updated_at) 为失效版本（Task 2），而 ent 生成的
+// account_groups 写入（BindGroups/AddToGroup/RemoveFromGroup）只改关联表：
+// 批量编辑仅改分组时（BulkUpdate 无字段变更提前返回）不会推进版本，分组过滤的
+// 列表缓存会返回陈旧成员。这些测试先于修复存在（TDD 红），确保三条路径都推进
+// 受影响账号的 updated_at。
+
+func (s *AccountRepoSuite) accountUpdatedAtCommitted(accountID int64) time.Time {
+	var updatedAt time.Time
+	s.Require().NoError(scanSingleRow(s.ctx, integrationDB, "SELECT updated_at FROM accounts WHERE id = $1", []any{accountID}, &updatedAt))
+	return updatedAt
+}
+
+// TestBindGroups_AdvancesAccountUpdatedAt 复现审查发现的主路径：批量编辑仅改
+// 分组（BulkUpdate 无字段变更提前返回）→ BindGroups 替换成员 → 版本必须推进。
+func (s *AccountRepoSuite) TestBindGroups_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	g1 := mustCreateGroup(s.T(), client, &service.Group{Name: "bind-ver-g1-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	g2 := mustCreateGroup(s.T(), client, &service.Group{Name: "bind-ver-g2-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "bind-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = ANY($1)", []int64{g1.ID, g2.ID})
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	// 提交路径会写入共享 scheduler_outbox，先清空避免污染后续断言 outbox 空表的测试。
+	_, err := integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+
+	// 批量编辑仅改分组：BulkUpdate 无字段变更，提前返回，不推进版本。
+	rows, err := repo.BulkUpdate(s.ctx, []int64{account.ID}, service.AccountBulkUpdate{})
+	s.Require().NoError(err)
+	s.Require().Zero(rows)
+	before := s.accountUpdatedAtCommitted(account.ID)
+
+	s.Require().NoError(repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g2.ID}))
+
+	s.Require().True(s.accountUpdatedAtCommitted(account.ID).After(before), "BindGroups must advance affected account's updated_at")
+	latest, err := repo.MaxAccountUpdatedAt(s.ctx)
+	s.Require().NoError(err)
+	s.Require().NotNil(latest)
+	s.Require().True(latest.After(before), "BindGroups must advance the list cache version (max accounts.updated_at)")
+}
+
+func (s *AccountRepoSuite) TestAddToGroup_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	group := mustCreateGroup(s.T(), client, &service.Group{Name: "add-ver-g-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "add-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	// 提交路径会写入共享 scheduler_outbox，先清空避免污染后续断言 outbox 空表的测试。
+	_, err := integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+	before := s.accountUpdatedAtCommitted(account.ID)
+
+	s.Require().NoError(repo.AddToGroup(s.ctx, account.ID, group.ID, 10))
+
+	s.Require().True(s.accountUpdatedAtCommitted(account.ID).After(before), "AddToGroup must advance affected account's updated_at")
+}
+
+func (s *AccountRepoSuite) TestRemoveFromGroup_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	group := mustCreateGroup(s.T(), client, &service.Group{Name: "rm-ver-g-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "rm-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	// 提交路径会写入共享 scheduler_outbox，先清空避免污染后续断言 outbox 空表的测试。
+	_, err := integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+	s.Require().NoError(repo.AddToGroup(s.ctx, account.ID, group.ID, 10))
+	before := s.accountUpdatedAtCommitted(account.ID)
+
+	s.Require().NoError(repo.RemoveFromGroup(s.ctx, account.ID, group.ID))
+
+	s.Require().True(s.accountUpdatedAtCommitted(account.ID).After(before), "RemoveFromGroup must advance affected account's updated_at")
+}
+
+// TestBindGroups_UpdatedAtBumpJoinsCallerTx 验证 bump 复用调用方事务：事务内
+// 可见，回滚时与成员替换一起撤销（不会误推进已提交的缓存版本）。
+func (s *AccountRepoSuite) TestBindGroups_UpdatedAtBumpJoinsCallerTx() {
+	client := testEntClient(s.T())
+	group := mustCreateGroup(s.T(), client, &service.Group{Name: "bind-tx-ver-g-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "bind-tx-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	beforeCommitted := s.accountUpdatedAtCommitted(account.ID)
+
+	tx, err := client.Tx(s.ctx)
+	s.Require().NoError(err)
+	txCtx := dbent.NewTxContext(s.ctx, tx)
+
+	s.Require().NoError(repo.BindGroups(txCtx, account.ID, []int64{group.ID}))
+
+	var updatedAtInTx time.Time
+	s.Require().NoError(scanSingleRow(txCtx, tx, "SELECT updated_at FROM accounts WHERE id = $1", []any{account.ID}, &updatedAtInTx))
+	s.Require().True(updatedAtInTx.After(beforeCommitted), "bump must be visible inside the caller tx")
+
+	s.Require().NoError(tx.Rollback())
+
+	s.Require().Equal(beforeCommitted, s.accountUpdatedAtCommitted(account.ID), "rolled-back tx must not advance committed updated_at")
+	groups, err := repo.GetGroups(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Empty(groups, "rolled-back membership replacement must not be visible")
+}
+
 // --- Schedulable ---
 
 func (s *AccountRepoSuite) TestListSchedulable() {

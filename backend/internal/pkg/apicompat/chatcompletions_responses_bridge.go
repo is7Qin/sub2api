@@ -1,6 +1,7 @@
 package apicompat
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,13 @@ func ResponsesToChatCompletionsRequest(req *ResponsesRequest) (*ResponsesToChatC
 }
 
 type responsesInputItemsDecoder func(json.RawMessage) ([]json.RawMessage, error)
+
+type toolOutputMediaByCallID map[string][]ChatContentPart
+
+const (
+	toolOutputMediaMarker      = "[Tool output media moved to the following user message]"
+	toolOutputMediaAttribution = "[Tool output media for call %s]"
+)
 
 func decodeResponsesInputItems(inputRaw json.RawMessage) ([]json.RawMessage, error) {
 	var rawItems []json.RawMessage
@@ -142,12 +150,12 @@ func convertResponsesInput(instructions string, inputRaw json.RawMessage, decode
 		return responsesInputConversion{}, fmt.Errorf("parse responses input: %w", err)
 	}
 
-	built, additionalTools, hasAdditionalTools, err := buildChatMessagesFromItems(messages, rawItems)
+	built, mediaByCallID, additionalTools, hasAdditionalTools, err := buildChatMessagesFromItems(messages, rawItems)
 	if err != nil {
 		return responsesInputConversion{}, err
 	}
 	return responsesInputConversion{
-		messages:           normalizeChatMessages(built),
+		messages:           normalizeChatMessagesWithToolOutputMedia(built, mediaByCallID),
 		additionalTools:    additionalTools,
 		hasAdditionalTools: hasAdditionalTools,
 	}, nil
@@ -155,7 +163,7 @@ func convertResponsesInput(instructions string, inputRaw json.RawMessage, decode
 
 // buildChatMessagesFromItems walks the Responses input items and appends the
 // corresponding Chat messages.
-func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessage) ([]ChatMessage, []ResponsesTool, bool, error) {
+func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessage) ([]ChatMessage, toolOutputMediaByCallID, []ResponsesTool, bool, error) {
 	// pendingReasoning holds the reasoning text from a reasoning item until the
 	// assistant message it belongs to is emitted. DeepSeek's thinking mode
 	// requires the reasoning_content that produced a tool call to be passed back
@@ -163,6 +171,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 	// across an assistant message (so a following tool call in the same turn
 	// still receives it); any other role ends the thinking span.
 	var pendingReasoning string
+	mediaByCallID := make(toolOutputMediaByCallID)
 	var additionalTools []ResponsesTool
 	var hasAdditionalTools bool
 
@@ -181,7 +190,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 				pendingReasoning = ""
 				continue
 			}
-			return nil, nil, false, fmt.Errorf("parse responses input item: %w", err)
+			return nil, nil, nil, false, fmt.Errorf("parse responses input item: %w", err)
 		}
 
 		role := chatCompletionsBridgeRole(rawString(item["role"]))
@@ -193,7 +202,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			if len(toolsRaw) > 0 && string(toolsRaw) != "null" {
 				var tools []ResponsesTool
 				if err := json.Unmarshal(toolsRaw, &tools); err != nil {
-					return nil, nil, false, fmt.Errorf("parse responses additional tools: %w", err)
+					return nil, nil, nil, false, fmt.Errorf("parse responses additional tools: %w", err)
 				}
 				additionalTools = append(additionalTools, tools...)
 			}
@@ -238,11 +247,26 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			}
 			pendingReasoning = ""
 			continue
-		case "function_call_output":
-			content, _ := json.Marshal(rawString(item["output"]))
+		case "function_call_output", "custom_tool_call_output", "tool_search_output":
+			outputRaw := bytesTrimSpace(item["output"])
+			callID := rawString(item["call_id"])
+			delete(mediaByCallID, callID)
+
+			outputText, media, rewritten := extractToolOutputMedia(outputRaw)
+			if rewritten {
+				if callID != "" {
+					mediaByCallID[callID] = media
+				}
+			} else {
+				outputText = rawString(outputRaw)
+				if outputText == "" && len(outputRaw) > 0 && string(outputRaw) != "null" && string(outputRaw) != `""` {
+					outputText = string(outputRaw)
+				}
+			}
+			content, _ := json.Marshal(outputText)
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
-				ToolCallID: rawString(item["call_id"]),
+				ToolCallID: callID,
 				Content:    content,
 			})
 			pendingReasoning = ""
@@ -255,7 +279,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		case "input_image":
 			content, err := chatContentFromSingleResponsesPart(itemType, item)
 			if err != nil {
-				return nil, nil, false, err
+				return nil, nil, nil, false, err
 			}
 			messages = append(messages, ChatMessage{Role: "user", Content: content})
 			pendingReasoning = ""
@@ -281,7 +305,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		}
 		chatContent, err := responsesContentToChatContent(content, role)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, nil, false, err
 		}
 		messages = append(messages, ChatMessage{Role: role, Content: chatContent})
 		// Reasoning only survives across an assistant text message.
@@ -290,7 +314,131 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		}
 	}
 
-	return messages, additionalTools, hasAdditionalTools, nil
+	return messages, mediaByCallID, additionalTools, hasAdditionalTools, nil
+}
+
+// extractToolOutputMedia rewrites recognized image nodes only. Media-free
+// outputs remain byte-identical so prompt-cache prefixes are preserved.
+func extractToolOutputMedia(outputRaw json.RawMessage) (string, []ChatContentPart, bool) {
+	outputRaw = bytesTrimSpace(outputRaw)
+	if len(outputRaw) == 0 || string(outputRaw) == "null" {
+		return "", nil, false
+	}
+
+	var outputString string
+	if err := json.Unmarshal(outputRaw, &outputString); err == nil {
+		if isToolOutputImageDataURL(outputString) {
+			return toolOutputMediaMarker, []ChatContentPart{toolOutputImagePart(outputString)}, true
+		}
+		nested, ok := decodeToolOutputJSON([]byte(outputString))
+		if !ok {
+			return "", nil, false
+		}
+		rewritten, media, changed := rewriteToolOutputMediaValue(nested)
+		if !changed {
+			return "", nil, false
+		}
+		encoded, err := json.Marshal(rewritten)
+		if err != nil {
+			return "", nil, false
+		}
+		return string(encoded), media, true
+	}
+
+	value, ok := decodeToolOutputJSON(outputRaw)
+	if !ok {
+		return "", nil, false
+	}
+	rewritten, media, changed := rewriteToolOutputMediaValue(value)
+	if !changed {
+		return "", nil, false
+	}
+	encoded, err := json.Marshal(rewritten)
+	if err != nil {
+		return "", nil, false
+	}
+	return string(encoded), media, true
+}
+
+func decodeToolOutputJSON(raw []byte) (any, bool) {
+	if !json.Valid(raw) {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func rewriteToolOutputMediaValue(value any) (any, []ChatContentPart, bool) {
+	switch typed := value.(type) {
+	case []any:
+		var media []ChatContentPart
+		changed := false
+		for i, item := range typed {
+			rewritten, itemMedia, itemChanged := rewriteToolOutputMediaValue(item)
+			if !itemChanged {
+				continue
+			}
+			typed[i] = rewritten
+			media = append(media, itemMedia...)
+			changed = true
+		}
+		return typed, media, changed
+	case map[string]any:
+		if imageURL, ok := recognizedToolOutputImageURL(typed); ok {
+			return map[string]any{"type": "input_text", "text": toolOutputMediaMarker},
+				[]ChatContentPart{toolOutputImagePart(imageURL)}, true
+		}
+		content, ok := typed["content"]
+		if !ok {
+			return typed, nil, false
+		}
+		rewritten, media, changed := rewriteToolOutputMediaValue(content)
+		if changed {
+			typed["content"] = rewritten
+		}
+		return typed, media, changed
+	default:
+		return value, nil, false
+	}
+}
+
+func recognizedToolOutputImageURL(value map[string]any) (string, bool) {
+	partType, _ := value["type"].(string)
+	if partType != "input_image" && partType != "image_url" {
+		return "", false
+	}
+	switch imageURL := value["image_url"].(type) {
+	case string:
+		return imageURL, strings.TrimSpace(imageURL) != ""
+	case map[string]any:
+		url, _ := imageURL["url"].(string)
+		return url, strings.TrimSpace(url) != ""
+	default:
+		return "", false
+	}
+}
+
+func isToolOutputImageDataURL(value string) bool {
+	const prefix = "data:image/"
+	const separator = ";base64,"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	separatorIndex := strings.Index(value[len(prefix):], separator)
+	if separatorIndex <= 0 {
+		return false
+	}
+	payloadIndex := len(prefix) + separatorIndex + len(separator)
+	return payloadIndex < len(value)
+}
+
+func toolOutputImagePart(imageURL string) ChatContentPart {
+	return ChatContentPart{Type: "image_url", ImageURL: &ChatImageURL{URL: imageURL}}
 }
 
 // normalizeChatMessages is the single place that enforces the tool-call
@@ -312,6 +460,10 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 // tool replies and intervening messages are emitted in their natural position
 // but never between an assistant tool_calls message and its replies.
 func normalizeChatMessages(messages []ChatMessage) []ChatMessage {
+	return normalizeChatMessagesWithToolOutputMedia(messages, nil)
+}
+
+func normalizeChatMessagesWithToolOutputMedia(messages []ChatMessage, mediaByCallID toolOutputMediaByCallID) []ChatMessage {
 	// Index every tool reply by its tool_call_id (last wins on duplicates).
 	replies := make(map[string]ChatMessage)
 	for _, m := range messages {
@@ -357,6 +509,23 @@ func normalizeChatMessages(messages []ChatMessage) []ChatMessage {
 			out = append(out, m)
 			for _, tc := range kept {
 				out = append(out, replies[tc.ID])
+			}
+
+			var mediaParts []ChatContentPart
+			for _, tc := range kept {
+				media := mediaByCallID[tc.ID]
+				if len(media) == 0 {
+					continue
+				}
+				mediaParts = append(mediaParts, ChatContentPart{
+					Type: "text",
+					Text: fmt.Sprintf(toolOutputMediaAttribution, tc.ID),
+				})
+				mediaParts = append(mediaParts, media...)
+			}
+			if len(mediaParts) > 0 {
+				content, _ := json.Marshal(mediaParts)
+				out = append(out, ChatMessage{Role: "user", Content: content})
 			}
 		default:
 			out = append(out, m)

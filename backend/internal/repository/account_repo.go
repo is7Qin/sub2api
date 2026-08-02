@@ -889,9 +889,11 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 	}
 
 	subFieldNames := accountCredentialSubsetFieldNames()
-	jsonColumns := accountCredentialSubsetJSONColumns()
 	selectList := "id"
 	for _, name := range subFieldNames {
+		// credentials->'field'（jsonb 运算符）对所有类型返回带类型的 JSON
+		// 文本：标量（email/plan_type）带引号、对象/数组保留结构。统一在
+		// 扫描后 json.Unmarshal，标量自动去引号、对象保留类型。
 		selectList += ", credentials->'" + name + "'"
 	}
 
@@ -922,16 +924,14 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 			if !values[i].Valid {
 				continue
 			}
-			if jsonColumns[name] {
-				// JSON 值字段：反序列化保留类型（object/array/bool/number）。
-				var v any
-				if err := json.Unmarshal([]byte(values[i].String), &v); err == nil {
-					subset[name] = v
-					continue
-				}
+			// 统一反序列化：标量 JSON（"email"）去引号还原为字符串，
+			// 对象/数组/布尔/数字保留类型；解析失败时兜底为原样文本。
+			var v any
+			if err := json.Unmarshal([]byte(values[i].String), &v); err == nil {
+				subset[name] = v
+			} else {
+				subset[name] = values[i].String
 			}
-			// 标量字段（email/plan_type 等）或 JSON 解析失败的兜底：原样字符串。
-			subset[name] = values[i].String
 		}
 		out[id] = subset
 	}
@@ -949,18 +949,6 @@ func accountCredentialSubsetFieldNames() []string {
 		"compact_model_mapping", "temp_unschedulable_rules",
 		"temp_unschedulable_enabled", "model_whitelist",
 		"intercept_warmup_requests", "api_key",
-	}
-}
-
-// accountCredentialSubsetJSONColumns 标记子集字段中需要保留 JSON 类型
-// （object/array/bool/number）的字段；其余为标量字符串字段。
-func accountCredentialSubsetJSONColumns() map[string]bool {
-	return map[string]bool{
-		"openai_capabilities":     true,
-		"model_mapping":           true,
-		"compact_model_mapping":   true,
-		"temp_unschedulable_rules": true,
-		"model_whitelist":          true,
 	}
 }
 

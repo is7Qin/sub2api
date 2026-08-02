@@ -263,6 +263,45 @@ func TestIdempotencyCleanupWorkerCreationDoesNotStartWork(t *testing.T) {
 	}
 }
 
+func TestSubscriptionExpiryWorkerPreservesPeriodicRuntimeSpec(t *testing.T) {
+	worker, err := NewSubscriptionExpiryWorker(NewSubscriptionExpiryService(nil, time.Minute))
+
+	require.NoError(t, err)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "subscription-expiry", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+}
+
+func TestPaymentOrderExpiryWorkerPreservesPeriodicRuntimeSpec(t *testing.T) {
+	worker, err := NewPaymentOrderExpiryWorker(NewPaymentOrderExpiryService(nil, time.Minute))
+
+	require.NoError(t, err)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "payment-order-expiry", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+}
+
+func TestPricingRemoteSyncWorkerDisabledWithoutRemoteURL(t *testing.T) {
+	worker, err := NewPricingRemoteSyncWorker(NewPricingService(&config.Config{}, nil))
+
+	require.NoError(t, err)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "pricing-remote-sync", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "pricing", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+
+	require.NoError(t, worker.Start(context.Background()))
+	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
+	require.Never(t, func() bool {
+		return worker.Snapshot().Status.(workerruntime.PeriodicStatus).RunCount > 0
+	}, 50*time.Millisecond, time.Millisecond)
+}
+
 func TestRuntimeStopAllWaitsForPeriodicEntryBeforeRealUsagePoolStop(t *testing.T) {
 	periodicRunning := make(chan struct{})
 	releasePeriodic := make(chan struct{})

@@ -83,9 +83,7 @@ func provideCleanup(
 	apiKeyService *service.APIKeyService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
-	subscriptionExpiry *service.SubscriptionExpiryService,
 	usageCleanup *service.UsageCleanupService,
-	pricing *service.PricingService,
 	emailQueue *service.EmailQueueService,
 	billingCache *service.BillingCacheService,
 	subscriptionService *service.SubscriptionService,
@@ -97,7 +95,6 @@ func provideCleanup(
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
-	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	billingOutboxWorker *service.BillingOutboxWorker,
@@ -179,18 +176,10 @@ func provideCleanup(
 				tokenRefresh.Stop()
 				return nil
 			}},
-			{"SubscriptionExpiryService", func() error {
-				subscriptionExpiry.Stop()
-				return nil
-			}},
 			{"SubscriptionService", func() error {
 				if subscriptionService != nil {
 					subscriptionService.Stop()
 				}
-				return nil
-			}},
-			{"PricingService", func() error {
-				pricing.Stop()
 				return nil
 			}},
 			{"EmailQueueService", func() error {
@@ -232,12 +221,6 @@ func provideCleanup(
 			{"BackupService", func() error {
 				if backupSvc != nil {
 					backupSvc.Stop()
-				}
-				return nil
-			}},
-			{"PaymentOrderExpiryService", func() error {
-				if paymentOrderExpiry != nil {
-					paymentOrderExpiry.Stop()
 				}
 				return nil
 			}},

@@ -190,9 +190,6 @@ func (s *PricingService) Initialize() error {
 		}
 	}
 
-	// 启动定时更新
-	s.startUpdateScheduler()
-
 	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", len(s.pricingData))
 	return nil
 }
@@ -207,7 +204,31 @@ func (s *PricingService) Stop() {
 	logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Service stopped")
 }
 
-// startUpdateScheduler 启动定时更新调度器
+// RemoteSyncInterval returns the configured remote-sync interval, or zero when disabled.
+func (s *PricingService) RemoteSyncInterval() time.Duration {
+	if s == nil || s.cfg == nil || strings.TrimSpace(s.cfg.Pricing.RemoteURL) == "" {
+		return 0
+	}
+	interval := time.Duration(s.cfg.Pricing.HashCheckIntervalMinutes) * time.Minute
+	if interval < time.Minute {
+		interval = 10 * time.Minute
+	}
+	return interval
+}
+
+// RunRemoteSync performs one optional remote pricing synchronization.
+func (s *PricingService) RunRemoteSync(ctx context.Context) error {
+	if s == nil || s.RemoteSyncInterval() <= 0 {
+		return nil
+	}
+	return s.syncWithRemoteContext(ctx)
+}
+
+func (s *PricingService) syncWithRemoteContext(ctx context.Context) error {
+	return s.syncWithRemote(ctx)
+}
+
+// startUpdateScheduler is retained for compatibility; runtime owns scheduling.
 func (s *PricingService) startUpdateScheduler() {
 	if s == nil || s.cfg == nil || strings.TrimSpace(s.cfg.Pricing.RemoteURL) == "" {
 		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Remote sync disabled: pricing remote URL is empty")
@@ -229,7 +250,7 @@ func (s *PricingService) startUpdateScheduler() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := s.syncWithRemote(); err != nil {
+				if err := s.syncWithRemote(context.Background()); err != nil {
 					logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
 				}
 			case <-s.stopCh:
@@ -299,7 +320,7 @@ func (s *PricingService) checkAndUpdatePricing() error {
 }
 
 // syncWithRemote 与远程同步（基于哈希校验）
-func (s *PricingService) syncWithRemote() error {
+func (s *PricingService) syncWithRemote(ctx context.Context) error {
 	// 如果配置了哈希URL，从远程获取哈希进行比对
 	if s.cfg.Pricing.HashURL != "" {
 		remoteHash, err := s.fetchRemoteHash()

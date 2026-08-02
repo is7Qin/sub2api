@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
@@ -65,8 +64,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		cfg,
 		nil,
 	)
-	subscriptionExpirySvc := service.NewSubscriptionExpiryService(nil, time.Second)
-	pricingSvc := service.NewPricingService(cfg, nil)
 	emailQueueSvc := service.NewEmailQueueService(nil, 1)
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
@@ -85,9 +82,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // apiKeyService
 		schedulerSnapshotSvc,
 		tokenRefreshSvc,
-		subscriptionExpirySvc,
 		&service.UsageCleanupService{},
-		pricingSvc,
 		emailQueueSvc,
 		billingCacheSvc,
 		&service.SubscriptionService{},
@@ -99,7 +94,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // openAIGateway
 		nil, // scheduledTestRunner
 		nil, // backupSvc
-		nil, // paymentOrderExpiry
 		nil, // channelMonitorRunner
 		nil, // quotaFlusher
 		nil, // billingOutboxWorker

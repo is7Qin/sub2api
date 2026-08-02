@@ -28,6 +28,74 @@ func NewAccountExpiryWorker(svc *AccountExpiryService) (*workerruntime.PeriodicJ
 	})
 }
 
+// NewSubscriptionExpiryWorker adapts subscription expiry maintenance to the worker runtime.
+func NewSubscriptionExpiryWorker(svc *SubscriptionExpiryService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("subscription expiry service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "subscription-expiry",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Periodically expires subscriptions and sends configured reminders",
+			Tags:             []string{"subscriptions", "expiry", "reminders"},
+		},
+		Interval:       svc.Interval(),
+		Timeout:        10 * time.Second,
+		RunImmediately: true,
+		Run:            svc.Run,
+	})
+}
+
+// NewPaymentOrderExpiryWorker adapts payment-order expiry maintenance to the worker runtime.
+func NewPaymentOrderExpiryWorker(svc *PaymentOrderExpiryService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("payment order expiry service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "payment-order-expiry",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Reconciles and expires timed-out payment orders",
+			Tags:             []string{"payments", "expiry", "reconciliation"},
+		},
+		Interval:       svc.Interval(),
+		Timeout:        62 * time.Second,
+		RunImmediately: true,
+		Run:            svc.Run,
+	})
+}
+
+// NewPricingRemoteSyncWorker adapts optional pricing remote synchronization.
+func NewPricingRemoteSyncWorker(svc *PricingService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("pricing service is required")
+	}
+	interval := svc.RemoteSyncInterval()
+	if interval <= 0 {
+		// The disabled scheduler remains a managed, visible component without invoking remote work.
+		interval = time.Hour
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "pricing-remote-sync",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "pricing",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Synchronizes configured remote pricing data",
+			Tags:             []string{"pricing", "remote-sync"},
+		},
+		Interval:       interval,
+		Timeout:        30 * time.Second,
+		RunImmediately: svc.RemoteSyncInterval() > 0,
+		Run:            svc.RunRemoteSync,
+	})
+}
+
 // NewIdempotencyCleanupWorker adapts idempotency cleanup maintenance to the worker runtime.
 func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {

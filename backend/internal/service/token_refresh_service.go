@@ -240,6 +240,10 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	var lastErr error
 
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		previousAccount := cloneAccountForTokenInvalidation(account)
 		var newCredentials map[string]any
 		var err error
@@ -268,6 +272,10 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 					return fmt.Errorf("failed to save credentials: %w", saveErr)
 				}
 			}
+		}
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 
 		if err == nil {
@@ -300,7 +308,18 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		if attempt < s.cfg.MaxRetries {
 			// 指数退避：2^(attempt-1) * baseSeconds
 			backoff := time.Duration(s.cfg.RetryBackoffSeconds) * time.Second * time.Duration(1<<(attempt-1))
-			time.Sleep(backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return ctx.Err()
+			}
 		}
 	}
 

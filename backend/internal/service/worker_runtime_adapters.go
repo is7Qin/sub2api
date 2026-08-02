@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -103,6 +104,7 @@ func NewTokenRefreshWorker(svc *TokenRefreshService) (*workerruntime.PeriodicJob
 		return nil, fmt.Errorf("token refresh service is required")
 	}
 	if !svc.Enabled() {
+		slog.Info("token_refresh.service_disabled")
 		return nil, nil
 	}
 	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
@@ -120,6 +122,15 @@ func NewTokenRefreshWorker(svc *TokenRefreshService) (*workerruntime.PeriodicJob
 		Timeout:        100 * 365 * 24 * time.Hour,
 		RunImmediately: true,
 		Run:            svc.Run,
+		OnStart: func() {
+			slog.Info("token_refresh.service_started",
+				"check_interval_minutes", svc.cfg.CheckIntervalMinutes,
+				"refresh_before_expiry_hours", svc.cfg.RefreshBeforeExpiryHours,
+			)
+		},
+		OnStop: func() {
+			slog.Info("token_refresh.service_stopped")
+		},
 	})
 }
 

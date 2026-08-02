@@ -3,8 +3,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -891,4 +893,74 @@ func TestPathA_DBUpdateFailed(t *testing.T) {
 	require.Contains(t, err.Error(), "DB update failed")
 	require.Equal(t, 1, repo.updateCalls)  // DB 更新被尝试
 	require.Equal(t, 0, invalidator.calls) // DB 失败时不应触发缓存失效
+}
+
+func TestTokenRefreshService_RefreshWithRetryCancellationDuringBackoffStopsWithoutStatusMutation(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	cfg := &config.Config{TokenRefresh: config.TokenRefreshConfig{
+		MaxRetries:          2,
+		RetryBackoffSeconds: 10,
+	}}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	account := &Account{ID: 22, Platform: PlatformGemini, Type: AccountTypeOAuth}
+	ctx, cancel := context.WithCancel(context.Background())
+	refresher := &cancelingTokenRefresher{cancel: cancel, err: errors.New("temporary upstream failure")}
+
+	started := time.Now()
+	err := service.refreshWithRetry(ctx, account, refresher, refresher, time.Hour)
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Less(t, time.Since(started), time.Second)
+	require.Equal(t, 1, refresher.calls, "cancellation during backoff must prevent another refresh attempt")
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.setTempUnschedCalls, "cancellation must not mark the account temporarily unschedulable")
+}
+
+type cancelingTokenRefresher struct {
+	cancel context.CancelFunc
+	err    error
+	calls  int
+}
+
+func (r *cancelingTokenRefresher) CanRefresh(*Account) bool                  { return true }
+func (r *cancelingTokenRefresher) NeedsRefresh(*Account, time.Duration) bool { return true }
+func (r *cancelingTokenRefresher) CacheKey(*Account) string                  { return "test:canceling" }
+func (r *cancelingTokenRefresher) Refresh(context.Context, *Account) (map[string]any, error) {
+	r.calls++
+	if r.calls == 1 {
+		r.cancel()
+	}
+	return nil, r.err
+}
+
+func TestTokenRefreshWorkerLogsRuntimeOwnedLifecycle(t *testing.T) {
+	var output bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	cfg := &config.Config{}
+	cfg.TokenRefresh.Enabled = true
+	cfg.TokenRefresh.CheckIntervalMinutes = 60
+	worker, err := NewTokenRefreshWorker(NewTokenRefreshService(&tokenRefreshRuntimeRepo{}, nil, nil, nil, nil, nil, nil, cfg, nil))
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	require.NoError(t, worker.Start(context.Background()))
+	require.NoError(t, worker.Stop(context.Background()))
+
+	require.Contains(t, output.String(), "token_refresh.service_started")
+	require.Contains(t, output.String(), "token_refresh.service_stopped")
+}
+
+func TestTokenRefreshWorkerLogsDisabledRuntimeRegistration(t *testing.T) {
+	var output bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	worker, err := NewTokenRefreshWorker(NewTokenRefreshService(&tokenRefreshRuntimeRepo{}, nil, nil, nil, nil, nil, nil, &config.Config{}, nil))
+
+	require.NoError(t, err)
+	require.Nil(t, worker)
+	require.Contains(t, output.String(), "token_refresh.service_disabled")
 }

@@ -9,6 +9,31 @@ vi.mock('vue-i18n', () => ({
 }))
 
 describe('PaymentMethodSelector', () => {
+  it('wraps large method collections without letting labels widen the selector', () => {
+    const methods = Array.from({ length: 12 }, (_, index) => ({
+      type: `custom_payment_method_${index}`,
+      fee_rate: 0,
+      available: true,
+    }))
+
+    const wrapper = mount(PaymentMethodSelector, {
+      props: {
+        selected: methods[0].type,
+        methods,
+      },
+    })
+
+    const grid = wrapper.get('[data-testid="payment-method-grid"]')
+    expect(grid.classes()).toEqual(expect.arrayContaining(['grid', 'sm:grid-cols-3', 'lg:grid-cols-4']))
+    expect(grid.classes()).not.toContain('sm:flex')
+
+    const buttons = wrapper.findAll('button')
+    expect(buttons).toHaveLength(methods.length)
+    expect(buttons.every(button => button.classes().includes('min-w-0'))).toBe(true)
+    expect(buttons.every((button, index) => button.attributes('title') === `payment.methods.${methods[index].type}`)).toBe(true)
+    expect(wrapper.findAll('[data-testid="payment-method-label"]').every(label => label.classes().includes('truncate'))).toBe(true)
+  })
+
   it('uses branded presentation only for built-in alipay and wxpay aliases', () => {
     const wrapper = mount(PaymentMethodSelector, {
       props: {

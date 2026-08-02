@@ -59,6 +59,10 @@ type OpsMetricsCollector struct {
 	lastCgroupCPUUsageNanos uint64
 	lastCgroupCPUSampleAt   time.Time
 
+	// 分配速率采样状态（采集为单 goroutine，无需锁）。
+	lastTotalAlloc uint64
+	lastAllocAt    time.Time
+
 	stopCh    chan struct{}
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -367,7 +371,38 @@ func (c *OpsMetricsCollector) collectAndPersist(ctx context.Context) error {
 		ConcurrencyQueueDepth: concurrencyQueueDepth,
 	}
 
+	c.applyRuntimeStats(input, now)
 	return c.opsRepo.InsertSystemMetrics(ctx, input)
+}
+
+// applyRuntimeStats 采集 Go runtime 内存与 GC 指标（进程内口径，区别于
+// cgroup 的系统内存）。用于定位内存占用去向与 GC 压力：
+//   - HeapAlloc 接近 GOMEMLIMIT 说明 soft limit 过紧，GC 持续高压；
+//   - GCCPUFraction 高说明 GC 本身是 CPU 主因；
+//   - AllocBytesPerSec 高说明需要减少分配（缓冲复用 / 惰性解析）。
+func (c *OpsMetricsCollector) applyRuntimeStats(input *OpsInsertSystemMetricsInput, sampleAt time.Time) {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+
+	heapAllocMB := float64(ms.HeapAlloc) / bytesPerMB
+	heapSysMB := float64(ms.HeapSys) / bytesPerMB
+	pauseMs := float64(ms.PauseTotalNs) / float64(time.Millisecond)
+	input.HeapAllocMB = float64Ptr(roundTo1DP(heapAllocMB))
+	input.HeapSysMB = float64Ptr(roundTo1DP(heapSysMB))
+	input.GCNumCycles = int64Ptr(int64(ms.NumGC))
+	input.GCTotalPauseMs = float64Ptr(roundTo1DP(pauseMs))
+	input.GCCPUFraction = float64Ptr(roundTo1DP(ms.GCCPUFraction))
+
+	// 分配速率：TotalAlloc 增量 / 距上次采样时间。
+	if c.lastTotalAlloc > 0 && !c.lastAllocAt.IsZero() {
+		elapsed := sampleAt.Sub(c.lastAllocAt).Seconds()
+		if elapsed > 0 {
+			alloced := float64(ms.TotalAlloc - c.lastTotalAlloc)
+			input.AllocBytesPerSec = float64Ptr(roundTo1DP(alloced / elapsed))
+		}
+	}
+	c.lastTotalAlloc = ms.TotalAlloc
+	c.lastAllocAt = sampleAt
 }
 
 func (c *OpsMetricsCollector) collectConcurrencyQueueDepth(parentCtx context.Context) *int {
@@ -954,6 +989,11 @@ func boolPtr(v bool) *bool {
 }
 
 func intPtr(v int) *int {
+	out := v
+	return &out
+}
+
+func int64Ptr(v int64) *int64 {
 	out := v
 	return &out
 }

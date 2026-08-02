@@ -158,5 +158,3 @@ func TestOpsServiceGetOpenAITokenStats_RepoUnavailable(t *testing.T) {
 	require.Equal(t, 503, infraerrors.Code(err))
 	require.Equal(t, "OPS_REPO_UNAVAILABLE", infraerrors.Reason(err))
 }
-
-func int64Ptr(v int64) *int64 { return &v }

@@ -190,6 +190,17 @@ type OpsInsertSystemMetricsInput struct {
 
 	GoroutineCount        *int
 	ConcurrencyQueueDepth *int
+
+	// Go runtime memory / GC 观测（进程内，非 cgroup 口径）。
+	// 用于判断内存占用去向与 GC 压力：heap_alloc 接近 GOMEMLIMIT 说明
+	// soft limit 过紧；gc_cpu_fraction 高说明 GC 是 CPU 主因；alloc 速率
+	// 高说明需要减少分配（缓冲复用/惰性解析）。
+	HeapAllocMB       *float64 // 当前堆分配（runtime.MemStats.HeapAlloc）
+	HeapSysMB         *float64 // 堆系统占用（HeapSys）
+	GCNumCycles       *int64   // 累计 GC 周期数（NumGC）
+	GCTotalPauseMs    *float64 // 累计 STW 暂停（PauseTotalNs）
+	GCCPUFraction     *float64 // GC 占累计 CPU 比例（GCCPUFraction，0-1）
+	AllocBytesPerSec  *float64 // 上一采集窗口的分配速率（TotalAlloc 增量）
 }
 
 type OpsInsertSystemLogInput struct {

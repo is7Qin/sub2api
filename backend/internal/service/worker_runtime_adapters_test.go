@@ -181,6 +181,84 @@ func TestUsageRecordWorkerPoolWorkerStopReturnsSuccessAfterCompletionWithExpired
 	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
 }
 
+func TestConcurrencySlotCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
+	cache := &slotCleanupCache{}
+	svc := NewConcurrencyService(cache)
+	svc.ConfigureSlotCleanup(time.Minute)
+
+	worker, err := NewConcurrencySlotCleanupWorker(svc)
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "concurrency-slot-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Removes expired account concurrency slots", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"concurrency", "account-slots", "cleanup"}, snapshot.Descriptor.Tags)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestConcurrencySlotCleanupWorkerIsOmittedWhenDisabled(t *testing.T) {
+	for _, svc := range []*ConcurrencyService{
+		NewConcurrencyService(nil),
+		NewConcurrencyService(&slotCleanupCache{}),
+	} {
+		if svc.cache != nil {
+			svc.ConfigureSlotCleanup(0)
+		}
+		worker, err := NewConcurrencySlotCleanupWorker(svc)
+		require.NoError(t, err)
+		require.Nil(t, worker)
+	}
+}
+
+func TestConcurrencySlotCleanupWorkerRunsImmediatelyAndUsesFixedDelay(t *testing.T) {
+	cache := &slotCleanupCache{}
+	svc := NewConcurrencyService(cache)
+	svc.ConfigureSlotCleanup(time.Hour)
+	worker, err := NewConcurrencySlotCleanupWorker(svc)
+	require.NoError(t, err)
+	require.NoError(t, worker.Start(context.Background()))
+	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
+
+	require.Eventually(t, func() bool { return cache.calls.Load() == 1 }, time.Second, time.Millisecond)
+	status := worker.Snapshot().Status.(workerruntime.PeriodicStatus)
+	require.Equal(t, uint64(1), status.RunCount)
+	require.Equal(t, workerruntime.OutcomeSuccess, status.LastOutcome)
+	require.False(t, status.NextRunAt.IsZero())
+}
+
+func TestConcurrencySlotCleanupCapsContextAtFiveSecondsAndPreservesEarlierDeadline(t *testing.T) {
+	cache := &slotCleanupCache{contexts: make(chan context.Context, 2)}
+	svc := NewConcurrencyService(cache)
+
+	require.NoError(t, svc.RunSlotCleanup(context.Background()))
+	cleanupCtx := <-cache.contexts
+	deadline, ok := cleanupCtx.Deadline()
+	require.True(t, ok)
+	require.LessOrEqual(t, deadline.Sub(time.Now()), 5*time.Second)
+	require.Greater(t, deadline.Sub(time.Now()), 4*time.Second)
+
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	parentDeadline, ok := parent.Deadline()
+	require.True(t, ok)
+	require.NoError(t, svc.RunSlotCleanup(parent))
+	cleanupCtx = <-cache.contexts
+	deadline, ok = cleanupCtx.Deadline()
+	require.True(t, ok)
+	require.False(t, deadline.After(parentDeadline))
+}
+
+func TestConcurrencySlotCleanupReturnsCacheFailure(t *testing.T) {
+	cache := &slotCleanupCache{err: errors.New("cleanup failed")}
+	svc := NewConcurrencyService(cache)
+
+	require.ErrorIs(t, svc.RunSlotCleanup(context.Background()), cache.err)
+}
+
 func TestAccountExpiryWorkerPreservesImmediateRuntimeSpec(t *testing.T) {
 	worker, err := NewAccountExpiryWorker(NewAccountExpiryService(&accountExpiryRepoStub{autoPauseFn: func(context.Context, time.Time) (int64, error) {
 		return 0, nil

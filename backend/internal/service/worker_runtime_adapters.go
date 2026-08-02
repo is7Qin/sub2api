@@ -61,7 +61,7 @@ func NewPaymentOrderExpiryWorker(svc *PaymentOrderExpiryService) (*workerruntime
 			Name:             "payment-order-expiry",
 			Kind:             workerruntime.KindPeriodic,
 			Group:            "maintenance",
-			CoordinationMode: workerruntime.CoordinationPerInstance,
+			CoordinationMode: workerruntime.CoordinationSingletonRun,
 			Description:      "Reconciles and expires timed-out payment orders",
 			Tags:             []string{"payments", "expiry", "reconciliation"},
 		},

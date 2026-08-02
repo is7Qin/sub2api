@@ -283,7 +283,7 @@ func TestPaymentOrderExpiryWorkerPreservesPeriodicRuntimeSpec(t *testing.T) {
 	require.Equal(t, "payment-order-expiry", snapshot.Descriptor.Name)
 	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
 	require.Equal(t, "maintenance", snapshot.Descriptor.Group)
-	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, workerruntime.CoordinationSingletonRun, snapshot.Descriptor.CoordinationMode)
 }
 
 func TestPricingRemoteSyncWorkerIsNotRegisteredWithoutRemoteURL(t *testing.T) {
@@ -306,6 +306,50 @@ func TestPricingRemoteSyncWorkerWaitsForItsFirstInterval(t *testing.T) {
 	require.Never(t, func() bool {
 		return worker.Snapshot().Status.(workerruntime.PeriodicStatus).RunCount > 0
 	}, 50*time.Millisecond, time.Millisecond)
+}
+
+func TestPricingRemoteSyncCapsEachRemoteOperationAtThirtySeconds(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RemoteURL = "https://pricing.example/models.json"
+	cfg.Pricing.HashURL = "https://pricing.example/models.sha256"
+	cfg.Pricing.DataDir = t.TempDir()
+	pricingFile := cfg.Pricing.DataDir + "/model_pricing.json"
+	require.NoError(t, os.WriteFile(pricingFile, []byte(`{"test":{"input_cost_per_token":1}}`), 0600))
+	client := &pricingRemoteClientContextSpy{}
+	svc := NewPricingService(cfg, client)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	require.NoError(t, svc.RunRemoteSync(ctx))
+	assertDeadlineDurationNear(t, client.hashObservedAt, client.hashDeadline, 30*time.Second)
+	assertDeadlineDurationNear(t, client.downloadObservedAt, client.downloadDeadline, 30*time.Second)
+}
+
+func TestPricingRemoteSyncRetainsEarlierParentDeadlineForEachOperation(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RemoteURL = "https://pricing.example/models.json"
+	cfg.Pricing.HashURL = "https://pricing.example/models.sha256"
+	cfg.Pricing.DataDir = t.TempDir()
+	pricingFile := cfg.Pricing.DataDir + "/model_pricing.json"
+	require.NoError(t, os.WriteFile(pricingFile, []byte(`{"test":{"input_cost_per_token":1}}`), 0600))
+	client := &pricingRemoteClientContextSpy{}
+	svc := NewPricingService(cfg, client)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	parentDeadline, ok := ctx.Deadline()
+	require.True(t, ok)
+
+	require.NoError(t, svc.RunRemoteSync(ctx))
+	require.False(t, client.hashDeadline.After(parentDeadline))
+	require.False(t, client.downloadDeadline.After(parentDeadline))
+}
+
+func assertDeadlineDurationNear(t *testing.T, observedAt, deadline time.Time, expected time.Duration) {
+	t.Helper()
+	require.False(t, deadline.IsZero())
+	remaining := deadline.Sub(observedAt)
+	require.GreaterOrEqual(t, remaining, expected-time.Second)
+	require.LessOrEqual(t, remaining, expected)
 }
 
 func TestPricingRemoteSyncPropagatesWorkerDeadlineToHashAndDownload(t *testing.T) {
@@ -335,16 +379,20 @@ func TestPaymentOrderExpiryWorkerTimeoutExceedsLockAndOperationBudgets(t *testin
 }
 
 type pricingRemoteClientContextSpy struct {
-	hashDeadline     time.Time
-	downloadDeadline time.Time
+	hashDeadline       time.Time
+	downloadDeadline   time.Time
+	hashObservedAt     time.Time
+	downloadObservedAt time.Time
 }
 
 func (s *pricingRemoteClientContextSpy) FetchPricingJSON(ctx context.Context, _ string) ([]byte, error) {
+	s.downloadObservedAt = time.Now()
 	s.downloadDeadline, _ = ctx.Deadline()
 	return []byte(`{"test":{"input_cost_per_token":1}}`), nil
 }
 
 func (s *pricingRemoteClientContextSpy) FetchHashText(ctx context.Context, _ string) (string, error) {
+	s.hashObservedAt = time.Now()
 	s.hashDeadline, _ = ctx.Deadline()
 	return "different", nil
 }

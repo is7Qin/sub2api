@@ -371,13 +371,6 @@ func (s *PricingService) downloadPricingData(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Startup and manual refreshes retain their standalone download bound; a worker
-	// supplies its own deadline, which also bounds hash and download network calls.
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-	}
 
 	// 获取远程哈希（用于同步锚点，不作为完整性校验）
 	var remoteHash string
@@ -388,7 +381,9 @@ func (s *PricingService) downloadPricingData(ctx context.Context) error {
 		}
 	}
 
-	body, err := s.remoteClient.FetchPricingJSON(ctx, remoteURL)
+	downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	body, err := s.remoteClient.FetchPricingJSON(downloadCtx, remoteURL)
+	cancel()
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
@@ -603,13 +598,10 @@ func (s *PricingService) fetchRemoteHash(ctx context.Context) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-	}
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 
-	hash, err := s.remoteClient.FetchHashText(ctx, hashURL)
+	hash, err := s.remoteClient.FetchHashText(requestCtx, hashURL)
+	cancel()
 	if err != nil {
 		return "", err
 	}

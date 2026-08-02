@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,6 +108,77 @@ func TestAdminServiceImpl_ListAccountsCacheReturnsCopies(t *testing.T) {
 	accounts2, _, err := svc.ListAccounts(ctx, 1, 200, AccountListFilters{}, "created_at", "desc")
 	require.NoError(t, err)
 	require.Equal(t, "acc-1", accounts2[0].Name)
+}
+
+func TestAccountsListCacheDeepCopiesNestedValues(t *testing.T) {
+	c := newAccountsListTTLCache()
+	const key, version = "page-1", "v1"
+	accounts := []Account{{
+		ID:   1,
+		Name: "acc-1",
+		Credentials: map[string]any{
+			"email":         "a@example.com",
+			"model_mapping": map[string]any{"gpt-5": "gpt-5-upstream"},
+			"tokens":        []any{"t1", "t2"},
+		},
+		Extra:        map[string]any{"privacy_mode": "training_off"},
+		AccountGroups: []AccountGroup{{AccountID: 1, GroupID: 7}},
+		GroupIDs:      []int64{7},
+		Groups: []*Group{{
+			ID: 7, Name: "g1", Platform: "openai", SubscriptionType: "plus",
+			RateMultiplier: 1.5,
+			ModelRouting:   map[string][]int64{"gpt-5": {1, 2}},
+		}},
+	}}
+	c.set(key, accounts, 1, version)
+
+	got, total, ok := c.get(key, version)
+	require.True(t, ok)
+	require.Equal(t, int64(1), total)
+	require.Len(t, got, 1)
+
+	// 修改返回对象的所有嵌套结构：缓存条目与最初传入 set 的 accounts 都不应受影响
+	got[0].Credentials["email"] = "mutated"
+	got[0].Credentials["model_mapping"].(map[string]any)["gpt-5"] = "mutated"
+	got[0].Credentials["tokens"].([]any)[0] = "mutated"
+	got[0].Extra["privacy_mode"] = "mutated"
+	got[0].Groups[0].Name = "mutated"
+	got[0].Groups[0].ModelRouting["gpt-5"][0] = 99
+
+	// 缓存条目未被污染（重新读取仍为原始值）
+	got2, _, ok := c.get(key, version)
+	require.True(t, ok)
+	require.Equal(t, "a@example.com", got2[0].Credentials["email"])
+	require.Equal(t, "gpt-5-upstream", got2[0].Credentials["model_mapping"].(map[string]any)["gpt-5"])
+	require.Equal(t, "t1", got2[0].Credentials["tokens"].([]any)[0])
+	require.Equal(t, "training_off", got2[0].Extra["privacy_mode"])
+	require.Equal(t, "g1", got2[0].Groups[0].Name)
+	require.Equal(t, int64(1), got2[0].Groups[0].ModelRouting["gpt-5"][0])
+	// 传入 set 的原始切片同样未被污染
+	require.Equal(t, "a@example.com", accounts[0].Credentials["email"])
+	require.Equal(t, "gpt-5-upstream", accounts[0].Credentials["model_mapping"].(map[string]any)["gpt-5"])
+	require.Equal(t, "t1", accounts[0].Credentials["tokens"].([]any)[0])
+	require.Equal(t, "g1", accounts[0].Groups[0].Name)
+	require.Equal(t, int64(1), accounts[0].Groups[0].ModelRouting["gpt-5"][0])
+}
+
+func TestAccountsListCacheEvictsOldestWhenOverCapacity(t *testing.T) {
+	c := newAccountsListTTLCache()
+	const version = "v1"
+	// 容量上限 512：写入 513 个不同 key，最早写入的应被淘汰、最新的保留
+	for i := 0; i < 513; i++ {
+		key := fmt.Sprintf("page-%d", i)
+		c.set(key, []Account{{ID: int64(i), Name: key}}, 1, version)
+	}
+	require.Len(t, c.items, 512, "cache must stay bounded at maxEntries")
+	_, _, ok := c.get("page-0", version)
+	require.False(t, ok, "oldest entry must be evicted")
+	for _, i := range []int{1, 512} {
+		key := fmt.Sprintf("page-%d", i)
+		got, _, ok := c.get(key, version)
+		require.True(t, ok, "entry %s must be retained", key)
+		require.Equal(t, key, got[0].Name)
+	}
 }
 
 type accountsListCacheRepoWithSubsetStub struct {

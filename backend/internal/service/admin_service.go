@@ -2729,7 +2729,37 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 			}
 		}
 	}
+	// 列表视图瘦身：groups 只保留列表 UI 消费的字段（id/name/platform/
+	// subscription_type/rate_multiplier），其余零值字段经 dto omitempty
+	// 省略；account_groups 列表不使用，置空后经 omitempty 从响应消失。
+	// 详情页走 GetByID（全量），不受影响。
+	for i := range accounts {
+		accounts[i].Groups = accountListGroupLite(accounts[i].Groups)
+		accounts[i].AccountGroups = nil
+	}
 	return accounts, result.Total, nil
+}
+
+// accountListGroupLite 把完整 group 对象重建为列表视图（仅保留列表 UI
+// 消费的字段），其余零值字段经 dto.Group 的 omitempty 从响应省略。
+func accountListGroupLite(groups []*Group) []*Group {
+	if len(groups) == 0 {
+		return groups
+	}
+	out := make([]*Group, 0, len(groups))
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		out = append(out, &Group{
+			ID:               g.ID,
+			Name:             g.Name,
+			Platform:         g.Platform,
+			SubscriptionType: g.SubscriptionType,
+			RateMultiplier:   g.RateMultiplier,
+		})
+	}
+	return out
 }
 
 // accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFilters 投影后，

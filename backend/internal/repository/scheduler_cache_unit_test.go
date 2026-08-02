@@ -335,6 +335,33 @@ func TestSchedulerCacheSetSnapshotPreservesIDMemberSemanticsAndPayloadBytes(t *t
 	require.Nil(t, snapshot)
 }
 
+func TestSchedulerCacheGetSnapshotVersion(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 5, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+
+	// active key 尚未写入：空版本且无错误（此时 GetSnapshot 同样未命中，
+	// 不存在任何本地解码缓存条目可复用）。
+	version, err := cache.GetSnapshotVersion(ctx, bucket)
+	require.NoError(t, err)
+	require.Empty(t, version)
+
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{
+		{ID: 501, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	}))
+	version, err = cache.GetSnapshotVersion(ctx, bucket)
+	require.NoError(t, err)
+	require.Equal(t, "1", version)
+
+	// 二次写入后版本递增，解码缓存据此失效。
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{
+		{ID: 502, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	}))
+	version, err = cache.GetSnapshotVersion(ctx, bucket)
+	require.NoError(t, err)
+	require.Equal(t, "2", version)
+}
+
 func BenchmarkSchedulerSnapshotAccountMemberMaterialization(b *testing.B) {
 	for _, size := range []int{128, 1024, 10000} {
 		accounts := make([]service.Account, size)

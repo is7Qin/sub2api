@@ -207,6 +207,21 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	return accounts, true, nil
 }
 
+// GetSnapshotVersion 读取分桶当前激活快照版本号。active key 缺失（从未写入
+// 快照）时返回空版本且无错误——与 GetSnapshot 未命中语义一致，此时不存在
+// 任何可复用的本地解码缓存条目。
+func (c *schedulerCache) GetSnapshotVersion(ctx context.Context, bucket service.SchedulerBucket) (string, error) {
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	activeVal, err := c.rdb.Get(ctx, activeKey).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return activeVal, nil
+}
+
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) error {
 	// Phase 1: 分配新版本号并写入快照数据。
 	// INCR 保证每个调用方获得唯一递增版本号。

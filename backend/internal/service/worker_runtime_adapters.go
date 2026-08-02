@@ -131,7 +131,8 @@ func (w *UsageRecordWorkerPoolWorker) Start(context.Context) error {
 	return nil
 }
 
-func (w *UsageRecordWorkerPoolWorker) stopInitiation() <-chan struct{} {
+// StopInitiated returns a channel closed when Stop has entered.
+func (w *UsageRecordWorkerPoolWorker) StopInitiated() <-chan struct{} {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.stopStarted == nil {

@@ -27,8 +27,11 @@ type StopResult struct {
 	StillRunning bool
 }
 
-type stopInitiationNotifier interface {
-	stopInitiation() <-chan struct{}
+// StopInitiationNotifier is optionally implemented by components that can
+// publish when their Stop method has entered. Component deliberately remains
+// minimal; Runtime falls back to launch-and-proceed for other components.
+type StopInitiationNotifier interface {
+	StopInitiated() <-chan struct{}
 }
 
 type stopCall struct {
@@ -40,8 +43,8 @@ type stopCall struct {
 
 func (c *stopCall) start(ctx context.Context) (started <-chan struct{}) {
 	c.once.Do(func() {
-		if notifier, ok := c.registered.component.(stopInitiationNotifier); ok {
-			started = notifier.stopInitiation()
+		if notifier, ok := c.registered.component.(StopInitiationNotifier); ok {
+			started = notifier.StopInitiated()
 		}
 		go func() {
 			c.err = c.registered.component.Stop(ctx)

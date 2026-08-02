@@ -86,7 +86,7 @@ func newBlockingStopStub(name string) *blockingStopStub {
 	}
 }
 
-func (c *blockingStopStub) stopInitiation() <-chan struct{} { return c.stopStarted }
+func (c *blockingStopStub) StopInitiated() <-chan struct{} { return c.stopStarted }
 
 func (c *blockingStopStub) Stop(context.Context) error {
 	close(c.stopStarted)

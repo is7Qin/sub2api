@@ -262,3 +262,67 @@ func TestIdempotencyCleanupWorkerCreationDoesNotStartWork(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 }
+
+func TestRuntimeStopAllWaitsForPeriodicEntryBeforeRealUsagePoolStop(t *testing.T) {
+	periodicRunning := make(chan struct{})
+	releasePeriodic := make(chan struct{})
+	periodic, err := workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "blocking-periodic",
+			Kind:             workerruntime.KindPeriodic,
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+		},
+		Interval:       time.Hour,
+		Timeout:        time.Hour,
+		RunImmediately: true,
+		Run: func(context.Context) error {
+			close(periodicRunning)
+			<-releasePeriodic
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
+	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
+		WorkerCount:      1,
+		QueueSize:        1,
+		AutoScaleEnabled: false,
+	})
+	worker := NewUsageRecordWorkerPoolWorker(pool)
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	require.NoError(t, runtime.Register(periodic))
+	require.NoError(t, runtime.Register(worker))
+	require.NoError(t, runtime.StartAll(context.Background()))
+	<-periodicRunning
+
+	poolTaskStarted := make(chan struct{})
+	releasePoolTask := make(chan struct{})
+	require.Equal(t, UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {
+		close(poolTaskStarted)
+		<-releasePoolTask
+	}))
+	<-poolTaskStarted
+
+	stopDone := make(chan struct{})
+	go func() {
+		_, _ = runtime.StopAll(context.Background())
+		close(stopDone)
+	}()
+	t.Cleanup(func() {
+		close(releasePeriodic)
+		close(releasePoolTask)
+		select {
+		case <-stopDone:
+		case <-time.After(time.Second):
+			t.Error("Runtime.StopAll did not finish after releasing work")
+		}
+	})
+
+	select {
+	case <-periodic.StopInitiated():
+	case <-time.After(time.Second):
+		t.Fatal("periodic Stop did not enter")
+	}
+	require.Eventually(t, func() bool { return !pool.Accepting() }, 100*time.Millisecond, time.Millisecond,
+		"real usage pool Stop was not promptly initiated after periodic Stop entry")
+}

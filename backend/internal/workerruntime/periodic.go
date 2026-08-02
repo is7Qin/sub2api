@@ -93,7 +93,8 @@ func (j *PeriodicJob) Start(ctx context.Context) error {
 	return nil
 }
 
-func (j *PeriodicJob) stopInitiation() <-chan struct{} {
+// StopInitiated returns a channel closed when Stop has entered.
+func (j *PeriodicJob) StopInitiated() <-chan struct{} {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.stopStarted == nil {

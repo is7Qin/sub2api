@@ -378,6 +378,82 @@ func TestPaymentOrderExpiryWorkerTimeoutExceedsLockAndOperationBudgets(t *testin
 		paymentOrderExpiryLockAcquireTimeout+2*expiryCheckTimeout)
 }
 
+func TestTokenRefreshWorkerUsesEnabledServiceRuntimeSpec(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.TokenRefresh.Enabled = true
+	cfg.TokenRefresh.CheckIntervalMinutes = 30
+	svc := NewTokenRefreshService(&tokenRefreshRuntimeRepo{}, nil, nil, nil, nil, nil, nil, cfg, nil)
+
+	worker, err := NewTokenRefreshWorker(svc)
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "token-refresh", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "auth", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Refreshes eligible OAuth tokens before expiry", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"oauth", "token-refresh"}, snapshot.Descriptor.Tags)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+	require.Equal(t, 30*time.Minute, svc.Interval())
+}
+
+func TestTokenRefreshWorkerUsesFiveMinuteMinimumInterval(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.TokenRefresh.Enabled = true
+	cfg.TokenRefresh.CheckIntervalMinutes = 0
+	svc := NewTokenRefreshService(&tokenRefreshRuntimeRepo{}, nil, nil, nil, nil, nil, nil, cfg, nil)
+
+	worker, err := NewTokenRefreshWorker(svc)
+
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Minute, svc.Interval())
+	require.NotNil(t, worker)
+}
+
+func TestTokenRefreshWorkerDoesNotStartDisabledService(t *testing.T) {
+	cfg := &config.Config{}
+	svc := NewTokenRefreshService(&tokenRefreshRuntimeRepo{}, nil, nil, nil, nil, nil, nil, cfg, nil)
+
+	worker, err := NewTokenRefreshWorker(svc)
+
+	require.NoError(t, err)
+	require.Nil(t, worker)
+}
+
+func TestTokenRefreshWorkerRunsEnabledServiceImmediately(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.TokenRefresh.Enabled = true
+	cfg.TokenRefresh.CheckIntervalMinutes = 60
+	repo := &tokenRefreshRuntimeRepo{runs: make(chan context.Context, 1)}
+	svc := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	worker, err := NewTokenRefreshWorker(svc)
+	require.NoError(t, err)
+
+	require.NoError(t, worker.Start(context.Background()))
+	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
+
+	select {
+	case ctx := <-repo.runs:
+		require.NotNil(t, ctx)
+	case <-time.After(time.Second):
+		t.Fatal("token refresh worker did not run immediately")
+	}
+}
+
+type tokenRefreshRuntimeRepo struct {
+	mockAccountRepoForGemini
+	runs chan context.Context
+}
+
+func (r *tokenRefreshRuntimeRepo) ListOAuthRefreshCandidates(ctx context.Context) ([]Account, error) {
+	if r.runs != nil {
+		r.runs <- ctx
+	}
+	return nil, nil
+}
+
 type pricingRemoteClientContextSpy struct {
 	hashDeadline       time.Time
 	downloadDeadline   time.Time

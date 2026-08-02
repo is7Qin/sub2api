@@ -82,7 +82,6 @@ func provideCleanup(
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	apiKeyService *service.APIKeyService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
-	tokenRefresh *service.TokenRefreshService,
 	usageCleanup *service.UsageCleanupService,
 	emailQueue *service.EmailQueueService,
 	billingCache *service.BillingCacheService,
@@ -170,10 +169,6 @@ func provideCleanup(
 				if usageCleanup != nil {
 					usageCleanup.Stop()
 				}
-				return nil
-			}},
-			{"TokenRefreshService", func() error {
-				tokenRefresh.Stop()
 				return nil
 			}},
 			{"SubscriptionService", func() error {

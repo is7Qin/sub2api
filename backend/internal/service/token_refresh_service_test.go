@@ -123,6 +123,28 @@ func (r *tokenRefresherStub) CacheKey(account *Account) string {
 	return "test:stub:" + account.Platform
 }
 
+func TestTokenRefreshService_RunUsesCallerContextForRefreshCheck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repo := &tokenRefreshRunContextRepo{ctx: ctx}
+	cfg := &config.Config{TokenRefresh: config.TokenRefreshConfig{Enabled: true}}
+	svc := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+
+	require.NoError(t, svc.Run(ctx))
+	require.True(t, repo.usedCallerContext)
+}
+
+type tokenRefreshRunContextRepo struct {
+	mockAccountRepoForGemini
+	ctx               context.Context
+	usedCallerContext bool
+}
+
+func (r *tokenRefreshRunContextRepo) ListOAuthRefreshCandidates(ctx context.Context) ([]Account, error) {
+	r.usedCallerContext = ctx == r.ctx
+	return nil, nil
+}
+
 func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 	repo := &tokenRefreshAccountRepo{}
 	invalidator := &tokenCacheInvalidatorStub{}

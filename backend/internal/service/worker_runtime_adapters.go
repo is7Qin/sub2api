@@ -97,6 +97,32 @@ func NewPricingRemoteSyncWorker(svc *PricingService) (*workerruntime.PeriodicJob
 	})
 }
 
+// NewTokenRefreshWorker adapts configured OAuth token refresh checks to the worker runtime.
+func NewTokenRefreshWorker(svc *TokenRefreshService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("token refresh service is required")
+	}
+	if !svc.Enabled() {
+		return nil, nil
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "token-refresh",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Refreshes eligible OAuth tokens before expiry",
+			Tags:             []string{"oauth", "token-refresh"},
+		},
+		Interval: svc.Interval(),
+		// Legacy refresh checks had no per-run deadline; retain that behavior while
+		// letting the runtime root context drive truthful shutdown.
+		Timeout:        100 * 365 * 24 * time.Hour,
+		RunImmediately: true,
+		Run:            svc.Run,
+	})
+}
+
 // NewIdempotencyCleanupWorker adapts idempotency cleanup maintenance to the worker runtime.
 func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {

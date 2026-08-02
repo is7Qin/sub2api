@@ -17,6 +17,7 @@ func provideWorkerRuntime(
 	subscriptionExpiry *service.SubscriptionExpiryService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	pricing *service.PricingService,
+	tokenRefresh *service.TokenRefreshService,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -38,6 +39,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	tokenRefreshWorker, err := service.NewTokenRefreshWorker(tokenRefresh)
+	if err != nil {
+		return nil, err
+	}
 
 	components := []workerruntime.Component{
 		accountExpiryWorker,
@@ -48,6 +53,9 @@ func provideWorkerRuntime(
 	}
 	if pricingRemoteSyncWorker != nil {
 		components = append(components, pricingRemoteSyncWorker)
+	}
+	if tokenRefreshWorker != nil {
+		components = append(components, tokenRefreshWorker)
 	}
 
 	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())

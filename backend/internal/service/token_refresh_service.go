@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -38,10 +37,6 @@ type TokenRefreshService struct {
 	// OpenAI privacy: 刷新成功后检查并设置 training opt-out
 	privacyClientFactory PrivacyClientFactory
 	proxyRepo            ProxyRepository
-
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	wg       sync.WaitGroup
 }
 
 // NewTokenRefreshService 创建token刷新服务
@@ -63,7 +58,6 @@ func NewTokenRefreshService(
 		cacheInvalidator: cacheInvalidator,
 		schedulerCache:   schedulerCache,
 		tempUnschedCache: tempUnschedCache,
-		stopCh:           make(chan struct{}),
 	}
 
 	openAIRefresher := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
@@ -125,60 +119,35 @@ func (s *TokenRefreshService) notifyAccountSchedulingBlockCleared(accountID int6
 	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
 }
 
-// Start 启动后台刷新服务
-func (s *TokenRefreshService) Start() {
-	if !s.cfg.Enabled {
-		slog.Info("token_refresh.service_disabled")
-		return
-	}
-
-	s.wg.Add(1)
-	go s.refreshLoop()
-
-	slog.Info("token_refresh.service_started",
-		"check_interval_minutes", s.cfg.CheckIntervalMinutes,
-		"refresh_before_expiry_hours", s.cfg.RefreshBeforeExpiryHours,
-	)
+// Enabled reports whether background token refresh is configured.
+func (s *TokenRefreshService) Enabled() bool {
+	return s != nil && s.cfg != nil && s.cfg.Enabled
 }
 
-// Stop 停止刷新服务（可安全多次调用）
-func (s *TokenRefreshService) Stop() {
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-	})
-	s.wg.Wait()
-	slog.Info("token_refresh.service_stopped")
-}
-
-// refreshLoop 刷新循环
-func (s *TokenRefreshService) refreshLoop() {
-	defer s.wg.Done()
-
-	// 计算检查间隔
+// Interval returns the configured fixed-delay check interval, preserving the legacy minimum.
+func (s *TokenRefreshService) Interval() time.Duration {
 	checkInterval := time.Duration(s.cfg.CheckIntervalMinutes) * time.Minute
 	if checkInterval < time.Minute {
 		checkInterval = 5 * time.Minute
 	}
-
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
-	// 启动时立即执行一次检查
-	s.processRefresh()
-
-	for {
-		select {
-		case <-ticker.C:
-			s.processRefresh()
-		case <-s.stopCh:
-			return
-		}
-	}
+	return checkInterval
 }
 
-// processRefresh 执行一次刷新检查
-func (s *TokenRefreshService) processRefresh() {
+// Run performs one refresh check using the runtime-provided context.
+func (s *TokenRefreshService) Run(ctx context.Context) error {
+	if s == nil || s.cfg == nil || !s.cfg.Enabled {
+		return nil
+	}
+	s.processRefresh(ctx)
+	return nil
+}
+
+// processRefresh executes one refresh check.
+func (s *TokenRefreshService) processRefresh(contexts ...context.Context) {
 	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
 
 	// 计算刷新窗口
 	refreshWindow := time.Duration(s.cfg.RefreshBeforeExpiryHours * float64(time.Hour))

@@ -116,6 +116,26 @@ func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime
 	})
 }
 
+// NewOutboxCleanupWorker adapts outbox retention cleanup to the worker runtime.
+// 该任务为 singleton（每周期仅 leader 副本执行），协调逻辑见 OutboxCleanupService.Run。
+func NewOutboxCleanupWorker(svc *OutboxCleanupService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("outbox cleanup service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "outbox-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
+			CoordinationMode: workerruntime.CoordinationSingletonRun,
+		},
+		Interval:       svc.Interval(),
+		Timeout:        outboxCleanupCycleTimeout,
+		RunImmediately: true,
+		Run:            svc.Run,
+	})
+}
+
 type usageRecordWorkerPoolWorkerTestHooks struct {
 	afterPoolStart func()
 	afterPoolStop  func()

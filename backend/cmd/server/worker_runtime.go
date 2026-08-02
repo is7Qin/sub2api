@@ -17,6 +17,7 @@ func provideWorkerRuntime(
 	subscriptionExpiry *service.SubscriptionExpiryService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	pricing *service.PricingService,
+	outboxCleanup *service.OutboxCleanupService,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -38,12 +39,17 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	outboxCleanupWorker, err := service.NewOutboxCleanupWorker(outboxCleanup)
+	if err != nil {
+		return nil, err
+	}
 
 	components := []workerruntime.Component{
 		accountExpiryWorker,
 		idempotencyCleanupWorker,
 		subscriptionExpiryWorker,
 		paymentOrderExpiryWorker,
+		outboxCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 	}
 	if pricingRemoteSyncWorker != nil {

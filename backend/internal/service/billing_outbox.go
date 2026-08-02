@@ -127,6 +127,9 @@ type BillingOutboxRepository interface {
 	Retry(ctx context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error
 	Ack(ctx context.Context, id int64, workerID string) error
 	Stats(ctx context.Context) (BillingOutboxStats, error)
+	// CleanupTerminal 批量删除超过保留期的终态行（succeeded/terminal）。
+	// 保留期内的行仍用于对账与排障；删除不影响计费幂等（由 usage_billing_dedup 兜底）。
+	CleanupTerminal(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
 type BillingOutboxFinalizationRepository interface {

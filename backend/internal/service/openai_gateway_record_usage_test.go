@@ -50,6 +50,9 @@ func (s *openAIRecordUsageBillingOutboxStub) Ack(context.Context, int64, string)
 func (s *openAIRecordUsageBillingOutboxStub) Stats(context.Context) (BillingOutboxStats, error) {
 	return BillingOutboxStats{}, nil
 }
+func (s *openAIRecordUsageBillingOutboxStub) CleanupTerminal(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
+}
 
 type openAIRecordUsageBillingRepoStub struct {
 	UsageBillingRepository

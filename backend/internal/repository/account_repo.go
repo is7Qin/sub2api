@@ -664,7 +664,9 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 	return r.ListWithFilters(ctx, params, service.AccountListFilters{})
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+// buildListWithFiltersQuery 构建账号列表的过滤查询（WHERE 部分）。
+// 供投影版（ListWithFilters）与全量版（ListWithFiltersFull）共用。
+func (r *accountRepository) buildListWithFiltersQuery(filters service.AccountListFilters) *dbent.AccountQuery {
 	q := r.client.Account.Query()
 
 	if filters.Platform != "" {
@@ -761,6 +763,11 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			s.Where(sqljson.ValueEQ(dbaccount.FieldCredentials, filters.PlanType, sqljson.Path("plan_type")))
 		}))
 	}
+	return q
+}
+
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
 
 	total, err := q.Clone().Count(ctx)
 	if err != nil {
@@ -773,6 +780,65 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		// ListAccountCredentialSubset 单独批量提取，避免 ent 全量解码
 		// JSONB 造成的 CPU 风暴与 800KB/页 的响应膨胀。
 		Select(accountListProjectionFields...).
+		Offset(params.Offset()).
+		Limit(params.Limit())
+	for _, order := range accountListOrder(params) {
+		accountsQuery = accountsQuery.Order(order)
+	}
+
+	accounts, err := accountsQuery.All(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	outAccounts, err := r.accountsToService(ctx, accounts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+// ListWithFiltersFull 与 ListWithFilters 相同，但不做 credentials 投影：
+// 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
+// 主列表 UI 必须使用投影版 ListWithFilters，避免敏感凭据进入列表响应。
+// MaxAccountUpdatedAt 返回 accounts 表最大 updated_at，作为账号列表缓存的
+// 失效版本：任何账号变更都会推进该值，列表缓存据此立即失效。
+// 26K 行规模下 max(updated_at) 毫秒级完成。
+func (r *accountRepository) MaxAccountUpdatedAt(ctx context.Context) (*time.Time, error) {
+	if r == nil || r.sql == nil {
+		return nil, nil
+	}
+	rows, err := r.sql.QueryContext(ctx, `SELECT max(updated_at) FROM accounts WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var latest sql.NullTime
+	if err := rows.Scan(&latest); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if !latest.Valid {
+		return nil, nil
+	}
+	v := latest.Time
+	return &v, nil
+}
+
+func (r *accountRepository) ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
+
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	accountsQuery := q.
 		Offset(params.Offset()).
 		Limit(params.Limit())
 	for _, order := range accountListOrder(params) {
@@ -852,9 +918,11 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 	}
 
 	subFieldNames := accountCredentialSubsetFieldNames()
-	jsonColumns := accountCredentialSubsetJSONColumns()
 	selectList := "id"
 	for _, name := range subFieldNames {
+		// credentials->'field'（jsonb 运算符）对所有类型返回带类型的 JSON
+		// 文本：标量（email/plan_type）带引号、对象/数组保留结构。统一在
+		// 扫描后 json.Unmarshal，标量自动去引号、对象保留类型。
 		selectList += ", credentials->'" + name + "'"
 	}
 
@@ -885,16 +953,14 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 			if !values[i].Valid {
 				continue
 			}
-			if jsonColumns[name] {
-				// JSON 值字段：反序列化保留类型（object/array/bool/number）。
-				var v any
-				if err := json.Unmarshal([]byte(values[i].String), &v); err == nil {
-					subset[name] = v
-					continue
-				}
+			// 统一反序列化：标量 JSON（"email"）去引号还原为字符串，
+			// 对象/数组/布尔/数字保留类型；解析失败时兜底为原样文本。
+			var v any
+			if err := json.Unmarshal([]byte(values[i].String), &v); err == nil {
+				subset[name] = v
+			} else {
+				subset[name] = values[i].String
 			}
-			// 标量字段（email/plan_type 等）或 JSON 解析失败的兜底：原样字符串。
-			subset[name] = values[i].String
 		}
 		out[id] = subset
 	}
@@ -907,22 +973,11 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 func accountCredentialSubsetFieldNames() []string {
 	return []string{
 		"email", "plan_type", "subscription_expires_at", "project_id",
-		"antigravity_project_id", "openai_capabilities", "model_mapping",
+		"antigravity_project_id", "oauth_type",
+		"openai_capabilities", "model_mapping",
 		"compact_model_mapping", "temp_unschedulable_rules",
 		"temp_unschedulable_enabled", "model_whitelist",
 		"intercept_warmup_requests", "api_key",
-	}
-}
-
-// accountCredentialSubsetJSONColumns 标记子集字段中需要保留 JSON 类型
-// （object/array/bool/number）的字段；其余为标量字符串字段。
-func accountCredentialSubsetJSONColumns() map[string]bool {
-	return map[string]bool{
-		"openai_capabilities":     true,
-		"model_mapping":           true,
-		"compact_model_mapping":   true,
-		"temp_unschedulable_rules": true,
-		"model_whitelist":          true,
 	}
 }
 

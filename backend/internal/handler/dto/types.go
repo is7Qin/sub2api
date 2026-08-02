@@ -88,46 +88,46 @@ type APIKey struct {
 }
 
 type Group struct {
-	ID             int64   `json:"id"`
-	Name           string  `json:"name"`
-	Description    string  `json:"description"`
-	Platform       string  `json:"platform"`
-	RateMultiplier float64 `json:"rate_multiplier"`
-	IsExclusive    bool    `json:"is_exclusive"`
-	Status         string  `json:"status"`
+	ID             int64   `json:"id,omitempty"`
+	Name           string  `json:"name,omitempty"`
+	Description    string  `json:"description,omitempty"`
+	Platform       string  `json:"platform,omitempty"`
+	RateMultiplier float64 `json:"rate_multiplier,omitempty"`
+	IsExclusive    bool    `json:"is_exclusive,omitempty"`
+	Status         string  `json:"status,omitempty"`
 
-	SubscriptionType string   `json:"subscription_type"`
-	DailyLimitUSD    *float64 `json:"daily_limit_usd"`
-	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd"`
-	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
+	SubscriptionType string   `json:"subscription_type,omitempty"`
+	DailyLimitUSD    *float64 `json:"daily_limit_usd,omitempty"`
+	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd,omitempty"`
+	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd,omitempty"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
-	AllowImageGeneration bool     `json:"allow_image_generation"`
-	ImageRateIndependent bool     `json:"image_rate_independent"`
-	ImageRateMultiplier  float64  `json:"image_rate_multiplier"`
-	ImagePrice1K         *float64 `json:"image_price_1k"`
-	ImagePrice2K         *float64 `json:"image_price_2k"`
-	ImagePrice4K         *float64 `json:"image_price_4k"`
+	AllowImageGeneration bool     `json:"allow_image_generation,omitempty"`
+	ImageRateIndependent bool     `json:"image_rate_independent,omitempty"`
+	ImageRateMultiplier  float64  `json:"image_rate_multiplier,omitempty"`
+	ImagePrice1K         *float64 `json:"image_price_1k,omitempty"`
+	ImagePrice2K         *float64 `json:"image_price_2k,omitempty"`
+	ImagePrice4K         *float64 `json:"image_price_4k,omitempty"`
 
 	// Claude Code 客户端限制
-	ClaudeCodeOnly  bool   `json:"claude_code_only"`
-	FallbackGroupID *int64 `json:"fallback_group_id"`
+	ClaudeCodeOnly  bool   `json:"claude_code_only,omitempty"`
+	FallbackGroupID *int64 `json:"fallback_group_id,omitempty"`
 	// 无效请求兜底分组
-	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request"`
+	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request,omitempty"`
 
 	// OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
-	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
+	AllowMessagesDispatch bool `json:"allow_messages_dispatch,omitempty"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
-	RequireOAuthOnly                bool `json:"require_oauth_only"`
-	RequirePrivacySet               bool `json:"require_privacy_set"`
-	OpenAILongContextBillingEnabled bool `json:"openai_long_context_billing_enabled"`
+	RequireOAuthOnly                bool `json:"require_oauth_only,omitempty"`
+	RequirePrivacySet               bool `json:"require_privacy_set,omitempty"`
+	OpenAILongContextBillingEnabled bool `json:"openai_long_context_billing_enabled,omitempty"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
-	RPMLimit int `json:"rpm_limit"`
+	RPMLimit int `json:"rpm_limit,omitempty"`
 
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
@@ -136,19 +136,19 @@ type AdminGroup struct {
 	Group
 
 	// 模型路由配置（仅 anthropic 平台使用）
-	ModelRouting        map[string][]int64 `json:"model_routing"`
-	ModelRoutingEnabled bool               `json:"model_routing_enabled"`
+	ModelRouting        map[string][]int64 `json:"model_routing,omitempty"`
+	ModelRoutingEnabled bool               `json:"model_routing_enabled,omitempty"`
 
 	// MCP XML 协议注入（仅 antigravity 平台使用）
-	MCPXMLInject bool `json:"mcp_xml_inject"`
+	MCPXMLInject bool `json:"mcp_xml_inject,omitempty"`
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	DefaultMappedModel          string                                   `json:"default_mapped_model"`
-	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config"`
+	DefaultMappedModel          string                                   `json:"default_mapped_model,omitempty"`
+	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
+	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config,omitempty"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
-	SupportedModelScopes    []string       `json:"supported_model_scopes"`
+	SupportedModelScopes    []string       `json:"supported_model_scopes,omitempty"`
 	AccountGroups           []AccountGroup `json:"account_groups,omitempty"`
 	AccountCount            int64          `json:"account_count,omitempty"`
 	ActiveAccountCount      int64          `json:"active_account_count,omitempty"`

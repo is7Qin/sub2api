@@ -111,3 +111,22 @@ func TestAdminServiceImpl_ListAccountsFillsCredentialSubset(t *testing.T) {
 	require.Equal(t, "plus", accounts[0].Credentials["plan_type"])
 	require.NotNil(t, accounts[0].Credentials["model_mapping"])
 }
+
+func TestAccountListGroupLite(t *testing.T) {
+	full := &Group{
+		ID: 7, Name: "g", Description: "desc", Platform: "openai",
+		RateMultiplier: 1.5, IsExclusive: true, Status: "active",
+		SubscriptionType: "plus", DailyLimitUSD: float64Ptr(10),
+		ModelRouting: map[string][]int64{"gpt-5": {1}},
+	}
+	lite := accountListGroupLite([]*Group{full})
+	require.Len(t, lite, 1)
+	require.Equal(t, int64(7), lite[0].ID)
+	require.Equal(t, "g", lite[0].Name)
+	require.Equal(t, "openai", lite[0].Platform)
+	require.Equal(t, "plus", lite[0].SubscriptionType)
+	require.Equal(t, 1.5, lite[0].RateMultiplier)
+	require.Empty(t, lite[0].Description)
+	require.Empty(t, lite[0].ModelRouting)
+	require.Nil(t, lite[0].DailyLimitUSD)
+}

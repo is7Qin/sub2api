@@ -2646,23 +2646,76 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 
 // Account management implementations
 func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
-	// 短 TTL 缓存：外部面板/前端可能高频轮询账号列表（实测每 5 秒全量
-	// 拉取全部页），每次全量 ListWithFilters 都会解码所有账号的
-	// extra/credentials JSONB 并产生 800KB/页 响应，是 CPU/DB 压力主源。
-	// 3 秒 TTL 让轮询大部分命中缓存，同时账号变更在 3 秒内可见。
+	// 版本失效缓存：外部面板高频全量轮询账号列表，每次全量 ListWithFilters
+	// 都解码所有账号的 extra/credentials JSONB（此前是 CPU/DB 压力主源）。
+	// 以 max(accounts.updated_at) 为失效版本：账号变更 → 版本推进 → 缓存
+	// 立即失效（管理后台操作零延迟）；面板轮询期间版本不变 → 持续命中
+	// （零重算）。版本读取失败时回退短 TTL 兜底。
 	if cache := s.accountsListCache; cache != nil {
 		key := accountsListCacheKey(page, pageSize, filters, sortBy, sortOrder)
-		if accounts, total, ok := cache.get(key); ok {
+		version := accountsListCacheVersion(ctx, s.accountRepo)
+		if accounts, total, ok := cache.get(key, version); ok {
 			return accounts, total, nil
 		}
 		accounts, total, err := s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
 		if err != nil {
 			return nil, 0, err
 		}
-		cache.set(key, accounts, total)
+		cache.set(key, accounts, total, version)
 		return accounts, total, nil
 	}
 	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+}
+
+// accountsListCacheVersion 读取列表缓存失效版本（max accounts.updated_at）。
+// 返回字符串便于缓存键比较；版本读取失败时返回空串（缓存退化为 TTL 兜底）。
+func accountsListCacheVersion(ctx context.Context, repo AccountRepository) string {
+	if repo == nil {
+		return ""
+	}
+	reader, ok := repo.(accountsListVersionReader)
+	if !ok {
+		return ""
+	}
+	latest, err := reader.MaxAccountUpdatedAt(ctx)
+	if err != nil || latest == nil {
+		return ""
+	}
+	return latest.Format(time.RFC3339Nano)
+}
+
+// accountsListVersionReader 是可选接口：列表缓存版本（max updated_at）来源。
+type accountsListVersionReader interface {
+	MaxAccountUpdatedAt(ctx context.Context) (*time.Time, error)
+}
+
+// ListAccountsFull 与 ListAccounts 相同但不做 credentials 投影、不经缓存：
+// 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
+// 通过可选接口 accountListFullReader 调用 repo 全量变体，stub 缺失时降级
+// 到投影版（仅测试环境）。
+func (s *adminServiceImpl) ListAccountsFull(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
+	if reader, ok := s.accountRepo.(accountListFullReader); ok {
+		params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+		accounts, result, err := reader.ListWithFiltersFull(ctx, params, AccountListFilters{
+			Platform:    filters.Platform,
+			AccountType: filters.AccountType,
+			Status:      filters.Status,
+			Search:      filters.Search,
+			GroupID:     filters.GroupID,
+			PrivacyMode: filters.PrivacyMode,
+			PlanType:    filters.PlanType,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		return accounts, result.Total, nil
+	}
+	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+}
+
+// accountListFullReader 是可选接口：导出路径通过它获取全量（非投影）列表。
+type accountListFullReader interface {
+	ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
 }
 
 func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
@@ -2700,7 +2753,37 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 			}
 		}
 	}
+	// 列表视图瘦身：groups 只保留列表 UI 消费的字段（id/name/platform/
+	// subscription_type/rate_multiplier），其余零值字段经 dto omitempty
+	// 省略；account_groups 列表不使用，置空后经 omitempty 从响应消失。
+	// 详情页走 GetByID（全量），不受影响。
+	for i := range accounts {
+		accounts[i].Groups = accountListGroupLite(accounts[i].Groups)
+		accounts[i].AccountGroups = nil
+	}
 	return accounts, result.Total, nil
+}
+
+// accountListGroupLite 把完整 group 对象重建为列表视图（仅保留列表 UI
+// 消费的字段），其余零值字段经 dto.Group 的 omitempty 从响应省略。
+func accountListGroupLite(groups []*Group) []*Group {
+	if len(groups) == 0 {
+		return groups
+	}
+	out := make([]*Group, 0, len(groups))
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		out = append(out, &Group{
+			ID:               g.ID,
+			Name:             g.Name,
+			Platform:         g.Platform,
+			SubscriptionType: g.SubscriptionType,
+			RateMultiplier:   g.RateMultiplier,
+		})
+	}
+	return out
 }
 
 // accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFilters 投影后，
@@ -2709,12 +2792,13 @@ type accountCredentialSubsetReader interface {
 	ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error)
 }
 
-// accountsListCacheTTL 是 admin 账号列表缓存的保留时间。
-// 选择 3 秒：低于外部面板的 5 秒轮询间隔（缓存基本全命中），
-// 又足够短使账号变更延迟可接受。
-const accountsListCacheTTL = 3 * time.Second
+// accountsListCacheTTL 是列表缓存的时间兜底（版本读取失败时生效）。
+// 正常路径以 max(accounts.updated_at) 版本失效为准（账号变更立即失效），
+// 不依赖 TTL；此兜底防止版本来源异常时缓存无限期停留。
+const accountsListCacheTTL = 60 * time.Second
 
-// accountsListTTLCache 是 admin 账号列表的进程内短 TTL 缓存。
+// accountsListTTLCache 是 admin 账号列表的进程内版本失效缓存。
+// 命中条件：版本与当前一致（账号无变更）且未超过 TTL 兜底。
 // 返回时浅拷贝切片，避免调用方修改污染缓存条目。
 type accountsListTTLCache struct {
 	mu    sync.Mutex
@@ -2724,6 +2808,7 @@ type accountsListTTLCache struct {
 type accountsListCacheEntry struct {
 	accounts []Account
 	total    int64
+	version  string
 	exp      time.Time
 }
 
@@ -2731,21 +2816,22 @@ func newAccountsListTTLCache() *accountsListTTLCache {
 	return &accountsListTTLCache{items: make(map[string]accountsListCacheEntry)}
 }
 
-func (c *accountsListTTLCache) get(key string) ([]Account, int64, bool) {
+func (c *accountsListTTLCache) get(key, version string) ([]Account, int64, bool) {
 	if c == nil {
 		return nil, 0, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.items[key]
-	if !ok || time.Now().After(entry.exp) {
+	// 版本一致（账号无变更）且未超时兜底 → 命中。
+	if !ok || entry.version != version || time.Now().After(entry.exp) {
 		delete(c.items, key)
 		return nil, 0, false
 	}
 	return append([]Account(nil), entry.accounts...), entry.total, true
 }
 
-func (c *accountsListTTLCache) set(key string, accounts []Account, total int64) {
+func (c *accountsListTTLCache) set(key string, accounts []Account, total int64, version string) {
 	if c == nil {
 		return
 	}
@@ -2754,6 +2840,7 @@ func (c *accountsListTTLCache) set(key string, accounts []Account, total int64) 
 	c.items[key] = accountsListCacheEntry{
 		accounts: append([]Account(nil), accounts...),
 		total:    total,
+		version:  version,
 		exp:      time.Now().Add(accountsListCacheTTL),
 	}
 }

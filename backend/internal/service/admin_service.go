@@ -2665,6 +2665,35 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
 }
 
+// ListAccountsFull 与 ListAccounts 相同但不做 credentials 投影、不经缓存：
+// 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
+// 通过可选接口 accountListFullReader 调用 repo 全量变体，stub 缺失时降级
+// 到投影版（仅测试环境）。
+func (s *adminServiceImpl) ListAccountsFull(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
+	if reader, ok := s.accountRepo.(accountListFullReader); ok {
+		params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+		accounts, result, err := reader.ListWithFiltersFull(ctx, params, AccountListFilters{
+			Platform:    filters.Platform,
+			AccountType: filters.AccountType,
+			Status:      filters.Status,
+			Search:      filters.Search,
+			GroupID:     filters.GroupID,
+			PrivacyMode: filters.PrivacyMode,
+			PlanType:    filters.PlanType,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		return accounts, result.Total, nil
+	}
+	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+}
+
+// accountListFullReader 是可选接口：导出路径通过它获取全量（非投影）列表。
+type accountListFullReader interface {
+	ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
+}
+
 func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
 	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, AccountListFilters{

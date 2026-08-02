@@ -490,8 +490,18 @@ func (h *AccountHandler) listAccountsFiltered(ctx context.Context, platform, acc
 	page := 1
 	pageSize := dataPageCap
 	var out []service.Account
+	// 导出需要完整凭据（id_token 等），不能走列表投影版 ListAccounts；
+	// 优先使用全量变体（ListAccountsFull），缺失时降级到投影版。
+	listFull := func(p, ps int, f service.AccountListFilters, sb, so string) ([]service.Account, int64, error) {
+		if full, ok := h.adminService.(interface {
+			ListAccountsFull(ctx context.Context, page, pageSize int, filters service.AccountListFilters, sortBy, sortOrder string) ([]service.Account, int64, error)
+		}); ok {
+			return full.ListAccountsFull(ctx, p, ps, f, sb, so)
+		}
+		return h.adminService.ListAccounts(ctx, p, ps, f, sb, so)
+	}
 	for {
-		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, service.AccountListFilters{
+		items, total, err := listFull(page, pageSize, service.AccountListFilters{
 			Platform:    platform,
 			AccountType: accountType,
 			Status:      status,

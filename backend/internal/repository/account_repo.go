@@ -664,7 +664,9 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 	return r.ListWithFilters(ctx, params, service.AccountListFilters{})
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+// buildListWithFiltersQuery 构建账号列表的过滤查询（WHERE 部分）。
+// 供投影版（ListWithFilters）与全量版（ListWithFiltersFull）共用。
+func (r *accountRepository) buildListWithFiltersQuery(filters service.AccountListFilters) *dbent.AccountQuery {
 	q := r.client.Account.Query()
 
 	if filters.Platform != "" {
@@ -761,6 +763,11 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			s.Where(sqljson.ValueEQ(dbaccount.FieldCredentials, filters.PlanType, sqljson.Path("plan_type")))
 		}))
 	}
+	return q
+}
+
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
 
 	total, err := q.Clone().Count(ctx)
 	if err != nil {
@@ -773,6 +780,36 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		// ListAccountCredentialSubset 单独批量提取，避免 ent 全量解码
 		// JSONB 造成的 CPU 风暴与 800KB/页 的响应膨胀。
 		Select(accountListProjectionFields...).
+		Offset(params.Offset()).
+		Limit(params.Limit())
+	for _, order := range accountListOrder(params) {
+		accountsQuery = accountsQuery.Order(order)
+	}
+
+	accounts, err := accountsQuery.All(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	outAccounts, err := r.accountsToService(ctx, accounts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+// ListWithFiltersFull 与 ListWithFilters 相同，但不做 credentials 投影：
+// 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
+// 主列表 UI 必须使用投影版 ListWithFilters，避免敏感凭据进入列表响应。
+func (r *accountRepository) ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
+
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	accountsQuery := q.
 		Offset(params.Offset()).
 		Limit(params.Limit())
 	for _, order := range accountListOrder(params) {
@@ -907,7 +944,8 @@ func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids
 func accountCredentialSubsetFieldNames() []string {
 	return []string{
 		"email", "plan_type", "subscription_expires_at", "project_id",
-		"antigravity_project_id", "openai_capabilities", "model_mapping",
+		"antigravity_project_id", "oauth_type",
+		"openai_capabilities", "model_mapping",
 		"compact_model_mapping", "temp_unschedulable_rules",
 		"temp_unschedulable_enabled", "model_whitelist",
 		"intercept_warmup_requests", "api_key",

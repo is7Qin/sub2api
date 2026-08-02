@@ -86,6 +86,115 @@ func TestOpsHandlerWorkerRuntimeStatusOmitsRawRuntimeErrors(t *testing.T) {
 	require.NotContains(t, response.Body.String(), "raw-content")
 }
 
+func TestOpsHandlerWorkerRuntimeStatusSanitizesPointerRuntimeStatuses(t *testing.T) {
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	require.NoError(t, runtime.Register(workerRuntimeSnapshotFixture{snapshot: workerruntime.Snapshot{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "pointer-periodic-status",
+			Kind:             workerruntime.KindPeriodic,
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+		},
+		Status: &workerruntime.PeriodicStatus{
+			LastRunAt:    time.Date(2026, time.August, 2, 1, 2, 3, 0, time.UTC),
+			NextRunAt:    time.Date(2026, time.August, 2, 1, 3, 3, 0, time.UTC),
+			LastDuration: 1500 * time.Millisecond,
+			LastOutcome:  workerruntime.OutcomeError,
+			LastError:    "pointer-periodic-secret=do-not-serialize",
+			RunCount:     11,
+			SuccessCount: 7,
+			ErrorCount:   2,
+			PanicCount:   1,
+			TimeoutCount: 1,
+			StillRunning: true,
+		},
+	}}))
+	require.NoError(t, runtime.Register(workerRuntimeSnapshotFixture{snapshot: workerruntime.Snapshot{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "pointer-pool-status",
+			Kind:             workerruntime.KindPool,
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+		},
+		Status: &workerruntime.PoolStatus{
+			Accepting:          true,
+			StillRunning:       true,
+			MaxConcurrency:     8,
+			RunningWorkers:     3,
+			WaitingTasks:       5,
+			SubmittedTasks:     21,
+			CompletedTasks:     16,
+			SuccessfulTasks:    14,
+			FailedTasks:        2,
+			DroppedTasks:       1,
+			DroppedQueueFull:   1,
+			DroppedPoolStopped: 2,
+			SyncFallbackTasks:  4,
+		},
+	}}))
+	h := NewOpsHandler(newMonitoringEnabledOpsService())
+	h.SetWorkerRuntime(runtime)
+	r := newOpsSystemLogTestRouter(h, true)
+
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/workers/status", nil))
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NotContains(t, response.Body.String(), "pointer-periodic-secret=do-not-serialize")
+
+	var body struct {
+		Data struct {
+			Workers []struct {
+				Descriptor struct {
+					Name string `json:"Name"`
+				} `json:"Descriptor"`
+				Status json.RawMessage `json:"Status"`
+			} `json:"workers"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.Len(t, body.Data.Workers, 2)
+
+	statuses := make(map[string]map[string]any, len(body.Data.Workers))
+	for _, worker := range body.Data.Workers {
+		var status map[string]any
+		require.NoError(t, json.Unmarshal(worker.Status, &status))
+		statuses[worker.Descriptor.Name] = status
+	}
+
+	periodic := statuses["pointer-periodic-status"]
+	require.Contains(t, periodic, "LastRunAt")
+	require.Contains(t, periodic, "NextRunAt")
+	require.Equal(t, float64((1500 * time.Millisecond).Nanoseconds()), periodic["LastDuration"])
+	require.Equal(t, string(workerruntime.OutcomeError), periodic["LastOutcome"])
+	require.Equal(t, float64(11), periodic["RunCount"])
+	require.Equal(t, float64(7), periodic["SuccessCount"])
+	require.Equal(t, float64(2), periodic["ErrorCount"])
+	require.Equal(t, float64(1), periodic["PanicCount"])
+	require.Equal(t, float64(1), periodic["TimeoutCount"])
+	require.Equal(t, true, periodic["StillRunning"])
+	require.NotContains(t, periodic, "LastError")
+
+	pool := statuses["pointer-pool-status"]
+	require.Equal(t, true, pool["Accepting"])
+	require.Equal(t, true, pool["StillRunning"])
+	require.Equal(t, float64(8), pool["MaxConcurrency"])
+	require.Equal(t, float64(3), pool["RunningWorkers"])
+	require.Equal(t, float64(5), pool["WaitingTasks"])
+	require.Equal(t, float64(21), pool["SubmittedTasks"])
+	require.Equal(t, float64(16), pool["CompletedTasks"])
+	require.Equal(t, float64(14), pool["SuccessfulTasks"])
+	require.Equal(t, float64(2), pool["FailedTasks"])
+	require.Equal(t, float64(1), pool["DroppedTasks"])
+	require.Equal(t, float64(1), pool["DroppedQueueFull"])
+	require.Equal(t, float64(2), pool["DroppedPoolStopped"])
+	require.Equal(t, float64(4), pool["SyncFallbackTasks"])
+}
+
+func TestProjectWorkerRuntimeSnapshotPreservesNilPointerStatus(t *testing.T) {
+	var nilStatus *workerruntime.PeriodicStatus
+	projected := projectWorkerRuntimeSnapshot(workerruntime.Snapshot{Status: nilStatus})
+	require.Nil(t, projected.Status)
+}
+
 func TestOpsHandlerWorkerRuntimeStatusReturnsProcessLocalSnapshots(t *testing.T) {
 	runtime := newStartedRuntimeForHandler(t)
 	h := NewOpsHandler(newMonitoringEnabledOpsService())

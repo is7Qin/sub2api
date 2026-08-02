@@ -125,36 +125,52 @@ func projectWorkerRuntimeSnapshot(snapshot workerruntime.Snapshot) workerRuntime
 
 	switch status := snapshot.Status.(type) {
 	case workerruntime.PeriodicStatus:
-		worker.Status = workerRuntimePeriodicStatusResponse{
-			LastRunAt:    status.LastRunAt,
-			NextRunAt:    status.NextRunAt,
-			LastDuration: status.LastDuration,
-			LastOutcome:  status.LastOutcome,
-			RunCount:     status.RunCount,
-			SuccessCount: status.SuccessCount,
-			ErrorCount:   status.ErrorCount,
-			PanicCount:   status.PanicCount,
-			TimeoutCount: status.TimeoutCount,
-			StillRunning: status.StillRunning,
+		worker.Status = projectWorkerRuntimePeriodicStatus(status)
+	case *workerruntime.PeriodicStatus:
+		if status != nil {
+			worker.Status = projectWorkerRuntimePeriodicStatus(*status)
 		}
 	case workerruntime.PoolStatus:
-		worker.Status = workerRuntimePoolStatusResponse{
-			Accepting:          status.Accepting,
-			StillRunning:       status.StillRunning,
-			MaxConcurrency:     status.MaxConcurrency,
-			RunningWorkers:     status.RunningWorkers,
-			WaitingTasks:       status.WaitingTasks,
-			SubmittedTasks:     status.SubmittedTasks,
-			CompletedTasks:     status.CompletedTasks,
-			SuccessfulTasks:    status.SuccessfulTasks,
-			FailedTasks:        status.FailedTasks,
-			DroppedTasks:       status.DroppedTasks,
-			DroppedQueueFull:   status.DroppedQueueFull,
-			DroppedPoolStopped: status.DroppedPoolStopped,
-			SyncFallbackTasks:  status.SyncFallbackTasks,
+		worker.Status = projectWorkerRuntimePoolStatus(status)
+	case *workerruntime.PoolStatus:
+		if status != nil {
+			worker.Status = projectWorkerRuntimePoolStatus(*status)
 		}
 	}
 	return worker
+}
+
+func projectWorkerRuntimePeriodicStatus(status workerruntime.PeriodicStatus) workerRuntimePeriodicStatusResponse {
+	return workerRuntimePeriodicStatusResponse{
+		LastRunAt:    status.LastRunAt,
+		NextRunAt:    status.NextRunAt,
+		LastDuration: status.LastDuration,
+		LastOutcome:  status.LastOutcome,
+		RunCount:     status.RunCount,
+		SuccessCount: status.SuccessCount,
+		ErrorCount:   status.ErrorCount,
+		PanicCount:   status.PanicCount,
+		TimeoutCount: status.TimeoutCount,
+		StillRunning: status.StillRunning,
+	}
+}
+
+func projectWorkerRuntimePoolStatus(status workerruntime.PoolStatus) workerRuntimePoolStatusResponse {
+	return workerRuntimePoolStatusResponse{
+		Accepting:          status.Accepting,
+		StillRunning:       status.StillRunning,
+		MaxConcurrency:     status.MaxConcurrency,
+		RunningWorkers:     status.RunningWorkers,
+		WaitingTasks:       status.WaitingTasks,
+		SubmittedTasks:     status.SubmittedTasks,
+		CompletedTasks:     status.CompletedTasks,
+		SuccessfulTasks:    status.SuccessfulTasks,
+		FailedTasks:        status.FailedTasks,
+		DroppedTasks:       status.DroppedTasks,
+		DroppedQueueFull:   status.DroppedQueueFull,
+		DroppedPoolStopped: status.DroppedPoolStopped,
+		SyncFallbackTasks:  status.SyncFallbackTasks,
+	}
 }
 
 // GetBillingOutboxHealth exposes durable billing backlog health through the

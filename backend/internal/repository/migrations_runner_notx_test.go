@@ -58,6 +58,18 @@ DROP INDEX CONCURRENTLY IF EXISTS idx_b;
 		require.True(t, nonTx)
 		require.NoError(t, err)
 	})
+
+	t.Run("DROP索引名包含CREATE子串不被误判为CREATE", func(t *testing.T) {
+		// 回归：索引名 idx_usage_logs_created_model_upstream_model 大写后
+		// 含 "CREATE" 子串，旧 Contains 判定会误判为 CREATE INDEX 并因缺少
+		// IF NOT EXISTS 拒绝整个迁移（曾导致生产启动失败）。
+		nonTx, err := validateMigrationExecutionMode("175_drop_usage_log_unused_model_indexes_notx.sql", `
+DROP INDEX CONCURRENTLY IF EXISTS idx_usage_logs_model_created_at;
+DROP INDEX CONCURRENTLY IF EXISTS idx_usage_logs_created_model_upstream_model;
+`)
+		require.True(t, nonTx)
+		require.NoError(t, err)
+	})
 }
 
 func TestApplyMigrationsFS_NonTransactionalMigration(t *testing.T) {

@@ -296,6 +296,14 @@ type OpsSystemMetricsSnapshot struct {
 	GoroutineCount        *int   `json:"goroutine_count"`
 	ConcurrencyQueueDepth *int   `json:"concurrency_queue_depth"`
 	AccountSwitchCount    *int64 `json:"account_switch_count"`
+
+	// Go runtime memory / GC（进程内口径）。
+	HeapAllocMB      *float64 `json:"heap_alloc_mb"`
+	HeapSysMB        *float64 `json:"heap_sys_mb"`
+	GCNumCycles      *int64   `json:"gc_num_cycles"`
+	GCTotalPauseMs   *float64 `json:"gc_total_pause_ms"`
+	GCCPUFraction    *float64 `json:"gc_cpu_fraction"`
+	AllocBytesPerSec *float64 `json:"alloc_bytes_per_sec"`
 }
 
 type OpsUpsertJobHeartbeatInput struct {

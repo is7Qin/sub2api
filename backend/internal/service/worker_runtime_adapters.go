@@ -134,6 +134,34 @@ func NewTokenRefreshWorker(svc *TokenRefreshService) (*workerruntime.PeriodicJob
 	})
 }
 
+// The legacy cycle allowed a ten-second scan plus up to 1000 sequential two-second
+// releases. Keep the runtime deadline above that maximum so it only governs shutdown.
+const userMessageQueueCleanupWorkerTimeout = 10*time.Second + 1000*2*time.Second + time.Second
+
+// NewUserMessageQueueCleanupWorker adapts orphan-lock cleanup to the worker runtime.
+func NewUserMessageQueueCleanupWorker(svc *UserMessageQueueService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("user message queue service is required")
+	}
+	if !svc.CleanupEnabled() {
+		return nil, nil
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "user-message-queue-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Releases orphaned user-message queue locks",
+			Tags:             []string{"user-message-queue", "orphan-lock-cleanup"},
+		},
+		Interval:       svc.CleanupInterval(),
+		Timeout:        userMessageQueueCleanupWorkerTimeout,
+		RunImmediately: false,
+		Run:            svc.RunCleanup,
+	})
+}
+
 // NewIdempotencyCleanupWorker adapts idempotency cleanup maintenance to the worker runtime.
 func NewIdempotencyCleanupWorker(svc *IdempotencyCleanupService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {

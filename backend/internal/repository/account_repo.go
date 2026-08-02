@@ -665,7 +665,8 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 }
 
 // buildListWithFiltersQuery 构建账号列表的过滤查询（WHERE 部分）。
-// 供投影版（ListWithFilters）与全量版（ListWithFiltersFull）共用。
+// 供全量版（ListWithFilters）、投影版（ListWithFiltersProjected）与
+// 导出全量版（ListWithFiltersFull）共用。
 func (r *accountRepository) buildListWithFiltersQuery(filters service.AccountListFilters) *dbent.AccountQuery {
 	q := r.client.Account.Query()
 
@@ -766,6 +767,10 @@ func (r *accountRepository) buildListWithFiltersQuery(filters service.AccountLis
 	return q
 }
 
+// ListWithFilters 是通用账号列表契约：返回完整账号（含 credentials 全量
+// JSONB 解码）。AccountService.List 依赖该契约。
+// 需要瘦身凭据的路径必须使用 ListWithFiltersProjected（admin 列表专用），
+// 不要在此方法上加投影。
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.buildListWithFiltersQuery(filters)
 
@@ -775,10 +780,38 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	}
 
 	accountsQuery := q.
-		// 列表投影：排除 credentials 列（平均 3.2KB/账号，最大 27KB），
-		// 列表不需要完整凭据。前端需要的少量 credentials 字段由
-		// ListAccountCredentialSubset 单独批量提取，避免 ent 全量解码
-		// JSONB 造成的 CPU 风暴与 800KB/页 的响应膨胀。
+		Offset(params.Offset()).
+		Limit(params.Limit())
+	for _, order := range accountListOrder(params) {
+		accountsQuery = accountsQuery.Order(order)
+	}
+
+	accounts, err := accountsQuery.All(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	outAccounts, err := r.accountsToService(ctx, accounts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+// ListWithFiltersProjected 是 admin 账号列表专用投影版：排除 credentials 列
+// （平均 3.2KB/账号，最大 27KB），列表不需要完整凭据。前端需要的少量
+// credentials 字段由 ListAccountCredentialSubset 单独批量提取，避免 ent 全量
+// 解码 JSONB 造成的 CPU 风暴与 800KB/页 的响应膨胀。
+// 注意：通用契约 ListWithFilters 保持全量，本方法只供 admin 列表路径使用。
+func (r *accountRepository) ListWithFiltersProjected(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
+
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	accountsQuery := q.
 		Select(accountListProjectionFields...).
 		Offset(params.Offset()).
 		Limit(params.Limit())
@@ -800,7 +833,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 
 // ListWithFiltersFull 与 ListWithFilters 相同，但不做 credentials 投影：
 // 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
-// 主列表 UI 必须使用投影版 ListWithFilters，避免敏感凭据进入列表响应。
+// 主列表 UI 必须使用投影版 ListWithFiltersProjected，避免敏感凭据进入列表响应。
 // MaxAccountUpdatedAt 返回 accounts 表最大 updated_at，作为账号列表缓存的
 // 失效版本：任何账号变更都会推进该值，列表缓存据此立即失效。
 // 26K 行规模下 max(updated_at) 毫秒级完成。

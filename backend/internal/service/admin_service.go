@@ -2718,9 +2718,16 @@ type accountListFullReader interface {
 	ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
 }
 
+// accountListProjectedReader 是可选接口：admin 账号列表通过它获取投影版
+// （不含完整 credentials）列表，保持通用 ListWithFilters 契约全量。
+// repo 未实现时降级到全量契约（仅测试 stub 场景，列表仍只暴露子集字段）。
+type accountListProjectedReader interface {
+	ListWithFiltersProjected(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
+}
+
 func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
-	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, AccountListFilters{
+	listFilters := AccountListFilters{
 		Platform:    filters.Platform,
 		AccountType: filters.AccountType,
 		Status:      filters.Status,
@@ -2728,12 +2735,25 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 		GroupID:     filters.GroupID,
 		PrivacyMode: filters.PrivacyMode,
 		PlanType:    filters.PlanType,
-	})
+	}
+	// 通用 ListWithFilters 契约返回完整凭据；admin 列表专用投影变体
+	// （ListWithFiltersProjected）排除 credentials。repo 未实现投影变体时
+	// 降级到全量契约（仅测试 stub 场景，凭据随后被子集回填覆盖）。
+	var (
+		accounts []Account
+		result   *pagination.PaginationResult
+		err      error
+	)
+	if reader, ok := s.accountRepo.(accountListProjectedReader); ok {
+		accounts, result, err = reader.ListWithFiltersProjected(ctx, params, listFilters)
+	} else {
+		accounts, result, err = s.accountRepo.ListWithFilters(ctx, params, listFilters)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
-	// 列表查询已投影排除 credentials；这里批量回填列表 UI 需要的
-	// 少量子字段（email/plan_type/model_mapping 等），避免全量 JSONB
+	// 列表查询已投影排除 credentials（降级路径除外）；这里批量回填列表 UI
+	// 需要的少量子字段（email/plan_type/model_mapping 等），避免全量 JSONB
 	// 解码。best-effort：子集查询失败不影响列表主数据。
 	if len(accounts) > 0 {
 		if reader, ok := s.accountRepo.(accountCredentialSubsetReader); ok {

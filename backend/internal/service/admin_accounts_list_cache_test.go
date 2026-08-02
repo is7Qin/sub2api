@@ -112,6 +112,50 @@ func TestAdminServiceImpl_ListAccountsFillsCredentialSubset(t *testing.T) {
 	require.NotNil(t, accounts[0].Credentials["model_mapping"])
 }
 
+// accountsListCacheProjectedRepoStub implements the optional
+// accountListProjectedReader capability and returns full credentials from the
+// general ListWithFilters contract, recording which variant was exercised.
+type accountsListCacheProjectedRepoStub struct {
+	AccountRepository
+	projectedCalls  atomic.Int32
+	fullCalls       atomic.Int32
+	fullCredentials map[string]any
+}
+
+func (s *accountsListCacheProjectedRepoStub) ListWithFilters(_ context.Context, _ pagination.PaginationParams, _ AccountListFilters) ([]Account, *pagination.PaginationResult, error) {
+	s.fullCalls.Add(1)
+	return []Account{{ID: 1, Name: "acc-1", Credentials: s.fullCredentials}}, &pagination.PaginationResult{Total: 1}, nil
+}
+
+func (s *accountsListCacheProjectedRepoStub) ListWithFiltersProjected(_ context.Context, _ pagination.PaginationParams, _ AccountListFilters) ([]Account, *pagination.PaginationResult, error) {
+	s.projectedCalls.Add(1)
+	// 投影版不带完整凭据。
+	return []Account{{ID: 1, Name: "acc-1"}}, &pagination.PaginationResult{Total: 1}, nil
+}
+
+func TestAdminServiceImpl_ListAccountsUsesProjectedVariant(t *testing.T) {
+	repo := &accountsListCacheProjectedRepoStub{fullCredentials: map[string]any{"access_token": "secret"}}
+	svc := &adminServiceImpl{accountRepo: repo, accountsListCache: newAccountsListTTLCache()}
+
+	accounts, _, err := svc.ListAccounts(context.Background(), 1, 200, AccountListFilters{}, "created_at", "desc")
+	require.NoError(t, err)
+	require.Equal(t, int32(1), repo.projectedCalls.Load(), "admin list must go through the projected variant")
+	require.Equal(t, int32(0), repo.fullCalls.Load(), "admin list must not call the full-contract ListWithFilters")
+	require.Len(t, accounts, 1)
+	require.Nil(t, accounts[0].Credentials, "projected rows must not carry full credentials")
+}
+
+func TestAdminServiceImpl_ListWithFiltersGeneralContractReturnsFullCredentials(t *testing.T) {
+	creds := map[string]any{"access_token": "secret", "refresh_token": "rt"}
+	repo := &accountsListCacheProjectedRepoStub{fullCredentials: creds}
+
+	// 通用契约：AccountService.List 依赖的 ListWithFilters 必须返回完整凭据。
+	accounts, _, err := repo.ListWithFilters(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 200}, AccountListFilters{})
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, creds, accounts[0].Credentials, "ListWithFilters general contract must return full credentials")
+}
+
 func TestAccountListGroupLite(t *testing.T) {
 	full := &Group{
 		ID: 7, Name: "g", Description: "desc", Platform: "openai",

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -94,6 +95,42 @@ func NewPricingRemoteSyncWorker(svc *PricingService) (*workerruntime.PeriodicJob
 		Timeout:        30 * time.Second,
 		RunImmediately: false,
 		Run:            svc.RunRemoteSync,
+	})
+}
+
+// NewTokenRefreshWorker adapts configured OAuth token refresh checks to the worker runtime.
+func NewTokenRefreshWorker(svc *TokenRefreshService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("token refresh service is required")
+	}
+	if !svc.Enabled() {
+		slog.Info("token_refresh.service_disabled")
+		return nil, nil
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "token-refresh",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Refreshes eligible OAuth tokens before expiry",
+			Tags:             []string{"oauth", "token-refresh"},
+		},
+		Interval: svc.Interval(),
+		// Legacy refresh checks had no per-run deadline; retain that behavior while
+		// letting the runtime root context drive truthful shutdown.
+		Timeout:        100 * 365 * 24 * time.Hour,
+		RunImmediately: true,
+		Run:            svc.Run,
+		OnStart: func() {
+			slog.Info("token_refresh.service_started",
+				"check_interval_minutes", svc.cfg.CheckIntervalMinutes,
+				"refresh_before_expiry_hours", svc.cfg.RefreshBeforeExpiryHours,
+			)
+		},
+		OnStop: func() {
+			slog.Info("token_refresh.service_stopped")
+		},
 	})
 }
 

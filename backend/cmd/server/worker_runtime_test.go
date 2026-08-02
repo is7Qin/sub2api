@@ -26,6 +26,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewPaymentOrderExpiryService(nil, time.Hour),
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -41,6 +42,45 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	}
 	require.IsType(t, workerruntime.PoolStatus{}, snapshots[5].Status)
 	require.True(t, usagePool.Accepting())
+}
+
+func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) {
+	usagePool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1})
+	disabledCfg := &config.Config{}
+	disabled := service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, disabledCfg, nil)
+
+	runtime, err := provideWorkerRuntime(
+		service.NewAccountExpiryService(nil, time.Hour),
+		service.NewIdempotencyCleanupService(nil, &config.Config{}),
+		usagePool,
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		disabled,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
+	require.NotContains(t, snapshotNames(runtime.Snapshot()), "token-refresh")
+
+	enabledCfg := &config.Config{}
+	enabledCfg.TokenRefresh.Enabled = true
+	enabledCfg.TokenRefresh.CheckIntervalMinutes = 60
+	enabled := service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, enabledCfg, nil)
+	enabledPool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1})
+	enabledRuntime, err := provideWorkerRuntime(
+		service.NewAccountExpiryService(nil, time.Hour),
+		service.NewIdempotencyCleanupService(nil, &config.Config{}),
+		enabledPool,
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		enabled,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = enabledRuntime.StopAll(context.Background()) })
+	require.Contains(t, snapshotNames(enabledRuntime.Snapshot()), "token-refresh")
 }
 
 func TestCleanupStopsRuntimeBeforeInfrastructure(t *testing.T) {
@@ -69,6 +109,7 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, functionSource(serviceWire, "ProvideIdempotencyCleanupService"), ".Start()")
 	require.NotContains(t, functionSource(serviceWire, "ProvideSubscriptionExpiryService"), ".Start()")
 	require.NotContains(t, functionSource(serviceWire, "ProvidePaymentOrderExpiryService"), ".Start()")
+	require.NotContains(t, functionSource(serviceWire, "ProvideTokenRefreshService"), ".Start()")
 
 	serverWire, err := os.ReadFile("wire.go")
 	require.NoError(t, err)
@@ -79,6 +120,7 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, legacyCleanup, "subscriptionExpiry.Stop()")
 	require.NotContains(t, legacyCleanup, "paymentOrderExpiry.Stop()")
 	require.NotContains(t, legacyCleanup, "pricing.Stop()")
+	require.NotContains(t, legacyCleanup, "tokenRefresh.Stop()")
 }
 
 type cleanupRuntimeSpy struct {

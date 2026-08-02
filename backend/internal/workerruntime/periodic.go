@@ -17,6 +17,8 @@ type PeriodicJobSpec struct {
 	Timeout        time.Duration
 	RunImmediately bool
 	Run            func(context.Context) error
+	OnStart        func()
+	OnStop         func()
 }
 
 // PeriodicJob runs one callback at a time on a fixed delay.
@@ -26,6 +28,8 @@ type PeriodicJob struct {
 	timeout        time.Duration
 	runImmediately bool
 	run            func(context.Context) error
+	onStart        func()
+	onStop         func()
 
 	mu           sync.RWMutex
 	lifecycle    LifecycleSnapshot
@@ -62,6 +66,8 @@ func NewPeriodicJob(spec PeriodicJobSpec) (*PeriodicJob, error) {
 		timeout:        spec.Timeout,
 		runImmediately: spec.RunImmediately,
 		run:            spec.Run,
+		onStart:        spec.OnStart,
+		onStop:         spec.OnStop,
 		lifecycle:      LifecycleSnapshot{State: LifecycleStopped, UpdatedAt: time.Now()},
 	}, nil
 }
@@ -89,6 +95,9 @@ func (j *PeriodicJob) Start(ctx context.Context) error {
 	j.lifecycle = LifecycleSnapshot{State: LifecycleRunning, UpdatedAt: time.Now()}
 	j.mu.Unlock()
 
+	if j.onStart != nil {
+		j.onStart()
+	}
 	go j.loop(root)
 	return nil
 }
@@ -180,7 +189,11 @@ func (j *PeriodicJob) loop(root context.Context) {
 		j.lifecycle = LifecycleSnapshot{State: LifecycleStopped, UpdatedAt: time.Now()}
 		j.status.StillRunning = false
 		done := j.stopDone
+		onStop := j.onStop
 		j.mu.Unlock()
+		if onStop != nil {
+			onStop()
+		}
 		close(done)
 	}()
 

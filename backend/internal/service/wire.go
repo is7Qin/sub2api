@@ -60,7 +60,7 @@ func ProvideOpenAIOAuthService(
 	return svc
 }
 
-// ProvideTokenRefreshService creates and starts TokenRefreshService
+// ProvideTokenRefreshService constructs TokenRefreshService. Its lifecycle is owned by the server worker runtime.
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
 	oauthService *OAuthService,
@@ -84,7 +84,6 @@ func ProvideTokenRefreshService(
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
-	svc.Start()
 	return svc
 }
 

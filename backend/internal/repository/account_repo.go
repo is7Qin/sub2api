@@ -801,6 +801,35 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 // ListWithFiltersFull 与 ListWithFilters 相同，但不做 credentials 投影：
 // 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
 // 主列表 UI 必须使用投影版 ListWithFilters，避免敏感凭据进入列表响应。
+// MaxAccountUpdatedAt 返回 accounts 表最大 updated_at，作为账号列表缓存的
+// 失效版本：任何账号变更都会推进该值，列表缓存据此立即失效。
+// 26K 行规模下 max(updated_at) 毫秒级完成。
+func (r *accountRepository) MaxAccountUpdatedAt(ctx context.Context) (*time.Time, error) {
+	if r == nil || r.sql == nil {
+		return nil, nil
+	}
+	rows, err := r.sql.QueryContext(ctx, `SELECT max(updated_at) FROM accounts WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var latest sql.NullTime
+	if err := rows.Scan(&latest); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if !latest.Valid {
+		return nil, nil
+	}
+	v := latest.Time
+	return &v, nil
+}
+
 func (r *accountRepository) ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.buildListWithFiltersQuery(filters)
 

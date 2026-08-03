@@ -52,6 +52,15 @@ type SchedulerStaticStateCache interface {
 	GetPersistentSupport(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error)
 }
 
+// SchedulerStaticCandidateAccountCache reads the active static candidate payload
+// for one bucket. It is deliberately separate from persistent support: request
+// selection and hydration must never observe the support projection for an ID
+// present in both pools.
+type SchedulerStaticCandidateAccountCache interface {
+	GetStaticCandidateAccount(ctx context.Context, bucket SchedulerBucket, accountID int64) (*Account, error)
+	GetStaticCandidateAccountsByIDs(ctx context.Context, bucket SchedulerBucket, ids []int64) (map[int64]*Account, error)
+}
+
 type SchedulerCache interface {
 	// GetSnapshot 读取快照并返回命中与否（ready + active + 数据完整）。
 	GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error)

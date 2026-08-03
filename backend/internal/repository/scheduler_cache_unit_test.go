@@ -455,12 +455,15 @@ func TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads(t *testin
 	cache := newSchedulerCacheUnit(t)
 	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
 	resetAt := time.Now().Add(time.Hour).UTC()
+	overloadUntil := time.Now().Add(30 * time.Minute).UTC()
 	candidate := service.Account{
 		ID:               12,
 		Platform:         service.PlatformOpenAI,
 		Status:           service.StatusActive,
 		Schedulable:      true,
 		RateLimitResetAt: &resetAt,
+		OverloadUntil:    &overloadUntil,
+		Credentials:      map[string]any{"api_key": "candidate-secret"},
 	}
 	persistentSupport := service.Account{
 		ID:          candidate.ID,
@@ -474,12 +477,23 @@ func TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads(t *testin
 	require.NoError(t, err)
 	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
 	require.NoError(t, err)
+	hydrated, err := cache.GetStaticCandidateAccount(ctx, bucket, candidate.ID)
+	require.NoError(t, err)
+	refreshed, err := cache.GetStaticCandidateAccountsByIDs(ctx, bucket, []int64{candidate.ID, 99, candidate.ID})
+	require.NoError(t, err)
 	require.True(t, candidateHit)
 	require.True(t, supportHit)
 	require.Len(t, candidates, 1)
 	require.Len(t, support, 1)
 	require.Equal(t, resetAt, *candidates[0].RateLimitResetAt)
 	require.Nil(t, support[0].RateLimitResetAt)
+	require.NotNil(t, hydrated)
+	require.Equal(t, resetAt, *hydrated.RateLimitResetAt)
+	require.Equal(t, overloadUntil, *hydrated.OverloadUntil)
+	require.Equal(t, "candidate-secret", hydrated.GetCredential("api_key"))
+	require.Len(t, refreshed, 1)
+	require.Equal(t, resetAt, *refreshed[candidate.ID].RateLimitResetAt)
+	require.Equal(t, overloadUntil, *refreshed[candidate.ID].OverloadUntil)
 }
 
 func TestSchedulerCache_IncompleteStaticStateDoesNotHitPersistentSupport(t *testing.T) {
@@ -530,6 +544,54 @@ func TestSchedulerCache_StaticStatePartialWriteKeepsPreviousVersion(t *testing.T
 	require.Equal(t, map[string]any{"old-model": "old-upstream"}, candidates[0].Credentials["model_mapping"])
 	require.Equal(t, "old", support[0].Name)
 	require.Equal(t, map[string]any{"old-model": "old-upstream"}, support[0].Credentials["model_mapping"])
+}
+
+func TestSchedulerCache_GetStaticCandidateAccountRetriesStaticToLegacyTransition(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 18, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	v1 := service.Account{ID: 85, Name: "static-v1", Platform: service.PlatformOpenAI, Credentials: map[string]any{"api_key": "v1"}}
+	v2 := service.Account{ID: 86, Name: "legacy-v2", Platform: service.PlatformOpenAI, Credentials: map[string]any{"api_key": "v2"}}
+	replacementCache, ok := newSchedulerCacheWithChunkSizes(redis.NewClient(&redis.Options{Addr: cache.rdb.Options().Addr}), defaultSchedulerSnapshotMGetChunkSize, defaultSchedulerSnapshotWriteChunkSize).(*schedulerCache)
+	require.True(t, ok)
+	t.Cleanup(func() { _ = replacementCache.rdb.Close() })
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{v1}, []service.Account{v1}))
+	hook := &schedulerStaticStateTransitionReadHook{
+		bucket: bucket,
+		publishNext: func(ctx context.Context) error {
+			return replacementCache.SetSnapshot(ctx, bucket, []service.Account{v2})
+		},
+	}
+	cache.rdb.AddHook(hook)
+
+	got, err := cache.GetStaticCandidateAccount(ctx, bucket, v1.ID)
+	require.NoError(t, err)
+	require.True(t, hook.fired.Load())
+	require.Nil(t, got, "a static candidate absent from the new legacy snapshot must not use an old payload")
+	got, err = cache.GetStaticCandidateAccount(ctx, bucket, v2.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, v2.Name, got.Name)
+	require.Equal(t, "v2", got.GetCredential("api_key"))
+}
+
+func TestSchedulerCache_GetStaticCandidateAccountsByIDs_LegacySnapshotUsesGlobalPayload(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 17, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	account := service.Account{ID: 84, Name: "legacy", Platform: service.PlatformOpenAI, Credentials: map[string]any{"api_key": "legacy-secret"}}
+
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{account}))
+	got, err := cache.GetStaticCandidateAccountsByIDs(ctx, bucket, []int64{account.ID, 999, account.ID})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, account.Name, got[account.ID].Name)
+	require.Empty(t, got[account.ID].GetCredential("api_key"), "legacy batch payload is metadata")
+	full, err := cache.GetStaticCandidateAccount(ctx, bucket, account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, full)
+	require.Equal(t, "legacy-secret", full.GetCredential("api_key"))
 }
 
 func TestSchedulerCache_StaticStateActivationUsesNewPayloadAndExpiresOldPayload(t *testing.T) {

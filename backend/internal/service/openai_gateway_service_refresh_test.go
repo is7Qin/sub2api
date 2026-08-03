@@ -115,7 +115,7 @@ func TestRefreshOpenAICandidates_ReadsFromSnapshotBatch(t *testing.T) {
 	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 99, Platform: PlatformOpenAI}}}
 	svc := newRefreshTestService(cache, repo)
 
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), []*Account{
+	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{
 		{ID: 1}, {ID: 2}, {ID: 2}, nil, {ID: 3},
 	})
 	require.Equal(t, 1, cache.calls)
@@ -132,7 +132,7 @@ func TestRefreshOpenAICandidates_SnapshotErrorDoesNotQueryDB(t *testing.T) {
 	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 1, Platform: PlatformOpenAI}, {ID: 3, Platform: PlatformOpenAI}}}
 	svc := newRefreshTestService(cache, repo)
 
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), []*Account{{ID: 1}, {ID: 3}})
+	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{{ID: 1}, {ID: 3}})
 	require.Equal(t, 1, cache.calls)
 	require.Zero(t, repo.getByIDsCalls)
 	require.Empty(t, got)
@@ -144,7 +144,7 @@ func TestRefreshOpenAICandidates_NoBatchReaderDoesNotQueryDB(t *testing.T) {
 	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 5, Platform: PlatformOpenAI}}}
 	svc := newRefreshTestService(cache, repo)
 
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), []*Account{{ID: 5}})
+	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{{ID: 5}})
 	require.Zero(t, repo.getByIDsCalls)
 	require.Empty(t, got)
 }
@@ -154,10 +154,10 @@ func TestRefreshOpenAICandidates_NoSnapshotReturnsNil(t *testing.T) {
 	repo := &spyGetByIDsAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), []*Account{{ID: 1}})
+	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{{ID: 1}})
 	require.Nil(t, got)
 	require.Zero(t, repo.getByIDsCalls)
-	require.Nil(t, svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil))
+	require.Nil(t, svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, nil))
 }
 
 // 端到端调度器水合测试的公共构造：开启高级调度器 + 快照（meta 批量读/全量单读）。

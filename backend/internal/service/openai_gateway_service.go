@@ -2420,7 +2420,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 		return nil, noAvailableOpenAISelectionErrorForAccounts(ctx, s, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, schedGroup, compactBlocked)
 	}
 
-	hydrated, err := s.hydrateSelectedAccount(ctx, selected)
+	hydrated, err := s.hydrateSelectedAccount(ctx, groupID, selected)
 	if err != nil {
 		return nil, err
 	}
@@ -2457,11 +2457,11 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		return nil
 	}
 
-	account, err := s.getSchedulableAccount(ctx, accountID)
+	account, err := s.getSchedulableAccount(ctx, groupID, accountID)
 	if err != nil {
 		return nil
 	}
-	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
+	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, groupID, account)
 	if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
@@ -2537,7 +2537,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			survivors = append(survivors, fresh)
 		}
 	}
-	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
+	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
@@ -2705,9 +2705,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if sessionHash != "" {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
-			account, err := s.getSchedulableAccount(ctx, accountID)
+			account, err := s.getSchedulableAccount(ctx, groupID, accountID)
 			if err == nil {
-				account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
+				account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, groupID, account)
 				if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				} else {
@@ -2864,7 +2864,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				survivors = append(survivors, fresh)
 			}
 		}
-		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
+		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
 
 		for _, acc := range survivors {
 			fresh := acc
@@ -2891,7 +2891,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 			if err == nil && result != nil && result.Acquired {
-				selection, selectErr := s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
+				selection, selectErr := s.newAcquiredSelectionResult(ctx, groupID, fresh, result.ReleaseFunc)
 				if selectErr != nil {
 					return nil, true, selectErr
 				}
@@ -2917,7 +2917,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				survivors = append(survivors, fresh)
 			}
 		}
-		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
+		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
 
 		for _, acc := range survivors {
 			fresh := acc
@@ -2944,7 +2944,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 			if err == nil && result != nil && result.Acquired {
-				selection, selectErr := s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
+				selection, selectErr := s.newAcquiredSelectionResult(ctx, groupID, fresh, result.ReleaseFunc)
 				if selectErr != nil {
 					return nil, selectErr
 				}
@@ -2981,7 +2981,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			survivors = append(survivors, fresh)
 		}
 	}
-	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
+	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
@@ -3006,7 +3006,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
 			continue
 		}
-		return s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
+		return s.newSelectionResult(ctx, groupID, fresh, false, nil, &AccountWaitPlan{
 			AccountID:      fresh.ID,
 			MaxConcurrency: fresh.Concurrency,
 			Timeout:        cfg.FallbackWaitTimeout,
@@ -3066,14 +3066,14 @@ func (s *OpenAIGatewayService) filterSchedulableOpenAICandidate(ctx context.Cont
 	return account
 }
 
-func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromSchedulerCache(ctx context.Context, account *Account) *Account {
+func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromSchedulerCache(ctx context.Context, groupID *int64, account *Account) *Account {
 	if account == nil {
 		return nil
 	}
 	if s.schedulerSnapshot == nil {
 		return account
 	}
-	latest, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	latest, err := s.schedulerSnapshot.GetStaticCandidateAccount(ctx, groupID, PlatformOpenAI, false, account.ID)
 	if err != nil || latest == nil {
 		return nil
 	}
@@ -3083,7 +3083,7 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromSchedulerCache(ct
 // refreshOpenAICandidatesFromSchedulerCache refreshes candidate metadata from
 // worker-published scheduler cache state. A missing or unreadable batch excludes
 // every candidate rather than querying the database.
-func (s *OpenAIGatewayService) refreshOpenAICandidatesFromSchedulerCache(ctx context.Context, candidates []*Account) map[int64]*Account {
+func (s *OpenAIGatewayService) refreshOpenAICandidatesFromSchedulerCache(ctx context.Context, groupID *int64, candidates []*Account) map[int64]*Account {
 	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil {
 		return nil
 	}
@@ -3100,7 +3100,7 @@ func (s *OpenAIGatewayService) refreshOpenAICandidatesFromSchedulerCache(ctx con
 		ids = append(ids, candidate.ID)
 	}
 	// Missing IDs remain absent so callers exclude them as unusable.
-	refreshed, err := s.schedulerSnapshot.GetSchedulableAccountsByIDs(ctx, ids)
+	refreshed, err := s.schedulerSnapshot.GetStaticCandidateAccountsByIDs(ctx, groupID, PlatformOpenAI, false, ids)
 	if err != nil {
 		slog.Warn("candidate refresh snapshot batch read failed", "error", err, "candidate_count", len(ids))
 		// No cache freshness signal means no candidate is safe to select.
@@ -3122,8 +3122,8 @@ func (s *OpenAIGatewayService) recheckOpenAIAccountEligibility(ctx context.Conte
 	return account
 }
 
-func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromSchedulerCache(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
-	return s.recheckOpenAIAccountEligibility(ctx, s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account), requestedModel, requireCompact, requiredCapability)
+func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromSchedulerCache(ctx context.Context, groupID *int64, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
+	return s.recheckOpenAIAccountEligibility(ctx, s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, groupID, account), requestedModel, requireCompact, requiredCapability)
 }
 
 func (s *OpenAIGatewayService) openAIStickyAccountMatchesSchedulingGroup(account *Account, groupID *int64) bool {
@@ -3136,13 +3136,13 @@ func (s *OpenAIGatewayService) openAIStickyAccountMatchesSchedulingGroup(account
 	return openAIStickyAccountMatchesGroup(account, groupID)
 }
 
-func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
+func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, groupID *int64, accountID int64) (*Account, error) {
 	var (
 		account *Account
 		err     error
 	)
 	if s.schedulerSnapshot != nil {
-		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+		account, err = s.schedulerSnapshot.GetStaticCandidateAccount(ctx, groupID, PlatformOpenAI, false, accountID)
 	} else {
 		account, err = s.accountRepo.GetByID(ctx, accountID)
 	}
@@ -3152,11 +3152,11 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 	return account, nil
 }
 
-func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
+func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, groupID *int64, account *Account) (*Account, error) {
 	if account == nil || s.schedulerSnapshot == nil {
 		return account, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	hydrated, err := s.schedulerSnapshot.GetStaticCandidateAccount(ctx, groupID, PlatformOpenAI, false, account.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -3166,8 +3166,8 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 	return hydrated, nil
 }
 
-func (s *OpenAIGatewayService) newSelectionResult(ctx context.Context, account *Account, acquired bool, release func(), waitPlan *AccountWaitPlan) (*AccountSelectionResult, error) {
-	hydrated, err := s.hydrateSelectedAccount(ctx, account)
+func (s *OpenAIGatewayService) newSelectionResult(ctx context.Context, groupID *int64, account *Account, acquired bool, release func(), waitPlan *AccountWaitPlan) (*AccountSelectionResult, error) {
+	hydrated, err := s.hydrateSelectedAccount(ctx, groupID, account)
 	if err != nil {
 		return nil, err
 	}
@@ -3179,8 +3179,8 @@ func (s *OpenAIGatewayService) newSelectionResult(ctx context.Context, account *
 	}, nil
 }
 
-func (s *OpenAIGatewayService) newAcquiredSelectionResult(ctx context.Context, account *Account, release func()) (*AccountSelectionResult, error) {
-	selection, err := s.newSelectionResult(ctx, account, true, release, nil)
+func (s *OpenAIGatewayService) newAcquiredSelectionResult(ctx context.Context, groupID *int64, account *Account, release func()) (*AccountSelectionResult, error) {
+	selection, err := s.newSelectionResult(ctx, groupID, account, true, release, nil)
 	if err != nil && release != nil {
 		release()
 	}

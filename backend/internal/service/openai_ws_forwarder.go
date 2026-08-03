@@ -4940,12 +4940,12 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		}
 	}
 
-	account, err := s.getSchedulableAccount(ctx, accountID)
+	account, err := s.getSchedulableAccount(ctx, groupID, accountID)
 	if err != nil || account == nil {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
-	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
+	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, groupID, account)
 	if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil

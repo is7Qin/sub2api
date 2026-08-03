@@ -192,6 +192,14 @@ type snapshotAccountBatchReader interface {
 	GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error)
 }
 
+// staticCandidateAccountReader reads the active candidate representation from a
+// static bucket. The request path supplies its bucket so an account cannot be
+// hydrated from an unrelated group or support projection.
+type staticCandidateAccountReader interface {
+	GetStaticCandidateAccount(ctx context.Context, bucket SchedulerBucket, accountID int64) (*Account, error)
+	GetStaticCandidateAccountsByIDs(ctx context.Context, bucket SchedulerBucket, ids []int64) (map[int64]*Account, error)
+}
+
 // schedulerAccountBatchWriter 是 SchedulerCache 的可选批量写入能力：dirty 工作
 // 消费端把整批脏账号合并成一次 Redis 管线写入，避免逐账号往返。cache 未实现
 // 时（仅测试 stub 或第三方实现）退化为逐账号 SetAccount。
@@ -515,6 +523,31 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 	}
 
 	return nil, ErrSchedulerCacheNotReady
+}
+
+// GetStaticCandidateAccount reads the active static candidate payload for the
+// request bucket. Legacy snapshots retain their global GetAccount behavior.
+func (s *SchedulerSnapshotService) GetStaticCandidateAccount(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, accountID int64) (*Account, error) {
+	if accountID <= 0 || s == nil || s.cache == nil {
+		return nil, ErrSchedulerCacheNotReady
+	}
+	reader, ok := s.cache.(staticCandidateAccountReader)
+	if !ok {
+		return s.GetAccount(ctx, accountID)
+	}
+	return reader.GetStaticCandidateAccount(ctx, s.bucketFor(groupID, platform, s.resolveMode(platform, hasForcePlatform)), accountID)
+}
+
+// GetStaticCandidateAccountsByIDs reads current static candidate metadata for
+// the request bucket. Legacy snapshots use the existing global batch reader.
+func (s *SchedulerSnapshotService) GetStaticCandidateAccountsByIDs(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, ids []int64) (map[int64]*Account, error) {
+	if s == nil || s.cache == nil {
+		return nil, ErrSchedulerCacheNotReady
+	}
+	if reader, ok := s.cache.(staticCandidateAccountReader); ok {
+		return reader.GetStaticCandidateAccountsByIDs(ctx, s.bucketFor(groupID, platform, s.resolveMode(platform, hasForcePlatform)), ids)
+	}
+	return s.GetSchedulableAccountsByIDs(ctx, ids)
 }
 
 // GetSchedulableAccountsByIDs 从快照批量读取账号调度元数据（meta payload）；

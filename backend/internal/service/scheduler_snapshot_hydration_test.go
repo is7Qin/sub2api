@@ -145,7 +145,7 @@ func TestOpenAINewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *test
 	}
 	releaseCalls := 0
 
-	selection, err := svc.newAcquiredSelectionResult(context.Background(), &Account{ID: 1001}, func() {
+	selection, err := svc.newAcquiredSelectionResult(context.Background(), nil, &Account{ID: 1001}, func() {
 		releaseCalls++
 	})
 

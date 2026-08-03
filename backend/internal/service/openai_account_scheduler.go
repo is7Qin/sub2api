@@ -348,12 +348,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 	}
 
-	account, err := s.service.getSchedulableAccount(ctx, accountID)
+	account, err := s.service.getSchedulableAccount(ctx, req.GroupID, accountID)
 	if err != nil || account == nil {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
-	account = s.service.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
+	account = s.service.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, req.GroupID, account)
 	if account == nil || !s.service.openAIStickyAccountMatchesSchedulingGroup(account, req.GroupID) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
@@ -839,7 +839,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		}
 		survivors = append(survivors, fresh)
 	}
-	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
+	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, req.GroupID, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
@@ -878,7 +878,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 			// "api_key not found in credentials"。与网关层 newAcquiredSelectionResult
 			// 的水合语义保持一致；水合失败视为该候选不可用，槽位由
 			// newAcquiredSelectionResult 内部释放，继续尝试下一个候选。
-			selection, selectErr := s.service.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
+			selection, selectErr := s.service.newAcquiredSelectionResult(ctx, req.GroupID, fresh, result.ReleaseFunc)
 			if selectErr != nil {
 				continue
 			}
@@ -1075,7 +1075,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		survivors = append(survivors, fresh)
 	}
-	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
+	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, req.GroupID, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
@@ -1106,7 +1106,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		// 与 tryAcquireOpenAISelectionOrder 一致：fresh 可能来自 meta payload，
 		// 经 newSelectionResult 水合为全量账号后再返回；水合失败视为候选不可用。
-		selection, selectErr := s.service.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
+		selection, selectErr := s.service.newSelectionResult(ctx, req.GroupID, fresh, false, nil, &AccountWaitPlan{
 			AccountID:      fresh.ID,
 			MaxConcurrency: fresh.Concurrency,
 			Timeout:        cfg.FallbackWaitTimeout,

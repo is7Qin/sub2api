@@ -870,6 +870,150 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 	return account, nil
 }
 
+// GetStaticCandidateAccount resolves an account from the active bucket payload.
+// A coherent static marker requires the versioned candidate key; global payloads
+// are considered only after proving the active version is a legacy snapshot.
+func (c *schedulerCache) GetStaticCandidateAccount(ctx context.Context, bucket service.SchedulerBucket, accountID int64) (*service.Account, error) {
+	if accountID <= 0 {
+		return nil, nil
+	}
+	id := strconv.FormatInt(accountID, 10)
+	for attempt := 0; attempt < 2; attempt++ {
+		active, static, isStatic, coherent, err := c.readCoherentStaticState(ctx, bucket)
+		if err != nil {
+			return nil, err
+		}
+		if !coherent {
+			continue
+		}
+		key := schedulerAccountKey(id)
+		if isStatic {
+			key = schedulerVersionedAccountKey(bucket, active, id)
+		}
+		values, err := c.rdb.MGet(ctx, key, schedulerLastUsedKey(id)).Result()
+		if err != nil {
+			return nil, err
+		}
+		if len(values) != 2 || values[0] == nil {
+			return nil, nil
+		}
+		currentActive, currentStatic, currentIsStatic, currentCoherent, err := c.readCoherentStaticState(ctx, bucket)
+		if err != nil {
+			return nil, err
+		}
+		if !currentCoherent {
+			return nil, nil
+		}
+		if active != currentActive || isStatic != currentIsStatic || (isStatic && static != currentStatic) {
+			continue
+		}
+		account, err := decodeCachedAccount(values[0])
+		if err != nil {
+			return nil, err
+		}
+		if err := applySchedulerLastUsed(account, values[1]); err != nil {
+			return nil, err
+		}
+		return account, nil
+	}
+	return nil, nil
+}
+
+// GetStaticCandidateAccountsByIDs reads only current active candidate metadata.
+// It retries a crossed active/static transition and fails closed rather than
+// interpreting an old static version through mutable global account keys.
+func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bucket service.SchedulerBucket, ids []int64) (map[int64]*service.Account, error) {
+	out := make(map[int64]*service.Account, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		active, static, isStatic, coherent, err := c.readCoherentStaticState(ctx, bucket)
+		if err != nil {
+			return nil, err
+		}
+		if !coherent {
+			return out, nil
+		}
+
+		keys := make([]string, 0, len(ids))
+		for _, accountID := range ids {
+			id := strconv.FormatInt(accountID, 10)
+			if isStatic {
+				keys = append(keys, schedulerVersionedAccountMetaKey(bucket, active, id))
+			} else {
+				keys = append(keys, schedulerAccountMetaKey(id))
+			}
+		}
+		values, err := c.mgetChunked(ctx, keys)
+		if err != nil {
+			return nil, err
+		}
+		if len(values) != len(ids) {
+			return nil, errors.New("scheduler snapshot cache returned unexpected value count")
+		}
+
+		currentActive, currentStatic, currentIsStatic, currentCoherent, err := c.readCoherentStaticState(ctx, bucket)
+		if err != nil {
+			return nil, err
+		}
+		if !currentCoherent {
+			continue
+		}
+		if active != currentActive || isStatic != currentIsStatic || (isStatic && static != currentStatic) {
+			continue
+		}
+
+		for _, val := range values {
+			if val == nil {
+				continue
+			}
+			account, err := decodeCachedAccount(val)
+			if err != nil {
+				return nil, err
+			}
+			if account != nil && account.ID > 0 {
+				out[account.ID] = account
+			}
+		}
+		return out, nil
+	}
+	return out, nil
+}
+
+func (c *schedulerCache) readCoherentStaticState(ctx context.Context, bucket service.SchedulerBucket) (active, static string, isStatic, coherent bool, err error) {
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	staticKey := schedulerBucketKey(schedulerSupportStatePrefix, bucket)
+	active, err = c.rdb.Get(ctx, activeKey).Result()
+	if err == redis.Nil {
+		return "", "", false, false, nil
+	}
+	if err != nil {
+		return "", "", false, false, err
+	}
+	static, err = c.rdb.Get(ctx, staticKey).Result()
+	if err != nil && err != redis.Nil {
+		return "", "", false, false, err
+	}
+	activeAgain, activeErr := c.rdb.Get(ctx, activeKey).Result()
+	if activeErr == redis.Nil {
+		return "", "", false, false, nil
+	}
+	if activeErr != nil {
+		return "", "", false, false, activeErr
+	}
+	if activeAgain != active {
+		return "", "", false, false, nil
+	}
+	if err == redis.Nil {
+		return active, "", false, true, nil
+	}
+	if static != active {
+		return "", "", false, false, nil
+	}
+	return active, static, true, true, nil
+}
+
 // GetSchedulableAccountsByIDs 批量读取账号快照的调度子集 meta payload
 // （sched:meta:{id}，仅调度/路由所需字段，不携带 api_key/access_token 等凭据）。
 // 每请求候选刷新若读全量 payload（~9KB/账号）会放大 Redis 网络吞吐；meta 仅

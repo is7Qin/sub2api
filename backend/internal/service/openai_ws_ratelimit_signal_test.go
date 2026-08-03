@@ -454,7 +454,7 @@ func TestOpenAIGatewayService_GetSchedulableAccount_ExhaustedCodexExtraDoesNotSe
 	repo := &openAICodexExtraListRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, rateLimitCh: make(chan time.Time, 1)}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 
-	fresh, err := svc.getSchedulableAccount(context.Background(), account.ID)
+	fresh, err := svc.getSchedulableAccount(context.Background(), nil, account.ID)
 	require.NoError(t, err)
 	require.NotNil(t, fresh)
 	require.Nil(t, fresh.RateLimitResetAt)

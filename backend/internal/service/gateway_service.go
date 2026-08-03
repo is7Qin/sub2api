@@ -1983,10 +1983,17 @@ func (s *GatewayService) isPureModelSupportMiss(
 		return false
 	}
 
-	// Scheduling lists exclude temporary cooldown and overload state. Re-read the
-	// persistent pool before declaring a permanent model miss, otherwise a brief
-	// capacity outage is misreported as 404.
-	if candidateRepo, ok := s.accountRepo.(ModelAvailabilityCandidateRepository); ok {
+	// Scheduling lists exclude temporary cooldown and overload state. The worker
+	// publishes the persistent pool alongside candidates; an unavailable snapshot
+	// cannot safely establish a permanent miss.
+	if s.schedulerSnapshot != nil {
+		configuredAccounts, hit, err := s.schedulerSnapshot.ListPersistentSupport(ctx, groupID, platform, !allowMixedScheduling)
+		if err != nil || !hit || len(configuredAccounts) == 0 {
+			return false
+		}
+		accounts = configuredAccounts
+	} else if candidateRepo, ok := s.accountRepo.(ModelAvailabilityCandidateRepository); ok {
+		// Constructors without scheduler support retain the legacy diagnostic query.
 		platforms := []string{platform}
 		if allowMixedScheduling {
 			platforms = append(platforms, PlatformAntigravity)
@@ -1998,8 +2005,7 @@ func (s *GatewayService) isPureModelSupportMiss(
 		}
 		accounts = configuredAccounts
 	}
-	// Legacy repository doubles do not expose the narrow diagnostic capability;
-	// retain their supplied pool while production repositories always re-query.
+	// A scheduler-backed request must never fall back to the repository.
 	if len(accounts) == 0 {
 		return false
 	}

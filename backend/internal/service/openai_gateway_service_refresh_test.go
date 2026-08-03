@@ -126,40 +126,27 @@ func TestRefreshOpenAICandidates_ReadsFromSnapshotBatch(t *testing.T) {
 	require.Nil(t, got[3], "快照缺失的 ID 与 DB 版“未在刷新 map 中”语义一致：视为不存在")
 }
 
-// 快照批量读失败（Redis 故障）时降级 DB GetByIDs。
-func TestRefreshOpenAICandidates_SnapshotErrorFallsBackToDB(t *testing.T) {
+// Snapshot errors exclude candidates instead of falling back to DB.
+func TestRefreshOpenAICandidates_SnapshotErrorDoesNotQueryDB(t *testing.T) {
 	cache := &batchReaderSnapshotCache{err: errors.New("redis down")}
 	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 1, Platform: PlatformOpenAI}, {ID: 3, Platform: PlatformOpenAI}}}
 	svc := newRefreshTestService(cache, repo)
 
 	got := svc.refreshOpenAICandidatesFromDB(context.Background(), []*Account{{ID: 1}, {ID: 3}})
 	require.Equal(t, 1, cache.calls)
-	require.Equal(t, 1, repo.getByIDsCalls)
-	require.Len(t, got, 2)
-	require.Equal(t, int64(1), got[1].ID)
-	require.Equal(t, int64(3), got[3].ID)
+	require.Zero(t, repo.getByIDsCalls)
+	require.Empty(t, got)
 }
 
-// 快照 cache 未实现批量读（可选接口缺失）时同样降级 DB。
-func TestRefreshOpenAICandidates_NoBatchReaderFallsBackToDB(t *testing.T) {
+// A cache without the optional batch reader also excludes candidates without DB access.
+func TestRefreshOpenAICandidates_NoBatchReaderDoesNotQueryDB(t *testing.T) {
 	cache := &ttlOnlyRefreshCache{}
 	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 5, Platform: PlatformOpenAI}}}
 	svc := newRefreshTestService(cache, repo)
 
 	got := svc.refreshOpenAICandidatesFromDB(context.Background(), []*Account{{ID: 5}})
-	require.Equal(t, 1, repo.getByIDsCalls)
-	require.Len(t, got, 1)
-	require.Equal(t, int64(5), got[5].ID)
-}
-
-// Redis 与 DB 批量查询均失败时沿用既有 fail-open：返回 nil，调用方继续用快照候选。
-func TestRefreshOpenAICandidates_BothFailReturnNil(t *testing.T) {
-	cache := &batchReaderSnapshotCache{err: errors.New("redis down")}
-	repo := &spyGetByIDsAccountRepo{err: errors.New("db down")}
-	svc := newRefreshTestService(cache, repo)
-
-	got := svc.refreshOpenAICandidatesFromDB(context.Background(), []*Account{{ID: 1}})
-	require.Nil(t, got)
+	require.Zero(t, repo.getByIDsCalls)
+	require.Empty(t, got)
 }
 
 // 快照服务缺失（未启用）时不刷新也不查询 DB，与既有行为一致。

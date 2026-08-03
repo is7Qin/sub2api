@@ -1950,7 +1950,14 @@ func isPureOpenAIModelSupportMiss(ctx context.Context, service *OpenAIGatewaySer
 	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 || service == nil {
 		return false
 	}
-	if candidateRepo, ok := service.accountRepo.(ModelAvailabilityCandidateRepository); ok {
+	if service.schedulerSnapshot != nil {
+		configuredAccounts, hit, err := service.schedulerSnapshot.ListPersistentSupport(ctx, groupID, PlatformOpenAI, false)
+		if err != nil || !hit || len(configuredAccounts) == 0 {
+			return false
+		}
+		accounts = configuredAccounts
+	} else if candidateRepo, ok := service.accountRepo.(ModelAvailabilityCandidateRepository); ok {
+		// Constructors without scheduler support retain the legacy diagnostic query.
 		includeGrouped := groupID == nil && service.cfg != nil && service.cfg.RunMode == config.RunModeSimple
 		configuredAccounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, groupID, []string{PlatformOpenAI}, includeGrouped)
 		if err != nil {
@@ -3063,30 +3070,21 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Co
 	if account == nil {
 		return nil
 	}
-	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+	if s.schedulerSnapshot == nil {
 		return account
 	}
-	latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	latest, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
 	if err != nil || latest == nil {
 		return nil
 	}
 	return latest
 }
 
-// refreshOpenAICandidatesFromDB 以一次批量读取刷新候选账号的最新状态（函数名
-// 保留历史语义），替代对每个候选各执行一次 GetByID：大账号池下把 N 次数据库
-// 往返收敛为一次。
-// 优先从调度快照（Redis）批量读取 meta payload（调度字段子集，无凭据）：候选
-// 本身来自快照命中，快照秒级重建且限流/超载等运行时状态经 dirty-work 实时写回，
-// DB 重读属于快照化前的历史遗留。快照读取失败（Redis 故障 / 批量读接口缺失）
-// 时降级为一次批量 DB 查询。
-// 返回 nil 表示无需刷新（快照未启用 / 仓库缺失 / 批量查询失败），调用方沿用快照账号；
-// 返回非 nil map 时，未被覆盖的 ID 视为已不存在，应跳过该候选。
-// 注意：批量查询失败时沿用快照账号属于 fail-open 回退（逐候选 GetByID 语义是
-// fail-closed 跳过）。DB 故障为瞬时窗口，且候选仍经内存态运行时屏蔽与
-// 兼容性复检兜底，实际差异极小；有意与快照未启用的既有行为保持一致。
+// refreshOpenAICandidatesFromDB keeps its historical name, but scheduler-backed
+// requests exclusively refresh candidate metadata from the published cache.
+// A missing or unreadable batch excludes every candidate rather than querying DB.
 func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context, candidates []*Account) map[int64]*Account {
-	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil || s.accountRepo == nil {
+	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil {
 		return nil
 	}
 	ids := make([]int64, 0, len(candidates))
@@ -3101,26 +3099,19 @@ func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context
 		seen[candidate.ID] = struct{}{}
 		ids = append(ids, candidate.ID)
 	}
-	// 快照优先：缺失的 ID 不在返回 map 中，调用方按“已不存在”跳过候选，
-	// 与 DB 版“未在刷新 map 中”的语义一致。
-	if refreshed, err := s.schedulerSnapshot.GetSchedulableAccountsByIDs(ctx, ids); err == nil {
-		return refreshed
-	} else {
-		// 降级观测：定位批量快照读失败原因（生产风暴排查用，Warn 级别生产可见）。
-		slog.Warn("candidate refresh snapshot batch read failed, falling back to DB",
-			"error", err, "candidate_count", len(ids))
-	}
-	refreshed, err := s.accountRepo.GetByIDs(ctx, ids)
+	// Missing IDs remain absent so callers exclude them as unusable.
+	refreshed, err := s.schedulerSnapshot.GetSchedulableAccountsByIDs(ctx, ids)
 	if err != nil {
-		return nil
-	}
-	out := make(map[int64]*Account, len(refreshed))
-	for _, account := range refreshed {
-		if account != nil {
-			out[account.ID] = account
+		slog.Warn("candidate refresh snapshot batch read failed", "error", err, "candidate_count", len(ids))
+		// A non-production/legacy scheduler without a batch reader has no cache
+		// freshness signal, so retain its existing candidate snapshot. Production
+		// snapshot readers return an empty map and exclude all candidates.
+		if _, ok := s.schedulerSnapshot.cache.(snapshotAccountBatchReader); !ok {
+			return nil
 		}
+		return map[int64]*Account{}
 	}
-	return out
+	return refreshed
 }
 
 func (s *OpenAIGatewayService) recheckOpenAIAccountEligibility(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {

@@ -11,7 +11,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -126,7 +125,6 @@ type SchedulerSnapshotService struct {
 	workerStopping          bool
 	workerDone              chan struct{}
 	wg                      sync.WaitGroup
-	fallbackLimit           *fallbackLimiter
 	lagMu                   sync.Mutex
 	lagFailures             int
 	dirtyLagFailures        int
@@ -150,9 +148,6 @@ type SchedulerSnapshotService struct {
 	snapshotVersionCacheTTL time.Duration
 	// snapshotVersionCache 记录每个分桶最近一次成功的版本读取（仅非空版本）。
 	snapshotVersionCache sync.Map // bucket.String() -> *snapshotVersionCacheEntry
-	// snapshotFallbackGroup 按分桶合并快照 miss 后的 DB 回源：同一时刻一个分桶
-	// 只允许一个请求实际查询数据库并写回快照，其余请求等待其结果。
-	snapshotFallbackGroup singleflight.Group
 	// dirtyRefreshThrottle 限制同一账号的脏刷新频率（见 dirtyAccountRefreshMinInterval）。
 	dirtyRefreshThrottle *accountWriteThrottle
 }
@@ -235,10 +230,6 @@ func newSchedulerSnapshotService(
 	groupRepo GroupRepository,
 	cfg *config.Config,
 ) *SchedulerSnapshotService {
-	maxQPS := 0
-	if cfg != nil {
-		maxQPS = cfg.Gateway.Scheduling.DbFallbackMaxQPS
-	}
 	return &SchedulerSnapshotService{
 		cache:                   cache,
 		outboxRepo:              outboxRepo,
@@ -247,7 +238,6 @@ func newSchedulerSnapshotService(
 		accountRepo:             accountRepo,
 		groupRepo:               groupRepo,
 		cfg:                     cfg,
-		fallbackLimit:           newFallbackLimiter(maxQPS),
 		dirtyRefreshThrottle:    newAccountWriteThrottle(dirtyAccountRefreshMinInterval),
 		snapshotVersionCacheTTL: snapshotVersionCacheWindow,
 	}
@@ -470,40 +460,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 	}
 
-	// 快照 miss 后的 DB 回源是全桶共享的慢路径：按分桶 singleflight 合并并发
-	// 请求，同一时刻只有一个请求实际执行 DB 查询 + SetSnapshot 写回，其余请求
-	// 等待同一结果（回源失败时共享同一错误，下一请求自然重试）。leader 的 DB
-	// 工作使用脱离调用方取消的上下文，避免首个请求断连把整批等待者一起拖垮；
-	// 执行时长由 fallbackQueryContext 施加的硬性上限限制。
-	value, err, _ := s.snapshotFallbackGroup.Do(bucket.String(), func() (any, error) {
-		if err := s.guardFallback(ctx); err != nil {
-			return nil, err
-		}
-		fallbackCtx, cancel := s.fallbackQueryContext(ctx)
-		defer cancel()
-
-		accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
-		if err != nil {
-			return nil, err
-		}
-
-		if s.cache != nil {
-			// Static-state caches publish candidates with persistent support under one
-			// activated version. Request fallback cannot safely publish candidates alone.
-			if _, staticCache := s.cache.(SchedulerStaticStateCache); !staticCache {
-				if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
-				}
-			}
-		}
-
-		return accounts, nil
-	})
-	if err != nil {
-		return nil, useMixed, err
-	}
-	accounts, _ := value.([]Account)
-	return accounts, useMixed, nil
+	return nil, useMixed, ErrSchedulerCacheNotReady
 }
 
 // cachedSnapshotVersion 返回本地版本缓存中窗口内的版本；ttl<=0 时总是返回
@@ -558,12 +515,7 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 		}
 	}
 
-	if err := s.guardFallback(ctx); err != nil {
-		return nil, err
-	}
-	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
-	defer cancel()
-	return s.accountRepo.GetByID(fallbackCtx, accountID)
+	return nil, ErrSchedulerCacheNotReady
 }
 
 // GetSchedulableAccountsByIDs 从快照批量读取账号调度元数据（meta payload）；
@@ -1758,16 +1710,6 @@ func (s *SchedulerSnapshotService) resolveMode(platform string, hasForcePlatform
 		return SchedulerModeMixed
 	}
 	return SchedulerModeSingle
-}
-
-func (s *SchedulerSnapshotService) guardFallback(ctx context.Context) error {
-	if s.cfg == nil || s.cfg.Gateway.Scheduling.DbFallbackEnabled {
-		if s.fallbackLimit == nil || s.fallbackLimit.Allow() {
-			return nil
-		}
-		return ErrSchedulerFallbackLimited
-	}
-	return ErrSchedulerCacheNotReady
 }
 
 // fallbackQueryContext 构造 singleflight leader 的回源查询上下文：脱离调用方

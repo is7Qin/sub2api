@@ -392,22 +392,45 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	}
 
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
-	activeVal, err := c.rdb.Get(ctx, activeKey).Result()
-	if err == redis.Nil {
-		c.stats.recordMiss(bucketKey, schedulerMissActiveMissing)
+	staticStateKey := schedulerBucketKey(schedulerSupportStatePrefix, bucket)
+	var activeVal string
+	var isStaticState bool
+	coherentState := false
+	for attempt := 0; attempt < 2; attempt++ {
+		activeVal, err = c.rdb.Get(ctx, activeKey).Result()
+		if err == redis.Nil {
+			c.stats.recordMiss(bucketKey, schedulerMissActiveMissing)
+			return nil, false, nil
+		}
+		if err != nil {
+			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+			return nil, false, err
+		}
+
+		staticStateVersion, stateErr := c.rdb.Get(ctx, staticStateKey).Result()
+		if stateErr != nil && stateErr != redis.Nil {
+			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+			return nil, false, stateErr
+		}
+		if stateErr == redis.Nil {
+			// A missing marker belongs to legacy SetSnapshot data, which continues to
+			// use the global account payload keys.
+			coherentState = true
+			break
+		}
+		if staticStateVersion == activeVal {
+			isStaticState = true
+			coherentState = true
+			break
+		}
+		// Static-state activation changes active and marker together. A mismatch
+		// means this reader crossed that transition, so retry rather than treating
+		// a grace-period static version as a legacy global-payload snapshot.
+	}
+	if !coherentState {
+		c.stats.recordMiss(bucketKey, schedulerMissSnapshotEmpty)
 		return nil, false, nil
 	}
-	if err != nil {
-		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
-		return nil, false, err
-	}
-
-	staticStateVersion, stateErr := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportStatePrefix, bucket)).Result()
-	if stateErr != nil && stateErr != redis.Nil {
-		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
-		return nil, false, stateErr
-	}
-	isStaticState := stateErr == nil && staticStateVersion == activeVal
 
 	snapshotKey := schedulerSnapshotKey(bucket, activeVal)
 	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, -1).Result()

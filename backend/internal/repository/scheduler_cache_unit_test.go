@@ -555,6 +555,64 @@ func TestSchedulerCache_StaticStateActivationUsesNewPayloadAndExpiresOldPayload(
 	require.Equal(t, time.Duration(snapshotGraceTTLSeconds)*time.Second, cache.rdb.TTL(ctx, schedulerVersionedSupportAccountMetaKey(bucket, oldVersion, id)).Val())
 }
 
+type schedulerStaticStateTransitionReadHook struct {
+	bucket      service.SchedulerBucket
+	publishNext func(context.Context) error
+	fired       atomic.Bool
+}
+
+func (h *schedulerStaticStateTransitionReadHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *schedulerStaticStateTransitionReadHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "get" && len(cmd.Args()) > 1 && cmd.Args()[1] == schedulerBucketKey(schedulerSupportStatePrefix, h.bucket) && h.fired.CompareAndSwap(false, true) {
+			if err := h.publishNext(ctx); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *schedulerStaticStateTransitionReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestSchedulerCache_GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 14, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	v1 := service.Account{ID: 70, Name: "v1 versioned", Platform: service.PlatformOpenAI}
+	global := service.Account{ID: v1.ID, Name: "stale global", Platform: service.PlatformOpenAI}
+	v2 := service.Account{ID: 71, Name: "v2 versioned", Platform: service.PlatformOpenAI}
+	replacementCache, ok := newSchedulerCacheWithChunkSizes(
+		redis.NewClient(&redis.Options{Addr: cache.rdb.Options().Addr}),
+		defaultSchedulerSnapshotMGetChunkSize,
+		defaultSchedulerSnapshotWriteChunkSize,
+	).(*schedulerCache)
+	require.True(t, ok)
+	t.Cleanup(func() { _ = replacementCache.rdb.Close() })
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{v1}, []service.Account{v1}))
+	require.NoError(t, cache.SetAccount(ctx, &global))
+	hook := &schedulerStaticStateTransitionReadHook{
+		bucket: bucket,
+		publishNext: func(ctx context.Context) error {
+			return replacementCache.SetStaticState(ctx, bucket, []service.Account{v2}, []service.Account{v2})
+		},
+	}
+	cache.rdb.AddHook(hook)
+
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hook.fired.Load())
+	require.True(t, hit)
+	require.Equal(t, []int64{v2.ID}, schedulerCacheTestIDs(candidates))
+	require.Equal(t, v2.Name, candidates[0].Name)
+}
+
 type schedulerStaticPayloadPipelineFailureHook struct {
 	pipelineCalls atomic.Int32
 }

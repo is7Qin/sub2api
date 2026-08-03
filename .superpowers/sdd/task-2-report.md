@@ -216,3 +216,35 @@ ok github.com/Wei-Shaw/sub2api/internal/service
 git diff --check
 # passed
 ```
+
+## Static marker transition reader-race fix
+
+### RED
+
+Added `TestSchedulerCache_GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload` before changing `GetSnapshot`. A deterministic Redis `GET` hook reads V1 as active, publishes V2 before the support-state marker is read, and provides a stale legacy global payload for V1's member ID.
+
+```text
+cd backend && go test -tags=unit ./internal/repository -run '^TestSchedulerCache_GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload$' -count=1
+```
+
+The test failed as intended before the fix: the reader returned V1 membership (`70`) after choosing the global payload path, instead of coherently retrying to V2 (`71`).
+
+### GREEN
+
+- `GetSnapshot` now reads the active version and support-state marker as a bounded coherent decision (two attempts).
+- A missing marker remains the legacy `SetSnapshot` case and continues to use global payload keys, including historical empty-snapshot behavior.
+- A present-but-mismatched marker means a static activation transition was crossed. The reader retries; if it cannot obtain a coherent pair, it fails closed as a cache miss rather than treating a grace-period static version as legacy data.
+- A matching pair continues to use version-qualified candidate payloads, preserving immutable old-reader grace and empty static snapshot hits.
+
+### Verification
+
+```text
+cd backend && go test -tags=unit ./internal/repository -run '^TestSchedulerCache_GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload$' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -tags=unit ./internal/repository -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -race -tags=unit ./internal/repository -run 'TestSchedulerCache_(GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload|StaticState)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+```

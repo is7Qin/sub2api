@@ -257,6 +257,52 @@ func TestBuildSchedulerMetadataAccount_KeepsQuotaStateForCachedAccounts(t *testi
 	}
 }
 
+func TestSchedulerCacheGetSchedulableAccountsByIDs_MixedPresentMissing(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	full := &service.Account{
+		ID: 701, Name: "full", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "secret-701", "project_id": "proj-701"},
+		Extra:       map[string]any{"quota_limit": 100.0, "unused": "drop"},
+	}
+	require.NoError(t, cache.SetAccount(ctx, full))
+	require.NoError(t, cache.SetAccount(ctx, &service.Account{ID: 703, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}))
+
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{701, 999, 703, 0, 701})
+	require.NoError(t, err)
+	// 缺失 ID 跳过、重复 ID 去重：只有快照中存在的账号进入返回 map。
+	require.Len(t, got, 2)
+	require.Equal(t, "full", got[701].Name)
+	require.Equal(t, map[string]any{"api_key": "secret-701", "project_id": "proj-701"}, got[701].Credentials)
+	require.Equal(t, map[string]any{"quota_limit": 100.0, "unused": "drop"}, got[701].Extra)
+	require.Equal(t, int64(703), got[703].ID)
+	require.Nil(t, got[999])
+
+	empty, err := cache.GetSchedulableAccountsByIDs(ctx, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty)
+}
+
+func TestSchedulerCacheGetSchedulableAccountsByIDs_ChunkBoundary(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	cache.mgetChunkSize = 2
+	var ids []int64
+	for i := int64(1); i <= 5; i++ {
+		ids = append(ids, i)
+		require.NoError(t, cache.SetAccount(ctx, &service.Account{ID: i, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}))
+	}
+
+	// 跨分块混入缺失 ID：分块内和分块之间都要跳过而非报错。
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{1, 999, 2, 3, 4, 5, 1000})
+	require.NoError(t, err)
+	require.Len(t, got, 5)
+	for _, id := range ids {
+		require.Equal(t, id, got[id].ID)
+	}
+}
+
 type schedulerSnapshotWriteFailureHook struct {
 	zaddCalls atomic.Int32
 }

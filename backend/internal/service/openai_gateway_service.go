@@ -3073,10 +3073,14 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Co
 	return latest
 }
 
-// refreshOpenAICandidatesFromDB 以一次批量查询刷新候选账号的最新状态，
-// 替代对每个候选各执行一次 GetByID：大账号池下把 N 次数据库往返收敛为一次。
+// refreshOpenAICandidatesFromDB 以一次批量读取刷新候选账号的最新状态（函数名
+// 保留历史语义），替代对每个候选各执行一次 GetByID：大账号池下把 N 次数据库
+// 往返收敛为一次。
+// 优先从调度快照（Redis）批量读取全量 payload：候选本身来自快照命中，快照秒级
+// 重建且限流/超载等运行时状态经 dirty-work 实时写回，DB 重读属于快照化前的
+// 历史遗留。快照读取失败（Redis 故障 / 批量读接口缺失）时降级为一次批量 DB 查询。
 // 返回 nil 表示无需刷新（快照未启用 / 仓库缺失 / 批量查询失败），调用方沿用快照账号；
-// 返回非 nil map 时，未被覆盖的 ID 视为数据库已不存在，应跳过该候选。
+// 返回非 nil map 时，未被覆盖的 ID 视为已不存在，应跳过该候选。
 // 注意：批量查询失败时沿用快照账号属于 fail-open 回退（逐候选 GetByID 语义是
 // fail-closed 跳过）。DB 故障为瞬时窗口，且候选仍经内存态运行时屏蔽与
 // 兼容性复检兜底，实际差异极小；有意与快照未启用的既有行为保持一致。
@@ -3095,6 +3099,11 @@ func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context
 		}
 		seen[candidate.ID] = struct{}{}
 		ids = append(ids, candidate.ID)
+	}
+	// 快照优先：缺失的 ID 不在返回 map 中，调用方按“已不存在”跳过候选，
+	// 与 DB 版“未在刷新 map 中”的语义一致。
+	if refreshed, err := s.schedulerSnapshot.GetSchedulableAccountsByIDs(ctx, ids); err == nil {
+		return refreshed
 	}
 	refreshed, err := s.accountRepo.GetByIDs(ctx, ids)
 	if err != nil {

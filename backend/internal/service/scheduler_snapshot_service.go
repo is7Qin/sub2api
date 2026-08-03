@@ -80,6 +80,13 @@ type snapshotVersionReader interface {
 	GetSnapshotVersion(ctx context.Context, bucket SchedulerBucket) (string, error)
 }
 
+// snapshotAccountBatchReader 是可选接口：网关批量刷新候选账号时通过它直接读
+// Redis 快照全量 payload（秒级更新 + 限流状态实时写回），避免逐请求回源 DB。
+// cache 未实现时（仅测试 stub 或第三方实现）由调用方降级 DB 查询。
+type snapshotAccountBatchReader interface {
+	GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error)
+}
+
 func NewSchedulerSnapshotService(
 	cache SchedulerCache,
 	outboxRepo SchedulerOutboxRepository,
@@ -270,6 +277,20 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
 	defer cancel()
 	return s.accountRepo.GetByID(fallbackCtx, accountID)
+}
+
+// GetSchedulableAccountsByIDs 从快照批量读取账号全量数据；缺失的 ID 不在返回
+// map 中（与“未在刷新 map 中视为已删除”的调用方语义一致）。cache 缺失或未实现
+// 批量读（可选接口）时返回错误，由调用方降级 DB 查询。
+func (s *SchedulerSnapshotService) GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error) {
+	if s == nil || s.cache == nil {
+		return nil, ErrSchedulerCacheNotReady
+	}
+	reader, ok := s.cache.(snapshotAccountBatchReader)
+	if !ok {
+		return nil, ErrSchedulerCacheNotReady
+	}
+	return reader.GetSchedulableAccountsByIDs(ctx, ids)
 }
 
 // GetGroupByID 获取分组信息（供调度器使用）

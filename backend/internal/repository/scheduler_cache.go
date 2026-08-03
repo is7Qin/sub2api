@@ -303,6 +303,38 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 	return account, nil
 }
 
+// GetSchedulableAccountsByIDs 批量读取账号快照全量 payload（sched:acc:{id}，
+// 含 credentials/extra 完整序列化）。缺失的 ID 直接跳过——快照中不存在即视为
+// 不可调度，与“未在刷新 map 中”的调用方语义一致；仅 Redis 错误或 payload
+// 解码失败才返回错误（此时调用方整体降级 DB）。
+func (c *schedulerCache) GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*service.Account, error) {
+	if len(ids) == 0 {
+		return map[int64]*service.Account{}, nil
+	}
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, schedulerAccountKey(strconv.FormatInt(id, 10)))
+	}
+	values, err := c.mgetChunked(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]*service.Account, len(ids))
+	for _, val := range values {
+		if val == nil {
+			continue
+		}
+		account, err := decodeCachedAccount(val)
+		if err != nil {
+			return nil, err
+		}
+		if account != nil && account.ID > 0 {
+			out[account.ID] = account
+		}
+	}
+	return out, nil
+}
+
 func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Account) error {
 	if account == nil || account.ID <= 0 {
 		return nil

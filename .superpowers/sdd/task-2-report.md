@@ -77,7 +77,7 @@ ok github.com/Wei-Shaw/sub2api/internal/service
   - Merges registered buckets with global defaults even without `groupRepo`.
 - `backend/internal/repository/scheduler_cache.go`
   - Adds version-qualified static full/meta payload keys and resolves static candidate/support reads through active bucket version.
-  - Applies bounded grace TTL to old version payloads and membership keys after activation.
+  - Applies bounded grace TTL to old version payload keys and membership keys after activation.
   - Preserves legacy SetSnapshot global payload semantics.
 - `backend/internal/repository/scheduler_cache_unit_test.go`
   - Adds same-ID failed replacement immutability regression and successful activation/grace cleanup regression.
@@ -101,9 +101,7 @@ RED command and observed failures:
 
 ```text
 cd backend && go test -tags unit ./internal/repository -run 'TestSchedulerCache_StaticState(AmbiguousPayloadPipelineFailureCleansUnpublishedPayloads|StaleActivationCleansUnpublishedPayloads)' -count=1
-```
 
-```text
 --- FAIL: TestSchedulerCache_StaticStateAmbiguousPayloadPipelineFailureCleansUnpublishedPayloads
     scheduler_cache_unit_test.go:593: Should be zero, but was 2
 --- FAIL: TestSchedulerCache_StaticStateStaleActivationCleansUnpublishedPayloads
@@ -120,27 +118,17 @@ cd backend && go test -tags unit ./internal/repository -run 'TestSchedulerCache_
 
 ### Verification
 
-Focused static regressions after the fix:
-
 ```text
 cd backend && go test -tags unit ./internal/repository -run 'TestSchedulerCache_StaticState(AmbiguousPayloadPipelineFailureCleansUnpublishedPayloads|StaleActivationCleansUnpublishedPayloads|PartialWriteKeepsPreviousVersion|ActivationUsesNewPayloadAndExpiresOldPayload)' -count=1
-ok   github.com/Wei-Shaw/sub2api/internal/repository
-```
+ok github.com/Wei-Shaw/sub2api/internal/repository
 
-Focused Task 2 unit suite:
-
-```text
 cd backend && go test -tags unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService|.*DefaultBuckets)' -count=1
-ok   github.com/Wei-Shaw/sub2api/internal/repository
-ok   github.com/Wei-Shaw/sub2api/internal/service
-```
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
 
-Focused Task 2 race suite:
-
-```text
 cd backend && go test -race -tags unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService)' -count=1
-ok   github.com/Wei-Shaw/sub2api/internal/repository
-ok   github.com/Wei-Shaw/sub2api/internal/service
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
 ```
 
 `git diff --check` passed.
@@ -176,13 +164,55 @@ V1's candidate/support ZSET and version-qualified full/meta payload keys had bee
 
 ```text
 cd backend && go test -tags unit ./internal/repository -run 'TestSchedulerCache_StaticState(AmbiguousPayloadPipelineFailureCleansUnpublishedPayloads|StaleActivationCleansUnpublishedPayloads|PartialWriteKeepsPreviousVersion|ActivationUsesNewPayloadAndExpiresOldPayload|LostActivationResponsePreservesReaderGrace)' -count=1
-ok   github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/repository
 
 cd backend && go test -tags unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService|.*DefaultBuckets)' -count=1
-ok   github.com/Wei-Shaw/sub2api/internal/repository
-ok   github.com/Wei-Shaw/sub2api/internal/service
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
 
 cd backend && go test -race -tags unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService)' -count=1
-ok   github.com/Wei-Shaw/sub2api/internal/repository
-ok   github.com/Wei-Shaw/sub2api/internal/service
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+```
+
+## Candidate/support payload namespace isolation review fix
+
+### RED
+
+Added `TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads` before changing production code. It publishes candidate and persistent-support records with the same account ID, but only the candidate has a future `RateLimitResetAt`.
+
+```text
+cd backend && go test -tags unit ./internal/repository -run 'TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads' -count=1
+```
+
+Before the fix, the candidate payload was overwritten by the persistent-support projection. The assertion dereferenced a nil candidate `RateLimitResetAt`, producing the expected failure:
+
+```text
+panic: runtime error: invalid memory address or nil pointer dereference
+```
+
+### GREEN
+
+- Candidate full/meta payloads remain under `sched:acc:v:*` and `sched:meta:v:*`; persistent-support full/meta payloads now use independent `sched:support:acc:v:*` and `sched:support:meta:v:*` namespaces.
+- `GetSnapshot` continues resolving candidate membership through candidate payload keys. `GetPersistentSupport` resolves support membership only through support payload keys. Both still share the one atomic active version.
+- The activation Lua transaction now persists and applies reader-grace TTL separately for each namespace. Unpublished cleanup and ambiguous activation bounds enumerate both candidate and support key families, including overlap IDs without cross-namespace deletion.
+- Expanded activation, response-loss, partial-pipeline, and stale-activation cleanup assertions so both namespaces are grace-safe and bounded.
+- Legacy global `sched:acc:{id}` / `sched:meta:{id}` publication and readers remain unchanged.
+
+### Verification
+
+```text
+cd backend && go test -tags unit ./internal/repository -run 'TestSchedulerCache_StaticState' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -tags unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService|.*DefaultBuckets)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+cd backend && go test -race -tags unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+git diff --check
+# passed
 ```

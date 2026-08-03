@@ -19,21 +19,23 @@ import (
 )
 
 const (
-	schedulerBucketSetKey               = "sched:buckets"
-	schedulerOutboxWatermarkKey         = "sched:outbox:watermark"
-	schedulerAccountPrefix              = "sched:acc:"
-	schedulerAccountMetaPrefix          = "sched:meta:"
-	schedulerVersionedAccountPrefix     = "sched:acc:v:"
-	schedulerVersionedAccountMetaPrefix = "sched:meta:v:"
-	schedulerAccountLastUsedPrefix      = "sched:acc:last_used:"
-	schedulerActivePrefix               = "sched:active:"
-	schedulerReadyPrefix                = "sched:ready:"
-	schedulerVersionPrefix              = "sched:ver:"
-	schedulerSnapshotPrefix             = "sched:"
-	schedulerSupportPrefix              = "sched:support:"
-	schedulerSupportStatePrefix         = "sched:support:state:"
-	schedulerSupportReadyPrefix         = "sched:support:ready:"
-	schedulerLockPrefix                 = "sched:lock:"
+	schedulerBucketSetKey                      = "sched:buckets"
+	schedulerOutboxWatermarkKey                = "sched:outbox:watermark"
+	schedulerAccountPrefix                     = "sched:acc:"
+	schedulerAccountMetaPrefix                 = "sched:meta:"
+	schedulerVersionedAccountPrefix            = "sched:acc:v:"
+	schedulerVersionedAccountMetaPrefix        = "sched:meta:v:"
+	schedulerVersionedSupportAccountPrefix     = "sched:support:acc:v:"
+	schedulerVersionedSupportAccountMetaPrefix = "sched:support:meta:v:"
+	schedulerAccountLastUsedPrefix             = "sched:acc:last_used:"
+	schedulerActivePrefix                      = "sched:active:"
+	schedulerReadyPrefix                       = "sched:ready:"
+	schedulerVersionPrefix                     = "sched:ver:"
+	schedulerSnapshotPrefix                    = "sched:"
+	schedulerSupportPrefix                     = "sched:support:"
+	schedulerSupportStatePrefix                = "sched:support:state:"
+	schedulerSupportReadyPrefix                = "sched:support:ready:"
+	schedulerLockPrefix                        = "sched:lock:"
 
 	defaultSchedulerSnapshotMGetChunkSize  = 128
 	defaultSchedulerSnapshotWriteChunkSize = 256
@@ -141,24 +143,30 @@ redis.call('SADD', KEYS[5], ARGV[2])
 
 -- Payloads start with a bounded TTL while publication is uncertain. Once this
 -- transaction publishes the version, remove that safety TTL for the live state.
-local newIDs = redis.call('ZRANGE', KEYS[6] .. ARGV[1], 0, -1)
-local newSupportIDs = redis.call('ZRANGE', KEYS[7] .. ARGV[1], 0, -1)
-for _, id in ipairs(newSupportIDs) do table.insert(newIDs, id) end
-for _, id in ipairs(newIDs) do
+local newCandidateIDs = redis.call('ZRANGE', KEYS[6] .. ARGV[1], 0, -1)
+for _, id in ipairs(newCandidateIDs) do
     redis.call('PERSIST', ARGV[4] .. ARGV[1] .. ':' .. id)
     redis.call('PERSIST', ARGV[5] .. ARGV[1] .. ':' .. id)
+end
+local newSupportIDs = redis.call('ZRANGE', KEYS[7] .. ARGV[1], 0, -1)
+for _, id in ipairs(newSupportIDs) do
+    redis.call('PERSIST', ARGV[6] .. ARGV[1] .. ':' .. id)
+    redis.call('PERSIST', ARGV[7] .. ARGV[1] .. ':' .. id)
 end
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
     local graceTTL = tonumber(ARGV[3])
     redis.call('EXPIRE', KEYS[6] .. currentActive, graceTTL)
     redis.call('EXPIRE', KEYS[7] .. currentActive, graceTTL)
-    local ids = redis.call('ZRANGE', KEYS[6] .. currentActive, 0, -1)
-    local supportIDs = redis.call('ZRANGE', KEYS[7] .. currentActive, 0, -1)
-    for _, id in ipairs(supportIDs) do table.insert(ids, id) end
-    for _, id in ipairs(ids) do
+    local candidateIDs = redis.call('ZRANGE', KEYS[6] .. currentActive, 0, -1)
+    for _, id in ipairs(candidateIDs) do
         redis.call('EXPIRE', ARGV[4] .. currentActive .. ':' .. id, graceTTL)
         redis.call('EXPIRE', ARGV[5] .. currentActive .. ':' .. id, graceTTL)
+    end
+    local supportIDs = redis.call('ZRANGE', KEYS[7] .. currentActive, 0, -1)
+    for _, id in ipairs(supportIDs) do
+        redis.call('EXPIRE', ARGV[6] .. currentActive .. ':' .. id, graceTTL)
+        redis.call('EXPIRE', ARGV[7] .. currentActive .. ':' .. id, graceTTL)
     end
 end
 
@@ -488,23 +496,24 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 	if err != nil {
 		return err
 	}
-	payloadIDs := staticStateAccountIDs(candidates, persistentSupport)
+	candidatePayloadIDs := staticStateAccountIDs(candidates)
+	supportPayloadIDs := staticStateAccountIDs(persistentSupport)
 	// Assign a short TTL before publication so an ambiguous pipeline outcome is
 	// bounded even if cleanup cannot tell which Redis writes reached the server.
 	if _, err := c.writeVersionedAccountIDs(ctx, bucket, version, candidates); err != nil {
-		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
-	if _, err := c.writeVersionedAccountIDs(ctx, bucket, version, persistentSupport); err != nil {
-		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
+	if _, err := c.writeSupportVersionedAccountIDs(ctx, bucket, version, persistentSupport); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
-	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, staticStateAccountIDs(candidates)); err != nil {
-		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, candidatePayloadIDs); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
-	if err := c.writeSupportAccountIDs(ctx, bucket, version, staticStateAccountIDs(persistentSupport)); err != nil {
-		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
+	if err := c.writeSupportAccountIDs(ctx, bucket, version, supportPayloadIDs); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
 	published, err := c.activateStaticStateVersion(ctx, bucket, version)
@@ -513,11 +522,11 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 		// the response was lost, and a newer writer may already have granted this
 		// version reader grace. Never destructively clean that state; bound every
 		// artifact instead so definitely unpublished attempts cannot leak forever.
-		_ = c.boundAmbiguousStaticState(ctx, bucket, version, payloadIDs)
+		_ = c.boundAmbiguousStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
 	if !published {
-		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return errors.New("static state version was superseded")
 	}
 	return nil
@@ -552,14 +561,14 @@ func (c *schedulerCache) GetPersistentSupport(ctx context.Context, bucket servic
 	if len(ids) == 0 {
 		return []*service.Account{}, true, nil
 	}
-	return c.readSnapshotAccounts(ctx, bucket, active, ids)
+	return c.readSupportSnapshotAccounts(ctx, bucket, active, ids)
 }
 
-func (c *schedulerCache) readSnapshotAccounts(ctx context.Context, bucket service.SchedulerBucket, version string, ids []string) ([]*service.Account, bool, error) {
+func (c *schedulerCache) readSupportSnapshotAccounts(ctx context.Context, bucket service.SchedulerBucket, version string, ids []string) ([]*service.Account, bool, error) {
 	keys := make([]string, 0, len(ids))
 	lastUsedKeys := make([]string, 0, len(ids))
 	for _, id := range ids {
-		keys = append(keys, schedulerVersionedAccountMetaKey(bucket, version, id))
+		keys = append(keys, schedulerVersionedSupportAccountMetaKey(bucket, version, id))
 		lastUsedKeys = append(lastUsedKeys, schedulerLastUsedKey(id))
 	}
 	values, err := c.mgetChunked(ctx, keys)
@@ -710,9 +719,11 @@ func (c *schedulerCache) activateStaticStateVersion(ctx context.Context, bucket 
 	candidatePrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	supportPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSupportPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	keys := []string{activeKey, readyKey, supportStateKey, supportReadyKey, schedulerBucketSetKey, candidatePrefix, supportPrefix, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)}
-	versionedMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
-	versionedFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
-	args := []any{version, bucket.String(), snapshotGraceTTLSeconds, versionedMetaPrefix, versionedFullPrefix}
+	versionedCandidateMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedCandidateFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedSupportMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedSupportAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedSupportFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedSupportAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	args := []any{version, bucket.String(), snapshotGraceTTLSeconds, versionedCandidateMetaPrefix, versionedCandidateFullPrefix, versionedSupportMetaPrefix, versionedSupportFullPrefix}
 	result, err := activateStaticStateScript.Run(ctx, c.rdb, keys, args...).Int()
 	if err != nil {
 		return false, err
@@ -945,6 +956,14 @@ func schedulerVersionedAccountMetaKey(bucket service.SchedulerBucket, version, i
 	return fmt.Sprintf("%s%d:%s:%s:v%s:%s", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version, id)
 }
 
+func schedulerVersionedSupportAccountKey(bucket service.SchedulerBucket, version, id string) string {
+	return fmt.Sprintf("%s%d:%s:%s:v%s:%s", schedulerVersionedSupportAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version, id)
+}
+
+func schedulerVersionedSupportAccountMetaKey(bucket service.SchedulerBucket, version, id string) string {
+	return fmt.Sprintf("%s%d:%s:%s:v%s:%s", schedulerVersionedSupportAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version, id)
+}
+
 func schedulerLastUsedKey(id string) string {
 	return schedulerAccountLastUsedPrefix + id
 }
@@ -1081,7 +1100,7 @@ func staticStateAccountIDs(accountSets ...[]service.Account) []int64 {
 // boundAmbiguousStaticState preserves any reader grace that a committed activation
 // may have received from a newer version, while bounding artifacts of an activation
 // whose server-side outcome cannot be known after a transport error.
-func (c *schedulerCache) boundAmbiguousStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
+func (c *schedulerCache) boundAmbiguousStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, candidateIDs, supportIDs []int64) error {
 	active, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
 	if err != nil && err != redis.Nil {
 		return err
@@ -1093,15 +1112,8 @@ func (c *schedulerCache) boundAmbiguousStaticState(ctx context.Context, bucket s
 	}
 	ttl := time.Duration(staticStateUnpublishedPayloadTTLSeconds) * time.Second
 	keys := []string{schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)}
-	seen := make(map[int64]struct{}, len(ids))
-	for _, id := range ids {
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		idText := strconv.FormatInt(id, 10)
-		keys = append(keys, schedulerVersionedAccountKey(bucket, version, idText), schedulerVersionedAccountMetaKey(bucket, version, idText))
-	}
+	keys = append(keys, versionedAccountPayloadKeys(bucket, version, candidateIDs, false)...)
+	keys = append(keys, versionedAccountPayloadKeys(bucket, version, supportIDs, true)...)
 	for _, key := range keys {
 		if err := c.rdb.Expire(ctx, key, ttl).Err(); err != nil {
 			return err
@@ -1110,7 +1122,7 @@ func (c *schedulerCache) boundAmbiguousStaticState(ctx context.Context, bucket s
 	return nil
 }
 
-func (c *schedulerCache) cleanupUnpublishedStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
+func (c *schedulerCache) cleanupUnpublishedStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, candidateIDs, supportIDs []int64) error {
 	active, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
 	if err == nil && active == version {
 		// An activation response can fail after Lua commits. Preserve that live
@@ -1120,15 +1132,15 @@ func (c *schedulerCache) cleanupUnpublishedStaticState(ctx context.Context, buck
 	if err != nil && err != redis.Nil {
 		return err
 	}
-	if err := c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)).Err(); err != nil {
-		return err
-	}
-	return c.deleteVersionedAccountPayloads(ctx, bucket, version, ids)
+	keys := []string{schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)}
+	keys = append(keys, versionedAccountPayloadKeys(bucket, version, candidateIDs, false)...)
+	keys = append(keys, versionedAccountPayloadKeys(bucket, version, supportIDs, true)...)
+	return c.rdb.Del(ctx, keys...).Err()
 }
 
-// writeVersionedAccountIDs isolates static-state payloads from the mutable legacy
-// account keys, so a failed replacement cannot alter a still-active version.
-func (c *schedulerCache) deleteVersionedAccountPayloads(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
+// versionedAccountPayloadKeys returns one deduplicated full/meta key pair per
+// account in exactly one static-state namespace.
+func versionedAccountPayloadKeys(bucket service.SchedulerBucket, version string, ids []int64, support bool) []string {
 	keys := make([]string, 0, len(ids)*2)
 	seen := make(map[int64]struct{}, len(ids))
 	for _, id := range ids {
@@ -1137,15 +1149,26 @@ func (c *schedulerCache) deleteVersionedAccountPayloads(ctx context.Context, buc
 		}
 		seen[id] = struct{}{}
 		idText := strconv.FormatInt(id, 10)
-		keys = append(keys, schedulerVersionedAccountKey(bucket, version, idText), schedulerVersionedAccountMetaKey(bucket, version, idText))
+		if support {
+			keys = append(keys, schedulerVersionedSupportAccountKey(bucket, version, idText), schedulerVersionedSupportAccountMetaKey(bucket, version, idText))
+		} else {
+			keys = append(keys, schedulerVersionedAccountKey(bucket, version, idText), schedulerVersionedAccountMetaKey(bucket, version, idText))
+		}
 	}
-	if len(keys) == 0 {
-		return nil
-	}
-	return c.rdb.Del(ctx, keys...).Err()
+	return keys
 }
 
+// writeVersionedAccountIDs isolates candidate payloads from mutable legacy keys,
+// while the support variant below isolates its deliberately different projection.
 func (c *schedulerCache) writeVersionedAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accounts []service.Account) ([]int64, error) {
+	return c.writeStaticStateVersionedAccountIDs(ctx, bucket, version, accounts, false)
+}
+
+func (c *schedulerCache) writeSupportVersionedAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accounts []service.Account) ([]int64, error) {
+	return c.writeStaticStateVersionedAccountIDs(ctx, bucket, version, accounts, true)
+}
+
+func (c *schedulerCache) writeStaticStateVersionedAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accounts []service.Account, support bool) ([]int64, error) {
 	if len(accounts) == 0 {
 		return nil, nil
 	}
@@ -1157,8 +1180,13 @@ func (c *schedulerCache) writeVersionedAccountIDs(ctx context.Context, bucket se
 			return nil, err
 		}
 		id := strconv.FormatInt(account.ID, 10)
-		pipe.Set(ctx, schedulerVersionedAccountKey(bucket, version, id), fullPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
-		pipe.Set(ctx, schedulerVersionedAccountMetaKey(bucket, version, id), metaPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
+		if support {
+			pipe.Set(ctx, schedulerVersionedSupportAccountKey(bucket, version, id), fullPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
+			pipe.Set(ctx, schedulerVersionedSupportAccountMetaKey(bucket, version, id), metaPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
+		} else {
+			pipe.Set(ctx, schedulerVersionedAccountKey(bucket, version, id), fullPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
+			pipe.Set(ctx, schedulerVersionedAccountMetaKey(bucket, version, id), metaPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
+		}
 		accountIDs = append(accountIDs, account.ID)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {

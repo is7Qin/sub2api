@@ -450,6 +450,38 @@ func TestSchedulerCache_StaticStateReadersShareActiveVersion(t *testing.T) {
 	require.Equal(t, []int64{10, 11}, schedulerCacheTestIDs(support))
 }
 
+func TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	resetAt := time.Now().Add(time.Hour).UTC()
+	candidate := service.Account{
+		ID:               12,
+		Platform:         service.PlatformOpenAI,
+		Status:           service.StatusActive,
+		Schedulable:      true,
+		RateLimitResetAt: &resetAt,
+	}
+	persistentSupport := service.Account{
+		ID:          candidate.ID,
+		Platform:    service.PlatformOpenAI,
+		Status:      service.StatusActive,
+		Schedulable: true,
+	}
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{candidate}, []service.Account{persistentSupport}))
+	candidates, candidateHit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, candidateHit)
+	require.True(t, supportHit)
+	require.Len(t, candidates, 1)
+	require.Len(t, support, 1)
+	require.Equal(t, resetAt, *candidates[0].RateLimitResetAt)
+	require.Nil(t, support[0].RateLimitResetAt)
+}
+
 func TestSchedulerCache_IncompleteStaticStateDoesNotHitPersistentSupport(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)
@@ -518,7 +550,9 @@ func TestSchedulerCache_StaticStateActivationUsesNewPayloadAndExpiresOldPayload(
 	require.True(t, supportHit)
 	require.Equal(t, "new", candidates[0].Name)
 	require.Equal(t, "new", support[0].Name)
-	require.Equal(t, time.Duration(snapshotGraceTTLSeconds)*time.Second, cache.rdb.TTL(ctx, schedulerVersionedAccountMetaKey(bucket, oldVersion, strconv.FormatInt(accountID, 10))).Val())
+	id := strconv.FormatInt(accountID, 10)
+	require.Equal(t, time.Duration(snapshotGraceTTLSeconds)*time.Second, cache.rdb.TTL(ctx, schedulerVersionedAccountMetaKey(bucket, oldVersion, id)).Val())
+	require.Equal(t, time.Duration(snapshotGraceTTLSeconds)*time.Second, cache.rdb.TTL(ctx, schedulerVersionedSupportAccountMetaKey(bucket, oldVersion, id)).Val())
 }
 
 type schedulerStaticPayloadPipelineFailureHook struct {
@@ -631,8 +665,10 @@ func TestSchedulerCache_StaticStateLostActivationResponsePreservesReaderGrace(t 
 		schedulerSupportKey(bucket, "1"),
 		schedulerVersionedAccountKey(bucket, "1", "60"),
 		schedulerVersionedAccountMetaKey(bucket, "1", "60"),
-		schedulerVersionedAccountKey(bucket, "1", "61"),
-		schedulerVersionedAccountMetaKey(bucket, "1", "61"),
+		schedulerVersionedSupportAccountKey(bucket, "1", "60"),
+		schedulerVersionedSupportAccountMetaKey(bucket, "1", "60"),
+		schedulerVersionedSupportAccountKey(bucket, "1", "61"),
+		schedulerVersionedSupportAccountMetaKey(bucket, "1", "61"),
 	} {
 		ttl := cache.rdb.TTL(ctx, key).Val()
 		require.GreaterOrEqual(t, ttl, time.Duration(snapshotGraceTTLSeconds)*time.Second, key)
@@ -666,6 +702,8 @@ func TestSchedulerCache_StaticStateAmbiguousPayloadPipelineFailureCleansUnpublis
 		require.Zero(t, cache.rdb.Exists(ctx,
 			schedulerVersionedAccountKey(bucket, "2", id),
 			schedulerVersionedAccountMetaKey(bucket, "2", id),
+			schedulerVersionedSupportAccountKey(bucket, "2", id),
+			schedulerVersionedSupportAccountMetaKey(bucket, "2", id),
 		).Val())
 	}
 }
@@ -698,8 +736,10 @@ func TestSchedulerCache_StaticStateStaleActivationCleansUnpublishedPayloads(t *t
 		schedulerSupportKey(bucket, "1"),
 		schedulerVersionedAccountKey(bucket, "1", "50"),
 		schedulerVersionedAccountMetaKey(bucket, "1", "50"),
-		schedulerVersionedAccountKey(bucket, "1", "51"),
-		schedulerVersionedAccountMetaKey(bucket, "1", "51"),
+		schedulerVersionedSupportAccountKey(bucket, "1", "50"),
+		schedulerVersionedSupportAccountMetaKey(bucket, "1", "50"),
+		schedulerVersionedSupportAccountKey(bucket, "1", "51"),
+		schedulerVersionedSupportAccountMetaKey(bucket, "1", "51"),
 	).Val())
 	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
 	require.NoError(t, err)

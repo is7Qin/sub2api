@@ -49,7 +49,7 @@ type schedulerAccountQueryKey struct {
 }
 
 // 查询结果只在一次 rebuild batch 内，按原始 groupID+platform 复用成功的 single/forced 查询；
-// mixed 与历史模式保持独立。每个桶都用 defer 消费 remaining，最后一个消费者会立即释放结果，
+// mixed 与其他模式保持独立。每个桶都用 defer 消费 remaining，最后一个消费者会立即释放结果，
 // 避免把账号切片的生命周期扩大到整轮 full rebuild。
 type schedulerAccountQueryCache struct {
 	remaining          map[schedulerAccountQueryKey]int
@@ -133,7 +133,8 @@ type SchedulerSnapshotService struct {
 	outboxRebuildRetryReason string
 	// 快照解码缓存：GetSnapshot 每次调用都对整个桶的账号做 JSON 解码
 	// （大账号池下 O(N) 且与请求成功率无关），高频网关请求下是 CPU 主源。
-	// 短 TTL 缓存解码结果，命中时免解码；调度器对快照账号只读使用。
+	// 命中时免解码；版本可用时以 active version 失效为主、TTL 兜底，
+	// 版本不可用时退化为短 TTL（见下方两个 TTL 常量）；调度器对快照账号只读使用。
 	decodeCache sync.Map // bucket.String() -> *snapshotDecodeCacheEntry
 }
 
@@ -946,7 +947,7 @@ func (s *SchedulerSnapshotService) rebuildBucketWithQueryCache(ctx context.Conte
 }
 
 // loadAccountsForRebuild 读取 bucket 的账号集；single/forced 桶在同一重建批次内
-// 共享一次数据库查询。mixed 与历史模式不可复用，直接走原查询路径。
+// 共享一次数据库查询。mixed 与其他模式不可复用，直接走原查询路径。
 func (s *SchedulerSnapshotService) loadAccountsForRebuild(ctx context.Context, bucket SchedulerBucket, queries *schedulerAccountQueryCache) ([]Account, error) {
 	key, cacheable := schedulerAccountQueryKeyForBucket(bucket)
 	if queries == nil || !cacheable {

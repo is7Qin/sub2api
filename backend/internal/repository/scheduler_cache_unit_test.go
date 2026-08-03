@@ -559,3 +559,42 @@ func TestBuildSchedulerMetadataAccount_HasAPIKeyRequiresNonEmptyString(t *testin
 		})
 	}
 }
+
+func TestSchedulerCacheSetAccountsWritesAllAccountsInOneCall(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+
+	accounts := []service.Account{
+		{ID: 201, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+		{ID: 202, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey},
+		{ID: 203, Platform: service.PlatformGemini, Type: service.AccountTypeAPIKey},
+	}
+	require.NoError(t, cache.SetAccounts(ctx, accounts))
+
+	for _, id := range []int64{201, 202, 203} {
+		got, err := cache.GetAccount(ctx, id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Equal(t, id, got.ID)
+	}
+	// 空输入是幂等空操作。
+	require.NoError(t, cache.SetAccounts(ctx, nil))
+}
+
+func TestSchedulerCacheSetAccountsClearsUnencodablePayload(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, cache.SetAccounts(ctx, []service.Account{
+		{ID: 204, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+		{ID: 205, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, ExpiresAt: &invalidTime},
+	}))
+
+	// 不可编码账号被删除（连同 meta/last_used 侧键），其余账号正常写入。
+	got, err := cache.GetAccount(ctx, 204)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, int64(204), got.ID)
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerAccountKey("205"), schedulerAccountMetaKey("205"), schedulerLastUsedKey("205")).Val())
+}

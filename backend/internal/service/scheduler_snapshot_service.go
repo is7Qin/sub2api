@@ -1648,7 +1648,21 @@ func (s *SchedulerSnapshotService) loadPersistentSupportForRebuild(ctx context.C
 	if bucket.Mode == SchedulerModeMixed {
 		platforms = append(platforms, PlatformAntigravity)
 	}
-	return candidateRepo.ListModelAvailabilityCandidates(ctx, group, platforms, includeGrouped)
+	accounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, group, platforms, includeGrouped)
+	if err != nil {
+		return nil, err
+	}
+	if bucket.Mode != SchedulerModeMixed {
+		return accounts, nil
+	}
+	filtered := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Platform == PlatformAntigravity && !account.IsMixedSchedulingEnabled() {
+			continue
+		}
+		filtered = append(filtered, account)
+	}
+	return filtered, nil
 }
 
 func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucket SchedulerBucket, useMixed bool) ([]Account, error) {
@@ -1818,11 +1832,6 @@ func (s *SchedulerSnapshotService) rebuildBucketsForStartup(ctx context.Context)
 	registered, err := s.cache.ListBuckets(ctx)
 	if err != nil {
 		return nil, err
-	}
-	// Legacy test/third-party caches without a group repository cannot discover
-	// active groups, so retain their explicit registry as the complete scope.
-	if s.groupRepo == nil && !s.isRunModeSimple() && len(registered) > 0 {
-		return dedupeBuckets(registered), nil
 	}
 	defaults, err := s.defaultBuckets(ctx)
 	if err != nil {

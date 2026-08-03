@@ -22,6 +22,10 @@ func (r schedulerSupportRepo) ListSchedulableByGroupIDAndPlatform(context.Contex
 	return append([]Account(nil), r.candidates...), nil
 }
 
+func (r schedulerSupportRepo) ListSchedulableByGroupIDAndPlatforms(context.Context, int64, []string) ([]Account, error) {
+	return append([]Account(nil), r.candidates...), nil
+}
+
 func (r schedulerSupportRepo) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
 	return append([]Account(nil), r.support...), nil
 }
@@ -97,6 +101,27 @@ func TestSchedulerSnapshotService_RebuildPublishesPersistentSupport(t *testing.T
 	require.Equal(t, []int64{1, 2}, staticStateAccountIDs(support))
 }
 
+func TestSchedulerSnapshotService_MixedRebuildFiltersPersistentSupport(t *testing.T) {
+	bucket := SchedulerBucket{GroupID: 7, Platform: PlatformAnthropic, Mode: SchedulerModeMixed}
+	cache := &staticStateCache{}
+	repo := schedulerSupportRepo{
+		candidates: []Account{
+			{ID: 1, Platform: PlatformAnthropic},
+			{ID: 2, Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": true}},
+		},
+		support: []Account{
+			{ID: 1, Platform: PlatformAnthropic},
+			{ID: 2, Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": true}},
+			{ID: 3, Platform: PlatformAntigravity},
+		},
+	}
+	svc := newSchedulerSnapshotService(cache, nil, nil, nil, repo, nil, &config.Config{})
+
+	require.NoError(t, svc.rebuildBucketWithQueryCache(context.Background(), bucket, "test", nil))
+	require.Equal(t, []int64{1, 2}, staticStateAccountIDs(cache.candidates[bucket]))
+	require.Equal(t, []int64{1, 2}, staticStateAccountIDs(cache.support[bucket]))
+}
+
 func TestSchedulerSnapshotService_DefaultBucketsMergeRegistryAndActiveGroups(t *testing.T) {
 	registered := SchedulerBucket{GroupID: 99, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
 	cache := &staticStateCache{buckets: []SchedulerBucket{registered}}
@@ -107,6 +132,16 @@ func TestSchedulerSnapshotService_DefaultBucketsMergeRegistryAndActiveGroups(t *
 	require.NoError(t, err)
 	require.Contains(t, buckets, registered)
 	require.Contains(t, buckets, SchedulerBucket{GroupID: 7, Platform: PlatformOpenAI, Mode: SchedulerModeSingle})
+	require.Contains(t, buckets, SchedulerBucket{GroupID: 0, Platform: PlatformOpenAI, Mode: SchedulerModeSingle})
+}
+
+func TestSchedulerSnapshotService_DefaultBucketsMergeRegistryWithoutGroupRepository(t *testing.T) {
+	registered := SchedulerBucket{GroupID: 99, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	svc := newSchedulerSnapshotService(&staticStateCache{buckets: []SchedulerBucket{registered}}, nil, nil, nil, nil, nil, &config.Config{})
+
+	buckets, err := svc.rebuildBucketsForStartup(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, buckets, registered)
 	require.Contains(t, buckets, SchedulerBucket{GroupID: 0, Platform: PlatformOpenAI, Mode: SchedulerModeSingle})
 }
 

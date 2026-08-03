@@ -19,19 +19,21 @@ import (
 )
 
 const (
-	schedulerBucketSetKey          = "sched:buckets"
-	schedulerOutboxWatermarkKey    = "sched:outbox:watermark"
-	schedulerAccountPrefix         = "sched:acc:"
-	schedulerAccountMetaPrefix     = "sched:meta:"
-	schedulerAccountLastUsedPrefix = "sched:acc:last_used:"
-	schedulerActivePrefix          = "sched:active:"
-	schedulerReadyPrefix           = "sched:ready:"
-	schedulerVersionPrefix         = "sched:ver:"
-	schedulerSnapshotPrefix        = "sched:"
-	schedulerSupportPrefix         = "sched:support:"
-	schedulerSupportStatePrefix    = "sched:support:state:"
-	schedulerSupportReadyPrefix    = "sched:support:ready:"
-	schedulerLockPrefix            = "sched:lock:"
+	schedulerBucketSetKey               = "sched:buckets"
+	schedulerOutboxWatermarkKey         = "sched:outbox:watermark"
+	schedulerAccountPrefix              = "sched:acc:"
+	schedulerAccountMetaPrefix          = "sched:meta:"
+	schedulerVersionedAccountPrefix     = "sched:acc:v:"
+	schedulerVersionedAccountMetaPrefix = "sched:meta:v:"
+	schedulerAccountLastUsedPrefix      = "sched:acc:last_used:"
+	schedulerActivePrefix               = "sched:active:"
+	schedulerReadyPrefix                = "sched:ready:"
+	schedulerVersionPrefix              = "sched:ver:"
+	schedulerSnapshotPrefix             = "sched:"
+	schedulerSupportPrefix              = "sched:support:"
+	schedulerSupportStatePrefix         = "sched:support:state:"
+	schedulerSupportReadyPrefix         = "sched:support:ready:"
+	schedulerLockPrefix                 = "sched:lock:"
 
 	defaultSchedulerSnapshotMGetChunkSize  = 128
 	defaultSchedulerSnapshotWriteChunkSize = 256
@@ -133,8 +135,16 @@ redis.call('SET', KEYS[4], '1')
 redis.call('SADD', KEYS[5], ARGV[2])
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
-    redis.call('EXPIRE', KEYS[6] .. currentActive, tonumber(ARGV[3]))
-    redis.call('EXPIRE', KEYS[7] .. currentActive, tonumber(ARGV[3]))
+    local graceTTL = tonumber(ARGV[3])
+    redis.call('EXPIRE', KEYS[6] .. currentActive, graceTTL)
+    redis.call('EXPIRE', KEYS[7] .. currentActive, graceTTL)
+    local ids = redis.call('ZRANGE', KEYS[6] .. currentActive, 0, -1)
+    local supportIDs = redis.call('ZRANGE', KEYS[7] .. currentActive, 0, -1)
+    for _, id in ipairs(supportIDs) do table.insert(ids, id) end
+    for _, id in ipairs(ids) do
+        redis.call('EXPIRE', ARGV[4] .. currentActive .. ':' .. id, graceTTL)
+        redis.call('EXPIRE', ARGV[5] .. currentActive .. ':' .. id, graceTTL)
+    end
 end
 
 return 1
@@ -369,6 +379,13 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		return nil, false, err
 	}
 
+	staticStateVersion, stateErr := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportStatePrefix, bucket)).Result()
+	if stateErr != nil && stateErr != redis.Nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+		return nil, false, stateErr
+	}
+	isStaticState := stateErr == nil && staticStateVersion == activeVal
+
 	snapshotKey := schedulerSnapshotKey(bucket, activeVal)
 	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, -1).Result()
 	if err != nil {
@@ -378,14 +395,9 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	if len(ids) == 0 {
 		// A static-state marker proves this is an intentionally published empty
 		// candidate pool. Legacy SetSnapshot keeps its historical empty=miss behavior.
-		stateVersion, stateErr := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportStatePrefix, bucket)).Result()
-		if stateErr == nil && stateVersion == activeVal {
+		if isStaticState {
 			c.stats.recordHit(bucketKey)
 			return []*service.Account{}, true, nil
-		}
-		if stateErr != nil && stateErr != redis.Nil {
-			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
-			return nil, false, stateErr
 		}
 		c.stats.recordMiss(bucketKey, schedulerMissSnapshotEmpty)
 		return nil, false, nil
@@ -394,7 +406,11 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	keys := make([]string, 0, len(ids))
 	lastUsedKeys := make([]string, 0, len(ids))
 	for _, id := range ids {
-		keys = append(keys, schedulerAccountMetaKey(id))
+		if isStaticState {
+			keys = append(keys, schedulerVersionedAccountMetaKey(bucket, activeVal, id))
+		} else {
+			keys = append(keys, schedulerAccountMetaKey(id))
+		}
 		lastUsedKeys = append(lastUsedKeys, schedulerLastUsedKey(id))
 	}
 	values, err := c.mgetChunked(ctx, keys)
@@ -457,11 +473,11 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 	if err != nil {
 		return err
 	}
-	candidateIDs, err := c.writeAccountIDs(ctx, candidates)
+	candidateIDs, err := c.writeVersionedAccountIDs(ctx, bucket, version, candidates)
 	if err != nil {
 		return err
 	}
-	supportIDs, err := c.writeAccountIDs(ctx, persistentSupport)
+	supportIDs, err := c.writeVersionedAccountIDs(ctx, bucket, version, persistentSupport)
 	if err != nil {
 		return err
 	}
@@ -507,14 +523,14 @@ func (c *schedulerCache) GetPersistentSupport(ctx context.Context, bucket servic
 	if len(ids) == 0 {
 		return []*service.Account{}, true, nil
 	}
-	return c.readSnapshotAccounts(ctx, ids)
+	return c.readSnapshotAccounts(ctx, bucket, active, ids)
 }
 
-func (c *schedulerCache) readSnapshotAccounts(ctx context.Context, ids []string) ([]*service.Account, bool, error) {
+func (c *schedulerCache) readSnapshotAccounts(ctx context.Context, bucket service.SchedulerBucket, version string, ids []string) ([]*service.Account, bool, error) {
 	keys := make([]string, 0, len(ids))
 	lastUsedKeys := make([]string, 0, len(ids))
 	for _, id := range ids {
-		keys = append(keys, schedulerAccountMetaKey(id))
+		keys = append(keys, schedulerVersionedAccountMetaKey(bucket, version, id))
 		lastUsedKeys = append(lastUsedKeys, schedulerLastUsedKey(id))
 	}
 	values, err := c.mgetChunked(ctx, keys)
@@ -665,7 +681,10 @@ func (c *schedulerCache) activateStaticStateVersion(ctx context.Context, bucket 
 	candidatePrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	supportPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSupportPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	keys := []string{activeKey, readyKey, supportStateKey, supportReadyKey, schedulerBucketSetKey, candidatePrefix, supportPrefix, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)}
-	_, err := activateStaticStateScript.Run(ctx, c.rdb, keys, version, bucket.String(), snapshotGraceTTLSeconds).Result()
+	versionedMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	args := []any{version, bucket.String(), snapshotGraceTTLSeconds, versionedMetaPrefix, versionedFullPrefix}
+	_, err := activateStaticStateScript.Run(ctx, c.rdb, keys, args...).Result()
 	return err
 }
 
@@ -886,6 +905,14 @@ func schedulerAccountMetaKey(id string) string {
 	return schedulerAccountMetaPrefix + id
 }
 
+func schedulerVersionedAccountKey(bucket service.SchedulerBucket, version, id string) string {
+	return fmt.Sprintf("%s%d:%s:%s:v%s:%s", schedulerVersionedAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version, id)
+}
+
+func schedulerVersionedAccountMetaKey(bucket service.SchedulerBucket, version, id string) string {
+	return fmt.Sprintf("%s%d:%s:%s:v%s:%s", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version, id)
+}
+
 func schedulerLastUsedKey(id string) string {
 	return schedulerAccountLastUsedPrefix + id
 }
@@ -1000,6 +1027,30 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 	}
 
 	if err := flush(); err != nil {
+		return nil, err
+	}
+	return accountIDs, nil
+}
+
+// writeVersionedAccountIDs isolates static-state payloads from the mutable legacy
+// account keys, so a failed replacement cannot alter a still-active version.
+func (c *schedulerCache) writeVersionedAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accounts []service.Account) ([]int64, error) {
+	if len(accounts) == 0 {
+		return nil, nil
+	}
+	pipe := c.rdb.Pipeline()
+	accountIDs := make([]int64, 0, len(accounts))
+	for _, account := range accounts {
+		fullPayload, metaPayload, err := marshalSchedulerCacheAccount(account)
+		if err != nil {
+			return nil, err
+		}
+		id := strconv.FormatInt(account.ID, 10)
+		pipe.Set(ctx, schedulerVersionedAccountKey(bucket, version, id), fullPayload, 0)
+		pipe.Set(ctx, schedulerVersionedAccountMetaKey(bucket, version, id), metaPayload, 0)
+		accountIDs = append(accountIDs, account.ID)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err
 	}
 	return accountIDs, nil

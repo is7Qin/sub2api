@@ -474,15 +474,15 @@ func TestSchedulerCache_StaticStatePartialWriteKeepsPreviousVersion(t *testing.T
 	cache := newSchedulerCacheUnit(t)
 	cache.writeChunkSize = 1
 	bucket := service.SchedulerBucket{GroupID: 9, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
-	oldCandidate := service.Account{ID: 20, Platform: service.PlatformOpenAI}
-	oldSupport := service.Account{ID: 21, Platform: service.PlatformOpenAI}
+	oldCandidate := service.Account{ID: 20, Name: "old", Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"old-model": "old-upstream"}}}
+	oldSupport := service.Account{ID: 21, Name: "old-support", Platform: service.PlatformOpenAI}
 	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{oldCandidate}, []service.Account{oldCandidate, oldSupport}))
 
 	hook := &schedulerSnapshotWriteFailureHook{}
 	cache.rdb.AddHook(hook)
 	err := cache.SetStaticState(ctx, bucket,
-		[]service.Account{{ID: 22, Platform: service.PlatformOpenAI}},
-		[]service.Account{{ID: 22, Platform: service.PlatformOpenAI}, {ID: 23, Platform: service.PlatformOpenAI}},
+		[]service.Account{{ID: 20, Name: "replacement", Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"new-model": "new-upstream"}}}},
+		[]service.Account{{ID: 20, Name: "replacement", Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"new-model": "new-upstream"}}}, {ID: 23, Platform: service.PlatformOpenAI}},
 	)
 	require.ErrorContains(t, err, "injected snapshot zadd failure")
 
@@ -494,6 +494,31 @@ func TestSchedulerCache_StaticStatePartialWriteKeepsPreviousVersion(t *testing.T
 	require.True(t, supportHit)
 	require.Equal(t, []int64{20}, schedulerCacheTestIDs(candidates))
 	require.Equal(t, []int64{20, 21}, schedulerCacheTestIDs(support))
+	require.Equal(t, "old", candidates[0].Name)
+	require.Equal(t, map[string]any{"old-model": "old-upstream"}, candidates[0].Credentials["model_mapping"])
+	require.Equal(t, "old", support[0].Name)
+	require.Equal(t, map[string]any{"old-model": "old-upstream"}, support[0].Credentials["model_mapping"])
+}
+
+func TestSchedulerCache_StaticStateActivationUsesNewPayloadAndExpiresOldPayload(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 10, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	accountID := int64(30)
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{{ID: accountID, Name: "old", Platform: service.PlatformOpenAI}}, []service.Account{{ID: accountID, Name: "old", Platform: service.PlatformOpenAI}}))
+	oldVersion := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{{ID: accountID, Name: "new", Platform: service.PlatformOpenAI}}, []service.Account{{ID: accountID, Name: "new", Platform: service.PlatformOpenAI}}))
+
+	candidates, candidateHit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, candidateHit)
+	require.True(t, supportHit)
+	require.Equal(t, "new", candidates[0].Name)
+	require.Equal(t, "new", support[0].Name)
+	require.Equal(t, time.Duration(snapshotGraceTTLSeconds)*time.Second, cache.rdb.TTL(ctx, schedulerVersionedAccountMetaKey(bucket, oldVersion, strconv.FormatInt(accountID, 10))).Val())
 }
 
 func schedulerCacheTestIDs(accounts []*service.Account) []int64 {

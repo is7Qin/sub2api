@@ -210,3 +210,63 @@ func TestSchedulerSnapshotDecodeCache_ExpiredEntryRefetches(t *testing.T) {
 	require.Len(t, accounts, 1)
 	require.Equal(t, int64(1), accounts[0].ID)
 }
+
+// TestSchedulerSnapshotDecodeCache_VersionGetSkippedOnHit 验证解码缓存命中时
+// 不再向 Redis 读取激活版本：本地版本缓存窗口内命中为零 Redis 往返（版本 GET
+// 只在首次调用发生），这是选择路径每个请求省掉一次版本 GET 的核心。
+func TestSchedulerSnapshotDecodeCache_VersionGetSkippedOnHit(t *testing.T) {
+	cache := &versionedSnapshotCache{
+		snapshot: []*Account{{ID: 1, Platform: PlatformOpenAI}},
+		version:  "v1",
+	}
+	// 打开版本本地缓存窗口（生产构造经由 NewSchedulerSnapshotService 默认 1s）。
+	svc := &SchedulerSnapshotService{
+		cache:                   cache,
+		snapshotVersionCacheTTL: snapshotVersionCacheWindow,
+	}
+	ctx := context.Background()
+
+	_, _, err := svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	_, _, err = svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+
+	// 第二次调用命中解码缓存 + 本地版本缓存：不读 Redis 版本，也不再 GetSnapshot。
+	require.Equal(t, 1, cache.versionCalls, "解码缓存命中时不得再读 Redis 激活版本")
+	require.Equal(t, 1, cache.getSnapshotCalls)
+}
+
+// TestSchedulerSnapshotDecodeCache_VersionChangeDetectedAfterWindow 验证本地
+// 版本缓存窗口过期后能感知重建导致的版本变化并失效解码缓存（失效延迟 ≤ 窗口；
+// 窗口内命中旧条目由 snapshotDecodeVersionedTTL 兜底，符合版本缓存设计的
+// 有界陈旧性）。
+func TestSchedulerSnapshotDecodeCache_VersionChangeDetectedAfterWindow(t *testing.T) {
+	cache := &versionedSnapshotCache{
+		snapshot: []*Account{{ID: 1, Platform: PlatformOpenAI}},
+		version:  "v1",
+	}
+	svc := &SchedulerSnapshotService{
+		cache:                   cache,
+		snapshotVersionCacheTTL: 10 * time.Millisecond,
+	}
+	ctx := context.Background()
+
+	_, _, err := svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, cache.getSnapshotCalls)
+
+	// 窗口内版本变化：命中旧条目（有界陈旧性由窗口兜底，可接受）。
+	cache.snapshot = []*Account{{ID: 2, Platform: PlatformOpenAI}}
+	cache.version = "v2"
+	accounts, _, err := svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), accounts[0].ID)
+	require.Equal(t, 1, cache.getSnapshotCalls)
+
+	// 窗口过期：重新读版本发现变化，解码缓存失效并返回新快照。
+	time.Sleep(50 * time.Millisecond)
+	accounts, _, err = svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), accounts[0].ID)
+	require.Equal(t, 2, cache.getSnapshotCalls)
+}

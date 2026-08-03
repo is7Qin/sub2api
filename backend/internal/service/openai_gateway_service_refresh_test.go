@@ -254,6 +254,39 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_MetaBatchReadHydratesAc
 	require.True(t, cache.getAccountCalls > 0, "选中后必须经 GetAccount 重新水合")
 }
 
+// 多候选选择路径的 Redis 往返收敛：三个候选只发生一次批量 meta 读 + 一次最终
+// 水合 GetAccount。此前每个候选单独 GetAccount（每个候选一次 MGET）+ 批量读 +
+// 最终水合共 N+2 次；现在 per-candidate 读已移除，GetAccount 只在水合最终选中
+// 账号时发生一次。
+func TestOpenAIGatewayService_SelectAccountWithScheduler_BatchReadSingleHydration(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10431)
+	fullAccounts := map[int64]*Account{}
+	metaAccounts := map[int64]*Account{}
+	for _, id := range []int64{1041, 1042, 1043} {
+		full, meta := newMetaHydrationAccounts(groupID, id)
+		fullAccounts[id] = full
+		metaAccounts[id] = meta
+	}
+	cache := &metaHydrationSnapshotCache{
+		fullAccounts: fullAccounts,
+		metaAccounts: metaAccounts,
+	}
+	svc := newMetaHydrationSchedulerService(cache, 1041, false)
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, 1, cache.batchCalls, "多候选必须合并为一次批量 meta 读")
+	require.Equal(t, 1, cache.getAccountCalls, "每个候选不得单独 GetAccount；最终水合只发生一次")
+	require.Equal(t, "sk-hydrate-test", selection.Account.GetOpenAIApiKey())
+}
+
 // 调度器兜底等待路径（selectByLoadBalance 尾段 fallback）：槽位获取失败后返回
 // WaitPlan 候选，同样必须水合为含凭据的全量账号。
 func TestOpenAIGatewayService_SelectAccountWithScheduler_MetaBatchReadHydratesFallbackWaitPlan(t *testing.T) {

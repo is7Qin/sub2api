@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -139,6 +140,16 @@ type SchedulerSnapshotService struct {
 	// 命中时免解码；版本可用时以 active version 失效为主、TTL 兜底，
 	// 版本不可用时退化为短 TTL（见下方两个 TTL 常量）；调度器对快照账号只读使用。
 	decodeCache sync.Map // bucket.String() -> *snapshotDecodeCacheEntry
+	// snapshotVersionCacheTTL 分桶激活版本的本地读取窗口：解码缓存命中路径在
+	// 窗口内直接复用上次读到的版本，避免每个请求一次 Redis 版本 GET；窗口过期
+	// 后下一次命中才重新读取（每个分桶每秒最多一次版本往返）。0/负值表示每次
+	// 调用都重新读 Redis（测试直接构造结构体时保持旧行为）。
+	snapshotVersionCacheTTL time.Duration
+	// snapshotVersionCache 记录每个分桶最近一次成功的版本读取（仅非空版本）。
+	snapshotVersionCache sync.Map // bucket.String() -> *snapshotVersionCacheEntry
+	// snapshotFallbackGroup 按分桶合并快照 miss 后的 DB 回源：同一时刻一个分桶
+	// 只允许一个请求实际查询数据库并写回快照，其余请求等待其结果。
+	snapshotFallbackGroup singleflight.Group
 	// dirtyRefreshThrottle 限制同一账号的脏刷新频率（见 dirtyAccountRefreshMinInterval）。
 	dirtyRefreshThrottle *accountWriteThrottle
 }
@@ -151,10 +162,24 @@ const snapshotDecodeCacheTTL = 5 * time.Second
 // 版本立即递增使缓存失效，TTL 只是版本丢失时的兜底上限，不再承担主要失效职责。
 const snapshotDecodeVersionedTTL = 30 * time.Second
 
+// snapshotVersionCacheWindow 分桶激活版本的本地缓存窗口。解码缓存命中路径不再
+// 每个请求读一次 Redis 版本：窗口内直接用本地版本判断条目是否仍有效（零往返），
+// 重建导致的版本递增最多滞后一个窗口即被感知并失效本地条目。失效延迟因此
+// 从“立即”放宽为 ≤snapshotVersionCacheWindow，代价是每个分桶每秒最多一次版本
+// GET（而非每个请求一次），且条目 TTL 始终是陈旧性的最终兜底。
+const snapshotVersionCacheWindow = time.Second
+
 type snapshotDecodeCacheEntry struct {
 	accounts []*Account
 	version  string
 	exp      time.Time
+}
+
+// snapshotVersionCacheEntry 记录一次成功的版本读取时间，供解码缓存命中路径
+// 判断是否可直接复用本地版本（窗口内）而非重新向 Redis 读取。
+type snapshotVersionCacheEntry struct {
+	version string
+	readAt  time.Time
 }
 
 // snapshotVersionReader 是可选接口：解码缓存通过它读取分桶激活版本，重建后立即
@@ -213,18 +238,19 @@ func newSchedulerSnapshotService(
 	}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &SchedulerSnapshotService{
-		cache:                cache,
-		outboxRepo:           outboxRepo,
-		dirtyWorkRepo:        dirtyWorkRepo,
-		ownershipRepo:        ownershipRepo,
-		accountRepo:          accountRepo,
-		groupRepo:            groupRepo,
-		cfg:                  cfg,
-		stopCh:               make(chan struct{}),
-		workerCtx:            workerCtx,
-		workerCancel:         workerCancel,
-		fallbackLimit:        newFallbackLimiter(maxQPS),
-		dirtyRefreshThrottle: newAccountWriteThrottle(dirtyAccountRefreshMinInterval),
+		cache:                   cache,
+		outboxRepo:              outboxRepo,
+		dirtyWorkRepo:           dirtyWorkRepo,
+		ownershipRepo:           ownershipRepo,
+		accountRepo:             accountRepo,
+		groupRepo:               groupRepo,
+		cfg:                     cfg,
+		stopCh:                  make(chan struct{}),
+		workerCtx:               workerCtx,
+		workerCancel:            workerCancel,
+		fallbackLimit:           newFallbackLimiter(maxQPS),
+		dirtyRefreshThrottle:    newAccountWriteThrottle(dirtyAccountRefreshMinInterval),
+		snapshotVersionCacheTTL: snapshotVersionCacheWindow,
 	}
 }
 
@@ -313,23 +339,39 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 
 	if s.cache != nil {
 		cacheKey := bucket.String()
-		// 先读激活版本：重建后 active 版本立即递增，据此失效本地解码缓存，
-		// 避免 rebuild 后 TTL 内仍返回旧账号集合。版本不可用（接口缺失/
-		// 读取失败）时退化为纯 TTL 兜底。
-		version := s.readSnapshotVersion(ctx, bucket)
-		// 再查解码缓存：同一桶的 GetSnapshot 解码结果在 TTL 内复用，
-		// 避免每个网关请求对全桶账号重新 JSON 解码。
+		// 解码缓存命中路径不再每个请求先读一次 Redis 激活版本：条目在存储时已
+		// 用当时的 active 版本校验，陈旧性由条目 TTL 兜底（见 snapshotDecodeCacheTTL
+		// / snapshotDecodeVersionedTTL）；重建导致的版本递增经本地版本缓存窗口
+		// 感知，最多滞后 snapshotVersionCacheWindow 即失效重取，窗口内命中为
+		// 纯本地判断（零 Redis 往返）。
+		version := ""
 		if entry, ok := s.decodeCache.Load(cacheKey); ok {
-			if e, ok := entry.(*snapshotDecodeCacheEntry); ok {
-				if version == "" {
-					// 版本不可读时只允许命中无版本条目：带版本号的条目可能
-					// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
-					if e.version == "" && time.Now().Before(e.exp) {
+			if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
+				if v, fresh := s.cachedSnapshotVersion(cacheKey, time.Now()); fresh {
+					if e.version == v {
 						return derefAccounts(e.accounts), useMixed, nil
 					}
-				} else if e.version == version && time.Now().Before(e.exp) {
+					version = v
+				} else if v := s.readSnapshotVersion(ctx, bucket); v != "" {
+					s.storeSnapshotVersion(cacheKey, v, time.Now())
+					version = v
+					if e.version == v {
+						return derefAccounts(e.accounts), useMixed, nil
+					}
+				} else if e.version == "" {
+					// 版本不可读时只允许命中无版本条目：带版本号的条目可能
+					// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
 					return derefAccounts(e.accounts), useMixed, nil
 				}
+			}
+		}
+		// 解码缓存未命中（或版本不一致）才读激活版本：重建后 active 版本立即
+		// 递增，据此失效本地解码缓存并选择条目 TTL。版本不可用（接口缺失/
+		// 读取失败）时退化为纯 TTL 兜底。
+		if version == "" {
+			version = s.readSnapshotVersion(ctx, bucket)
+			if version != "" {
+				s.storeSnapshotVersion(cacheKey, version, time.Now())
 			}
 		}
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
@@ -349,25 +391,59 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 	}
 
-	if err := s.guardFallback(ctx); err != nil {
-		return nil, useMixed, err
-	}
+	// 快照 miss 后的 DB 回源是全桶共享的慢路径：按分桶 singleflight 合并并发
+	// 请求，同一时刻只有一个请求实际执行 DB 查询 + SetSnapshot 写回，其余请求
+	// 等待同一结果（回源失败时共享同一错误，下一请求自然重试）。leader 的 DB
+	// 工作使用脱离调用方取消的上下文，避免首个请求断连把整批等待者一起拖垮；
+	// 执行时长仍由 withFallbackTimeout 限制。
+	value, err, _ := s.snapshotFallbackGroup.Do(bucket.String(), func() (any, error) {
+		if err := s.guardFallback(ctx); err != nil {
+			return nil, err
+		}
+		fallbackCtx, cancel := s.withFallbackTimeout(context.WithoutCancel(ctx))
+		defer cancel()
 
-	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
-	defer cancel()
+		accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+		if err != nil {
+			return nil, err
+		}
 
-	accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+		if s.cache != nil {
+			if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
+				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
+			}
+		}
+
+		return accounts, nil
+	})
 	if err != nil {
 		return nil, useMixed, err
 	}
+	accounts, _ := value.([]Account)
+	return accounts, useMixed, nil
+}
 
-	if s.cache != nil {
-		if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
+// cachedSnapshotVersion 返回本地版本缓存中窗口内的版本；ttl<=0 时总是返回
+// fresh=false（每次都重新读 Redis，测试直接构造结构体时保持旧行为）。
+func (s *SchedulerSnapshotService) cachedSnapshotVersion(cacheKey string, now time.Time) (string, bool) {
+	if s.snapshotVersionCacheTTL <= 0 {
+		return "", false
+	}
+	if raw, ok := s.snapshotVersionCache.Load(cacheKey); ok {
+		if e, ok := raw.(*snapshotVersionCacheEntry); ok && e.version != "" && now.Sub(e.readAt) < s.snapshotVersionCacheTTL {
+			return e.version, true
 		}
 	}
+	return "", false
+}
 
-	return accounts, useMixed, nil
+// storeSnapshotVersion 记录一次成功的版本读取；空版本与窗口关闭（ttl<=0）时
+// 不缓存，保证本地缓存只含“窗口内可复用的真实版本”。
+func (s *SchedulerSnapshotService) storeSnapshotVersion(cacheKey, version string, now time.Time) {
+	if s.snapshotVersionCacheTTL <= 0 || version == "" {
+		return
+	}
+	s.snapshotVersionCache.Store(cacheKey, &snapshotVersionCacheEntry{version: version, readAt: now})
 }
 
 // readSnapshotVersion 通过可选接口读取分桶激活版本；cache 未实现

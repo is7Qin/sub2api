@@ -2526,7 +2526,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 
-		if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
+		if fresh := s.filterSchedulableOpenAICandidate(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
 			survivors = append(survivors, fresh)
 		}
 	}
@@ -2652,25 +2652,27 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 		result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 		if err == nil && result != nil && result.Acquired {
-			return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
+			// account 已由 selectAccountForModelWithExclusions 水合（全量 payload），
+			// 直接构造结果，跳过重复的 GetAccount 水合读。
+			return newSelectionResultFromAccount(account, true, result.ReleaseFunc, nil), nil
 		}
 		if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 			waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
 			if waitingCount < cfg.StickySessionMaxWaiting {
-				return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+				return newSelectionResultFromAccount(account, false, nil, &AccountWaitPlan{
 					AccountID:      account.ID,
 					MaxConcurrency: account.Concurrency,
 					Timeout:        cfg.StickySessionWaitTimeout,
 					MaxWaiting:     cfg.StickySessionMaxWaiting,
-				})
+				}), nil
 			}
 		}
-		return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+		return newSelectionResultFromAccount(account, false, nil, &AccountWaitPlan{
 			AccountID:      account.ID,
 			MaxConcurrency: account.Concurrency,
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
-		})
+		}), nil
 	}
 
 	accounts, err := s.listSchedulableAccounts(ctx, groupID)
@@ -2721,22 +2723,21 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						} else {
 							result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 							if err == nil && result != nil && result.Acquired {
-								selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
-								if selectErr != nil {
-									return nil, selectErr
-								}
+								// account 已由 GetAccount + DB 刷新持有全量 payload，
+								// 直接构造结果，跳过重复的 GetAccount 水合读。
+								selection := newSelectionResultFromAccount(account, true, result.ReleaseFunc, nil)
 								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
 								return selection, nil
 							}
 
 							waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
 							if waitingCount < cfg.StickySessionMaxWaiting {
-								return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+								return newSelectionResultFromAccount(account, false, nil, &AccountWaitPlan{
 									AccountID:      accountID,
 									MaxConcurrency: account.Concurrency,
 									Timeout:        cfg.StickySessionWaitTimeout,
 									MaxWaiting:     cfg.StickySessionMaxWaiting,
-								})
+								}), nil
 							}
 						}
 					}
@@ -2848,11 +2849,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			selectionOrder = append(selectionOrder, available...)
 		}
 
-		// 先做快照级廉价过滤，再对幸存候选做一次批量 DB 刷新，
+		// 先做快照级廉价过滤，再对幸存候选做一次批量刷新，
 		// 避免大账号池下对每个候选各执行一次 GetByID。
 		survivors := make([]*Account, 0, len(selectionOrder))
 		for _, item := range selectionOrder {
-			if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, false, requiredCapability); fresh != nil {
+			if fresh := s.filterSchedulableOpenAICandidate(ctx, item.account, requestedModel, false, requiredCapability); fresh != nil {
 				survivors = append(survivors, fresh)
 			}
 		}
@@ -2905,7 +2906,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 		survivors := make([]*Account, 0, len(ordered))
 		for _, acc := range ordered {
-			if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
+			if fresh := s.filterSchedulableOpenAICandidate(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
 				survivors = append(survivors, fresh)
 			}
 		}
@@ -2969,7 +2970,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 	survivors := make([]*Account, 0, len(candidates))
 	for _, acc := range candidates {
-		if fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
+		if fresh := s.filterSchedulableOpenAICandidate(ctx, acc, requestedModel, false, requiredCapability); fresh != nil {
 			survivors = append(survivors, fresh)
 		}
 	}
@@ -3039,27 +3040,23 @@ func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accoun
 	return s.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
 }
 
-func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
+// filterSchedulableOpenAICandidate 对快照候选做廉价的纯本地过滤（资格 + 运行时
+// 屏蔽），不读 Redis。候选的实时状态与存在性由紧随其后的批量刷新统一承载：
+// refreshOpenAICandidatesFromDB 一次 meta MGET 覆盖全部候选，缺失 ID 视为已
+// 删除（与逐候选 GetAccount 的 nil 语义一致）。此前每个候选单独 GetAccount
+// （每个候选一次 MGET）与批量刷新重复读同一批账号，是选择路径 Redis 往返的
+// 主要来源，已移除。
+func (s *OpenAIGatewayService) filterSchedulableOpenAICandidate(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
 	if account == nil {
 		return nil
 	}
-
-	fresh := account
-	if s.schedulerSnapshot != nil {
-		current, err := s.getSchedulableAccount(ctx, account.ID)
-		if err != nil || current == nil {
-			return nil
-		}
-		fresh = current
-	}
-
-	if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability) {
+	if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability) {
 		return nil
 	}
-	if s.isOpenAIAccountRuntimeBlocked(fresh) {
+	if s.isOpenAIAccountRuntimeBlocked(account) {
 		return nil
 	}
-	return fresh
+	return account
 }
 
 func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Context, account *Account) *Account {
@@ -3202,6 +3199,20 @@ func (s *OpenAIGatewayService) newAcquiredSelectionResult(ctx context.Context, a
 		release()
 	}
 	return selection, err
+}
+
+// newSelectionResultFromAccount 构造已持有全量 payload 账号的选中结果：调用方
+// 确认账号已经水合（粘性命中路径刚经 GetAccount + DB 刷新、selectAccountForModel
+// WithExclusions 返回前已水合）时使用，跳过重复的 GetAccount 水合读，每次选中
+// 省一次 Redis 往返。与 newSelectionResult 的差异：newSelectionResult 面向批量
+// 刷新得到的 meta payload 候选，必须水合全量账号后才能执行请求。
+func newSelectionResultFromAccount(account *Account, acquired bool, release func(), waitPlan *AccountWaitPlan) *AccountSelectionResult {
+	return &AccountSelectionResult{
+		Account:     account,
+		Acquired:    acquired,
+		ReleaseFunc: release,
+		WaitPlan:    waitPlan,
+	}
 }
 
 func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig {

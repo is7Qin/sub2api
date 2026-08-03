@@ -1056,11 +1056,17 @@ func isOpenAIPersonalAccessTokenOwner403(account *Account, upstreamMsg string, r
 	if msg == "" {
 		msg = strings.ToLower(extractUpstreamErrorMessage(responseBody))
 	}
-	if !strings.Contains(msg, "personal access token owner") {
+	// 门禁放宽为 "personal access token"：既覆盖 "personal access token owner ..."，
+	// 也覆盖被撤销 PAT 的 "This personal access token has been revoked"。
+	if !strings.Contains(msg, "personal access token") {
 		return false
 	}
+	// PAT 被撤销（has been revoked / is revoked）是永久失效，等同 401 token_revoked，直接 SetError。
+	// 只匹配精确措辞，不用裸 "revoked" 子串，避免命中其他含 "revoked" 的非 PAT 上下文。
 	return strings.Contains(msg, "owner is inactive") ||
-		(strings.Contains(msg, "not an active member") && strings.Contains(msg, "selected workspace"))
+		(strings.Contains(msg, "not an active member") && strings.Contains(msg, "selected workspace")) ||
+		strings.Contains(msg, "has been revoked") ||
+		strings.Contains(msg, "is revoked")
 }
 
 // handleAntigravity403 处理 Antigravity 平台的 403 错误

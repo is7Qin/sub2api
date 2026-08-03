@@ -3105,6 +3105,10 @@ func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context
 	// 与 DB 版“未在刷新 map 中”的语义一致。
 	if refreshed, err := s.schedulerSnapshot.GetSchedulableAccountsByIDs(ctx, ids); err == nil {
 		return refreshed
+	} else {
+		// 降级观测：定位批量快照读失败原因（生产风暴排查用，Warn 级别生产可见）。
+		slog.Warn("candidate refresh snapshot batch read failed, falling back to DB",
+			"error", err, "candidate_count", len(ids))
 	}
 	refreshed, err := s.accountRepo.GetByIDs(ctx, ids)
 	if err != nil {

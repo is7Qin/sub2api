@@ -248,3 +248,45 @@ ok github.com/Wei-Shaw/sub2api/internal/repository
 cd backend && go test -race -tags=unit ./internal/repository -run 'TestSchedulerCache_(GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload|StaticState)' -count=1
 ok github.com/Wei-Shaw/sub2api/internal/repository
 ```
+
+## Legacy activation marker-transition compatibility fix
+
+### RED
+
+Added deterministic repository regressions before the production change:
+
+- `TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads` publishes static V1, then legacy V2, and requires `GetSnapshot` to return V2 through global payloads with both static markers cleared.
+- `TestSchedulerCache_GetSnapshotRetriesStaticToLegacyTransitionBeforeChoosingPayload` uses the existing Redis read hook to read static V1 active, publish legacy V2 before marker classification, and provide a deliberately stale global V1 payload. It requires a V2 result or a cache miss, never V1 membership decoded through global payloads.
+
+```text
+cd backend && go test -tags=unit ./internal/repository -run 'TestSchedulerCache_(SetSnapshotTransitionsStaticStateToLegacyPayloads|GetSnapshotRetriesStaticToLegacyTransitionBeforeChoosingPayload)' -count=1
+
+--- FAIL: TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads
+    scheduler_cache_unit_test.go:570: Should be true
+--- FAIL: TestSchedulerCache_GetSnapshotRetriesStaticToLegacyTransitionBeforeChoosingPayload
+    scheduler_cache_unit_test.go:666: Should not be: []int64{82}
+```
+
+### GREEN
+
+- Legacy `activateSnapshotVersion` now passes the static support-state and support-ready marker keys to its existing Lua activation transaction, which clears both markers atomically while installing legacy `active` and `ready` state.
+- `GetSnapshot` now rereads `active` after each support-state marker lookup and retries if it changed. This validates both marker classifications: a matching marker remains static only if its active version is still current; a missing marker becomes legacy only if its active version is still current. A transition that cannot stabilize within the existing bounded retries fails closed as a cache miss.
+- Legacy empty snapshots retain their historical cache-miss behavior, while empty static snapshots and static reader grace retain their existing semantics.
+
+### Verification
+
+```text
+cd backend && go test -tags=unit ./internal/repository -run 'TestSchedulerCache_(SetSnapshotTransitionsStaticStateToLegacyPayloads|GetSnapshotRetriesStaticToLegacyTransitionBeforeChoosingPayload)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -tags=unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService|.*DefaultBuckets)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+cd backend && go test -race -tags=unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+git diff --check
+# passed
+```

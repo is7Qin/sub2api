@@ -92,6 +92,8 @@ return updated
 	// KEYS[2] = readyKey      (sched:ready:{bucket})
 	// KEYS[3] = bucketSetKey  (sched:buckets)
 	// KEYS[4] = snapshotKey   (新写入的快照 key)
+	// KEYS[5] = supportStateKey (sched:support:state:{bucket})
+	// KEYS[6] = supportReadyKey (sched:support:ready:{bucket})
 	// ARGV[1] = 新版本号字符串
 	// ARGV[2] = bucket 字符串 (用于 SADD)
 	// ARGV[3] = 快照 key 前缀 (用于构造旧快照 key)
@@ -112,6 +114,9 @@ end
 
 redis.call('SET', KEYS[1], ARGV[1])
 redis.call('SET', KEYS[2], '1')
+-- Legacy snapshots use global payloads. Clear static markers atomically with
+-- activation so readers never classify the old static version as legacy data.
+redis.call('DEL', KEYS[5], KEYS[6])
 redis.call('SADD', KEYS[3], ARGV[2])
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
@@ -411,6 +416,23 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		if stateErr != nil && stateErr != redis.Nil {
 			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 			return nil, false, stateErr
+		}
+		// Validate active after classifying the marker. Both static activation and
+		// legacy activation transition active and the markers atomically, but these
+		// reads are separate Redis commands. Without this check, a reader can retain
+		// a static V1 active value, observe V2's cleared marker, and decode V1 IDs
+		// through legacy global payloads.
+		currentActive, activeErr := c.rdb.Get(ctx, activeKey).Result()
+		if activeErr == redis.Nil {
+			c.stats.recordMiss(bucketKey, schedulerMissActiveMissing)
+			return nil, false, nil
+		}
+		if activeErr != nil {
+			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+			return nil, false, activeErr
+		}
+		if currentActive != activeVal {
+			continue
 		}
 		if stateErr == redis.Nil {
 			// A missing marker belongs to legacy SetSnapshot data, which continues to
@@ -760,7 +782,14 @@ func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket ser
 	snapshotKey := schedulerSnapshotKey(bucket, version)
 	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 
-	keys := []string{activeKey, readyKey, schedulerBucketSetKey, snapshotKey}
+	keys := []string{
+		activeKey,
+		readyKey,
+		schedulerBucketSetKey,
+		snapshotKey,
+		schedulerBucketKey(schedulerSupportStatePrefix, bucket),
+		schedulerBucketKey(schedulerSupportReadyPrefix, bucket),
+	}
 	args := []any{version, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds}
 
 	_, err := activateSnapshotScript.Run(ctx, c.rdb, keys, args...).Result()

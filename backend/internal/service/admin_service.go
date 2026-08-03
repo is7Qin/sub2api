@@ -2777,8 +2777,8 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 		}
 	}
 	// 列表视图瘦身：groups 只保留列表 UI 消费的字段（id/name/platform/
-	// subscription_type/rate_multiplier），其余零值字段经 dto omitempty
-	// 省略；account_groups 列表不使用，置空后经 omitempty 从响应消失。
+	// subscription_type/rate_multiplier），其余字段由 dto.GroupLite 投影
+	// 省略；account_groups 列表不使用，置空后同样经投影从响应消失。
 	// 详情页走 GetByID（全量），不受影响。
 	for i := range accounts {
 		accounts[i].Groups = accountListGroupLite(accounts[i].Groups)
@@ -2788,7 +2788,7 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 }
 
 // accountListGroupLite 把完整 group 对象重建为列表视图（仅保留列表 UI
-// 消费的字段），其余零值字段经 dto.Group 的 omitempty 从响应省略。
+// 消费的字段），其余零值字段由 dto.GroupLite 投影省略。
 func accountListGroupLite(groups []*Group) []*Group {
 	if len(groups) == 0 {
 		return groups
@@ -2822,7 +2822,7 @@ const accountsListCacheTTL = 60 * time.Second
 
 // accountsListCacheMaxEntries 是缓存条目数上限：分页/筛选/排序组合在面板
 // 轮询下可能持续漂移，无上限时过期 key 会无限累积。超限后淘汰最旧条目
-//（TTL 相同，插入序与 exp 序等价）。
+// （TTL 相同，插入序与 exp 序等价）。
 const accountsListCacheMaxEntries = 512
 
 // accountsListTTLCache 是 admin 账号列表的进程内版本失效缓存。

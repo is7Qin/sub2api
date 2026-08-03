@@ -123,6 +123,7 @@ func TestOpenAIMessagesModelNotFoundUsesRequestedPublicModel(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
@@ -213,6 +214,7 @@ func TestOpenAIMessagesStreamingModelNotFoundAfterPingUsesAnthropicSSE(t *testin
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 	h.concurrencyHelper = NewConcurrencyHelper(concurrencySvc, SSEPingFormatComment, time.Millisecond)
@@ -306,6 +308,7 @@ func TestOpenAICompatibleChatCompletionsStreamingModelNotFoundAfterPingUsesSSE(t
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := &GatewayHandler{
 		gatewayService:           gatewaySvc,
@@ -502,6 +505,7 @@ func TestGeminiV1BetaModelNotFoundUsesRoutePublicModel(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := &GatewayHandler{
 		gatewayService:      gatewaySvc,
@@ -623,6 +627,7 @@ func newCountTokensModelNotFoundGatewayHandler(t *testing.T, groupID int64, acco
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	return &GatewayHandler{gatewayService: gatewaySvc, billingCacheService: billingCacheSvc}, billingCacheSvc.Stop
 }

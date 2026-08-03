@@ -232,6 +232,7 @@ func TestGatewayHandlerMessages_AdmittedRetryCancellationDoesNotWriteFallback(t 
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	defer billingCacheService.Stop()

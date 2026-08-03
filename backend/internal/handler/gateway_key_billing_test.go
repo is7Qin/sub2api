@@ -35,6 +35,7 @@ func newKeyBillingHandler(repo service.UserGroupRateRepository) *GatewayHandler 
 	gatewayService := service.NewGatewayService(
 		nil, nil, nil, nil, nil, nil, repo, nil, cfg, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, // usageRecordWorkerPool
 	)
 	return &GatewayHandler{gatewayService: gatewayService}
 }

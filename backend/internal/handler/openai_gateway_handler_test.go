@@ -83,7 +83,7 @@ func TestOpenAIHandleFailoverExhaustedSanitizedResponseBypassesMatchingRule(t *t
 	forwardContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	forwardContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	cfg := &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}}
-	forwarder := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil)
+	forwarder := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
 	account := &service.Account{
 		ID: 91, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://api.example.test"},
@@ -1176,7 +1176,7 @@ func TestOpenAIResponsesWebSocket_MappedImageModelRequiresGroupPermission(t *tes
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCacheSvc.Stop)
-	gatewaySvc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, billingCacheSvc, nil, nil, nil, nil, channelSvc, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, billingCacheSvc, nil, nil, nil, nil, channelSvc, nil, nil, nil, nil)
 	h := &OpenAIGatewayHandler{
 		gatewayService:      gatewaySvc,
 		billingCacheService: billingCacheSvc,
@@ -1600,7 +1600,7 @@ func TestOpenAIResponses_MappedImageModelRequiresGroupPermission(t *testing.T) {
 		}},
 		groupPlatforms: map[int64]string{groupID: service.PlatformOpenAI},
 	}, nil, nil, nil)
-	gatewaySvc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, channelSvc, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, channelSvc, nil, nil, nil, nil)
 	h := &OpenAIGatewayHandler{
 		gatewayService:      gatewaySvc,
 		billingCacheService: &service.BillingCacheService{},
@@ -1671,6 +1671,7 @@ func TestOpenAIResponses_MappedImageModelRequiresImageCapableAccount(t *testing.
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil,
 		billingCacheSvc, upstream, &service.DeferredService{}, nil, nil, channelSvc, nil, nil, nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, service.NewConcurrencyService(nil), billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -1846,6 +1847,7 @@ func TestOpenAIGatewayHTTPRoutes_ChannelMappingSelectionAndForwarding(t *testing
 			gatewaySvc := service.NewOpenAIGatewayService(
 				accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil,
 				billingCacheSvc, upstream, &service.DeferredService{}, nil, nil, channelSvc, nil, nil, nil,
+				nil, // usageRecordWorkerPool
 			)
 			h := NewOpenAIGatewayHandler(gatewaySvc, service.NewConcurrencyService(nil), billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -1914,6 +1916,7 @@ func TestOpenAIMessages_PreOutputPolicyFailureRecordsUsage(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -1966,7 +1969,7 @@ func TestOpenAIChatCompletions_ContextFailedDoesNotSwitchOrRateLimitAccount(t *t
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
 	upstreamBody := `data: {"type":"response.failed","response":{"id":"resp_chat_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"},"usage":{"input_tokens":5,"output_tokens":0}}}` + "\n\n"
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2009,7 +2012,7 @@ func TestOpenAIResponses_ContextFailedDoesNotSwitchRateLimitOrRecordUsage(t *tes
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
 	upstreamBody := "event: response.failed\n" + `data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"}}}` + "\n\n"
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2051,7 +2054,7 @@ func TestOpenAIMessages_ContextFailedDoesNotSwitchOrRateLimitAccount(t *testing.
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
 	upstreamBody := `data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window"}}}` + "\n\n"
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2094,7 +2097,7 @@ func TestOpenAIResponses_RecognizedOverloadReturnsWithoutSchedulerMutation(t *te
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
 	upstreamBody := "event: response.failed\n" + `data: {"type":"response.failed","response":{"id":"resp_overload","status":"failed","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Please retry later"}}}` + "\n\n"
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2127,7 +2130,7 @@ func TestOpenAIMessages_RecognizedOverloadReturnsWithoutSchedulerMutation(t *tes
 	t.Cleanup(billingCacheSvc.Stop)
 	concurrencySvc := service.NewConcurrencyService(nil)
 	upstreamBody := `data: {"type":"response.failed","response":{"id":"resp_overload","status":"failed","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Please retry later"}}}` + "\n\n"
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), nil, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2252,6 +2255,7 @@ func TestOpenAIResponses_PostOutputResponseFailedRecordsUsage(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -2332,7 +2336,7 @@ func TestOpenAIChatCompletions_PostOutputContextFailedRecordsUsageWithoutResetti
 	require.NoError(t, err)
 	rateLimitSvc := service.NewRateLimitService(accountRepo, usageRepo, cfg, nil, nil)
 	rateLimitSvc.SetOpenAI403CounterCache(healthCounter)
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2408,7 +2412,7 @@ func TestOpenAIResponses_PostOutputContextFailedRecordsUsageWithoutSchedulerOutc
 	require.NoError(t, err)
 	rateLimitSvc := service.NewRateLimitService(accountRepo, usageRepo, cfg, nil, nil)
 	rateLimitSvc.SetOpenAI403CounterCache(healthCounter)
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2476,7 +2480,7 @@ func TestOpenAIMessages_PostOutputContextFailedRecordsUsageWithoutSchedulerOutco
 	require.NoError(t, err)
 	rateLimitSvc := service.NewRateLimitService(accountRepo, usageRepo, cfg, nil, nil)
 	rateLimitSvc.SetOpenAI403CounterCache(healthCounter)
-	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewOpenAIGatewayService(accountRepo, usageRepo, nil, nil, nil, nil, nil, cfg, nil, concurrencySvc, service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc, openAIMessagesUsageHTTPUpstream{body: upstreamBody}, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
 	rec := httptest.NewRecorder()
@@ -2574,6 +2578,7 @@ func TestOpenAIResponses_PreOutputResponseFailedDoesNotRecordUsage(t *testing.T)
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 
@@ -2751,6 +2756,7 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 
 	h := &OpenAIGatewayHandler{
@@ -2951,6 +2957,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		nil,
 		nil, // userPlatformQuotaRepo
+		nil, // usageRecordWorkerPool
 	)
 
 	cache := &concurrencyCacheMock{

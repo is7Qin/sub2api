@@ -270,6 +270,7 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
@@ -352,6 +353,7 @@ func TestOpenAIGatewayHandlerImages_Canceled520DoesNotReplayOrReportExhausted(t 
 	gatewayService := service.NewOpenAIGatewayService(
 		openAIImagesFailoverAccountRepo{accounts: accounts}, nil, nil, nil, nil, nil, nil, cfg,
 		nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil,
+		nil, // usageRecordWorkerPool
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
@@ -410,6 +412,7 @@ func TestOpenAIGatewayHandlerImages_CancellationAroundAccountAcquisitionStopsBef
 			gatewayService := service.NewOpenAIGatewayService(
 				openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}, nil, nil, nil, nil, nil, nil, cfg,
 				nil, concurrencyService, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil,
+				nil, // usageRecordWorkerPool
 			)
 			billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(billingService.Stop)
@@ -457,6 +460,7 @@ func TestOpenAIGatewayHandlerImages_CancellationAtServiceAdmissionIsClean(t *tes
 		gatewayService := service.NewOpenAIGatewayService(
 			openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}, nil, nil, nil, nil, nil, nil, cfg,
 			nil, concurrencyService, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil,
+			nil, // usageRecordWorkerPool
 		)
 		billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 		handler := NewOpenAIGatewayHandler(
@@ -567,6 +571,7 @@ func TestOpenAIGatewayHandlerImages_IncompleteFailoverBillsOnlyFinalSuccess(t *t
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)

@@ -829,11 +829,11 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 	compactBlocked := false
 	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 
-	// 先做快照级廉价过滤，再对幸存候选做一次批量 DB 刷新，
+	// 先做快照级廉价过滤，再对幸存候选做一次批量刷新，
 	// 避免大账号池下对每个候选各执行一次 GetByID。
 	survivors := make([]*Account, 0, len(selectionOrder))
 	for _, candidate := range selectionOrder {
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability)
+		fresh := s.service.filterSchedulableOpenAICandidate(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -1065,11 +1065,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
-	// 先做快照级廉价过滤，再对幸存候选做一次批量 DB 刷新，
+	// 先做快照级廉价过滤，再对幸存候选做一次批量刷新，
 	// 避免大账号池下对每个候选各执行一次 GetByID。
 	survivors := make([]*Account, 0, len(selectionOrder))
 	for _, candidate := range selectionOrder {
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability)
+		fresh := s.service.filterSchedulableOpenAICandidate(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}

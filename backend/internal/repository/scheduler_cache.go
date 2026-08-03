@@ -304,7 +304,9 @@ func (c *schedulerCache) LogSnapshotStats() {
 		attrs = append(attrs, slog.Float64("total_miss_ratio", float64(summary.TotalMisses)/float64(total)))
 	}
 	attrs = append(attrs, slog.Any("buckets", summary.Buckets))
-	slog.Info("scheduler snapshot cache stats", attrs...)
+	// Warn 级别：生产 LOG_LEVEL=error/warn 下 10 秒周期汇总仍可见，
+	// 供风暴定位 GetSnapshot miss 分布（每桶 reason 计数）。
+	slog.Warn("scheduler snapshot cache stats", attrs...)
 }
 
 func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {

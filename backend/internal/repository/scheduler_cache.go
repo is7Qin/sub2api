@@ -508,11 +508,16 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 		return err
 	}
 	published, err := c.activateStaticStateVersion(ctx, bucket, version)
-	if err != nil || !published {
+	if err != nil {
+		// An activation transport error is ambiguous: Lua may have committed before
+		// the response was lost, and a newer writer may already have granted this
+		// version reader grace. Never destructively clean that state; bound every
+		// artifact instead so definitely unpublished attempts cannot leak forever.
+		_ = c.boundAmbiguousStaticState(ctx, bucket, version, payloadIDs)
+		return err
+	}
+	if !published {
 		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
-		if err != nil {
-			return err
-		}
 		return errors.New("static state version was superseded")
 	}
 	return nil
@@ -1071,6 +1076,38 @@ func staticStateAccountIDs(accountSets ...[]service.Account) []int64 {
 		}
 	}
 	return ids
+}
+
+// boundAmbiguousStaticState preserves any reader grace that a committed activation
+// may have received from a newer version, while bounding artifacts of an activation
+// whose server-side outcome cannot be known after a transport error.
+func (c *schedulerCache) boundAmbiguousStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
+	active, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
+	if err != nil && err != redis.Nil {
+		return err
+	}
+	if active == version {
+		// The activation may have committed and remains live; preserve its durable
+		// lifetime instead of converting it to a cleanup TTL.
+		return nil
+	}
+	ttl := time.Duration(staticStateUnpublishedPayloadTTLSeconds) * time.Second
+	keys := []string{schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)}
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		idText := strconv.FormatInt(id, 10)
+		keys = append(keys, schedulerVersionedAccountKey(bucket, version, idText), schedulerVersionedAccountMetaKey(bucket, version, idText))
+	}
+	for _, key := range keys {
+		if err := c.rdb.Expire(ctx, key, ttl).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *schedulerCache) cleanupUnpublishedStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {

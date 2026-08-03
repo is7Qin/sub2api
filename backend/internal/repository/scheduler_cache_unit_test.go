@@ -566,6 +566,80 @@ func (h *schedulerStaticActivationRaceHook) ProcessPipelineHook(next redis.Proce
 	return next
 }
 
+type schedulerStaticActivationResponseLostHook struct {
+	publishNext func(context.Context) error
+	fired       atomic.Bool
+}
+
+func (h *schedulerStaticActivationResponseLostHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *schedulerStaticActivationResponseLostHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && h.fired.CompareAndSwap(false, true) {
+			if publishErr := h.publishNext(ctx); publishErr != nil {
+				return publishErr
+			}
+			// Redis committed activation, but the caller lost its response.
+			return errors.New("injected lost static-state activation response")
+		}
+		return err
+	}
+}
+
+func (h *schedulerStaticActivationResponseLostHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestSchedulerCache_StaticStateLostActivationResponsePreservesReaderGrace(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 13, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	v1Candidate := service.Account{ID: 60, Name: "v1 candidate", Platform: service.PlatformOpenAI}
+	v1Support := service.Account{ID: 61, Name: "v1 support", Platform: service.PlatformOpenAI}
+	v2 := service.Account{ID: 62, Name: "v2", Platform: service.PlatformOpenAI}
+	v2Cache, ok := newSchedulerCacheWithChunkSizes(
+		redis.NewClient(&redis.Options{Addr: cache.rdb.Options().Addr}),
+		defaultSchedulerSnapshotMGetChunkSize,
+		defaultSchedulerSnapshotWriteChunkSize,
+	).(*schedulerCache)
+	require.True(t, ok)
+	t.Cleanup(func() { _ = v2Cache.rdb.Close() })
+
+	hook := &schedulerStaticActivationResponseLostHook{publishNext: func(ctx context.Context) error {
+		return v2Cache.SetStaticState(ctx, bucket, []service.Account{v2}, []service.Account{v2})
+	}}
+	cache.rdb.AddHook(hook)
+	err := cache.SetStaticState(ctx, bucket, []service.Account{v1Candidate}, []service.Account{v1Candidate, v1Support})
+	require.ErrorContains(t, err, "injected lost static-state activation response")
+	require.True(t, hook.fired.Load())
+	require.Equal(t, "2", cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val())
+
+	candidates, candidateHit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, candidateHit)
+	require.True(t, supportHit)
+	require.Equal(t, []int64{v2.ID}, schedulerCacheTestIDs(candidates))
+	require.Equal(t, []int64{v2.ID}, schedulerCacheTestIDs(support))
+
+	for _, key := range []string{
+		schedulerSnapshotKey(bucket, "1"),
+		schedulerSupportKey(bucket, "1"),
+		schedulerVersionedAccountKey(bucket, "1", "60"),
+		schedulerVersionedAccountMetaKey(bucket, "1", "60"),
+		schedulerVersionedAccountKey(bucket, "1", "61"),
+		schedulerVersionedAccountMetaKey(bucket, "1", "61"),
+	} {
+		ttl := cache.rdb.TTL(ctx, key).Val()
+		require.GreaterOrEqual(t, ttl, time.Duration(snapshotGraceTTLSeconds)*time.Second, key)
+		require.LessOrEqual(t, ttl, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second, key)
+	}
+}
+
 func TestSchedulerCache_StaticStateAmbiguousPayloadPipelineFailureCleansUnpublishedPayloads(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

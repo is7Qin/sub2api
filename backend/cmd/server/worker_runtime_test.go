@@ -29,20 +29,24 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "email-queue", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
 	// Status is the public kind-specific runtime API; do not depend on obsolete snapshot fields.
-	for i := 0; i < 5; i++ {
-		require.IsType(t, workerruntime.PeriodicStatus{}, snapshots[i].Status)
+	for _, snapshot := range snapshots {
+		if snapshot.Descriptor.Kind == workerruntime.KindPool {
+			require.IsType(t, workerruntime.PoolStatus{}, snapshot.Status)
+			continue
+		}
+		require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
 	}
-	require.IsType(t, workerruntime.PoolStatus{}, snapshots[5].Status)
 	require.True(t, usagePool.Accepting())
 }
 
@@ -62,6 +66,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		disabled,
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -83,6 +88,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		enabled,
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = enabledRuntime.StopAll(context.Background()) })
@@ -102,6 +108,7 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
 			service.NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: interval}),
 			service.NewConcurrencyService(nil),
+			service.NewEmailQueueService(nil, 1),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -130,6 +137,7 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			concurrency,
+			service.NewEmailQueueService(nil, 1),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })

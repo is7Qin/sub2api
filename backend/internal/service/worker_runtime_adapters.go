@@ -422,3 +422,116 @@ func (w *UsageRecordWorkerPoolWorker) Snapshot() workerruntime.Snapshot {
 		},
 	}
 }
+
+// EmailQueueWorker adapts EmailQueueService lifecycle ownership to the worker runtime.
+type EmailQueueWorker struct {
+	queue      *EmailQueueService
+	descriptor workerruntime.Descriptor
+	mu         sync.RWMutex
+	lifecycle  workerruntime.LifecycleSnapshot
+	stopping   bool
+	stopDone   chan struct{}
+}
+
+// NewEmailQueueWorker returns the runtime component for asynchronous email delivery.
+func NewEmailQueueWorker(queue *EmailQueueService) workerruntime.Component {
+	return &EmailQueueWorker{queue: queue, descriptor: workerruntime.Descriptor{Name: "email-queue", Kind: workerruntime.KindPool, Group: "notifications", CoordinationMode: workerruntime.CoordinationPerInstance, Description: "Delivers queued email messages asynchronously", Tags: []string{"email", "notifications", "asynchronous-delivery"}}, lifecycle: workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}}
+}
+
+func (w *EmailQueueWorker) Descriptor() workerruntime.Descriptor {
+	if w == nil {
+		return workerruntime.Descriptor{}
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.descriptor
+}
+
+func (w *EmailQueueWorker) Start(context.Context) error {
+	if w == nil || w.queue == nil {
+		return fmt.Errorf("email queue is required")
+	}
+	w.mu.Lock()
+	if w.lifecycle.State == workerruntime.LifecycleRunning {
+		w.mu.Unlock()
+		return nil
+	}
+	if w.stopping || (w.lifecycle.State == workerruntime.LifecycleStopped && w.stopDone != nil) {
+		w.mu.Unlock()
+		return fmt.Errorf("email queue is stopping")
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	err := w.queue.Start()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopping || w.lifecycle.State != workerruntime.LifecycleStarting {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("email queue is stopping")
+	}
+	if err != nil {
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
+		return err
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	return nil
+}
+
+func (w *EmailQueueWorker) Stop(ctx context.Context) error {
+	if w == nil || w.queue == nil {
+		return nil
+	}
+	w.mu.Lock()
+	if w.stopDone == nil {
+		w.stopping = true
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+		w.stopDone = make(chan struct{})
+		done := w.stopDone
+		go func() {
+			err := w.queue.Stop(context.Background())
+			w.mu.Lock()
+			w.stopping = false
+			if err != nil {
+				w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
+			} else {
+				w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+			}
+			w.mu.Unlock()
+			close(done)
+		}()
+	}
+	done := w.stopDone
+	w.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return nil
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+func (w *EmailQueueWorker) Snapshot() workerruntime.Snapshot {
+	if w == nil {
+		return workerruntime.Snapshot{}
+	}
+	w.mu.RLock()
+	descriptor, lifecycle, stopping := w.descriptor, w.lifecycle, w.stopping
+	w.mu.RUnlock()
+	stats := EmailQueueStats{}
+	if w.queue != nil {
+		stats = w.queue.Stats()
+	}
+	return workerruntime.Snapshot{Descriptor: descriptor, Lifecycle: lifecycle, Status: workerruntime.PoolStatus{Accepting: stats.Accepting, StillRunning: stats.StillRunning || stopping, MaxConcurrency: stats.MaxConcurrency, RunningWorkers: stats.RunningWorkers, WaitingTasks: stats.WaitingTasks, SubmittedTasks: stats.SubmittedTasks, CompletedTasks: stats.CompletedTasks, DroppedTasks: stats.DroppedTasks, DroppedQueueFull: stats.DroppedQueueFull, DroppedPoolStopped: stats.DroppedPoolStopped}}
+}

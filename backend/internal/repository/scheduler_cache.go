@@ -223,65 +223,111 @@ func (c *schedulerCache) GetSnapshotVersion(ctx context.Context, bucket service.
 }
 
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) error {
-	// Phase 1: 分配新版本号并写入快照数据。
-	// INCR 保证每个调用方获得唯一递增版本号。
-	// 写入的 snapshotKey 是新的版本化 key，reader 尚不知晓，因此无竞态。
-	versionKey := schedulerBucketKey(schedulerVersionPrefix, bucket)
-	version, err := c.rdb.Incr(ctx, versionKey).Result()
+	version, err := c.allocateSnapshotVersion(ctx, bucket)
 	if err != nil {
 		return err
 	}
-
-	versionStr := strconv.FormatInt(version, 10)
-	snapshotKey := schedulerSnapshotKey(bucket, versionStr)
-
 	accountIDs, err := c.writeAccountIDs(ctx, accounts)
 	if err != nil {
 		return err
 	}
-
-	if len(accountIDs) > 0 {
-		// 使用序号作为 score，保持数据库返回的排序语义。
-		members := make([]redis.Z, 0, len(accountIDs))
-		for idx, accountID := range accountIDs {
-			members = append(members, redis.Z{
-				Score:  float64(idx),
-				Member: strconv.FormatInt(accountID, 10),
-			})
-		}
-		for start := 0; start < len(members); start += c.writeChunkSize {
-			end := start + c.writeChunkSize
-			if end > len(members) {
-				end = len(members)
-			}
-			// Publish only after every bounded ZADD succeeds, so a partial write
-			// cannot become an active snapshot.
-			if err := c.rdb.ZAdd(ctx, snapshotKey, members[start:end]...).Err(); err != nil {
-				// This version was never published; best-effort cleanup avoids leaking a
-				// partially materialized key while preserving the active snapshot.
-				_ = c.rdb.Del(ctx, snapshotKey).Err()
-				return err
-			}
-		}
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, accountIDs); err != nil {
+		return err
 	}
+	return c.activateSnapshotVersion(ctx, bucket, version)
+}
 
-	// Phase 2: 原子 CAS 激活版本。
-	// Lua 脚本保证：仅当新版本 >= 当前激活版本时才切换 active 指针，
-	// 防止并发写入导致版本回滚。
-	// 旧快照使用 EXPIRE 宽限期而非立即 DEL，避免 reader 竞态。
-	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
-	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
-	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+// SetSnapshotAndReturnAccountIDs 完整发布快照，并返回实际成功编码并写入的有序账号 ID。
+// 该可选能力只供同一重建批次复用：同批次后续桶直接以这些 ID 发布，省略重复的账号
+// JSON 序列化与全局键写入。发布语义与 SetSnapshot 完全一致。
+func (c *schedulerCache) SetSnapshotAndReturnAccountIDs(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) ([]int64, error) {
+	version, err := c.allocateSnapshotVersion(ctx, bucket)
+	if err != nil {
+		return nil, err
+	}
+	accountIDs, err := c.writeAccountIDs(ctx, accounts)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, accountIDs); err != nil {
+		return nil, err
+	}
+	if err := c.activateSnapshotVersion(ctx, bucket, version); err != nil {
+		return nil, err
+	}
+	return accountIDs, nil
+}
 
-	keys := []string{activeKey, readyKey, schedulerBucketSetKey, snapshotKey}
-	args := []any{versionStr, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds}
-
-	_, err = activateSnapshotScript.Run(ctx, c.rdb, keys, args...).Result()
+// SetSnapshotByAccountIDs 复用同批次首次完整写入后得到的账号成员。
+// 每个桶仍独立分配版本、写入有序集合并执行激活，只省略重复的账号 JSON 与全局键写入。
+func (c *schedulerCache) SetSnapshotByAccountIDs(ctx context.Context, bucket service.SchedulerBucket, accountIDs []int64) error {
+	version, err := c.allocateSnapshotVersion(ctx, bucket)
 	if err != nil {
 		return err
 	}
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, accountIDs); err != nil {
+		return err
+	}
+	return c.activateSnapshotVersion(ctx, bucket, version)
+}
 
+// allocateSnapshotVersion 分配新版本号并返回版本字符串。
+// INCR 保证每个调用方获得唯一递增版本号；写入的 snapshotKey 是新的版本化 key，
+// reader 尚不知晓，因此无竞态。
+func (c *schedulerCache) allocateSnapshotVersion(ctx context.Context, bucket service.SchedulerBucket) (string, error) {
+	versionKey := schedulerBucketKey(schedulerVersionPrefix, bucket)
+	version, err := c.rdb.Incr(ctx, versionKey).Result()
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(version, 10), nil
+}
+
+// writeSnapshotAccountIDs 把有序账号 ID 写入版本化快照 key（score 为序号，保持
+// 数据库返回的排序语义）。只有每一批有界的 ZADD 都成功后该版本才会被发布，
+// 部分写入不能成为激活快照；任一 ZADD 失败都清理该版本 key。
+func (c *schedulerCache) writeSnapshotAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accountIDs []int64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	snapshotKey := schedulerSnapshotKey(bucket, version)
+	members := make([]redis.Z, 0, len(accountIDs))
+	for idx, accountID := range accountIDs {
+		members = append(members, redis.Z{
+			Score:  float64(idx),
+			Member: strconv.FormatInt(accountID, 10),
+		})
+	}
+	for start := 0; start < len(members); start += c.writeChunkSize {
+		end := start + c.writeChunkSize
+		if end > len(members) {
+			end = len(members)
+		}
+		if err := c.rdb.ZAdd(ctx, snapshotKey, members[start:end]...).Err(); err != nil {
+			// This version was never published; best-effort cleanup avoids leaking a
+			// partially materialized key while preserving the active snapshot.
+			_ = c.rdb.Del(ctx, snapshotKey).Err()
+			return err
+		}
+	}
 	return nil
+}
+
+// activateSnapshotVersion 原子 CAS 激活版本。
+// Lua 脚本保证：仅当新版本 >= 当前激活版本时才切换 active 指针，
+// 防止并发写入导致版本回滚。
+// 旧快照使用 EXPIRE 宽限期而非立即 DEL，避免 reader 竞态。
+func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket service.SchedulerBucket, version string) error {
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
+	snapshotKey := schedulerSnapshotKey(bucket, version)
+	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+
+	keys := []string{activeKey, readyKey, schedulerBucketSetKey, snapshotKey}
+	args := []any{version, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds}
+
+	_, err := activateSnapshotScript.Run(ctx, c.rdb, keys, args...).Result()
+	return err
 }
 
 func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*service.Account, error) {

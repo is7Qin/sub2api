@@ -34,6 +34,70 @@ type batchSeenKey struct {
 	platform string
 }
 
+// schedulerAccountQueryKey 标识一次可跨分桶复用的账号查询。
+type schedulerAccountQueryKey struct {
+	groupID  int64
+	platform string
+}
+
+// 查询结果只在一次 rebuild batch 内，按原始 groupID+platform 复用成功的 single/forced 查询；
+// mixed 与历史模式保持独立。每个桶都用 defer 消费 remaining，最后一个消费者会立即释放结果，
+// 避免把账号切片的生命周期扩大到整轮 full rebuild。
+type schedulerAccountQueryCache struct {
+	remaining          map[schedulerAccountQueryKey]int
+	accounts           map[schedulerAccountQueryKey][]Account
+	snapshotAccountIDs map[schedulerAccountQueryKey][]int64
+}
+
+// schedulerSnapshotAccountIDWriter 是 SchedulerCache 的可选批次优化能力。
+// 首次完整发布成功后返回实际可编码账号 ID；同一查询结果的后续桶只需发布这些 ID，
+// 避免重复序列化并覆盖全局账号缓存。未实现该接口的缓存继续走原 SetSnapshot 路径。
+type schedulerSnapshotAccountIDWriter interface {
+	SetSnapshotAndReturnAccountIDs(ctx context.Context, bucket SchedulerBucket, accounts []Account) ([]int64, error)
+	SetSnapshotByAccountIDs(ctx context.Context, bucket SchedulerBucket, accountIDs []int64) error
+}
+
+func newSchedulerAccountQueryCache(bucketSets ...[]SchedulerBucket) *schedulerAccountQueryCache {
+	queries := &schedulerAccountQueryCache{
+		remaining:          make(map[schedulerAccountQueryKey]int),
+		accounts:           make(map[schedulerAccountQueryKey][]Account),
+		snapshotAccountIDs: make(map[schedulerAccountQueryKey][]int64),
+	}
+	for _, buckets := range bucketSets {
+		for _, bucket := range buckets {
+			if key, ok := schedulerAccountQueryKeyForBucket(bucket); ok {
+				queries.remaining[key]++
+			}
+		}
+	}
+	return queries
+}
+
+func schedulerAccountQueryKeyForBucket(bucket SchedulerBucket) (schedulerAccountQueryKey, bool) {
+	if bucket.Mode != SchedulerModeSingle && bucket.Mode != SchedulerModeForced {
+		return schedulerAccountQueryKey{}, false
+	}
+	return schedulerAccountQueryKey{groupID: bucket.GroupID, platform: bucket.Platform}, true
+}
+
+func (c *schedulerAccountQueryCache) release(bucket SchedulerBucket) {
+	if c == nil {
+		return
+	}
+	key, ok := schedulerAccountQueryKeyForBucket(bucket)
+	if !ok {
+		return
+	}
+	remaining := c.remaining[key] - 1
+	if remaining <= 0 {
+		delete(c.remaining, key)
+		delete(c.accounts, key)
+		delete(c.snapshotAccountIDs, key)
+		return
+	}
+	c.remaining[key] = remaining
+}
+
 type SchedulerSnapshotService struct {
 	cache                   SchedulerCache
 	outboxRepo              SchedulerOutboxRepository
@@ -789,7 +853,7 @@ func (s *SchedulerSnapshotService) rebuildBucketsForPlatform(ctx context.Context
 	if platform == "" {
 		return nil
 	}
-	var firstErr error
+	buckets := make([]SchedulerBucket, 0, len(groupIDs)*3)
 	for _, gid := range groupIDs {
 		// Within a single poll batch, skip (groupID, platform) pairs that were
 		// already rebuilt. The first rebuild loads fresh DB data for all accounts
@@ -802,32 +866,32 @@ func (s *SchedulerSnapshotService) rebuildBucketsForPlatform(ctx context.Context
 			}
 			seen[key] = struct{}{}
 		}
-		if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeSingle}, reason); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced}, reason); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeSingle})
+		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced})
 		if platform == PlatformAnthropic || platform == PlatformGemini {
-			if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed}, reason); err != nil && firstErr == nil {
-				firstErr = err
-			}
+			buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed})
 		}
 	}
-	return firstErr
+	return s.rebuildBuckets(ctx, buckets, reason)
 }
 
 func (s *SchedulerSnapshotService) rebuildBuckets(ctx context.Context, buckets []SchedulerBucket, reason string) error {
+	queries := newSchedulerAccountQueryCache(buckets)
 	var firstErr error
 	for _, bucket := range buckets {
-		if err := s.rebuildBucket(ctx, bucket, reason); err != nil && firstErr == nil {
+		if err := s.rebuildBucketWithQueryCache(ctx, bucket, reason, queries); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket SchedulerBucket, reason string) error {
+func (s *SchedulerSnapshotService) rebuildBucketWithQueryCache(ctx context.Context, bucket SchedulerBucket, reason string, queries *schedulerAccountQueryCache) error {
+	if queries != nil {
+		// 无论本次重建是否成功，都消费一次 remaining；最后一个消费者立即释放
+		// 账号切片与可复用 ID，避免把结果保留到整轮 rebuild 结束。
+		defer queries.release(bucket)
+	}
 	if s.cache == nil {
 		return ErrSchedulerCacheNotReady
 	}
@@ -849,16 +913,68 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 	rebuildCtx, cancel := context.WithTimeout(ctx, schedulerBucketRebuildLimit)
 	defer cancel()
 
-	accounts, err := s.loadAccountsFromDB(rebuildCtx, bucket, bucket.Mode == SchedulerModeMixed)
+	accounts, err := s.loadAccountsForRebuild(rebuildCtx, bucket, queries)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
-	if err := s.cache.SetSnapshot(rebuildCtx, bucket, accounts); err != nil {
+	if err := s.setRebuildSnapshot(rebuildCtx, bucket, accounts, queries); err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
 	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts))
+	return nil
+}
+
+// loadAccountsForRebuild 读取 bucket 的账号集；single/forced 桶在同一重建批次内
+// 共享一次数据库查询。mixed 与历史模式不可复用，直接走原查询路径。
+func (s *SchedulerSnapshotService) loadAccountsForRebuild(ctx context.Context, bucket SchedulerBucket, queries *schedulerAccountQueryCache) ([]Account, error) {
+	key, cacheable := schedulerAccountQueryKeyForBucket(bucket)
+	if queries == nil || !cacheable {
+		return s.loadAccountsFromDB(ctx, bucket, bucket.Mode == SchedulerModeMixed)
+	}
+
+	if accounts, ok := queries.accounts[key]; ok {
+		return accounts, nil
+	}
+	if queries.remaining[key] <= 1 {
+		// 最后一个消费者直接查询，避免为无人再消费的结果保留切片。
+		return s.loadAccountsFromDB(ctx, bucket, false)
+	}
+	accounts, err := s.loadAccountsFromDB(ctx, bucket, false)
+	if err != nil {
+		return nil, err
+	}
+	queries.accounts[key] = accounts
+	return accounts, nil
+}
+
+// setRebuildSnapshot 发布 bucket 快照；缓存实现了 schedulerSnapshotAccountIDWriter
+// 且该桶的查询可复用时，首个消费者完整发布并登记实际写入的账号 ID，后续桶只发布
+// ID（省略重复的账号序列化与全局键写入），最后一个消费者回到原 SetSnapshot。
+func (s *SchedulerSnapshotService) setRebuildSnapshot(ctx context.Context, bucket SchedulerBucket, accounts []Account, queries *schedulerAccountQueryCache) error {
+	writer, ok := s.cache.(schedulerSnapshotAccountIDWriter)
+	key, reusable := schedulerAccountQueryKeyForBucket(bucket)
+	if !ok || queries == nil || !reusable {
+		return s.cache.SetSnapshot(ctx, bucket, accounts)
+	}
+
+	if accountIDs, exists := queries.snapshotAccountIDs[key]; exists {
+		return writer.SetSnapshotByAccountIDs(ctx, bucket, accountIDs)
+	}
+	if queries.remaining[key] <= 1 {
+		return s.cache.SetSnapshot(ctx, bucket, accounts)
+	}
+
+	accountIDs, err := writer.SetSnapshotAndReturnAccountIDs(ctx, bucket, accounts)
+	if err != nil {
+		return err
+	}
+	if queries.remaining[key] > 1 {
+		// 必须保存实际成功编码并写入的有序 ID，不能从原账号切片重新推导；
+		// 否则不可编码账号会只出现在后续桶中，破坏两个快照的成员一致性。
+		queries.snapshotAccountIDs[key] = accountIDs
+	}
 	return nil
 }
 

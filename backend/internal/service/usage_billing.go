@@ -154,3 +154,27 @@ type UsageBillingFinalizationRepository interface {
 	UsageBillingRepository
 	ApplyAndStageOutboxFinalization(ctx context.Context, cmd *UsageBillingCommand, binding UsageBillingOutboxBinding) (*UsageBillingApplyResult, error)
 }
+
+// UsageBillingBatchItem is one outbox record handed to a batch apply transaction.
+type UsageBillingBatchItem struct {
+	Command UsageBillingCommand
+	Binding UsageBillingOutboxBinding
+}
+
+// UsageBillingBatchOutcome reports one item's outcome inside a batch apply
+// transaction. Err is non-nil when the item failed and was rolled back to its
+// own savepoint; the remaining items still committed. A non-nil Err means
+// Result is nil (nothing of this item persisted).
+type UsageBillingBatchOutcome struct {
+	Result *UsageBillingApplyResult
+	Err    error
+}
+
+// UsageBillingBatchFinalizationRepository applies a whole worker round in ONE
+// transaction. Per-record savepoints isolate failures: one failed record never
+// drags the rest of the round. Same-user records inside one batch run serially
+// within the transaction, preserving the per-user shard serialization contract
+// of the worker.
+type UsageBillingBatchFinalizationRepository interface {
+	ApplyBatchAndStageOutboxFinalizations(ctx context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error)
+}

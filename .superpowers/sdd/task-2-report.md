@@ -249,6 +249,52 @@ cd backend && go test -race -tags=unit ./internal/repository -run 'TestScheduler
 ok github.com/Wei-Shaw/sub2api/internal/repository
 ```
 
+## Static-to-legacy artifact-grace cleanup fix
+
+### RED
+
+Expanded `TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads` before changing the activation protocol. It now publishes a static V1 with distinct candidate and support accounts, activates legacy V2, verifies V2 remains readable, and requires a positive bounded TTL for every V1 artifact: candidate/support ZSETs plus candidate/support full and meta payloads.
+
+```text
+cd backend && go test -tags=unit ./internal/repository -run '^TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads$' -count=1
+
+--- FAIL: TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads
+    scheduler_cache_unit_test.go:591: "-1ns" is not greater than "0s"
+    Messages: sched:support:15:openai:single:v1
+```
+
+The prior legacy activation only expired the old candidate ZSET. Static support membership and all version-qualified payloads remained persistent after the markers were cleared, leaving them unreachable indefinitely.
+
+### GREEN
+
+- `activateSnapshotScript` atomically records whether the outgoing active version has a matching static support-state marker before it clears the static markers.
+- On that static-to-legacy transition only, it grants the existing 60-second reader grace to V1 candidate/support ZSETs and enumerates their IDs to expire every version-qualified candidate/support full and meta payload.
+- The active V2 state is installed before cleanup handling, marker clearing remains atomic, and legacy-to-legacy activation retains its existing candidate-ZSET-only grace behavior.
+
+### Verification
+
+```text
+cd backend && go test -tags=unit ./internal/repository -run '^TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads$' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -tags=unit ./internal/repository -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -race -tags=unit ./internal/repository -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -tags=unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService|.*DefaultBuckets)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+cd backend && go test -race -tags=unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+git diff --check
+# passed
+```
+
 ## Legacy activation marker-transition compatibility fix
 
 ### RED

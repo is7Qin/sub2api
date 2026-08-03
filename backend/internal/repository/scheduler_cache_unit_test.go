@@ -559,10 +559,12 @@ func TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads(t *tes
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)
 	bucket := service.SchedulerBucket{GroupID: 15, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
-	static := service.Account{ID: 80, Name: "static", Platform: service.PlatformOpenAI}
+	staticCandidate := service.Account{ID: 80, Name: "static candidate", Platform: service.PlatformOpenAI}
+	staticSupport := service.Account{ID: 82, Name: "static support", Platform: service.PlatformOpenAI}
 	legacy := service.Account{ID: 81, Name: "legacy", Platform: service.PlatformOpenAI}
 
-	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{static}, []service.Account{static}))
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{staticCandidate}, []service.Account{staticCandidate, staticSupport}))
+	staticVersion := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{legacy}))
 
 	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
@@ -574,6 +576,21 @@ func TestSchedulerCache_SetSnapshotTransitionsStaticStateToLegacyPayloads(t *tes
 		schedulerBucketKey(schedulerSupportStatePrefix, bucket),
 		schedulerBucketKey(schedulerSupportReadyPrefix, bucket),
 	).Val())
+
+	for _, key := range []string{
+		schedulerSnapshotKey(bucket, staticVersion),
+		schedulerSupportKey(bucket, staticVersion),
+		schedulerVersionedAccountKey(bucket, staticVersion, strconv.FormatInt(staticCandidate.ID, 10)),
+		schedulerVersionedAccountMetaKey(bucket, staticVersion, strconv.FormatInt(staticCandidate.ID, 10)),
+		schedulerVersionedSupportAccountKey(bucket, staticVersion, strconv.FormatInt(staticCandidate.ID, 10)),
+		schedulerVersionedSupportAccountMetaKey(bucket, staticVersion, strconv.FormatInt(staticCandidate.ID, 10)),
+		schedulerVersionedSupportAccountKey(bucket, staticVersion, strconv.FormatInt(staticSupport.ID, 10)),
+		schedulerVersionedSupportAccountMetaKey(bucket, staticVersion, strconv.FormatInt(staticSupport.ID, 10)),
+	} {
+		ttl := cache.rdb.TTL(ctx, key).Val()
+		require.Greater(t, ttl, time.Duration(0), key)
+		require.LessOrEqual(t, ttl, time.Duration(snapshotGraceTTLSeconds)*time.Second, key)
+	}
 }
 
 type schedulerStaticStateTransitionReadHook struct {

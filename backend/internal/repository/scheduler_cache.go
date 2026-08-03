@@ -96,8 +96,10 @@ return updated
 	// KEYS[6] = supportReadyKey (sched:support:ready:{bucket})
 	// ARGV[1] = 新版本号字符串
 	// ARGV[2] = bucket 字符串 (用于 SADD)
-	// ARGV[3] = 快照 key 前缀 (用于构造旧快照 key)
+	// ARGV[3] = candidate snapshot key prefix (用于构造旧快照 key)
 	// ARGV[4] = 宽限期 TTL 秒数
+	// ARGV[5] = support snapshot key prefix
+	// ARGV[6:9] = old static candidate/support full/meta payload prefixes
 	//
 	// 返回 1 = 已激活, 0 = 版本过旧未激活
 	activateSnapshotScript = redis.NewScript(`
@@ -112,6 +114,10 @@ if currentActive ~= false then
 	end
 end
 
+-- A matching support-state marker is the atomic publication proof that the
+-- previous active version owns version-qualified candidate and support payloads.
+local previousWasStatic = currentActive ~= false and redis.call('GET', KEYS[5]) == currentActive
+
 redis.call('SET', KEYS[1], ARGV[1])
 redis.call('SET', KEYS[2], '1')
 -- Legacy snapshots use global payloads. Clear static markers atomically with
@@ -120,7 +126,23 @@ redis.call('DEL', KEYS[5], KEYS[6])
 redis.call('SADD', KEYS[3], ARGV[2])
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
-	redis.call('EXPIRE', ARGV[3] .. currentActive, tonumber(ARGV[4]))
+	local graceTTL = tonumber(ARGV[4])
+	local candidateKey = ARGV[3] .. currentActive
+	redis.call('EXPIRE', candidateKey, graceTTL)
+	if previousWasStatic then
+		local supportKey = ARGV[5] .. currentActive
+		redis.call('EXPIRE', supportKey, graceTTL)
+		local candidateIDs = redis.call('ZRANGE', candidateKey, 0, -1)
+		for _, id in ipairs(candidateIDs) do
+			redis.call('EXPIRE', ARGV[6] .. currentActive .. ':' .. id, graceTTL)
+			redis.call('EXPIRE', ARGV[7] .. currentActive .. ':' .. id, graceTTL)
+		end
+		local supportIDs = redis.call('ZRANGE', supportKey, 0, -1)
+		for _, id in ipairs(supportIDs) do
+			redis.call('EXPIRE', ARGV[8] .. currentActive .. ':' .. id, graceTTL)
+			redis.call('EXPIRE', ARGV[9] .. currentActive .. ':' .. id, graceTTL)
+		end
+	end
 end
 
 return 1
@@ -781,6 +803,11 @@ func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket ser
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	snapshotKey := schedulerSnapshotKey(bucket, version)
 	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	supportKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSupportPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedCandidateFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedCandidateMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedSupportFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedSupportAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	versionedSupportMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedSupportAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 
 	keys := []string{
 		activeKey,
@@ -790,7 +817,17 @@ func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket ser
 		schedulerBucketKey(schedulerSupportStatePrefix, bucket),
 		schedulerBucketKey(schedulerSupportReadyPrefix, bucket),
 	}
-	args := []any{version, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds}
+	args := []any{
+		version,
+		bucket.String(),
+		snapshotKeyPrefix,
+		snapshotGraceTTLSeconds,
+		supportKeyPrefix,
+		versionedCandidateFullPrefix,
+		versionedCandidateMetaPrefix,
+		versionedSupportFullPrefix,
+		versionedSupportMetaPrefix,
+	}
 
 	_, err := activateSnapshotScript.Run(ctx, c.rdb, keys, args...).Result()
 	return err

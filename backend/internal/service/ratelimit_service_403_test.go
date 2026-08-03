@@ -236,6 +236,86 @@ func TestRateLimitService_HandleUpstreamError_OpenAIPATWorkspace403DisablesImmed
 	require.NotContains(t, repo.lastErrorMsg, "consecutive_403")
 }
 
+func TestIsOpenAIPersonalAccessTokenOwner403(t *testing.T) {
+	patAccount := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"personal_access_token": "pat-test",
+		},
+	}
+	nonPATAccount := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	tests := []struct {
+		name     string
+		account  *Account
+		msg      string
+		body     []byte
+		expected bool
+	}{
+		{
+			name:     "owner is inactive",
+			account:  patAccount,
+			msg:      "Personal access token owner is inactive.",
+			expected: true,
+		},
+		{
+			name:     "owner not active member of selected workspace",
+			account:  patAccount,
+			msg:      "Personal access token owner is not an active member of the selected workspace.",
+			expected: true,
+		},
+		{
+			name:     "personal access token has been revoked",
+			account:  patAccount,
+			msg:      "This personal access token has been revoked",
+			expected: true,
+		},
+		{
+			name:     "personal access token has been revoked with trailing period",
+			account:  patAccount,
+			msg:      "This personal access token has been revoked.",
+			expected: true,
+		},
+		{
+			name:     "personal access token is revoked variant",
+			account:  patAccount,
+			msg:      "This personal access token is revoked.",
+			expected: true,
+		},
+		{
+			name:     "revoked message extracted from response body",
+			account:  patAccount,
+			msg:      "",
+			body:     []byte(`{"error":{"message":"This personal access token has been revoked"}}`),
+			expected: true,
+		},
+		{
+			name:     "non PAT account never matches",
+			account:  nonPATAccount,
+			msg:      "This personal access token has been revoked",
+			expected: false,
+		},
+		{
+			name:     "generic forbidden message not matched",
+			account:  patAccount,
+			msg:      "temporary edge rejection",
+			expected: false,
+		},
+		{
+			name:     "bare revoked without personal access token not matched",
+			account:  patAccount,
+			msg:      "The workspace has been revoked",
+			expected: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, isOpenAIPersonalAccessTokenOwner403(tt.account, tt.msg, tt.body))
+		})
+	}
+}
+
 func TestRateLimitService_HandleUpstreamError_OpenAIPATOwnerInactive403DisablesImmediately(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	counter := &openAI403CounterCacheStub{counts: []int64{1}}
@@ -263,6 +343,46 @@ func TestRateLimitService_HandleUpstreamError_OpenAIPATOwnerInactive403DisablesI
 	require.Equal(t, 0, repo.tempCalls)
 	require.Equal(t, []int64{1}, counter.counts)
 	require.Contains(t, repo.lastErrorMsg, "Personal access token owner is inactive")
+	require.NotContains(t, repo.lastErrorMsg, "consecutive_403")
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI403RevokedPATDisablesImmediately(t *testing.T) {
+	// 被撤销的 PAT 是永久失效（等同 401 token_revoked），即使 403 冷却配置为 Ignore
+	// 也必须走 handleAuthError 直接 SetError，而不是落入冷却/Ignore 分支。
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{1}}
+	settingRepo := newMockSettingRepo()
+	data, err := json.Marshal(OpenAI403CooldownSettings{
+		Enabled: true,
+		Ignore:  true,
+	})
+	require.NoError(t, err)
+	settingRepo.data[SettingKeyOpenAI403CooldownSettings] = string(data)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	service.SetOpenAI403CounterCache(counter)
+	account := &Account{
+		ID:       309,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"personal_access_token": "pat-test",
+		},
+	}
+
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusForbidden,
+		http.Header{},
+		[]byte(`{"error":{"message":"This personal access token has been revoked"}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Zero(t, repo.tempCalls)
+	require.Equal(t, []int64{1}, counter.counts)
+	require.Contains(t, repo.lastErrorMsg, "This personal access token has been revoked")
 	require.NotContains(t, repo.lastErrorMsg, "consecutive_403")
 }
 

@@ -49,6 +49,10 @@ type accountRepository struct {
 	// Used to proactively sync account snapshot to cache when status changes,
 	// ensuring sticky sessions can promptly detect unavailable accounts.
 	schedulerCache service.SchedulerCache
+
+	// modelAvailabilityCache 缓存模型可用性候选（404-vs-503 判别专用），
+	// 按 groupID 短 TTL 复用，避免每请求全量查询与解码候选账号。
+	modelAvailabilityCache *modelAvailabilityCandidateCache
 }
 
 // Keep this allowlist exact: unknown Extra keys must remain lifecycle-relevant,
@@ -94,7 +98,12 @@ func NewAccountRepository(client *dbent.Client, sqlDB *sql.DB, schedulerCache se
 // newAccountRepositoryWithSQL 是内部构造函数，支持依赖注入 SQL 执行器。
 // 这种设计便于单元测试时注入 mock 对象。
 func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedulerCache service.SchedulerCache) *accountRepository {
-	return &accountRepository{client: client, sql: sqlq, schedulerCache: schedulerCache}
+	return &accountRepository{
+		client:                 client,
+		sql:                    sqlq,
+		schedulerCache:         schedulerCache,
+		modelAvailabilityCache: newModelAvailabilityCandidateCache(),
+	}
 }
 
 func (r *accountRepository) sqlFromContext(ctx context.Context) sqlExecutor {
@@ -1764,39 +1773,9 @@ func (r *accountRepository) ListSchedulableByGroupIDAndPlatforms(ctx context.Con
 	})
 }
 
-// ListModelAvailabilityCandidates returns the persistently enabled pool used
-// only to classify a model miss. Runtime cooldown, overload, and expiry state
-// must not turn a temporary capacity shortage into a permanent 404.
-func (r *accountRepository) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]service.Account, error) {
-	if len(platforms) == 0 {
-		return []service.Account{}, nil
-	}
-	if groupID != nil {
-		return r.queryAccountsByGroup(ctx, *groupID, accountGroupQueryOptions{
-			status:               service.StatusActive,
-			schedulable:          true,
-			ignoreTransientState: true,
-			platforms:            platforms,
-		})
-	}
-
-	preds := []dbpredicate.Account{
-		dbaccount.StatusEQ(service.StatusActive),
-		dbaccount.SchedulableEQ(true),
-		dbaccount.PlatformIn(platforms...),
-	}
-	if !includeGrouped {
-		preds = append(preds, dbaccount.Not(dbaccount.HasAccountGroups()))
-	}
-	accounts, err := r.client.Account.Query().
-		Where(preds...).
-		Order(dbent.Asc(dbaccount.FieldPriority)).
-		All(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.accountsToService(ctx, accounts)
-}
+// ListModelAvailabilityCandidates 的实现已移至 account_model_availability_cache.go：
+// 生产路径带 30s TTL 缓存 + 字段投影（见该文件顶部注释与报告
+// .superpowers/sdd/modelcheck-fix-report.md）。
 
 func (r *accountRepository) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
 	result, err := r.sqlFromContext(ctx).ExecContext(ctx, `

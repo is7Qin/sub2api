@@ -111,16 +111,20 @@ func (w *SchedulerSnapshotWorker) Snapshot() workerruntime.Snapshot {
 	if w == nil {
 		return workerruntime.Snapshot{}
 	}
-	w.mu.RLock()
-	lifecycle := w.lifecycle
-	descriptor := w.descriptor
-	w.mu.RUnlock()
 	stillRunning := w.service != nil && w.service.isWorkerActive()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !stillRunning && w.lifecycle.State == workerruntime.LifecycleStopping {
+		// A timed-out Stop may drain after its caller returns; publish completion on
+		// the next runtime observation instead of leaving a stale stopping state.
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+	}
+	lifecycle := w.lifecycle
 	if stillRunning && lifecycle.State == workerruntime.LifecycleStopped {
 		lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
 	}
 	return workerruntime.Snapshot{
-		Descriptor: descriptor,
+		Descriptor: w.descriptor,
 		Lifecycle:  lifecycle,
 		Status: workerruntime.PeriodicStatus{
 			StillRunning: stillRunning,

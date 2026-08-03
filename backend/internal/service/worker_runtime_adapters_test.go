@@ -26,6 +26,18 @@ func (schedulerSnapshotLifecycleCache) TryLockBucket(context.Context, SchedulerB
 	return "", false, nil
 }
 
+type schedulerSnapshotBlockingCache struct {
+	schedulerSnapshotLifecycleCache
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *schedulerSnapshotBlockingCache) ListBuckets(context.Context) ([]SchedulerBucket, error) {
+	close(c.entered)
+	<-c.release
+	return []SchedulerBucket{{GroupID: 0, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}}, nil
+}
+
 func TestNewSchedulerSnapshotWorker_RequiresService(t *testing.T) {
 	_, err := NewSchedulerSnapshotWorker(nil)
 
@@ -54,6 +66,29 @@ func TestProvideSchedulerSnapshotService_DoesNotStartWorker(t *testing.T) {
 	svc := ProvideSchedulerSnapshotService(schedulerSnapshotLifecycleCache{}, nil, nil, nil, nil, nil, &config.Config{})
 
 	require.False(t, svc.isWorkerActive())
+}
+
+func TestSchedulerSnapshotWorker_TimeoutThenDrainReportsStopped(t *testing.T) {
+	cache := &schedulerSnapshotBlockingCache{entered: make(chan struct{}), release: make(chan struct{})}
+	svc := newSchedulerSnapshotService(cache, nil, nil, nil, nil, nil, &config.Config{})
+	worker, err := NewSchedulerSnapshotWorker(svc)
+	require.NoError(t, err)
+	require.NoError(t, worker.Start(context.Background()))
+	<-cache.entered
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, worker.Stop(stopCtx), context.DeadlineExceeded)
+	intermediate := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopping, intermediate.Lifecycle.State)
+	require.True(t, intermediate.Status.(workerruntime.PeriodicStatus).StillRunning)
+
+	close(cache.release)
+	require.Eventually(t, func() bool {
+		snapshot := worker.Snapshot()
+		status, ok := snapshot.Status.(workerruntime.PeriodicStatus)
+		return ok && snapshot.Lifecycle.State == workerruntime.LifecycleStopped && !status.StillRunning
+	}, time.Second, time.Millisecond)
 }
 
 func TestUsageRecordWorkerPoolWorkerStartDoesNotOverwriteStopping(t *testing.T) {

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -160,4 +161,96 @@ func TestGatewayModelSupportMiss_PublishedSupportSnapshotChecksMixedPlatformScop
 	miss := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), nil, "claude-test", PlatformAnthropic, nil, true, nil, nil)
 
 	require.False(t, miss)
+}
+
+func TestResolveOpenAIAccountForPrivacyRequirement_SchedulerUsesPublishedAccount(t *testing.T) {
+	account := &Account{
+		ID:          81101,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{"privacy_mode": PrivacyModeTrainingOff},
+	}
+	cache := &openAISnapshotCacheStub{accountsByID: map[int64]*Account{account.ID: account}}
+	svc := &OpenAIGatewayService{
+		accountRepo:       panicSchedulerDBRepo{},
+		schedulerSnapshot: NewSchedulerSnapshotService(cache, nil, nil, nil, nil),
+	}
+
+	resolved, ok := svc.resolveOpenAIAccountForPrivacyRequirement(
+		context.Background(),
+		&Account{ID: account.ID, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		&Group{ID: 811, Platform: PlatformOpenAI, RequirePrivacySet: true},
+	)
+
+	require.True(t, ok)
+	require.Equal(t, account, resolved)
+}
+
+func TestOpenAIWSPreviousResponse_SchedulerUsesPublishedAccount(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(812)
+	account := &Account{
+		ID:          81201,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		GroupIDs:    []int64{groupID},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}
+	gatewayCache := &schedulerTestGatewayCache{}
+	store := NewOpenAIWSStateStore(gatewayCache)
+	svc := &OpenAIGatewayService{
+		accountRepo:        panicSchedulerDBRepo{},
+		cache:              gatewayCache,
+		cfg:                newOpenAIWSV2TestConfig(),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiWSStateStore: store,
+		schedulerSnapshot: NewSchedulerSnapshotService(
+			&openAISnapshotCacheStub{accountsByID: map[int64]*Account{account.ID: account}}, nil, nil, nil, nil,
+		),
+	}
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_scheduler_cached", account.ID, time.Hour))
+
+	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_scheduler_cached", "gpt-5.1", nil, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, account.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIScheduler_StaleCandidateWithoutBatchFreshnessIsExcluded(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	ctx := context.Background()
+	groupID := int64(813)
+	accountID := int64(81301)
+	account, _ := newMetaHydrationAccounts(groupID, accountID)
+	cache := noBatchOpenAISnapshotCache{cache: &openAISnapshotCacheStub{
+		snapshotAccounts: []*Account{account},
+		accountsByID:     map[int64]*Account{accountID: account},
+	}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        panicSchedulerDBRepo{},
+		cfg:                cfg,
+		schedulerSnapshot:  NewSchedulerSnapshotService(cache, nil, nil, nil, nil),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false,
+	)
+
+	require.Nil(t, selection)
+	require.Error(t, err)
 }

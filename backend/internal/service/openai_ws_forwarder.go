@@ -4988,8 +4988,10 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
-	if s.schedulerSnapshot != nil && s.accountRepo != nil {
-		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
+	if s.schedulerSnapshot != nil {
+		// Scheduler-backed sticky routing only uses the published full account.
+		// Cache unavailability invalidates the binding; request paths never query DB.
+		latest, latestErr := s.schedulerSnapshot.GetAccount(ctx, account.ID)
 		if latestErr != nil || latest == nil {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return nil, nil

@@ -221,22 +221,10 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_UpstreamChannelR
 	require.Zero(t, boundAccountID)
 }
 
-func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_DBRuntimeRecheckRateLimitedMiss(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_PublishedRuntimeRecheckRateLimitedMiss(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(24)
 	rateLimitedUntil := time.Now().Add(30 * time.Minute)
-	staleAccount := &Account{
-		ID:          13,
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		GroupIDs:    []int64{groupID},
-		Extra: map[string]any{
-			"openai_apikey_responses_websockets_v2_enabled": true,
-		},
-	}
 	dbAccount := Account{
 		ID:               13,
 		Platform:         PlatformOpenAI,
@@ -254,7 +242,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_DBRuntimeRecheck
 	store := NewOpenAIWSStateStore(cache)
 	cfg := newOpenAIWSV2TestConfig()
 	snapshotCache := &openAISnapshotCacheStub{
-		accountsByID: map[int64]*Account{dbAccount.ID: staleAccount},
+		accountsByID: map[int64]*Account{dbAccount.ID: &dbAccount},
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{dbAccount}},

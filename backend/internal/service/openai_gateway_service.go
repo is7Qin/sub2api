@@ -2080,10 +2080,10 @@ func (s *OpenAIGatewayService) resolveOpenAIAccountForPrivacyRequirement(ctx con
 	if account.Platform == PlatformOpenAI && account.Type != AccountTypeOAuth {
 		return account, true
 	}
-	if s != nil && s.schedulerSnapshot != nil && s.accountRepo != nil {
-		// Snapshot/cache data can lag behind privacy updates; verify against DB before
-		// mutating runtime/account error state so fresh privacy-set accounts are not poisoned.
-		latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	if s != nil && s.schedulerSnapshot != nil {
+		// Scheduler-backed request paths only trust the worker-published full account.
+		// A cache miss fails closed rather than querying the source database.
+		latest, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
 		if err != nil || latest == nil {
 			return nil, false
 		}
@@ -3103,12 +3103,7 @@ func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context
 	refreshed, err := s.schedulerSnapshot.GetSchedulableAccountsByIDs(ctx, ids)
 	if err != nil {
 		slog.Warn("candidate refresh snapshot batch read failed", "error", err, "candidate_count", len(ids))
-		// A non-production/legacy scheduler without a batch reader has no cache
-		// freshness signal, so retain its existing candidate snapshot. Production
-		// snapshot readers return an empty map and exclude all candidates.
-		if _, ok := s.schedulerSnapshot.cache.(snapshotAccountBatchReader); !ok {
-			return nil
-		}
+		// No cache freshness signal means no candidate is safe to select.
 		return map[int64]*Account{}
 	}
 	return refreshed

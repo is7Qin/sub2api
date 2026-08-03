@@ -430,6 +430,8 @@ type EmailQueueWorker struct {
 	mu         sync.RWMutex
 	lifecycle  workerruntime.LifecycleSnapshot
 	stopping   bool
+	startDone  chan struct{}
+	startErr   error
 	stopDone   chan struct{}
 }
 
@@ -460,23 +462,37 @@ func (w *EmailQueueWorker) Start(context.Context) error {
 		w.mu.Unlock()
 		return fmt.Errorf("email queue is stopping")
 	}
-	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
-	w.mu.Unlock()
-	err := w.queue.Start()
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.stopping || w.lifecycle.State != workerruntime.LifecycleStarting {
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("email queue is stopping")
-	}
-	if err != nil {
-		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
+	if w.lifecycle.State == workerruntime.LifecycleStarting {
+		done := w.startDone
+		w.mu.Unlock()
+		<-done
+		w.mu.RLock()
+		err := w.startErr
+		w.mu.RUnlock()
 		return err
 	}
-	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
-	return nil
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
+	w.startErr = nil
+	w.startDone = make(chan struct{})
+	done := w.startDone
+	w.mu.Unlock()
+
+	err := w.queue.Start()
+	w.mu.Lock()
+	w.startErr = err
+	if w.stopping || w.lifecycle.State != workerruntime.LifecycleStarting {
+		if err == nil {
+			err = fmt.Errorf("email queue is stopping")
+			w.startErr = err
+		}
+	} else if err != nil {
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
+	} else {
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	}
+	close(done)
+	w.mu.Unlock()
+	return err
 }
 
 func (w *EmailQueueWorker) Stop(ctx context.Context) error {

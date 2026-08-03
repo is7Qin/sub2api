@@ -52,6 +52,30 @@ func TestEmailQueueWorkerStartsConfiguredWorkersExactlyOnce(t *testing.T) {
 	require.EqualValues(t, 2, status.RunningWorkers)
 }
 
+func TestEmailQueueWorkerConcurrentStartIsIdempotent(t *testing.T) {
+	queue := NewEmailQueueService(nil, 1)
+	worker := NewEmailQueueWorker(queue).(*EmailQueueWorker)
+	t.Cleanup(func() { require.NoError(t, worker.Stop(context.Background())) })
+
+	// Hold the native start after the adapter exposes Starting so both callers
+	// must complete the same startup transition.
+	queue.mu.Lock()
+	startResults := make(chan error, 2)
+	go func() { startResults <- worker.Start(context.Background()) }()
+	require.Eventually(t, func() bool {
+		worker.mu.RLock()
+		defer worker.mu.RUnlock()
+		return worker.lifecycle.State == workerruntime.LifecycleStarting
+	}, time.Second, time.Millisecond)
+	go func() { startResults <- worker.Start(context.Background()) }()
+	queue.mu.Unlock()
+
+	require.NoError(t, <-startResults)
+	require.NoError(t, <-startResults)
+	status := worker.Snapshot().Status.(workerruntime.PoolStatus)
+	require.EqualValues(t, 1, status.RunningWorkers)
+}
+
 func TestEmailQueueWorkerStopIsTruthfulAndRetryable(t *testing.T) {
 	queue := NewEmailQueueService(nil, 1)
 	component := NewEmailQueueWorker(queue)

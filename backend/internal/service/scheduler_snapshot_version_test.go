@@ -157,6 +157,36 @@ func TestSchedulerSnapshotDecodeCache_FallsBackToTTLOnVersionReadError(t *testin
 	require.WithinDuration(t, time.Now().Add(snapshotDecodeCacheTTL), entry.exp, time.Second)
 }
 
+// TestSchedulerSnapshotDecodeCache_VersionedEntryNotServedOnVersionReadError
+// 验证版本读取失败时，带版本号的解码缓存条目不得被命中：否则重建后的新
+// 快照会被 30s TTL 内的旧条目顶掉（旧账号继续派发、新账号不可见）。
+func TestSchedulerSnapshotDecodeCache_VersionedEntryNotServedOnVersionReadError(t *testing.T) {
+	cache := &versionedSnapshotCache{
+		snapshot: []*Account{{ID: 1, Platform: PlatformOpenAI}},
+		version:  "v1",
+	}
+	svc := &SchedulerSnapshotService{cache: cache}
+	ctx := context.Background()
+
+	// 第一轮：版本可用，存入带版本号 "v1" 的条目（30s TTL）。
+	accounts, _, err := svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(1), accounts[0].ID)
+	require.Equal(t, 1, cache.getSnapshotCalls)
+
+	// 快照重建后版本读取瞬时失败（version == ""）：带版本号的旧条目
+	// 不得命中，必须重新 GetSnapshot 并返回新账号集合。
+	cache.snapshot = []*Account{{ID: 2, Platform: PlatformOpenAI}}
+	cache.versionErr = errors.New("redis down")
+
+	accounts, _, err = svc.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Equal(t, 2, cache.getSnapshotCalls)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(2), accounts[0].ID)
+}
+
 // TestSchedulerSnapshotDecodeCache_ExpiredEntryRefetches 验证即使版本一致，
 // 超过保留 TTL 的条目也必须重新 GetSnapshot。
 func TestSchedulerSnapshotDecodeCache_ExpiredEntryRefetches(t *testing.T) {

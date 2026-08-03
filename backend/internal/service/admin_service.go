@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -2776,8 +2777,8 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 		}
 	}
 	// 列表视图瘦身：groups 只保留列表 UI 消费的字段（id/name/platform/
-	// subscription_type/rate_multiplier），其余零值字段经 dto omitempty
-	// 省略；account_groups 列表不使用，置空后经 omitempty 从响应消失。
+	// subscription_type/rate_multiplier），其余字段由 dto.GroupLite 投影
+	// 省略；account_groups 列表不使用，置空后同样经投影从响应消失。
 	// 详情页走 GetByID（全量），不受影响。
 	for i := range accounts {
 		accounts[i].Groups = accountListGroupLite(accounts[i].Groups)
@@ -2787,7 +2788,7 @@ func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageS
 }
 
 // accountListGroupLite 把完整 group 对象重建为列表视图（仅保留列表 UI
-// 消费的字段），其余零值字段经 dto.Group 的 omitempty 从响应省略。
+// 消费的字段），其余零值字段由 dto.GroupLite 投影省略。
 func accountListGroupLite(groups []*Group) []*Group {
 	if len(groups) == 0 {
 		return groups
@@ -2819,12 +2820,22 @@ type accountCredentialSubsetReader interface {
 // 不依赖 TTL；此兜底防止版本来源异常时缓存无限期停留。
 const accountsListCacheTTL = 60 * time.Second
 
+// accountsListCacheMaxEntries 是缓存条目数上限：分页/筛选/排序组合在面板
+// 轮询下可能持续漂移，无上限时过期 key 会无限累积。超限后淘汰最旧条目
+// （TTL 相同，插入序与 exp 序等价）。
+const accountsListCacheMaxEntries = 512
+
 // accountsListTTLCache 是 admin 账号列表的进程内版本失效缓存。
 // 命中条件：版本与当前一致（账号无变更）且未超过 TTL 兜底。
-// 返回时浅拷贝切片，避免调用方修改污染缓存条目。
+// get/set 均深拷贝嵌套结构（Credentials/Extra/Groups），调用方修改返回值
+// 不会污染缓存条目；条目数超过上限时淘汰最旧条目。
 type accountsListTTLCache struct {
 	mu    sync.Mutex
 	items map[string]accountsListCacheEntry
+	// order 维护插入顺序（覆盖写入视为"最近使用"移到队尾）。容量超限时
+	// 按队首淘汰最旧条目：与按 exp 淘汰等价（TTL 相同），且不受时钟分辨率
+	// 限制（并发写入可能落在同一时间刻度上，exp 相等时扫描无确定顺序）。
+	order []string
 }
 
 type accountsListCacheEntry struct {
@@ -2847,10 +2858,10 @@ func (c *accountsListTTLCache) get(key, version string) ([]Account, int64, bool)
 	entry, ok := c.items[key]
 	// 版本一致（账号无变更）且未超时兜底 → 命中。
 	if !ok || entry.version != version || time.Now().After(entry.exp) {
-		delete(c.items, key)
+		c.deleteKeyLocked(key)
 		return nil, 0, false
 	}
-	return append([]Account(nil), entry.accounts...), entry.total, true
+	return deepCopyAccounts(entry.accounts), entry.total, true
 }
 
 func (c *accountsListTTLCache) set(key string, accounts []Account, total int64, version string) {
@@ -2859,12 +2870,191 @@ func (c *accountsListTTLCache) set(key string, accounts []Account, total int64, 
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := time.Now()
+	// 顺带清理已过期条目：过期 key 不应占用容量上限
+	for k, e := range c.items {
+		if now.After(e.exp) {
+			c.deleteKeyLocked(k)
+		}
+	}
+	// 覆盖写入视为"最近使用"：从旧位置移除后追加到队尾
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
 	c.items[key] = accountsListCacheEntry{
-		accounts: append([]Account(nil), accounts...),
+		accounts: deepCopyAccounts(accounts),
 		total:    total,
 		version:  version,
-		exp:      time.Now().Add(accountsListCacheTTL),
+		exp:      now.Add(accountsListCacheTTL),
 	}
+	c.order = append(c.order, key)
+	// 容量超限：淘汰最旧（队首）条目
+	for len(c.order) > accountsListCacheMaxEntries {
+		c.deleteKeyLocked(c.order[0])
+	}
+}
+
+// deleteKeyLocked 从 items 与 order 中同步删除（调用方需持有 mu）。
+func (c *accountsListTTLCache) deleteKeyLocked(key string) {
+	if _, ok := c.items[key]; !ok {
+		return
+	}
+	delete(c.items, key)
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// deepCopyAccounts 深拷贝账号列表（结构复制，避免 JSON 往返解码开销）。
+// 浅拷贝只复制切片头，调用方就地修改返回的嵌套 map/slice 会把修改带进
+// 缓存条目；这里递归复制嵌套的 map/slice。
+func deepCopyAccounts(accounts []Account) []Account {
+	if len(accounts) == 0 {
+		return nil
+	}
+	out := make([]Account, len(accounts))
+	for i := range accounts {
+		out[i] = deepCopyAccount(accounts[i])
+	}
+	return out
+}
+
+func deepCopyAccount(a Account) Account {
+	a.Credentials = deepCopyAnyMap(a.Credentials)
+	a.Extra = deepCopyAnyMap(a.Extra)
+	a.AccountGroups = append([]AccountGroup(nil), a.AccountGroups...)
+	a.GroupIDs = append([]int64(nil), a.GroupIDs...)
+	a.Groups = deepCopyGroups(a.Groups)
+	// 非持久化的 model_mapping 热路径缓存按 Account 实例归属：复制后
+	// Credentials 指针已变化，旧缓存失效，置零避免共享（首次访问重新计算）。
+	a.modelMappingCache = nil
+	a.modelMappingCacheReady = false
+	a.modelMappingCacheCredentialsPtr = 0
+	a.modelMappingCacheRawPtr = 0
+	a.modelMappingCacheRawLen = 0
+	a.modelMappingCacheRawSig = 0
+	return a
+}
+
+func deepCopyAnyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCopyReflectValue(reflect.ValueOf(v)).Interface()
+	}
+	return out
+}
+
+// deepCopyReflectValue 深拷贝任意值：map/slice 递归新建（nil map/slice 与
+// nil 接口值保持原样），其余类型直接共享——调用方能借以改写缓存数据的
+// 容器只有 map 与 slice；标量/指针/结构体在接口中按值传递或约定不修改。
+func deepCopyReflectValue(rv reflect.Value) reflect.Value {
+	if rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return rv
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), deepCopyReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(deepCopyReflectValue(rv.Index(i)))
+		}
+		return out
+	default:
+		return rv
+	}
+}
+
+// deepCopyGroups 复制账号关联分组：每个 *Group 重建为新值，嵌套的
+// map/slice 与指针字段所指值一并复制。Group.AccountGroups 内嵌
+// Account/Group 指针（可能回指 Account 构成环），只复制切片本身、共享指针。
+func deepCopyGroups(groups []*Group) []*Group {
+	if len(groups) == 0 {
+		return nil
+	}
+	out := make([]*Group, len(groups))
+	for i, g := range groups {
+		if g == nil {
+			continue
+		}
+		copied := *g
+		copied.ModelRouting = deepCopyModelRouting(g.ModelRouting)
+		copied.SupportedModelScopes = append([]string(nil), g.SupportedModelScopes...)
+		copied.MessagesDispatchModelConfig.ExactModelMappings = copyStringMap(g.MessagesDispatchModelConfig.ExactModelMappings)
+		copied.ModelsListConfig.Models = append([]string(nil), g.ModelsListConfig.Models...)
+		copied.DailyLimitUSD = copyFloat64Ptr(g.DailyLimitUSD)
+		copied.WeeklyLimitUSD = copyFloat64Ptr(g.WeeklyLimitUSD)
+		copied.MonthlyLimitUSD = copyFloat64Ptr(g.MonthlyLimitUSD)
+		copied.ImagePrice1K = copyFloat64Ptr(g.ImagePrice1K)
+		copied.ImagePrice2K = copyFloat64Ptr(g.ImagePrice2K)
+		copied.ImagePrice4K = copyFloat64Ptr(g.ImagePrice4K)
+		copied.FallbackGroupID = copyInt64Ptr(g.FallbackGroupID)
+		copied.FallbackGroupIDOnInvalidRequest = copyInt64Ptr(g.FallbackGroupIDOnInvalidRequest)
+		copied.AccountGroups = append([]AccountGroup(nil), g.AccountGroups...)
+		out[i] = &copied
+	}
+	return out
+}
+
+func deepCopyModelRouting(routing map[string][]int64) map[string][]int64 {
+	if routing == nil {
+		return nil
+	}
+	out := make(map[string][]int64, len(routing))
+	for k, ids := range routing {
+		out[k] = append([]int64(nil), ids...)
+	}
+	return out
+}
+
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyFloat64Ptr(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func copyInt64Ptr(p *int64) *int64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func accountsListCacheKey(page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) string {

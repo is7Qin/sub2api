@@ -187,7 +187,9 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		if entry, ok := s.decodeCache.Load(cacheKey); ok {
 			if e, ok := entry.(*snapshotDecodeCacheEntry); ok {
 				if version == "" {
-					if time.Now().Before(e.exp) {
+					// 版本不可读时只允许命中无版本条目：带版本号的条目可能
+					// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
+					if e.version == "" && time.Now().Before(e.exp) {
 						return derefAccounts(e.accounts), useMixed, nil
 					}
 				} else if e.version == version && time.Now().Before(e.exp) {

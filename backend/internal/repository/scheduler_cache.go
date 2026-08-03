@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -118,6 +121,7 @@ type schedulerCache struct {
 	rdb            *redis.Client
 	mgetChunkSize  int
 	writeChunkSize int
+	stats          *schedulerSnapshotStats
 }
 
 func NewSchedulerCache(rdb *redis.Client) service.SchedulerCache {
@@ -135,39 +139,213 @@ func newSchedulerCacheWithChunkSizes(rdb *redis.Client, mgetChunkSize, writeChun
 		rdb:            rdb,
 		mgetChunkSize:  mgetChunkSize,
 		writeChunkSize: writeChunkSize,
+		stats:          newSchedulerSnapshotStats(),
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GetSnapshot 命中/未命中观测统计（仅观测，不改变 GetSnapshot 返回语义）。
+// 窗口内按分桶累计，由 SchedulerSnapshotService 的周期 goroutine 每 10s
+// 聚合输出并重置；进程启动以来的全局滚动命中/未命中单独累计，用于立即
+// 评估整体命中率（未命中时网关退化为逐请求 DB 全量查询）。
+// ---------------------------------------------------------------------------
+
+// schedulerSnapshotMissReason 区分 GetSnapshot 未命中的原因分类。
+type schedulerSnapshotMissReason string
+
+const (
+	schedulerMissNotReady      schedulerSnapshotMissReason = "not_ready"
+	schedulerMissActiveMissing schedulerSnapshotMissReason = "active_missing"
+	schedulerMissSnapshotEmpty schedulerSnapshotMissReason = "snapshot_missing"
+	schedulerMissMetaMissing   schedulerSnapshotMissReason = "meta_missing"
+	schedulerMissDecodeError   schedulerSnapshotMissReason = "decode_error"
+	schedulerMissLastUsedError schedulerSnapshotMissReason = "last_used_error"
+	schedulerMissRedisError    schedulerSnapshotMissReason = "redis_error"
+
+	// schedulerSnapshotStatsLogBucketLimit 单次汇总日志最多输出的分桶数（按未命中次数降序）。
+	schedulerSnapshotStatsLogBucketLimit = 20
+)
+
+// schedulerSnapshotMissReasons 固定原因清单（定长数组，len 为编译期常量），
+// 索引与 bucketStats.missReasons 对齐。
+var schedulerSnapshotMissReasons = [...]schedulerSnapshotMissReason{
+	schedulerMissNotReady,
+	schedulerMissActiveMissing,
+	schedulerMissSnapshotEmpty,
+	schedulerMissMetaMissing,
+	schedulerMissDecodeError,
+	schedulerMissLastUsedError,
+	schedulerMissRedisError,
+}
+
+var schedulerSnapshotMissReasonIndex = func() map[schedulerSnapshotMissReason]int {
+	index := make(map[schedulerSnapshotMissReason]int, len(schedulerSnapshotMissReasons))
+	for i, reason := range schedulerSnapshotMissReasons {
+		index[reason] = i
+	}
+	return index
+}()
+
+// schedulerSnapshotBucketStats 单个分桶在统计窗口内的命中/未命中计数。
+type schedulerSnapshotBucketStats struct {
+	hits        atomic.Uint64
+	misses      atomic.Uint64
+	missReasons [len(schedulerSnapshotMissReasons)]atomic.Uint64
+}
+
+// schedulerSnapshotStats 聚合所有分桶的 GetSnapshot 观测计数。
+type schedulerSnapshotStats struct {
+	totalHits   atomic.Uint64
+	totalMisses atomic.Uint64
+	buckets     sync.Map // bucket.String() -> *schedulerSnapshotBucketStats
+}
+
+func newSchedulerSnapshotStats() *schedulerSnapshotStats {
+	return &schedulerSnapshotStats{}
+}
+
+func (s *schedulerSnapshotStats) bucketStats(key string) *schedulerSnapshotBucketStats {
+	stats, _ := s.buckets.LoadOrStore(key, &schedulerSnapshotBucketStats{})
+	return stats.(*schedulerSnapshotBucketStats)
+}
+
+func (s *schedulerSnapshotStats) recordHit(key string) {
+	s.totalHits.Add(1)
+	s.bucketStats(key).hits.Add(1)
+}
+
+func (s *schedulerSnapshotStats) recordMiss(key string, reason schedulerSnapshotMissReason) {
+	s.totalMisses.Add(1)
+	bucket := s.bucketStats(key)
+	bucket.misses.Add(1)
+	if index, ok := schedulerSnapshotMissReasonIndex[reason]; ok {
+		bucket.missReasons[index].Add(1)
+	}
+}
+
+// schedulerSnapshotBucketSummary 单个分桶在一个统计窗口内的汇总结果。
+type schedulerSnapshotBucketSummary struct {
+	Bucket  string                                 `json:"bucket"`
+	Hits    uint64                                 `json:"hits"`
+	Misses  uint64                                 `json:"misses"`
+	Reasons map[schedulerSnapshotMissReason]uint64 `json:"reasons"`
+}
+
+// schedulerSnapshotStatsSummary 一个统计窗口的汇总结果。
+type schedulerSnapshotStatsSummary struct {
+	WindowHits   uint64                           `json:"window_hits"`
+	WindowMisses uint64                           `json:"window_misses"`
+	TotalHits    uint64                           `json:"total_hits"`
+	TotalMisses  uint64                           `json:"total_misses"`
+	Buckets      []schedulerSnapshotBucketSummary `json:"buckets"`
+}
+
+// summarize 汇总当前窗口并重置窗口计数（滚动总量不清零）。先换入新计数结构
+// 再读取旧值：换入后的并发增量进入新结构，只有换入瞬间正持有旧结构的增量
+// 会从两个窗口漏计——观测数据，边界误差可容忍。仅输出窗口内有调用的分桶，
+// 按未命中次数降序，截断到 schedulerSnapshotStatsLogBucketLimit 个。
+func (s *schedulerSnapshotStats) summarize() schedulerSnapshotStatsSummary {
+	summary := schedulerSnapshotStatsSummary{
+		TotalHits:   s.totalHits.Load(),
+		TotalMisses: s.totalMisses.Load(),
+	}
+	s.buckets.Range(func(key, value any) bool {
+		bucketKey := key.(string)
+		bucket := value.(*schedulerSnapshotBucketStats)
+		s.buckets.Store(bucketKey, &schedulerSnapshotBucketStats{})
+
+		b := schedulerSnapshotBucketSummary{
+			Bucket:  bucketKey,
+			Hits:    bucket.hits.Load(),
+			Misses:  bucket.misses.Load(),
+			Reasons: make(map[schedulerSnapshotMissReason]uint64),
+		}
+		for i, reason := range schedulerSnapshotMissReasons {
+			if count := bucket.missReasons[i].Load(); count > 0 {
+				b.Reasons[reason] = count
+			}
+		}
+		if b.Hits == 0 && b.Misses == 0 {
+			return true
+		}
+		summary.WindowHits += b.Hits
+		summary.WindowMisses += b.Misses
+		summary.Buckets = append(summary.Buckets, b)
+		return true
+	})
+	sort.Slice(summary.Buckets, func(i, j int) bool {
+		if summary.Buckets[i].Misses != summary.Buckets[j].Misses {
+			return summary.Buckets[i].Misses > summary.Buckets[j].Misses
+		}
+		return summary.Buckets[i].Bucket < summary.Buckets[j].Bucket
+	})
+	if len(summary.Buckets) > schedulerSnapshotStatsLogBucketLimit {
+		summary.Buckets = summary.Buckets[:schedulerSnapshotStatsLogBucketLimit]
+	}
+	return summary
+}
+
+// LogSnapshotStats 输出最近一个统计窗口的 GetSnapshot 命中/未命中汇总并重置
+// 窗口计数。窗口内没有 GetSnapshot 调用时不输出，保持日志安静。
+// 由 SchedulerSnapshotService 的周期 goroutine 调用；测试直接调用 summarize。
+func (c *schedulerCache) LogSnapshotStats() {
+	summary := c.stats.summarize()
+	if len(summary.Buckets) == 0 {
+		return
+	}
+	attrs := []any{
+		slog.String("component", "scheduler.cache"),
+		slog.Uint64("window_hits", summary.WindowHits),
+		slog.Uint64("window_misses", summary.WindowMisses),
+		slog.Uint64("total_hits", summary.TotalHits),
+		slog.Uint64("total_misses", summary.TotalMisses),
+	}
+	if total := summary.TotalHits + summary.TotalMisses; total > 0 {
+		attrs = append(attrs, slog.Float64("total_miss_ratio", float64(summary.TotalMisses)/float64(total)))
+	}
+	attrs = append(attrs, slog.Any("buckets", summary.Buckets))
+	slog.Info("scheduler snapshot cache stats", attrs...)
+}
+
 func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+	bucketKey := bucket.String()
+
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	readyVal, err := c.rdb.Get(ctx, readyKey).Result()
 	if err == redis.Nil {
+		c.stats.recordMiss(bucketKey, schedulerMissNotReady)
 		return nil, false, nil
 	}
 	if err != nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
 	if readyVal != "1" {
+		c.stats.recordMiss(bucketKey, schedulerMissNotReady)
 		return nil, false, nil
 	}
 
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	activeVal, err := c.rdb.Get(ctx, activeKey).Result()
 	if err == redis.Nil {
+		c.stats.recordMiss(bucketKey, schedulerMissActiveMissing)
 		return nil, false, nil
 	}
 	if err != nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
 
 	snapshotKey := schedulerSnapshotKey(bucket, activeVal)
 	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, -1).Result()
 	if err != nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
 	if len(ids) == 0 {
 		// 空快照视为缓存未命中，触发数据库回退查询
 		// 这解决了新分组创建后立即绑定账号时的竞态条件问题
+		c.stats.recordMiss(bucketKey, schedulerMissSnapshotEmpty)
 		return nil, false, nil
 	}
 
@@ -179,31 +357,39 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	}
 	values, err := c.mgetChunked(ctx, keys)
 	if err != nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
 	lastUsedValues, err := c.mgetChunked(ctx, lastUsedKeys)
 	if err != nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
 	if len(values) != len(ids) || len(lastUsedValues) != len(ids) {
+		// MGET 返回条数与请求不一致属于 Redis 响应形状异常，归入 redis_error。
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, errors.New("scheduler snapshot cache returned unexpected value count")
 	}
 
 	accounts := make([]*service.Account, 0, len(values))
 	for i, val := range values {
 		if val == nil {
+			c.stats.recordMiss(bucketKey, schedulerMissMetaMissing)
 			return nil, false, nil
 		}
 		account, err := decodeCachedAccount(val)
 		if err != nil {
+			c.stats.recordMiss(bucketKey, schedulerMissDecodeError)
 			return nil, false, err
 		}
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
+			c.stats.recordMiss(bucketKey, schedulerMissLastUsedError)
 			return nil, false, err
 		}
 		accounts = append(accounts, account)
 	}
 
+	c.stats.recordHit(bucketKey)
 	return accounts, true, nil
 }
 

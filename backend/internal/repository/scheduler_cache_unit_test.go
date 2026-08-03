@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -274,14 +275,52 @@ func TestSchedulerCacheGetSchedulableAccountsByIDs_MixedPresentMissing(t *testin
 	// 缺失 ID 跳过、重复 ID 去重：只有快照中存在的账号进入返回 map。
 	require.Len(t, got, 2)
 	require.Equal(t, "full", got[701].Name)
-	require.Equal(t, map[string]any{"api_key": "secret-701", "project_id": "proj-701"}, got[701].Credentials)
-	require.Equal(t, map[string]any{"quota_limit": 100.0, "unused": "drop"}, got[701].Extra)
+	// 批量刷新读取 meta payload：调度字段保留、凭据脱敏、extra 走白名单过滤。
+	require.Equal(t, map[string]any{"project_id": "proj-701", "has_api_key": true}, got[701].Credentials)
+	require.Equal(t, map[string]any{"quota_limit": 100.0}, got[701].Extra)
 	require.Equal(t, int64(703), got[703].ID)
 	require.Nil(t, got[999])
 
 	empty, err := cache.GetSchedulableAccountsByIDs(ctx, nil)
 	require.NoError(t, err)
 	require.Empty(t, empty)
+}
+
+// 只写入 meta payload（sched:meta:{id}）时批量刷新即可正常返回调度字段。
+func TestSchedulerCacheGetSchedulableAccountsByIDs_MetaKeysOnly(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	account := service.Account{
+		ID: 801, Name: "meta", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "secret-801", "project_id": "proj-801"},
+		Extra:       map[string]any{"quota_limit": 100.0, "unused": "drop"},
+	}
+	metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+	require.NoError(t, err)
+	require.NoError(t, cache.rdb.Set(ctx, schedulerAccountMetaKey("801"), metaPayload, 0).Err())
+
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{801, 999})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "meta", got[801].Name)
+	require.Equal(t, map[string]any{"project_id": "proj-801", "has_api_key": true}, got[801].Credentials)
+	require.Equal(t, map[string]any{"quota_limit": 100.0}, got[801].Extra)
+	require.Nil(t, got[999])
+}
+
+// 只写入全量 payload（sched:acc:{id}）时批量刷新视为不可调度（空 map）：
+// 读取 meta 键后旧版本残留的全量键不得让已删除账号重新进入候选。
+func TestSchedulerCacheGetSchedulableAccountsByIDs_FullKeysOnly(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	fullPayload, err := json.Marshal(service.Account{ID: 802, Name: "full-only", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey})
+	require.NoError(t, err)
+	require.NoError(t, cache.rdb.Set(ctx, schedulerAccountKey("802"), fullPayload, 0).Err())
+
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{802})
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestSchedulerCacheGetSchedulableAccountsByIDs_ChunkBoundary(t *testing.T) {

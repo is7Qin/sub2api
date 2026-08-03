@@ -53,7 +53,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
 
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
-	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
 	cleanup := provideCleanup(
@@ -67,7 +66,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		opsSystemLogSinkSvc,
 		nil, // authCacheInvalidationWorker
 		nil, // apiKeyService
-		schedulerSnapshotSvc,
 		&service.UsageCleanupService{},
 		billingCacheSvc,
 		&service.SubscriptionService{},

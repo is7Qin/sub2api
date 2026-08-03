@@ -81,7 +81,6 @@ func provideCleanup(
 	opsSystemLogSink *service.OpsSystemLogSink,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	apiKeyService *service.APIKeyService,
-	schedulerSnapshot *service.SchedulerSnapshotService,
 	usageCleanup *service.UsageCleanupService,
 	billingCache *service.BillingCacheService,
 	subscriptionService *service.SubscriptionService,
@@ -154,12 +153,6 @@ func provideCleanup(
 			{"OpsMetricsCollector", func() error {
 				if opsMetricsCollector != nil {
 					opsMetricsCollector.Stop()
-				}
-				return nil
-			}},
-			{"SchedulerSnapshotService", func() error {
-				if schedulerSnapshot != nil {
-					schedulerSnapshot.Stop()
 				}
 				return nil
 			}},

@@ -37,6 +37,97 @@ func NewClaudeOAuthSessionCleanupWorker(svc *OAuthService) (*workerruntime.Perio
 	})
 }
 
+// SchedulerSnapshotWorker adapts scheduler snapshot maintenance to the worker runtime.
+type SchedulerSnapshotWorker struct {
+	service    *SchedulerSnapshotService
+	descriptor workerruntime.Descriptor
+
+	mu        sync.RWMutex
+	lifecycle workerruntime.LifecycleSnapshot
+}
+
+// NewSchedulerSnapshotWorker returns the runtime component for scheduler snapshot maintenance.
+func NewSchedulerSnapshotWorker(svc *SchedulerSnapshotService) (workerruntime.Component, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("scheduler snapshot service is required")
+	}
+	return &SchedulerSnapshotWorker{
+		service: svc,
+		descriptor: workerruntime.Descriptor{
+			Name:             "scheduler-snapshot",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "scheduling",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Builds and publishes scheduler candidate and model-support snapshots",
+			Tags:             []string{"scheduler", "snapshots", "routing"},
+		},
+		lifecycle: workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()},
+	}, nil
+}
+
+func (w *SchedulerSnapshotWorker) Descriptor() workerruntime.Descriptor {
+	if w == nil {
+		return workerruntime.Descriptor{}
+	}
+	return w.descriptor
+}
+
+func (w *SchedulerSnapshotWorker) Start(ctx context.Context) error {
+	if w == nil || w.service == nil {
+		return fmt.Errorf("scheduler snapshot service is required")
+	}
+	w.mu.Lock()
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	if err := w.service.startWorker(ctx); err != nil {
+		w.mu.Lock()
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
+		w.mu.Unlock()
+		return err
+	}
+	w.mu.Lock()
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *SchedulerSnapshotWorker) Stop(ctx context.Context) error {
+	if w == nil || w.service == nil {
+		return nil
+	}
+	w.mu.Lock()
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	if err := w.service.stopWorker(ctx); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *SchedulerSnapshotWorker) Snapshot() workerruntime.Snapshot {
+	if w == nil {
+		return workerruntime.Snapshot{}
+	}
+	w.mu.RLock()
+	lifecycle := w.lifecycle
+	descriptor := w.descriptor
+	w.mu.RUnlock()
+	stillRunning := w.service != nil && w.service.isWorkerActive()
+	if stillRunning && lifecycle.State == workerruntime.LifecycleStopped {
+		lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+	}
+	return workerruntime.Snapshot{
+		Descriptor: descriptor,
+		Lifecycle:  lifecycle,
+		Status: workerruntime.PeriodicStatus{
+			StillRunning: stillRunning,
+		},
+	}
+}
+
 // NewConcurrencySlotCleanupWorker adapts expired account-slot cleanup to the worker runtime.
 func NewConcurrencySlotCleanupWorker(svc *ConcurrencyService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {

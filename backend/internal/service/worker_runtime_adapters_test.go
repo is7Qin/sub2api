@@ -14,6 +14,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type schedulerSnapshotLifecycleCache struct {
+	SchedulerCache
+}
+
+func (schedulerSnapshotLifecycleCache) ListBuckets(context.Context) ([]SchedulerBucket, error) {
+	return []SchedulerBucket{{GroupID: 0, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}}, nil
+}
+
+func (schedulerSnapshotLifecycleCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (string, bool, error) {
+	return "", false, nil
+}
+
+func TestNewSchedulerSnapshotWorker_RequiresService(t *testing.T) {
+	_, err := NewSchedulerSnapshotWorker(nil)
+
+	require.Error(t, err)
+}
+
+func TestSchedulerSnapshotWorker_StartsAndStopsServiceWithRuntimeContext(t *testing.T) {
+	svc := newSchedulerSnapshotService(schedulerSnapshotLifecycleCache{}, nil, nil, nil, nil, nil, &config.Config{})
+	worker, err := NewSchedulerSnapshotWorker(svc)
+	require.NoError(t, err)
+
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	require.NoError(t, runtime.Register(worker))
+	require.NoError(t, runtime.StartAll(context.Background()))
+	require.Eventually(t, svc.isWorkerActive, time.Second, 10*time.Millisecond)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	results, err := runtime.StopAll(stopCtx)
+	require.NoError(t, err)
+	require.Contains(t, results, workerruntime.StopResult{Name: "scheduler-snapshot", Outcome: workerruntime.StopCompleted})
+	require.Eventually(t, func() bool { return !svc.isWorkerActive() }, time.Second, 10*time.Millisecond)
+}
+
+func TestProvideSchedulerSnapshotService_DoesNotStartWorker(t *testing.T) {
+	svc := ProvideSchedulerSnapshotService(schedulerSnapshotLifecycleCache{}, nil, nil, nil, nil, nil, &config.Config{})
+
+	require.False(t, svc.isWorkerActive())
+}
+
 func TestUsageRecordWorkerPoolWorkerStartDoesNotOverwriteStopping(t *testing.T) {
 	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{
 		WorkerCount:      1,

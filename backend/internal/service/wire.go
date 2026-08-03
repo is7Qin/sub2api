@@ -240,7 +240,7 @@ func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, 
 	return NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
 }
 
-// ProvideSchedulerSnapshotService creates and starts SchedulerSnapshotService.
+// ProvideSchedulerSnapshotService constructs SchedulerSnapshotService. Its lifecycle is owned by the server worker runtime.
 func ProvideSchedulerSnapshotService(
 	cache SchedulerCache,
 	outboxRepo SchedulerOutboxRepository,
@@ -250,9 +250,7 @@ func ProvideSchedulerSnapshotService(
 	groupRepo GroupRepository,
 	cfg *config.Config,
 ) *SchedulerSnapshotService {
-	svc := newSchedulerSnapshotService(cache, outboxRepo, dirtyWorkRepo, ownershipRepo, accountRepo, groupRepo, cfg)
-	svc.Start()
-	return svc
+	return newSchedulerSnapshotService(cache, outboxRepo, dirtyWorkRepo, ownershipRepo, accountRepo, groupRepo, cfg)
 }
 
 // ProvideRateLimitService creates RateLimitService with optional dependencies.

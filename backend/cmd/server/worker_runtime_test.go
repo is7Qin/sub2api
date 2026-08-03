@@ -27,16 +27,16 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
-		service.NewOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
+		service.NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}),
 		service.NewEmailQueueService(nil, 1),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "claude-oauth-session-cleanup", "email-queue", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "email-queue", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "scheduler-snapshot", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
@@ -48,6 +48,10 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		}
 		require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
 	}
+	scheduler := snapshots[5]
+	require.Equal(t, workerruntime.KindPeriodic, scheduler.Descriptor.Kind)
+	require.Equal(t, "scheduling", scheduler.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, scheduler.Descriptor.CoordinationMode)
 	require.True(t, usagePool.Accepting())
 }
 
@@ -65,9 +69,9 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		disabled,
-		service.NewOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
+		service.NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}),
 		service.NewEmailQueueService(nil, 1),
 	)
 	require.NoError(t, err)
@@ -88,9 +92,9 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		enabled,
-		service.NewOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
+		service.NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}),
 		service.NewEmailQueueService(nil, 1),
 	)
 	require.NoError(t, err)
@@ -109,9 +113,9 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewPricingService(&config.Config{}, nil),
 			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
-			service.NewOAuthService(nil, nil),
 			service.NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: interval}),
 			service.NewConcurrencyService(nil),
+			service.NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}),
 			service.NewEmailQueueService(nil, 1),
 		)
 		require.NoError(t, err)
@@ -139,9 +143,9 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			service.NewPricingService(&config.Config{}, nil),
 			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
-			service.NewOAuthService(nil, nil),
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			concurrency,
+			service.NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}),
 			service.NewEmailQueueService(nil, 1),
 		)
 		require.NoError(t, err)
@@ -193,6 +197,7 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, functionSource(serviceWire, "ProvidePaymentOrderExpiryService"), ".Start()")
 	require.NotContains(t, functionSource(serviceWire, "ProvideTokenRefreshService"), ".Start()")
 	require.NotContains(t, functionSource(serviceWire, "ProvideUserMessageQueueService"), "StartCleanupWorker")
+	require.NotContains(t, functionSource(serviceWire, "ProvideSchedulerSnapshotService"), ".Start()")
 
 	serverWire, err := os.ReadFile("wire.go")
 	require.NoError(t, err)
@@ -204,6 +209,7 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, legacyCleanup, "paymentOrderExpiry.Stop()")
 	require.NotContains(t, legacyCleanup, "pricing.Stop()")
 	require.NotContains(t, legacyCleanup, "tokenRefresh.Stop()")
+	require.NotContains(t, legacyCleanup, "schedulerSnapshot.Stop()")
 }
 
 type serverConcurrencyCacheStub struct {

@@ -118,10 +118,13 @@ type SchedulerSnapshotService struct {
 	accountRepo             AccountRepository
 	groupRepo               GroupRepository
 	cfg                     *config.Config
+	workerMu                sync.RWMutex
 	stopCh                  chan struct{}
-	stopOnce                sync.Once
 	workerCtx               context.Context
 	workerCancel            context.CancelFunc
+	workerActive            bool
+	workerStopping          bool
+	workerDone              chan struct{}
 	wg                      sync.WaitGroup
 	fallbackLimit           *fallbackLimiter
 	lagMu                   sync.Mutex
@@ -236,7 +239,6 @@ func newSchedulerSnapshotService(
 	if cfg != nil {
 		maxQPS = cfg.Gateway.Scheduling.DbFallbackMaxQPS
 	}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &SchedulerSnapshotService{
 		cache:                   cache,
 		outboxRepo:              outboxRepo,
@@ -245,18 +247,38 @@ func newSchedulerSnapshotService(
 		accountRepo:             accountRepo,
 		groupRepo:               groupRepo,
 		cfg:                     cfg,
-		stopCh:                  make(chan struct{}),
-		workerCtx:               workerCtx,
-		workerCancel:            workerCancel,
 		fallbackLimit:           newFallbackLimiter(maxQPS),
 		dirtyRefreshThrottle:    newAccountWriteThrottle(dirtyAccountRefreshMinInterval),
 		snapshotVersionCacheTTL: snapshotVersionCacheWindow,
 	}
 }
 
-func (s *SchedulerSnapshotService) Start() {
-	if s == nil || s.cache == nil {
-		return
+// startWorker starts scheduler maintenance from the runtime root context.
+func (s *SchedulerSnapshotService) startWorker(ctx context.Context) error {
+	if s == nil {
+		return errors.New("scheduler snapshot service is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	s.workerMu.Lock()
+	if s.workerActive {
+		s.workerMu.Unlock()
+		return nil
+	}
+	if s.workerStopping {
+		s.workerMu.Unlock()
+		return errors.New("scheduler snapshot service is stopping")
+	}
+	s.stopCh = make(chan struct{})
+	s.workerCtx, s.workerCancel = context.WithCancel(ctx)
+	s.workerDone = make(chan struct{})
+	s.workerActive = true
+
+	if s.cache == nil {
+		s.workerMu.Unlock()
+		return nil
 	}
 
 	s.wg.Add(1)
@@ -298,6 +320,26 @@ func (s *SchedulerSnapshotService) Start() {
 		defer s.wg.Done()
 		s.runSnapshotStatsWorker()
 	}()
+	s.workerMu.Unlock()
+	return nil
+}
+
+func (s *SchedulerSnapshotService) isWorkerActive() bool {
+	if s == nil {
+		return false
+	}
+	s.workerMu.RLock()
+	defer s.workerMu.RUnlock()
+	return s.workerActive || s.workerStopping
+}
+
+func (s *SchedulerSnapshotService) workerContext() context.Context {
+	s.workerMu.RLock()
+	defer s.workerMu.RUnlock()
+	if s.workerCtx == nil {
+		return context.Background()
+	}
+	return s.workerCtx
 }
 
 // runSnapshotStatsWorker 周期输出调度快照 GetSnapshot 命中/未命中观测日志。
@@ -319,17 +361,54 @@ func (s *SchedulerSnapshotService) runSnapshotStatsWorker() {
 	}
 }
 
-func (s *SchedulerSnapshotService) Stop() {
+// stopWorker cancels scheduler maintenance and waits for all owned goroutines.
+func (s *SchedulerSnapshotService) stopWorker(ctx context.Context) error {
 	if s == nil {
-		return
+		return nil
 	}
-	s.stopOnce.Do(func() {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	s.workerMu.Lock()
+	if !s.workerActive && !s.workerStopping {
+		s.workerMu.Unlock()
+		return nil
+	}
+	if !s.workerStopping {
+		s.workerStopping = true
 		close(s.stopCh)
-		if s.workerCancel != nil {
-			s.workerCancel()
+		s.workerCancel()
+		done := s.workerDone
+		go func() {
+			s.wg.Wait()
+			s.workerMu.Lock()
+			s.workerActive = false
+			s.workerStopping = false
+			s.workerCancel = nil
+			close(done)
+			s.workerMu.Unlock()
+		}()
+	}
+	done := s.workerDone
+	s.workerMu.Unlock()
+
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return nil
+		default:
+			return ctx.Err()
 		}
-	})
-	s.wg.Wait()
+	}
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
@@ -517,7 +596,7 @@ func (s *SchedulerSnapshotService) runInitialRebuild() {
 	if s.cache == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(s.workerContext(), 2*time.Minute)
 	defer cancel()
 	buckets, err := s.cache.ListBuckets(ctx)
 	if err != nil {
@@ -546,10 +625,10 @@ func (s *SchedulerSnapshotService) runDirtyWorkWorker(interval time.Duration) {
 	defer ticker.Stop()
 
 	for {
-		if s.workerCtx.Err() != nil {
+		if s.workerContext().Err() != nil {
 			return
 		}
-		ownership, acquired, err := s.ownershipRepo.TryAcquire(s.workerCtx)
+		ownership, acquired, err := s.ownershipRepo.TryAcquire(s.workerContext())
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] ownership acquisition failed: %v", err)
@@ -563,7 +642,7 @@ func (s *SchedulerSnapshotService) runDirtyWorkWorker(interval time.Duration) {
 
 		select {
 		case <-ticker.C:
-		case <-s.workerCtx.Done():
+		case <-s.workerContext().Done():
 			return
 		}
 	}
@@ -577,7 +656,7 @@ func (s *SchedulerSnapshotService) consumeDirtyWork(ownership SchedulerOwnership
 		interval = time.Second
 	}
 	consumeCtx, cancel := context.WithCancel(ownership.Context())
-	stopWorkerCancel := context.AfterFunc(s.workerCtx, cancel)
+	stopWorkerCancel := context.AfterFunc(s.workerContext(), cancel)
 	defer func() {
 		stopWorkerCancel()
 		cancel()
@@ -675,7 +754,7 @@ func (s *SchedulerSnapshotService) consumeDirtyWork(ownership SchedulerOwnership
 			poll()
 		case <-ownership.Lost():
 			return
-		case <-s.workerCtx.Done():
+		case <-s.workerContext().Done():
 			return
 		}
 	}
@@ -854,7 +933,7 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 	if s.outboxRepo == nil || s.cache == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(s.workerContext(), 10*time.Second)
 	defer cancel()
 
 	watermark, err := s.cache.GetOutboxWatermark(ctx)
@@ -875,7 +954,7 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 	watermarkForCheck := watermark
 	seen := make(map[batchSeenKey]struct{})
 	for _, event := range events {
-		eventCtx, cancel := context.WithTimeout(context.Background(), outboxEventTimeout)
+		eventCtx, cancel := context.WithTimeout(s.workerContext(), outboxEventTimeout)
 		err := s.handleOutboxEvent(eventCtx, event, seen)
 		cancel()
 		if err != nil {
@@ -892,7 +971,7 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 	}
 	var wmErr error
 	for i := range 3 {
-		wmCtx, wmCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		wmCtx, wmCancel := context.WithTimeout(s.workerContext(), 5*time.Second)
 		wmErr = s.cache.SetOutboxWatermark(wmCtx, lastID)
 		wmCancel()
 		if wmErr == nil {
@@ -1260,7 +1339,7 @@ func (s *SchedulerSnapshotService) setRebuildSnapshot(ctx context.Context, bucke
 }
 
 func (s *SchedulerSnapshotService) triggerFullRebuild(reason string) error {
-	return s.triggerFullRebuildContext(context.Background(), reason)
+	return s.triggerFullRebuildContext(s.workerContext(), reason)
 }
 
 func (s *SchedulerSnapshotService) triggerFullRebuildContext(ctx context.Context, reason string) error {
@@ -1525,9 +1604,8 @@ func (s *SchedulerSnapshotService) checkOutboxLag(ctx context.Context, oldest Sc
 	}
 
 	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] %s rebuild triggered: lag=%s failures=%d backlog=%d", reason, lag, failures, backlog)
-	// 重建独立于 poll 的 10s 超时运行（沿用原实现传入 Background），
-	// 避免 poll 上下文过期把最长 30s 的重建提前中断。
-	if err := s.runRebuildWithRetryBackoff(context.Background(), reason); err != nil {
+	// Rebuild outlives the poll deadline but remains rooted in runtime cancellation.
+	if err := s.runRebuildWithRetryBackoff(s.workerContext(), reason); err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] %s rebuild failed: %v", reason, err)
 	}
 }

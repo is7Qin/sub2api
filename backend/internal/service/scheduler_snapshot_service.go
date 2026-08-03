@@ -32,6 +32,9 @@ const (
 	// 变成重建失败→请求回源→DB 过载→重建再失败的风暴。
 	outboxRebuildRetryBaseDelay = 5 * time.Second
 	outboxRebuildRetryMaxDelay  = 5 * time.Minute
+
+	// snapshotStatsLogInterval 调度快照 GetSnapshot 命中/未命中观测日志的聚合窗口。
+	snapshotStatsLogInterval = 10 * time.Second
 )
 
 // batchSeenKey tracks which (groupID, platform) bucket sets have already been
@@ -165,6 +168,12 @@ type snapshotAccountBatchReader interface {
 	GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error)
 }
 
+// snapshotStatsReporter 是可选接口：缓存实现时由统计 worker 周期输出
+// GetSnapshot 命中/未命中观测日志；未实现（仅测试 stub）时静默跳过。
+type snapshotStatsReporter interface {
+	LogSnapshotStats()
+}
+
 func NewSchedulerSnapshotService(
 	cache SchedulerCache,
 	outboxRepo SchedulerOutboxRepository,
@@ -240,6 +249,32 @@ func (s *SchedulerSnapshotService) Start() {
 			defer s.wg.Done()
 			s.runFullRebuildWorker(fullInterval)
 		}()
+	}
+
+	// GetSnapshot 命中/未命中观测日志独立于重建与消费 worker，10s 一个窗口聚合输出。
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runSnapshotStatsWorker()
+	}()
+}
+
+// runSnapshotStatsWorker 周期输出调度快照 GetSnapshot 命中/未命中观测日志。
+// cache 未实现 snapshotStatsReporter（仅测试 stub）时立即返回。
+func (s *SchedulerSnapshotService) runSnapshotStatsWorker() {
+	reporter, ok := s.cache.(snapshotStatsReporter)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(snapshotStatsLogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			reporter.LogSnapshotStats()
+		case <-s.stopCh:
+			return
+		}
 	}
 }
 

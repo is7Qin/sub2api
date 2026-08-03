@@ -105,6 +105,93 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 		}
 	}()
 
+	result, err := r.applyAndStageOutboxFinalizationTx(ctx, tx, cmd, binding)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return result, nil
+}
+
+// ApplyBatchAndStageOutboxFinalizations 把整轮 worker 记录放进同一事务应用：
+// 每条记录一个 savepoint，失败记录单独回滚（失败隔离），其余记录照常提交。
+// 逐条语义与 ApplyAndStageOutboxFinalization 完全一致，仅事务边界变粗。
+func (r *usageBillingRepository) ApplyBatchAndStageOutboxFinalizations(ctx context.Context, items []service.UsageBillingBatchItem) ([]service.UsageBillingBatchOutcome, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("usage billing repository db is nil")
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	outcomes := make([]service.UsageBillingBatchOutcome, len(items))
+	applyIndexes := make([]int, 0, len(items))
+	for i := range items {
+		items[i].Command.Normalize()
+		switch {
+		case items[i].Binding.OutboxID <= 0 || strings.TrimSpace(items[i].Binding.WorkerID) == "":
+			// 与逐条路径一致：租约信息缺失视为 claim 丢失，由 worker 按记录处理。
+			outcomes[i].Err = service.ErrBillingOutboxClaimLost
+		case items[i].Command.RequestID == "":
+			outcomes[i].Err = service.ErrUsageBillingRequestIDRequired
+		default:
+			if err := items[i].Command.Validate(); err != nil {
+				outcomes[i].Err = err
+				continue
+			}
+			applyIndexes = append(applyIndexes, i)
+		}
+	}
+	if len(applyIndexes) == 0 {
+		return outcomes, nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, i := range applyIndexes {
+		savepoint := fmt.Sprintf("billing_apply_%d", i+1)
+		if _, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
+			return nil, err
+		}
+		result, itemErr := r.applyAndStageOutboxFinalizationTx(ctx, tx, &items[i].Command, items[i].Binding)
+		if itemErr != nil {
+			// 失败隔离：只回滚本条记录的 savepoint，事务其余部分不受影响。
+			if _, rbErr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); rbErr != nil {
+				return nil, rbErr
+			}
+			if _, rbErr := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); rbErr != nil {
+				return nil, rbErr
+			}
+			outcomes[i].Err = itemErr
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+			return nil, err
+		}
+		outcomes[i].Result = result
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+	return outcomes, nil
+}
+
+// applyAndStageOutboxFinalizationTx 在既有事务内完成一次记账应用与
+// finalization_pending 出站标记（不含事务边界）。批量路径以 savepoint
+// 包裹每次调用实现逐条失败隔离；单条路径由调用方负责提交/回滚。
+func (r *usageBillingRepository) applyAndStageOutboxFinalizationTx(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand, binding service.UsageBillingOutboxBinding) (*service.UsageBillingApplyResult, error) {
 	applied, err := r.claimUsageBillingKey(ctx, tx, cmd)
 	if err != nil {
 		return nil, err
@@ -129,18 +216,18 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 		if err := stageQuotaAuthCacheInvalidationIfExhausted(ctx, tx, cmd, result); err != nil {
 			return nil, err
 		}
-	}
-	if !applied {
-		if err := tx.Commit(); err != nil {
+		if err := stageOutboxFinalizationMarker(ctx, tx, binding, result); err != nil {
 			return nil, err
 		}
-		tx = nil
-		return result, nil
 	}
+	return result, nil
+}
 
+// stageOutboxFinalizationMarker 把记账结果原子地写回出站行，转入 finalization 阶段。
+func stageOutboxFinalizationMarker(ctx context.Context, tx *sql.Tx, binding service.UsageBillingOutboxBinding, result *service.UsageBillingApplyResult) error {
 	applyResult, err := json.Marshal(result)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE billing_attempt_outbox
@@ -149,20 +236,16 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 		WHERE id = $1 AND leased_by = $2 AND status = 'processing' AND lease_until > NOW()
 	`, binding.OutboxID, binding.WorkerID, applyResult)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if affected != 1 {
-		return nil, fmt.Errorf("%w: %d", service.ErrBillingOutboxClaimLost, binding.OutboxID)
+		return fmt.Errorf("%w: %d", service.ErrBillingOutboxClaimLost, binding.OutboxID)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	tx = nil
-	return result, nil
+	return nil
 }
 
 func stageQuotaAuthCacheInvalidationIfExhausted(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand, result *service.UsageBillingApplyResult) error {

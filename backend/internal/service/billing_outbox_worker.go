@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -147,6 +148,10 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 }
 
 func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []BillingOutboxRecord) error {
+	if batchRepo, ok := w.billing.(UsageBillingBatchFinalizationRepository); ok {
+		return w.processApplyBatchBatched(ctx, records, batchRepo)
+	}
+	// 旧仓库回退路径：逐条独立事务，16 并发，语义不变。
 	semaphore := make(chan struct{}, billingOutboxConcurrency)
 	var wg sync.WaitGroup
 	for i := range records {
@@ -165,6 +170,127 @@ func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []B
 	}
 	wg.Wait()
 	return nil
+}
+
+// processApplyBatchBatched 把整轮记录放进一个批量事务应用，把每请求的
+// Apply 事务数从"每条记录一个"降到"每轮一个"。同一用户的多条记录在事务内
+// 天然串行；跨轮/跨 worker 的并发触碰由 lockBatchUsers 的用户分片互斥
+// 与 users 行锁兜底（与逐条路径的 billingApplyUserShardCount 语义一致）。
+// 逐条失败通过 savepoint 隔离：一条记录失败不拖垮整批，重试语义不变。
+func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
+	items := make([]UsageBillingBatchItem, 0, len(records))
+	// 校验失败的记录不进批量事务，直接按 terminal 落库，与逐条路径一致。
+	var invalid []struct {
+		record BillingOutboxRecord
+		err    error
+	}
+	for i := range records {
+		command := records[i].Command
+		command.Normalize()
+		if err := command.Validate(); err != nil {
+			err = fmt.Errorf("validate billing outbox command %d: %w", records[i].ID, err)
+			w.recordFailure(err)
+			invalid = append(invalid, struct {
+				record BillingOutboxRecord
+				err    error
+			}{records[i], err})
+			continue
+		}
+		items = append(items, UsageBillingBatchItem{
+			Command: command.Billing,
+			Binding: UsageBillingOutboxBinding{OutboxID: records[i].ID, WorkerID: w.workerID},
+		})
+	}
+	for _, f := range invalid {
+		w.persistFailure(f.record, f.err, true)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	unlock := w.lockBatchUsers(items)
+	applyCtx, applyCancel := context.WithTimeout(ctx, billingOutboxApplyTimeout)
+	outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(applyCtx, items)
+	applyCancel()
+	unlock()
+	if err == nil && len(outcomes) != len(items) {
+		err = fmt.Errorf("batch billing apply returned %d outcomes for %d items", len(outcomes), len(items))
+	}
+	if err != nil {
+		// 批量事务整体失败：没有任何一条记录提交，全部按瞬态错误退避重试。
+		for i := range items {
+			record := records[itemRecordIndex(records, items[i].Binding.OutboxID, i)]
+			w.recordFailure(err)
+			w.persistFailure(record, err, false)
+		}
+		return err
+	}
+	for i, outcome := range outcomes {
+		record := records[itemRecordIndex(records, items[i].Binding.OutboxID, i)]
+		if outcome.Err != nil {
+			w.recordFailure(outcome.Err)
+			w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
+			continue
+		}
+		if outcome.Result == nil || outcome.Result.Applied {
+			// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
+			continue
+		}
+		// 已存在的去重键：本行无需 post-effects，直接确认完成。
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
+		ackErr := w.repo.Ack(ackCtx, record.ID, w.workerID)
+		ackCancel()
+		if ackErr != nil {
+			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
+			continue
+		}
+		w.processed.Add(1)
+		w.lastError.Store("")
+	}
+	return nil
+}
+
+// itemRecordIndex 在整轮记录里按 outbox ID 找回 items 对应的原始记录。
+// items 与 records 顺序一一对应（不含校验失败项），按 ID 匹配更稳妥。
+func itemRecordIndex(records []BillingOutboxRecord, outboxID int64, fallback int) int {
+	for i := range records {
+		if records[i].ID == outboxID {
+			return i
+		}
+	}
+	return fallback
+}
+
+// lockBatchUsers 对批量事务涉及的所有用户分片加锁（按分片序升序获取，
+// 避免并发批量事务间死锁），保证同一用户的扣费事务跨轮串行。
+// 返回的解锁函数按逆序释放。userID <= 0 的记录不触碰 users 行，无需加锁。
+func (w *BillingOutboxWorker) lockBatchUsers(items []UsageBillingBatchItem) func() {
+	if w == nil || len(items) == 0 {
+		return func() {}
+	}
+	seen := make(map[uint64]struct{}, len(items))
+	shards := make([]uint64, 0, len(items))
+	for i := range items {
+		userID := items[i].Command.UserID
+		if userID <= 0 {
+			continue
+		}
+		shard := uint64(userID) % billingApplyUserShardCount
+		if _, ok := seen[shard]; ok {
+			continue
+		}
+		seen[shard] = struct{}{}
+		shards = append(shards, shard)
+	}
+	sort.Slice(shards, func(i, j int) bool { return shards[i] < shards[j] })
+	for _, shard := range shards {
+		w.applyUserLocks[shard].Lock()
+	}
+	return func() {
+		for i := len(shards) - 1; i >= 0; i-- {
+			w.applyUserLocks[shards[i]].Unlock()
+		}
+	}
 }
 
 func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, records []BillingOutboxRecord, repo BillingOutboxFinalizationRepository) error {

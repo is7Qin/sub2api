@@ -521,6 +521,118 @@ func TestSchedulerCache_StaticStateActivationUsesNewPayloadAndExpiresOldPayload(
 	require.Equal(t, time.Duration(snapshotGraceTTLSeconds)*time.Second, cache.rdb.TTL(ctx, schedulerVersionedAccountMetaKey(bucket, oldVersion, strconv.FormatInt(accountID, 10))).Val())
 }
 
+type schedulerStaticPayloadPipelineFailureHook struct {
+	pipelineCalls atomic.Int32
+}
+
+func (h *schedulerStaticPayloadPipelineFailureHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *schedulerStaticPayloadPipelineFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+
+func (h *schedulerStaticPayloadPipelineFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		err := next(ctx, cmds)
+		if h.pipelineCalls.Add(1) == 1 && err == nil {
+			// Report an ambiguous outcome only after Redis accepted the pipeline writes.
+			return errors.New("injected ambiguous static payload pipeline failure")
+		}
+		return err
+	}
+}
+
+type schedulerStaticActivationRaceHook struct {
+	publishWinner func(context.Context) error
+	fired         atomic.Bool
+}
+
+func (h *schedulerStaticActivationRaceHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *schedulerStaticActivationRaceHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && cmd.Name() == "zadd" && h.fired.CompareAndSwap(false, true) {
+			// Publish a complete newer state after this version is materialized but before activation.
+			return h.publishWinner(ctx)
+		}
+		return err
+	}
+}
+
+func (h *schedulerStaticActivationRaceHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestSchedulerCache_StaticStateAmbiguousPayloadPipelineFailureCleansUnpublishedPayloads(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 11, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	old := service.Account{ID: 40, Name: "old", Platform: service.PlatformOpenAI}
+	replacement := service.Account{ID: 41, Name: "replacement", Platform: service.PlatformOpenAI}
+	supportOnly := service.Account{ID: 42, Name: "support", Platform: service.PlatformOpenAI}
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{old}, []service.Account{old}))
+	oldVersion := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+
+	hook := &schedulerStaticPayloadPipelineFailureHook{}
+	cache.rdb.AddHook(hook)
+	err := cache.SetStaticState(ctx, bucket, []service.Account{replacement}, []service.Account{replacement, supportOnly})
+	require.ErrorContains(t, err, "injected ambiguous static payload pipeline failure")
+	require.Equal(t, int32(1), hook.pipelineCalls.Load())
+
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, []int64{old.ID}, schedulerCacheTestIDs(candidates))
+	require.Equal(t, oldVersion, cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val())
+	for _, account := range []service.Account{replacement, supportOnly} {
+		id := strconv.FormatInt(account.ID, 10)
+		require.Zero(t, cache.rdb.Exists(ctx,
+			schedulerVersionedAccountKey(bucket, "2", id),
+			schedulerVersionedAccountMetaKey(bucket, "2", id),
+		).Val())
+	}
+}
+
+func TestSchedulerCache_StaticStateStaleActivationCleansUnpublishedPayloads(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 12, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	candidate := service.Account{ID: 50, Platform: service.PlatformOpenAI}
+	support := service.Account{ID: 51, Platform: service.PlatformOpenAI}
+	winner := service.Account{ID: 52, Platform: service.PlatformOpenAI}
+	winnerCache, ok := newSchedulerCacheWithChunkSizes(
+		redis.NewClient(&redis.Options{Addr: cache.rdb.Options().Addr}),
+		defaultSchedulerSnapshotMGetChunkSize,
+		defaultSchedulerSnapshotWriteChunkSize,
+	).(*schedulerCache)
+	require.True(t, ok)
+	t.Cleanup(func() { _ = winnerCache.rdb.Close() })
+
+	hook := &schedulerStaticActivationRaceHook{publishWinner: func(ctx context.Context) error {
+		return winnerCache.SetStaticState(ctx, bucket, []service.Account{winner}, []service.Account{winner})
+	}}
+	cache.rdb.AddHook(hook)
+	err := cache.SetStaticState(ctx, bucket, []service.Account{candidate}, []service.Account{candidate, support})
+	require.ErrorContains(t, err, "static state version was superseded")
+	require.True(t, hook.fired.Load())
+	require.Equal(t, "2", cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val())
+	require.Zero(t, cache.rdb.Exists(ctx,
+		schedulerSnapshotKey(bucket, "1"),
+		schedulerSupportKey(bucket, "1"),
+		schedulerVersionedAccountKey(bucket, "1", "50"),
+		schedulerVersionedAccountMetaKey(bucket, "1", "50"),
+		schedulerVersionedAccountKey(bucket, "1", "51"),
+		schedulerVersionedAccountMetaKey(bucket, "1", "51"),
+	).Val())
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, []int64{winner.ID}, schedulerCacheTestIDs(candidates))
+}
+
 func schedulerCacheTestIDs(accounts []*service.Account) []int64 {
 	ids := make([]int64, 0, len(accounts))
 	for _, account := range accounts {

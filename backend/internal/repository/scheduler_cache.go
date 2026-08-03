@@ -48,6 +48,11 @@ const (
 	// snapshotGraceTTLSeconds 旧快照过期的宽限期（秒）。
 	// 替代立即 DEL，让正在读取旧版本的 reader 有足够时间完成 ZRANGE。
 	snapshotGraceTTLSeconds = 60
+
+	// staticStateUnpublishedPayloadTTLSeconds bounds payloads that were written
+	// before static-state activation. Successful activation persists them; a
+	// failed or ambiguous write therefore cannot leak versioned payloads forever.
+	staticStateUnpublishedPayloadTTLSeconds = 5 * 60
 )
 
 var errSchedulerLastUsedCacheMalformed = errors.New("malformed scheduler last-used cache value")
@@ -133,6 +138,16 @@ redis.call('SET', KEYS[2], '1')
 redis.call('SET', KEYS[3], ARGV[1])
 redis.call('SET', KEYS[4], '1')
 redis.call('SADD', KEYS[5], ARGV[2])
+
+-- Payloads start with a bounded TTL while publication is uncertain. Once this
+-- transaction publishes the version, remove that safety TTL for the live state.
+local newIDs = redis.call('ZRANGE', KEYS[6] .. ARGV[1], 0, -1)
+local newSupportIDs = redis.call('ZRANGE', KEYS[7] .. ARGV[1], 0, -1)
+for _, id in ipairs(newSupportIDs) do table.insert(newIDs, id) end
+for _, id in ipairs(newIDs) do
+    redis.call('PERSIST', ARGV[4] .. ARGV[1] .. ':' .. id)
+    redis.call('PERSIST', ARGV[5] .. ARGV[1] .. ':' .. id)
+end
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
     local graceTTL = tonumber(ARGV[3])
@@ -473,28 +488,32 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 	if err != nil {
 		return err
 	}
-	candidateIDs, err := c.writeVersionedAccountIDs(ctx, bucket, version, candidates)
-	if err != nil {
+	payloadIDs := staticStateAccountIDs(candidates, persistentSupport)
+	// Assign a short TTL before publication so an ambiguous pipeline outcome is
+	// bounded even if cleanup cannot tell which Redis writes reached the server.
+	if _, err := c.writeVersionedAccountIDs(ctx, bucket, version, candidates); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
 		return err
 	}
-	supportIDs, err := c.writeVersionedAccountIDs(ctx, bucket, version, persistentSupport)
-	if err != nil {
-		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, candidateIDs)
+	if _, err := c.writeVersionedAccountIDs(ctx, bucket, version, persistentSupport); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
 		return err
 	}
-	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, candidateIDs); err != nil {
-		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, append(candidateIDs, supportIDs...))
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, staticStateAccountIDs(candidates)); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
 		return err
 	}
-	if err := c.writeSupportAccountIDs(ctx, bucket, version, supportIDs); err != nil {
-		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version)).Err()
-		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, append(candidateIDs, supportIDs...))
+	if err := c.writeSupportAccountIDs(ctx, bucket, version, staticStateAccountIDs(persistentSupport)); err != nil {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
 		return err
 	}
-	if err := c.activateStaticStateVersion(ctx, bucket, version); err != nil {
-		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)).Err()
-		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, append(candidateIDs, supportIDs...))
-		return err
+	published, err := c.activateStaticStateVersion(ctx, bucket, version)
+	if err != nil || !published {
+		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, payloadIDs)
+		if err != nil {
+			return err
+		}
+		return errors.New("static state version was superseded")
 	}
 	return nil
 }
@@ -678,7 +697,7 @@ func (c *schedulerCache) writeSupportAccountIDs(ctx context.Context, bucket serv
 	return nil
 }
 
-func (c *schedulerCache) activateStaticStateVersion(ctx context.Context, bucket service.SchedulerBucket, version string) error {
+func (c *schedulerCache) activateStaticStateVersion(ctx context.Context, bucket service.SchedulerBucket, version string) (bool, error) {
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	supportStateKey := schedulerBucketKey(schedulerSupportStatePrefix, bucket)
@@ -689,8 +708,11 @@ func (c *schedulerCache) activateStaticStateVersion(ctx context.Context, bucket 
 	versionedMetaPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountMetaPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	versionedFullPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerVersionedAccountPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	args := []any{version, bucket.String(), snapshotGraceTTLSeconds, versionedMetaPrefix, versionedFullPrefix}
-	_, err := activateStaticStateScript.Run(ctx, c.rdb, keys, args...).Result()
-	return err
+	result, err := activateStaticStateScript.Run(ctx, c.rdb, keys, args...).Int()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
 }
 
 func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket service.SchedulerBucket, version string) error {
@@ -1037,6 +1059,36 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 	return accountIDs, nil
 }
 
+// staticStateAccountIDs produces the complete cleanup set before writing, so a
+// pipeline error cannot hide payload IDs whose commands reached Redis. It
+// preserves input order and duplicates for the versioned ZSET's existing member
+// semantics; cleanup itself deduplicates its DEL keys.
+func staticStateAccountIDs(accountSets ...[]service.Account) []int64 {
+	ids := make([]int64, 0)
+	for _, accounts := range accountSets {
+		for _, account := range accounts {
+			ids = append(ids, account.ID)
+		}
+	}
+	return ids
+}
+
+func (c *schedulerCache) cleanupUnpublishedStaticState(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
+	active, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
+	if err == nil && active == version {
+		// An activation response can fail after Lua commits. Preserve that live
+		// version rather than deleting data a reader may already be using.
+		return nil
+	}
+	if err != nil && err != redis.Nil {
+		return err
+	}
+	if err := c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)).Err(); err != nil {
+		return err
+	}
+	return c.deleteVersionedAccountPayloads(ctx, bucket, version, ids)
+}
+
 // writeVersionedAccountIDs isolates static-state payloads from the mutable legacy
 // account keys, so a failed replacement cannot alter a still-active version.
 func (c *schedulerCache) deleteVersionedAccountPayloads(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
@@ -1068,8 +1120,8 @@ func (c *schedulerCache) writeVersionedAccountIDs(ctx context.Context, bucket se
 			return nil, err
 		}
 		id := strconv.FormatInt(account.ID, 10)
-		pipe.Set(ctx, schedulerVersionedAccountKey(bucket, version, id), fullPayload, 0)
-		pipe.Set(ctx, schedulerVersionedAccountMetaKey(bucket, version, id), metaPayload, 0)
+		pipe.Set(ctx, schedulerVersionedAccountKey(bucket, version, id), fullPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
+		pipe.Set(ctx, schedulerVersionedAccountMetaKey(bucket, version, id), metaPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
 		accountIDs = append(accountIDs, account.ID)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {

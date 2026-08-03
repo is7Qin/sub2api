@@ -420,6 +420,92 @@ func TestSchedulerCacheSetSnapshotPreservesIDMemberSemanticsAndPayloadBytes(t *t
 	require.Nil(t, snapshot)
 }
 
+func TestSchedulerCache_EmptyPublishedSnapshotIsAHit(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, nil, nil))
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Empty(t, candidates)
+}
+
+func TestSchedulerCache_StaticStateReadersShareActiveVersion(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	candidate := service.Account{ID: 10, Platform: service.PlatformOpenAI, Status: service.StatusActive, Schedulable: true}
+	supportOnly := service.Account{ID: 11, Platform: service.PlatformOpenAI, Status: service.StatusActive, Schedulable: true}
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{candidate}, []service.Account{candidate, supportOnly}))
+	candidates, candidateHit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, candidateHit)
+	require.True(t, supportHit)
+	require.Equal(t, []int64{10}, schedulerCacheTestIDs(candidates))
+	require.Equal(t, []int64{10, 11}, schedulerCacheTestIDs(support))
+}
+
+func TestSchedulerCache_IncompleteStaticStateDoesNotHitPersistentSupport(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 8, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	version := "1"
+	support := service.Account{ID: 12, Platform: service.PlatformOpenAI, Status: service.StatusActive, Schedulable: true}
+
+	_, err := cache.writeAccountIDs(ctx, []service.Account{support})
+	require.NoError(t, err)
+	require.NoError(t, cache.writeSnapshotAccountIDs(ctx, bucket, version, []int64{support.ID}))
+	require.NoError(t, cache.rdb.Set(ctx, schedulerBucketKey(schedulerActivePrefix, bucket), version, 0).Err())
+	require.NoError(t, cache.rdb.Set(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket), "1", 0).Err())
+
+	accounts, hit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Nil(t, accounts)
+}
+
+func TestSchedulerCache_StaticStatePartialWriteKeepsPreviousVersion(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	cache.writeChunkSize = 1
+	bucket := service.SchedulerBucket{GroupID: 9, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	oldCandidate := service.Account{ID: 20, Platform: service.PlatformOpenAI}
+	oldSupport := service.Account{ID: 21, Platform: service.PlatformOpenAI}
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{oldCandidate}, []service.Account{oldCandidate, oldSupport}))
+
+	hook := &schedulerSnapshotWriteFailureHook{}
+	cache.rdb.AddHook(hook)
+	err := cache.SetStaticState(ctx, bucket,
+		[]service.Account{{ID: 22, Platform: service.PlatformOpenAI}},
+		[]service.Account{{ID: 22, Platform: service.PlatformOpenAI}, {ID: 23, Platform: service.PlatformOpenAI}},
+	)
+	require.ErrorContains(t, err, "injected snapshot zadd failure")
+
+	candidates, candidateHit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, candidateHit)
+	require.True(t, supportHit)
+	require.Equal(t, []int64{20}, schedulerCacheTestIDs(candidates))
+	require.Equal(t, []int64{20, 21}, schedulerCacheTestIDs(support))
+}
+
+func schedulerCacheTestIDs(accounts []*service.Account) []int64 {
+	ids := make([]int64, 0, len(accounts))
+	for _, account := range accounts {
+		if account != nil {
+			ids = append(ids, account.ID)
+		}
+	}
+	return ids
+}
+
 func TestSchedulerCacheGetSnapshotVersion(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

@@ -44,6 +44,14 @@ func ParseSchedulerBucket(raw string) (SchedulerBucket, bool) {
 }
 
 // SchedulerCache 负责调度快照与账号快照的缓存读写。
+// SchedulerStaticStateCache atomically publishes a bucket's request-independent
+// candidate and persistent-support pools. It is optional so external SchedulerCache
+// implementations remain source-compatible during the rollout.
+type SchedulerStaticStateCache interface {
+	SetStaticState(ctx context.Context, bucket SchedulerBucket, candidates, persistentSupport []Account) error
+	GetPersistentSupport(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error)
+}
+
 type SchedulerCache interface {
 	// GetSnapshot 读取快照并返回命中与否（ready + active + 数据完整）。
 	GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error)

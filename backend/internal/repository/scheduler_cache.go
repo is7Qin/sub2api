@@ -28,6 +28,9 @@ const (
 	schedulerReadyPrefix           = "sched:ready:"
 	schedulerVersionPrefix         = "sched:ver:"
 	schedulerSnapshotPrefix        = "sched:"
+	schedulerSupportPrefix         = "sched:support:"
+	schedulerSupportStatePrefix    = "sched:support:state:"
+	schedulerSupportReadyPrefix    = "sched:support:ready:"
 	schedulerLockPrefix            = "sched:lock:"
 
 	defaultSchedulerSnapshotMGetChunkSize  = 128
@@ -104,6 +107,34 @@ redis.call('SADD', KEYS[3], ARGV[2])
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
 	redis.call('EXPIRE', ARGV[3] .. currentActive, tonumber(ARGV[4]))
+end
+
+return 1
+`)
+
+	// activateStaticStateScript switches candidate and persistent-support pools as
+	// one version. Readers see the former version until both new ZSETs are durable.
+	activateStaticStateScript = redis.NewScript(`
+local currentActive = redis.call('GET', KEYS[1])
+local newVersion = tonumber(ARGV[1])
+
+if currentActive ~= false then
+    local curVersion = tonumber(currentActive)
+    if curVersion and newVersion < curVersion then
+        redis.call('DEL', KEYS[8], KEYS[9])
+        return 0
+    end
+end
+
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], '1')
+redis.call('SET', KEYS[3], ARGV[1])
+redis.call('SET', KEYS[4], '1')
+redis.call('SADD', KEYS[5], ARGV[2])
+
+if currentActive ~= false and currentActive ~= ARGV[1] then
+    redis.call('EXPIRE', KEYS[6] .. currentActive, tonumber(ARGV[3]))
+    redis.call('EXPIRE', KEYS[7] .. currentActive, tonumber(ARGV[3]))
 end
 
 return 1
@@ -345,8 +376,17 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		return nil, false, err
 	}
 	if len(ids) == 0 {
-		// 空快照视为缓存未命中，触发数据库回退查询
-		// 这解决了新分组创建后立即绑定账号时的竞态条件问题
+		// A static-state marker proves this is an intentionally published empty
+		// candidate pool. Legacy SetSnapshot keeps its historical empty=miss behavior.
+		stateVersion, stateErr := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportStatePrefix, bucket)).Result()
+		if stateErr == nil && stateVersion == activeVal {
+			c.stats.recordHit(bucketKey)
+			return []*service.Account{}, true, nil
+		}
+		if stateErr != nil && stateErr != redis.Nil {
+			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+			return nil, false, stateErr
+		}
 		c.stats.recordMiss(bucketKey, schedulerMissSnapshotEmpty)
 		return nil, false, nil
 	}
@@ -408,6 +448,101 @@ func (c *schedulerCache) GetSnapshotVersion(ctx context.Context, bucket service.
 		return "", err
 	}
 	return activeVal, nil
+}
+
+// SetStaticState writes candidates and persistent support to separate versioned
+// ZSETs, then uses one Lua transaction to publish their shared active version.
+func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.SchedulerBucket, candidates, persistentSupport []service.Account) error {
+	version, err := c.allocateSnapshotVersion(ctx, bucket)
+	if err != nil {
+		return err
+	}
+	candidateIDs, err := c.writeAccountIDs(ctx, candidates)
+	if err != nil {
+		return err
+	}
+	supportIDs, err := c.writeAccountIDs(ctx, persistentSupport)
+	if err != nil {
+		return err
+	}
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, candidateIDs); err != nil {
+		return err
+	}
+	if err := c.writeSupportAccountIDs(ctx, bucket, version, supportIDs); err != nil {
+		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version)).Err()
+		return err
+	}
+	if err := c.activateStaticStateVersion(ctx, bucket, version); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *schedulerCache) GetPersistentSupport(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+	active, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	supportVersion, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportStatePrefix, bucket)).Result()
+	if err == redis.Nil || supportVersion != active {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	ready, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportReadyPrefix, bucket)).Result()
+	if err == redis.Nil || ready != "1" {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	ids, err := c.rdb.ZRange(ctx, schedulerSupportKey(bucket, active), 0, -1).Result()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ids) == 0 {
+		return []*service.Account{}, true, nil
+	}
+	return c.readSnapshotAccounts(ctx, ids)
+}
+
+func (c *schedulerCache) readSnapshotAccounts(ctx context.Context, ids []string) ([]*service.Account, bool, error) {
+	keys := make([]string, 0, len(ids))
+	lastUsedKeys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, schedulerAccountMetaKey(id))
+		lastUsedKeys = append(lastUsedKeys, schedulerLastUsedKey(id))
+	}
+	values, err := c.mgetChunked(ctx, keys)
+	if err != nil {
+		return nil, false, err
+	}
+	lastUsedValues, err := c.mgetChunked(ctx, lastUsedKeys)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(values) != len(ids) || len(lastUsedValues) != len(ids) {
+		return nil, false, errors.New("scheduler snapshot cache returned unexpected value count")
+	}
+	accounts := make([]*service.Account, 0, len(values))
+	for i, val := range values {
+		if val == nil {
+			return nil, false, nil
+		}
+		account, err := decodeCachedAccount(val)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
+			return nil, false, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, true, nil
 }
 
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) error {
@@ -501,10 +636,39 @@ func (c *schedulerCache) writeSnapshotAccountIDs(ctx context.Context, bucket ser
 	return nil
 }
 
-// activateSnapshotVersion 原子 CAS 激活版本。
-// Lua 脚本保证：仅当新版本 >= 当前激活版本时才切换 active 指针，
-// 防止并发写入导致版本回滚。
-// 旧快照使用 EXPIRE 宽限期而非立即 DEL，避免 reader 竞态。
+// writeSupportAccountIDs materializes the persistent pool before its shared
+// version can become visible. A failed chunk deletes the unpublished key.
+func (c *schedulerCache) writeSupportAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accountIDs []int64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	key := schedulerSupportKey(bucket, version)
+	members := make([]redis.Z, 0, len(accountIDs))
+	for index, accountID := range accountIDs {
+		members = append(members, redis.Z{Score: float64(index), Member: strconv.FormatInt(accountID, 10)})
+	}
+	for start := 0; start < len(members); start += c.writeChunkSize {
+		end := min(start+c.writeChunkSize, len(members))
+		if err := c.rdb.ZAdd(ctx, key, members[start:end]...).Err(); err != nil {
+			_ = c.rdb.Del(ctx, key).Err()
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *schedulerCache) activateStaticStateVersion(ctx context.Context, bucket service.SchedulerBucket, version string) error {
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
+	supportStateKey := schedulerBucketKey(schedulerSupportStatePrefix, bucket)
+	supportReadyKey := schedulerBucketKey(schedulerSupportReadyPrefix, bucket)
+	candidatePrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	supportPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSupportPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+	keys := []string{activeKey, readyKey, supportStateKey, supportReadyKey, schedulerBucketSetKey, candidatePrefix, supportPrefix, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)}
+	_, err := activateStaticStateScript.Run(ctx, c.rdb, keys, version, bucket.String(), snapshotGraceTTLSeconds).Result()
+	return err
+}
+
 func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket service.SchedulerBucket, version string) error {
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
@@ -708,6 +872,10 @@ func schedulerBucketKey(prefix string, bucket service.SchedulerBucket) string {
 
 func schedulerSnapshotKey(bucket service.SchedulerBucket, version string) string {
 	return fmt.Sprintf("%s%d:%s:%s:v%s", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version)
+}
+
+func schedulerSupportKey(bucket service.SchedulerBucket, version string) string {
+	return fmt.Sprintf("%s%d:%s:%s:v%s", schedulerSupportPrefix, bucket.GroupID, bucket.Platform, bucket.Mode, version)
 }
 
 func schedulerAccountKey(id string) string {

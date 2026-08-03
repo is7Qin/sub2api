@@ -598,16 +598,10 @@ func (s *SchedulerSnapshotService) runInitialRebuild() {
 	}
 	ctx, cancel := context.WithTimeout(s.workerContext(), 2*time.Minute)
 	defer cancel()
-	buckets, err := s.cache.ListBuckets(ctx)
+	buckets, err := s.rebuildBucketsForStartup(ctx)
 	if err != nil {
-		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] list buckets failed: %v", err)
-	}
-	if len(buckets) == 0 {
-		buckets, err = s.defaultBuckets(ctx)
-		if err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] default buckets failed: %v", err)
-			return
-		}
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] startup bucket discovery failed: %v", err)
+		return
 	}
 	if err := s.rebuildBuckets(ctx, buckets, "startup"); err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild startup failed: %v", err)
@@ -1278,6 +1272,18 @@ func (s *SchedulerSnapshotService) rebuildBucketWithQueryCache(ctx context.Conte
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
+	if staticCache, ok := s.cache.(SchedulerStaticStateCache); ok {
+		support, err := s.loadPersistentSupportForRebuild(rebuildCtx, bucket)
+		if err != nil {
+			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] support rebuild failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
+			return err
+		}
+		if err := staticCache.SetStaticState(rebuildCtx, bucket, accounts, support); err != nil {
+			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] static-state cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
+			return err
+		}
+		return nil
+	}
 	if err := s.setRebuildSnapshot(rebuildCtx, bucket, accounts, queries); err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
@@ -1352,17 +1358,10 @@ func (s *SchedulerSnapshotService) triggerFullRebuildContext(ctx context.Context
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	buckets, err := s.cache.ListBuckets(ctx)
+	buckets, err := s.rebuildBucketsForStartup(ctx)
 	if err != nil {
-		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] list buckets failed: %v", err)
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] full rebuild bucket discovery failed: %v", err)
 		return err
-	}
-	if len(buckets) == 0 {
-		buckets, err = s.defaultBuckets(ctx)
-		if err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] default buckets failed: %v", err)
-			return err
-		}
 	}
 	return s.rebuildBuckets(ctx, buckets, reason)
 }
@@ -1610,6 +1609,44 @@ func (s *SchedulerSnapshotService) checkOutboxLag(ctx context.Context, oldest Sc
 	}
 }
 
+// ListPersistentSupport returns the worker-published persistent pool for the
+// request's scheduling bucket. Callers can fall back when a legacy cache lacks it.
+func (s *SchedulerSnapshotService) ListPersistentSupport(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	staticCache, ok := s.cache.(SchedulerStaticStateCache)
+	if !ok {
+		return nil, false, nil
+	}
+	bucket := s.bucketFor(groupID, platform, s.resolveMode(platform, hasForcePlatform))
+	accounts, hit, err := staticCache.GetPersistentSupport(ctx, bucket)
+	if err != nil || !hit {
+		return nil, hit, err
+	}
+	return derefAccounts(accounts), true, nil
+}
+
+func (s *SchedulerSnapshotService) loadPersistentSupportForRebuild(ctx context.Context, bucket SchedulerBucket) ([]Account, error) {
+	candidateRepo, ok := s.accountRepo.(ModelAvailabilityCandidateRepository)
+	if !ok {
+		return nil, errors.New("persistent support repository unavailable")
+	}
+	groupID := bucket.GroupID
+	if s.isRunModeSimple() {
+		groupID = 0
+	}
+	var group *int64
+	includeGrouped := false
+	if groupID > 0 {
+		group = &groupID
+	} else if s.isRunModeSimple() {
+		includeGrouped = true
+	}
+	platforms := []string{bucket.Platform}
+	if bucket.Mode == SchedulerModeMixed {
+		platforms = append(platforms, PlatformAntigravity)
+	}
+	return candidateRepo.ListModelAvailabilityCandidates(ctx, group, platforms, includeGrouped)
+}
+
 func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucket SchedulerBucket, useMixed bool) ([]Account, error) {
 	if s.accountRepo == nil {
 		return nil, ErrSchedulerCacheNotReady
@@ -1771,6 +1808,25 @@ func (s *SchedulerSnapshotService) fullRebuildInterval() time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
+// rebuildBucketsForStartup always merges registry entries with default and active
+// group buckets. A partial registry must not suppress discovery of new groups.
+func (s *SchedulerSnapshotService) rebuildBucketsForStartup(ctx context.Context) ([]SchedulerBucket, error) {
+	registered, err := s.cache.ListBuckets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Legacy test/third-party caches without a group repository cannot discover
+	// active groups, so retain their explicit registry as the complete scope.
+	if s.groupRepo == nil && !s.isRunModeSimple() && len(registered) > 0 {
+		return dedupeBuckets(registered), nil
+	}
+	defaults, err := s.defaultBuckets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return dedupeBuckets(append(registered, defaults...)), nil
+}
+
 func (s *SchedulerSnapshotService) defaultBuckets(ctx context.Context) ([]SchedulerBucket, error) {
 	buckets := make([]SchedulerBucket, 0)
 	platforms := []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity}
@@ -1788,7 +1844,7 @@ func (s *SchedulerSnapshotService) defaultBuckets(ctx context.Context) ([]Schedu
 
 	groups, err := s.groupRepo.ListActive(ctx)
 	if err != nil {
-		return dedupeBuckets(buckets), nil
+		return nil, err
 	}
 	for _, group := range groups {
 		if group.Platform == "" {

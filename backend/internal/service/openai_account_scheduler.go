@@ -873,11 +873,16 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 			return nil, compactBlocked, acquireErr
 		}
 		if result != nil && result.Acquired {
-			return &AccountSelectionResult{
-				Account:     fresh,
-				Acquired:    true,
-				ReleaseFunc: result.ReleaseFunc,
-			}, compactBlocked, nil
+			// 候选刷新读到的可能是调度 meta payload（无 api_key/access_token 凭据），
+			// 选中后必须经 GetAccount 重新水合全量账号，否则请求执行阶段会报
+			// "api_key not found in credentials"。与网关层 newAcquiredSelectionResult
+			// 的水合语义保持一致；水合失败视为该候选不可用，槽位由
+			// newAcquiredSelectionResult 内部释放，继续尝试下一个候选。
+			selection, selectErr := s.service.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
+			if selectErr != nil {
+				continue
+			}
+			return selection, compactBlocked, nil
 		}
 	}
 	return nil, compactBlocked, nil
@@ -1099,15 +1104,18 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			compactBlocked = true
 			continue
 		}
-		return &AccountSelectionResult{
-			Account: fresh,
-			WaitPlan: &AccountWaitPlan{
-				AccountID:      fresh.ID,
-				MaxConcurrency: fresh.Concurrency,
-				Timeout:        cfg.FallbackWaitTimeout,
-				MaxWaiting:     cfg.FallbackMaxWaiting,
-			},
-		}, candidateCount, topK, loadSkew, nil
+		// 与 tryAcquireOpenAISelectionOrder 一致：fresh 可能来自 meta payload，
+		// 经 newSelectionResult 水合为全量账号后再返回；水合失败视为候选不可用。
+		selection, selectErr := s.service.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
+			AccountID:      fresh.ID,
+			MaxConcurrency: fresh.Concurrency,
+			Timeout:        cfg.FallbackWaitTimeout,
+			MaxWaiting:     cfg.FallbackMaxWaiting,
+		})
+		if selectErr != nil {
+			continue
+		}
+		return selection, candidateCount, topK, loadSkew, nil
 	}
 
 	return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionDiagnostic(noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked), filterStats, "selection_order_exhausted")

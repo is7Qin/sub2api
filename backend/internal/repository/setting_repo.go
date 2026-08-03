@@ -34,6 +34,10 @@ type settingRepository struct {
 	keyCache map[string]settingCacheEntry
 	// allCache 全量快照：GetAll 使用，任何写路径整体失效。
 	allCache *settingAllCacheEntry
+	// version 每次成功写后自增。回源中的加载器在查库前捕获版本，
+	// 写回时版本已推进则丢弃结果——防止并发读把失效前的旧值写回缓存
+	// （读与 Set 重叠的 read-invalidation 竞态）。
+	version uint64
 	// sf 防止缓存过期时多个请求同时回源（thundering herd）。
 	sf singleflight.Group
 }
@@ -52,24 +56,49 @@ func (r *settingRepository) peekKeyCache(key string) (settingCacheEntry, bool) {
 	return entry, true
 }
 
-func (r *settingRepository) storeKeyCache(key string, entry settingCacheEntry) {
+// storeKeyCacheIfVersion 仅当版本未推进时写回缓存：调用方在查库前捕获
+// version，写回时发现期间发生过任何写（版本已变）则丢弃结果。
+func (r *settingRepository) storeKeyCacheIfVersion(key string, entry settingCacheEntry, version uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.version != version {
+		return
+	}
 	if r.keyCache == nil {
 		r.keyCache = make(map[string]settingCacheEntry)
 	}
 	r.keyCache[key] = entry
 }
 
+func (r *settingRepository) storeAllCacheIfVersion(entry *settingAllCacheEntry, version uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.version != version {
+		return
+	}
+	r.allCache = entry
+}
+
+// cacheVersion 返回当前版本号；加载器用它判断自己的回填是否已过期。
+func (r *settingRepository) cacheVersion() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.version
+}
+
+// invalidateKeyCache 只会在写提交成功后调用；同时推进版本，使在途
+// 加载器的旧回填被丢弃。
 func (r *settingRepository) invalidateKeyCache(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.version++
 	delete(r.keyCache, key)
 }
 
 func (r *settingRepository) invalidateAllCache() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.version++
 	r.allCache = nil
 }
 
@@ -102,6 +131,8 @@ func (r *settingRepository) Get(ctx context.Context, key string) (*service.Setti
 		if entry, ok := r.peekKeyCache(key); ok {
 			return entry, nil
 		}
+		// 查库前捕获版本：若期间发生写（版本推进），旧值回填将被丢弃。
+		version := r.cacheVersion()
 		setting, found, err := r.loadSetting(ctx, key)
 		if err != nil {
 			return nil, err
@@ -111,7 +142,7 @@ func (r *settingRepository) Get(ctx context.Context, key string) (*service.Setti
 			found:     found,
 			expiresAt: time.Now().Add(settingCacheTTL).UnixNano(),
 		}
-		r.storeKeyCache(key, entry)
+		r.storeKeyCacheIfVersion(key, entry, version)
 		return entry, nil
 	})
 	if err != nil {
@@ -169,6 +200,8 @@ func (r *settingRepository) GetMultiple(ctx context.Context, keys []string) (map
 		return result, nil
 	}
 
+	// 查库前捕获版本：期间若有写发生，本批回填整体丢弃（含负缓存）。
+	version := r.cacheVersion()
 	settings, err := r.client.Setting.Query().Where(setting.KeyIn(missing...)).All(ctx)
 	if err != nil {
 		return nil, err
@@ -178,16 +211,16 @@ func (r *settingRepository) GetMultiple(ctx context.Context, keys []string) (map
 	for _, m := range settings {
 		result[m.Key] = m.Value
 		seen[m.Key] = struct{}{}
-		r.storeKeyCache(m.Key, settingCacheEntry{
+		r.storeKeyCacheIfVersion(m.Key, settingCacheEntry{
 			setting:   &service.Setting{ID: m.ID, Key: m.Key, Value: m.Value, UpdatedAt: m.UpdatedAt},
 			found:     true,
 			expiresAt: now,
-		})
+		}, version)
 	}
 	// 请求了但查询未返回的键：负缓存（键不存在），后续读取零 DB 往返。
 	for _, key := range missing {
 		if _, ok := seen[key]; !ok {
-			r.storeKeyCache(key, settingCacheEntry{found: false, expiresAt: now})
+			r.storeKeyCacheIfVersion(key, settingCacheEntry{found: false, expiresAt: now}, version)
 		}
 	}
 	return result, nil
@@ -241,6 +274,8 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 		}
 		r.mu.Unlock()
 
+		// 查库前捕获版本：期间若有写发生，快照回填被丢弃。
+		version := r.cacheVersion()
 		settings, err := r.client.Setting.Query().All(ctx)
 		if err != nil {
 			return nil, err
@@ -249,9 +284,7 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 		for _, s := range settings {
 			values[s.Key] = s.Value
 		}
-		r.mu.Lock()
-		r.allCache = &settingAllCacheEntry{values: values, expiresAt: time.Now().Add(settingCacheTTL).UnixNano()}
-		r.mu.Unlock()
+		r.storeAllCacheIfVersion(&settingAllCacheEntry{values: values, expiresAt: time.Now().Add(settingCacheTTL).UnixNano()}, version)
 		return values, nil
 	})
 	if err != nil {

@@ -17,6 +17,9 @@ var (
 	ErrSchedulerCacheNotReady   = errors.New("scheduler cache not ready")
 	ErrSchedulerFallbackLimited = errors.New("scheduler db fallback limited")
 	errSchedulerBucketLockBusy  = errors.New("scheduler bucket rebuild lock contended")
+	// errSchedulerRebuildRetryPending 表示全量重建处于失败退避窗口内；dirty 消费端
+	// 据此让 Global 项保持挂起，而不是每轮 poll 立即重试执行重建。
+	errSchedulerRebuildRetryPending = errors.New("scheduler rebuild retry pending")
 )
 
 const (
@@ -24,6 +27,11 @@ const (
 	dirtyWorkBatchSize          = 100
 	schedulerBucketRebuildLimit = 30 * time.Second
 	schedulerBucketLockTTL      = schedulerBucketRebuildLimit + 5*time.Second
+	// outboxRebuildRetryBaseDelay/outboxRebuildRetryMaxDelay 控制重建失败后的
+	// 指数退避：5s 起、每次失败翻倍、5min 封顶，防止一秒一轮的 poll 把失败重建
+	// 变成重建失败→请求回源→DB 过载→重建再失败的风暴。
+	outboxRebuildRetryBaseDelay = 5 * time.Second
+	outboxRebuildRetryMaxDelay  = 5 * time.Minute
 )
 
 // batchSeenKey tracks which (groupID, platform) bucket sets have already been
@@ -118,6 +126,11 @@ type SchedulerSnapshotService struct {
 	dirtyRebuildLatched     bool
 	dirtyListFailures       int
 	dirtyListRebuildLatched bool
+	// 重建失败退避状态：outbox/dirty 触发的全量重建失败后，下一次尝试推迟到
+	// outboxRebuildRetryAt，延迟随 outboxRebuildFailures 指数增长（5s 起、5min 封顶）。
+	outboxRebuildFailures    int
+	outboxRebuildRetryAt     time.Time
+	outboxRebuildRetryReason string
 	// 快照解码缓存：GetSnapshot 每次调用都对整个桶的账号做 JSON 解码
 	// （大账号池下 O(N) 且与请求成功率无关），高频网关请求下是 CPU 主源。
 	// 短 TTL 缓存解码结果，命中时免解码；调度器对快照账号只读使用。
@@ -512,7 +525,13 @@ func (s *SchedulerSnapshotService) handleDirtyWork(ctx context.Context, work Sch
 		}
 		return s.rebuildByGroupIDs(ctx, []int64{work.EntityID}, "dirty_group", nil)
 	case SchedulerDirtyWorkGlobal:
-		return s.triggerFullRebuildContext(ctx, "dirty_global")
+		// 全量重建失败后进入指数退避窗口；窗口内不实际执行重建（返回错误让脏项
+		// 保持挂起，DB 端 retry_at 继续延长其可见时间），到期后自动重试。这防止
+		// 重建失败→请求回源→DB 过载→重建再失败的死循环。
+		if s.rebuildRetryPending(time.Now()) {
+			return errSchedulerRebuildRetryPending
+		}
+		return s.runRebuildWithRetryBackoff(ctx, "dirty_global")
 	default:
 		return errors.New("unknown scheduler dirty work kind")
 	}
@@ -1084,6 +1103,10 @@ func (s *SchedulerSnapshotService) checkDirtyWorkLag(ctx context.Context) {
 	if !degraded {
 		s.dirtyLagFailures = 0
 		s.dirtyRebuildLatched = false
+		// 条件恢复后清除重建失败退避状态，避免旧失败污染下一轮退化场景。
+		s.outboxRebuildFailures = 0
+		s.outboxRebuildRetryAt = time.Time{}
+		s.outboxRebuildRetryReason = ""
 		s.lagMu.Unlock()
 		return
 	}
@@ -1116,6 +1139,45 @@ func (s *SchedulerSnapshotService) checkDirtyWorkLag(ctx context.Context) {
 	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work degraded rebuild requested: lag=%ds pending=%d failed=%d", lagSeconds, stats.Count, stats.FailedCount)
 }
 
+// runRebuildWithRetryBackoff 执行一次全量重建并登记退避状态：成功清除失败计数与
+// 重试时间，失败按指数退避（5s 起，5min 封顶）推迟下一次尝试。所有 outbox/dirty
+// 触发的重建都经由这里，失败后不会在下一轮 poll 立即重试，避免重建失败→请求
+// 回源 DB→DB 过载→重建再失败的死循环。
+func (s *SchedulerSnapshotService) runRebuildWithRetryBackoff(ctx context.Context, reason string) error {
+	err := s.triggerFullRebuildContext(ctx, reason)
+	s.lagMu.Lock()
+	if err == nil {
+		s.outboxRebuildFailures = 0
+		s.outboxRebuildRetryAt = time.Time{}
+		s.outboxRebuildRetryReason = ""
+	} else {
+		s.outboxRebuildFailures++
+		s.outboxRebuildRetryAt = time.Now().Add(outboxRebuildRetryDelay(s.outboxRebuildFailures))
+		s.outboxRebuildRetryReason = reason
+	}
+	s.lagMu.Unlock()
+	return err
+}
+
+// rebuildRetryPending 报告全量重建是否处于失败退避窗口内。
+func (s *SchedulerSnapshotService) rebuildRetryPending(now time.Time) bool {
+	s.lagMu.Lock()
+	defer s.lagMu.Unlock()
+	return !s.outboxRebuildRetryAt.IsZero() && now.Before(s.outboxRebuildRetryAt)
+}
+
+// outboxRebuildRetryDelay 计算第 failures 次失败后的退避延迟：5s 起翻倍，封顶 5min。
+func outboxRebuildRetryDelay(failures int) time.Duration {
+	delay := outboxRebuildRetryBaseDelay
+	for i := 1; i < failures && delay < outboxRebuildRetryMaxDelay; i++ {
+		delay *= 2
+		if delay >= outboxRebuildRetryMaxDelay {
+			return outboxRebuildRetryMaxDelay
+		}
+	}
+	return delay
+}
+
 func (s *SchedulerSnapshotService) checkOutboxLag(ctx context.Context, oldest SchedulerOutboxEvent, watermark int64) {
 	if oldest.CreatedAt.IsZero() || s.cfg == nil {
 		return
@@ -1126,40 +1188,85 @@ func (s *SchedulerSnapshotService) checkOutboxLag(ctx context.Context, oldest Sc
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox lag warning: %ds", lagSeconds)
 	}
 
-	if s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 && int(lag.Seconds()) >= s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds {
-		s.lagMu.Lock()
-		s.lagFailures++
-		failures := s.lagFailures
-		s.lagMu.Unlock()
-
-		if failures >= s.cfg.Gateway.Scheduling.OutboxLagRebuildFailures {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox lag rebuild triggered: lag=%s failures=%d", lag, failures)
-			s.lagMu.Lock()
-			s.lagFailures = 0
-			s.lagMu.Unlock()
-			if err := s.triggerFullRebuild("outbox_lag"); err != nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox lag rebuild failed: %v", err)
-			}
-		}
-	} else {
-		s.lagMu.Lock()
-		s.lagFailures = 0
-		s.lagMu.Unlock()
-	}
+	lagDegraded := s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 && int(lag.Seconds()) >= s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds
 
 	threshold := s.cfg.Gateway.Scheduling.OutboxBacklogRebuildRows
-	if threshold <= 0 || s.outboxRepo == nil {
-		return
-	}
-	maxID, err := s.outboxRepo.MaxID(ctx)
-	if err != nil {
-		return
-	}
-	if maxID-watermark >= int64(threshold) {
-		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox backlog rebuild triggered: backlog=%d", maxID-watermark)
-		if err := s.triggerFullRebuild("outbox_backlog"); err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox backlog rebuild failed: %v", err)
+	backlogDegraded := false
+	var backlog int64
+	if threshold > 0 && s.outboxRepo != nil {
+		maxID, err := s.outboxRepo.MaxID(ctx)
+		if err != nil {
+			// MaxID 失败只视为 backlog 未退化；lag 决策独立继续，避免单次读失败
+			// 同时吞掉 lag 的重建触发。
+			backlogDegraded = false
+		} else {
+			backlog = maxID - watermark
+			backlogDegraded = backlog >= int64(threshold)
 		}
+	}
+
+	now := time.Now()
+	s.lagMu.Lock()
+	if !lagDegraded && !backlogDegraded {
+		s.lagFailures = 0
+		s.outboxRebuildFailures = 0
+		s.outboxRebuildRetryAt = time.Time{}
+		s.outboxRebuildRetryReason = ""
+		s.lagMu.Unlock()
+		return
+	}
+
+	// 退避原因对应的退化条件已消失时，旧的失败状态不再有意义，立即清除；
+	// 否则会永远压住下一次触发（例如 backlog 恢复后残留的 outbox_backlog 退避）。
+	if s.outboxRebuildRetryReason != "" {
+		retryReasonActive := (s.outboxRebuildRetryReason == "outbox_lag" && lagDegraded) ||
+			(s.outboxRebuildRetryReason == "outbox_backlog" && backlogDegraded)
+		if !retryReasonActive {
+			s.outboxRebuildFailures = 0
+			s.outboxRebuildRetryAt = time.Time{}
+			s.outboxRebuildRetryReason = ""
+		}
+	}
+
+	// 上一次 lag 重建失败后处于退避窗口内时，不再累计 lag 失败计数；
+	// 退避到期后由 retryDue 直接触发下一次重建。
+	lagRetryPending := s.outboxRebuildRetryReason == "outbox_lag" && !s.outboxRebuildRetryAt.IsZero()
+	if lagDegraded && !lagRetryPending {
+		s.lagFailures++
+	}
+	failures := s.lagFailures
+	lagReady := lagDegraded && failures >= s.cfg.Gateway.Scheduling.OutboxLagRebuildFailures
+	retryDue := !s.outboxRebuildRetryAt.IsZero() && !now.Before(s.outboxRebuildRetryAt)
+
+	reason := ""
+	switch {
+	case lagReady && s.outboxRebuildRetryReason != "outbox_lag":
+		// lag 就绪可抢占挂起的 backlog 退避：lag 反映最新消费进度，优先重建。
+		if s.outboxRebuildRetryReason != "" {
+			s.outboxRebuildFailures = 0
+			s.outboxRebuildRetryAt = time.Time{}
+			s.outboxRebuildRetryReason = ""
+		}
+		reason = "outbox_lag"
+	case retryDue && s.outboxRebuildRetryReason == "outbox_lag" && lagDegraded:
+		reason = "outbox_lag"
+	case backlogDegraded && (s.outboxRebuildRetryReason == "" || (retryDue && s.outboxRebuildRetryReason == "outbox_backlog")):
+		reason = "outbox_backlog"
+	}
+	if reason != "" {
+		s.lagFailures = 0
+	}
+	s.lagMu.Unlock()
+
+	if reason == "" {
+		return
+	}
+
+	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] %s rebuild triggered: lag=%s failures=%d backlog=%d", reason, lag, failures, backlog)
+	// 重建独立于 poll 的 10s 超时运行（沿用原实现传入 Background），
+	// 避免 poll 上下文过期把最长 30s 的重建提前中断。
+	if err := s.runRebuildWithRetryBackoff(context.Background(), reason); err != nil {
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] %s rebuild failed: %v", reason, err)
 	}
 }
 

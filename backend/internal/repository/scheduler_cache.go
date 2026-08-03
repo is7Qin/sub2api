@@ -479,16 +479,21 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 	}
 	supportIDs, err := c.writeVersionedAccountIDs(ctx, bucket, version, persistentSupport)
 	if err != nil {
+		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, candidateIDs)
 		return err
 	}
 	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, candidateIDs); err != nil {
+		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, append(candidateIDs, supportIDs...))
 		return err
 	}
 	if err := c.writeSupportAccountIDs(ctx, bucket, version, supportIDs); err != nil {
 		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version)).Err()
+		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, append(candidateIDs, supportIDs...))
 		return err
 	}
 	if err := c.activateStaticStateVersion(ctx, bucket, version); err != nil {
+		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)).Err()
+		_ = c.deleteVersionedAccountPayloads(ctx, bucket, version, append(candidateIDs, supportIDs...))
 		return err
 	}
 	return nil
@@ -1034,6 +1039,23 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 
 // writeVersionedAccountIDs isolates static-state payloads from the mutable legacy
 // account keys, so a failed replacement cannot alter a still-active version.
+func (c *schedulerCache) deleteVersionedAccountPayloads(ctx context.Context, bucket service.SchedulerBucket, version string, ids []int64) error {
+	keys := make([]string, 0, len(ids)*2)
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		idText := strconv.FormatInt(id, 10)
+		keys = append(keys, schedulerVersionedAccountKey(bucket, version, idText), schedulerVersionedAccountMetaKey(bucket, version, idText))
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return c.rdb.Del(ctx, keys...).Err()
+}
+
 func (c *schedulerCache) writeVersionedAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accounts []service.Account) ([]int64, error) {
 	if len(accounts) == 0 {
 		return nil, nil

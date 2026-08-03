@@ -14,9 +14,8 @@ import (
 )
 
 var (
-	ErrSchedulerCacheNotReady   = errors.New("scheduler cache not ready")
-	ErrSchedulerFallbackLimited = errors.New("scheduler db fallback limited")
-	errSchedulerBucketLockBusy  = errors.New("scheduler bucket rebuild lock contended")
+	ErrSchedulerCacheNotReady  = errors.New("scheduler cache not ready")
+	errSchedulerBucketLockBusy = errors.New("scheduler bucket rebuild lock contended")
 	// errSchedulerRebuildRetryPending 表示全量重建处于失败退避窗口内；dirty 消费端
 	// 据此让 Global 项保持挂起，而不是每轮 poll 立即重试执行重建。
 	errSchedulerRebuildRetryPending = errors.New("scheduler rebuild retry pending")
@@ -1840,40 +1839,4 @@ func toInt64(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-type fallbackLimiter struct {
-	maxQPS int
-	mu     sync.Mutex
-	window time.Time
-	count  int
-}
-
-func newFallbackLimiter(maxQPS int) *fallbackLimiter {
-	if maxQPS <= 0 {
-		return nil
-	}
-	return &fallbackLimiter{
-		maxQPS: maxQPS,
-		window: time.Now(),
-	}
-}
-
-func (l *fallbackLimiter) Allow() bool {
-	if l == nil || l.maxQPS <= 0 {
-		return true
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	now := time.Now()
-	if now.Sub(l.window) >= time.Second {
-		l.window = now
-		l.count = 0
-	}
-	if l.count >= l.maxQPS {
-		return false
-	}
-	l.count++
-	return true
 }

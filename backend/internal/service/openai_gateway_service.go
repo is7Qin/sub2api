@@ -416,6 +416,7 @@ var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts sup
 type OpenAIGatewayService struct {
 	accountRepo             AccountRepository
 	usageLogRepo            UsageLogRepository
+	usageRecordWorkerPool   *UsageRecordWorkerPool
 	usageBillingRepo        UsageBillingRepository
 	userRepo                UserRepository
 	userSubRepo             UserSubscriptionRepository
@@ -487,6 +488,7 @@ func NewOpenAIGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	usageRecordWorkerPool *UsageRecordWorkerPool,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -520,6 +522,7 @@ func NewOpenAIGatewayService(
 		settingService:          settingService,
 		codexFingerprintService: NewOpenAICodexFingerprintService(accountRepo, settingService),
 		userPlatformQuotaRepo:   userPlatformQuotaRepo,
+		usageRecordWorkerPool:   usageRecordWorkerPool,
 		billingOutboxRepo:       nil,
 		responseHeaderFilter:    compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle:   newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
@@ -8877,7 +8880,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+		writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.openai_gateway")
 		if !input.PreserveAccountHealth && s.rateLimitService != nil && account != nil && account.Platform == PlatformOpenAI {
 			s.rateLimitService.ResetOpenAI403Counter(ctx, account.ID)
 		}
@@ -8914,12 +8917,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		if s.billingOutboxRepo != nil {
 			// Preserve the immutable usage audit record when durable enqueue is
 			// unavailable; direct Apply failures retain their all-or-nothing path.
-			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+			writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.openai_gateway")
 		}
 		return billingErr
 	}
 	if !usageLogPersisted {
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+		writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.openai_gateway")
 	}
 	if !input.PreserveAccountHealth && s.rateLimitService != nil && account != nil && account.Platform == PlatformOpenAI {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, account.ID)

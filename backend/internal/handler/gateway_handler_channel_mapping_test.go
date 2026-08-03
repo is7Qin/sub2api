@@ -116,6 +116,7 @@ func newGatewayChannelMappingHandlerWithMapping(t *testing.T, group *service.Gro
 		nil,
 		nil,
 		nil,
+		nil, // usageRecordWorkerPool
 	)
 	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	settingService := service.NewSettingService(nil, cfg)

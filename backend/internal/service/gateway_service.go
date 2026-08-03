@@ -703,6 +703,7 @@ type GatewayService struct {
 	accountRepo           AccountRepository
 	groupRepo             GroupRepository
 	usageLogRepo          UsageLogRepository
+	usageRecordWorkerPool *UsageRecordWorkerPool
 	usageBillingRepo      UsageBillingRepository
 	userRepo              UserRepository
 	userSubRepo           UserSubscriptionRepository
@@ -768,6 +769,7 @@ func NewGatewayService(
 	resolver *ModelPricingResolver,
 	balanceNotifyService *BalanceNotifyService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	usageRecordWorkerPool *UsageRecordWorkerPool,
 ) *GatewayService {
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
@@ -804,6 +806,7 @@ func NewGatewayService(
 		resolver:              resolver,
 		balanceNotifyService:  balanceNotifyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		usageRecordWorkerPool: usageRecordWorkerPool,
 		billingOutboxRepo:     nil,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
@@ -9857,15 +9860,29 @@ func (s *GatewayService) billingDeps() *billingDeps {
 	}
 }
 
-func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usageLog *UsageLog, logKey string) {
+// writeUsageLogBestEffort 尽力写入使用日志：优先提交到使用量记录池异步落库，
+// 避免请求路径同步等待 DB；队列满时按 sync 溢流策略阻塞直至池接管任务，
+// 池不可用（nil/已停止）时同步兜底执行，保证已扣费记录不会静默丢失。
+// 任务内部使用 detached context（保留 deadline、剥离取消），与既有同步路径一致。
+func writeUsageLogBestEffort(ctx context.Context, pool *UsageRecordWorkerPool, repo UsageLogRepository, usageLog *UsageLog, logKey string) {
 	if repo == nil || usageLog == nil {
 		return
 	}
-	usageCtx, cancel := detachedBillingContext(ctx)
-	defer cancel()
+	task := func(context.Context) {
+		usageCtx, cancel := detachedBillingContext(ctx)
+		defer cancel()
 
-	if _, err := repo.Create(usageCtx, usageLog); err != nil {
-		logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
+		if _, err := repo.Create(usageCtx, usageLog); err != nil {
+			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
+		}
+	}
+	if pool == nil {
+		task(context.Background())
+		return
+	}
+	// 入队失败（池已停止等）时同步兜底执行，避免出现已扣费但无 usage_log 的对账缺口。
+	if mode := pool.Submit(task); mode == UsageRecordSubmitModeDropped {
+		task(context.Background())
 	}
 }
 
@@ -10059,7 +10076,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.gateway")
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
 		return nil
@@ -10096,12 +10113,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			// A failed durable enqueue has not transactionally persisted the usage
 			// audit record, so retain it independently while surfacing the delivery
 			// error. Direct Apply failures retain their existing all-or-nothing path.
-			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+			writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.gateway")
 		}
 		return billingErr
 	}
 	if !usageLogPersisted {
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.gateway")
 	}
 
 	return nil

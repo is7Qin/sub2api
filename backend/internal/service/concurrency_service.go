@@ -109,6 +109,8 @@ const (
 type ConcurrencyService struct {
 	cache ConcurrencyCache
 
+	slotCleanupInterval atomic.Int64
+
 	accountLoadCacheTTL atomic.Int64
 	accountLoadCacheMu  sync.RWMutex
 	accountLoadCache    map[string]cachedAccountLoadBatch
@@ -528,31 +530,38 @@ func (s *ConcurrencyService) CleanupExpiredAccountSlots(ctx context.Context, acc
 	return s.cache.CleanupExpiredAccountSlots(ctx, accountID)
 }
 
-// StartSlotCleanupWorker starts a background cleanup worker for expired account slots.
-func (s *ConcurrencyService) StartSlotCleanupWorker(_ AccountRepository, interval time.Duration) {
-	if s == nil || s.cache == nil || interval <= 0 {
-		return
+// ConfigureSlotCleanup stores the interval used by the runtime-owned cleanup worker.
+func (s *ConcurrencyService) ConfigureSlotCleanup(interval time.Duration) {
+	if s != nil {
+		s.slotCleanupInterval.Store(int64(interval))
 	}
+}
 
-	runCleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := s.cache.CleanupExpiredAccountSlotKeys(cleanupCtx)
-		cancel()
-		if err != nil {
-			logger.LegacyPrintf("service.concurrency", "Warning: cleanup expired account slots failed: %v", err)
-			return
-		}
+// CleanupInterval returns the configured expired account-slot cleanup interval.
+func (s *ConcurrencyService) CleanupInterval() time.Duration {
+	if s == nil {
+		return 0
 	}
+	return time.Duration(s.slotCleanupInterval.Load())
+}
 
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+// CleanupEnabled reports whether expired account-slot cleanup can run.
+func (s *ConcurrencyService) CleanupEnabled() bool {
+	return s != nil && s.cache != nil && s.CleanupInterval() > 0
+}
 
-		runCleanup()
-		for range ticker.C {
-			runCleanup()
-		}
-	}()
+// RunSlotCleanup performs one cache-wide expired account-slot cleanup cycle.
+func (s *ConcurrencyService) RunSlotCleanup(ctx context.Context) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := s.cache.CleanupExpiredAccountSlotKeys(cleanupCtx); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: cleanup expired account slots failed: %v", err)
+		return err
+	}
+	return cleanupCtx.Err()
 }
 
 // GetAccountConcurrencyBatch gets current concurrency counts for multiple accounts.

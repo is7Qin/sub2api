@@ -353,7 +353,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
-	account = s.service.refreshSelectedOpenAIAccountFromDB(ctx, account)
+	account = s.service.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
 	if account == nil || !s.service.openAIStickyAccountMatchesSchedulingGroup(account, req.GroupID) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
@@ -839,12 +839,12 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		}
 		survivors = append(survivors, fresh)
 	}
-	dbFresh := s.service.refreshOpenAICandidatesFromDB(ctx, survivors)
+	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
-		if dbFresh != nil {
-			latest := dbFresh[acc.ID]
+		if cacheFresh != nil {
+			latest := cacheFresh[acc.ID]
 			if latest == nil {
 				continue
 			}
@@ -1075,12 +1075,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		survivors = append(survivors, fresh)
 	}
-	dbFresh := s.service.refreshOpenAICandidatesFromDB(ctx, survivors)
+	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
-		if dbFresh != nil {
-			latest := dbFresh[acc.ID]
+		if cacheFresh != nil {
+			latest := cacheFresh[acc.ID]
 			if latest == nil {
 				continue
 			}

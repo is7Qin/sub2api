@@ -4945,7 +4945,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
-	account = s.refreshSelectedOpenAIAccountFromDB(ctx, account)
+	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
 	if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil

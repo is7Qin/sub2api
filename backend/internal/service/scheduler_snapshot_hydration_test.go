@@ -30,6 +30,25 @@ func (c *snapshotHydrationCache) GetAccount(ctx context.Context, accountID int64
 	return c.accounts[accountID], nil
 }
 
+// GetSchedulableAccountsByIDs supplies the published candidate metadata used by
+// scheduler-backed request selection before the selected account is hydrated.
+func (c *snapshotHydrationCache) GetSchedulableAccountsByIDs(_ context.Context, ids []int64) (map[int64]*Account, error) {
+	requested := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		requested[id] = struct{}{}
+	}
+	accounts := make(map[int64]*Account, len(ids))
+	for _, account := range c.snapshot {
+		if account == nil {
+			continue
+		}
+		if _, ok := requested[account.ID]; ok {
+			accounts[account.ID] = account
+		}
+	}
+	return accounts, nil
+}
+
 func (c *snapshotHydrationCache) SetAccount(ctx context.Context, account *Account) error {
 	return nil
 }

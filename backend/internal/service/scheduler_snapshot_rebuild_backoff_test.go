@@ -53,6 +53,10 @@ func (r *rebuildBackoffAccountRepo) ListSchedulableByGroupIDAndPlatforms(context
 	return r.accounts, nil
 }
 
+func (r *rebuildBackoffAccountRepo) ListSchedulableUngroupedByPlatforms(context.Context, []string) ([]Account, error) {
+	return r.accounts, nil
+}
+
 func TestSchedulerRebuildRetryDelayExponential(t *testing.T) {
 	for _, tc := range []struct {
 		failures int
@@ -91,8 +95,9 @@ func TestSchedulerCheckOutboxLagBacksOffAfterFailedRebuild(t *testing.T) {
 	require.Zero(t, cache.lockCalls, "未达到失败阈值不得触发重建")
 
 	svc.checkOutboxLag(context.Background(), oldest, 0)
-	require.Equal(t, 1, cache.lockCalls)
-	require.Equal(t, 1, cache.setAttempts)
+	// Startup rebuild merges the registered bucket with ten default platform/mode buckets.
+	require.Equal(t, 10, cache.lockCalls)
+	require.Equal(t, 10, cache.setAttempts)
 	require.Equal(t, 1, svc.outboxRebuildFailures)
 	require.False(t, svc.outboxRebuildRetryAt.IsZero())
 	require.True(t, svc.outboxRebuildRetryAt.After(time.Now().Add(4*time.Second)), "首次失败后的重试必须至少推迟 5s")
@@ -100,14 +105,14 @@ func TestSchedulerCheckOutboxLagBacksOffAfterFailedRebuild(t *testing.T) {
 
 	// 退避窗口内（下一轮 poll）不得再次触发重建
 	svc.checkOutboxLag(context.Background(), oldest, 0)
-	require.Equal(t, 1, cache.lockCalls)
-	require.Equal(t, 1, cache.setAttempts)
+	require.Equal(t, 10, cache.lockCalls)
+	require.Equal(t, 10, cache.setAttempts)
 
 	// 退避到期后按原原因重试，失败后继续翻倍
 	svc.outboxRebuildRetryAt = time.Now().Add(-time.Second)
 	svc.checkOutboxLag(context.Background(), oldest, 0)
-	require.Equal(t, 2, cache.lockCalls)
-	require.Equal(t, 2, cache.setAttempts)
+	require.Equal(t, 20, cache.lockCalls)
+	require.Equal(t, 20, cache.setAttempts)
 	require.Equal(t, 2, svc.outboxRebuildFailures)
 }
 
@@ -184,20 +189,20 @@ func TestSchedulerCheckOutboxLagBacklogBacksOffAfterFailedRebuild(t *testing.T) 
 	oldest := SchedulerOutboxEvent{CreatedAt: time.Now().Add(-time.Minute)}
 
 	svc.checkOutboxLag(context.Background(), oldest, 0)
-	require.Equal(t, 1, cache.lockCalls)
-	require.Equal(t, 1, cache.setAttempts)
+	require.Equal(t, 10, cache.lockCalls)
+	require.Equal(t, 10, cache.setAttempts)
 	require.Equal(t, "outbox_backlog", svc.outboxRebuildRetryReason)
 
 	// backlog 仍超标，但退避窗口内不得再次触发
 	svc.checkOutboxLag(context.Background(), oldest, 0)
-	require.Equal(t, 1, cache.lockCalls)
-	require.Equal(t, 1, cache.setAttempts)
+	require.Equal(t, 10, cache.lockCalls)
+	require.Equal(t, 10, cache.setAttempts)
 
 	// 退避到期后按原原因重试
 	svc.outboxRebuildRetryAt = time.Now().Add(-time.Second)
 	svc.checkOutboxLag(context.Background(), oldest, 0)
-	require.Equal(t, 2, cache.lockCalls)
-	require.Equal(t, 2, cache.setAttempts)
+	require.Equal(t, 20, cache.lockCalls)
+	require.Equal(t, 20, cache.setAttempts)
 }
 
 func TestSchedulerHandleDirtyWorkGlobalBacksOffAfterFailedRebuild(t *testing.T) {
@@ -214,14 +219,14 @@ func TestSchedulerHandleDirtyWorkGlobalBacksOffAfterFailedRebuild(t *testing.T) 
 
 	err := svc.handleDirtyWork(ctx, SchedulerDirtyWork{Kind: SchedulerDirtyWorkGlobal, EntityID: 0})
 	require.Error(t, err)
-	require.Equal(t, 1, cache.lockCalls)
+	require.Equal(t, 10, cache.lockCalls)
 	require.Equal(t, 1, svc.outboxRebuildFailures)
 	require.False(t, svc.outboxRebuildRetryAt.IsZero())
 
 	// 退避窗口内：同一轮 poll 再次处理 Global 项时不得执行重建（脏项保持挂起）
 	err = svc.handleDirtyWork(ctx, SchedulerDirtyWork{Kind: SchedulerDirtyWorkGlobal, EntityID: 0})
 	require.ErrorIs(t, err, errSchedulerRebuildRetryPending)
-	require.Equal(t, 1, cache.lockCalls)
+	require.Equal(t, 10, cache.lockCalls)
 
 	// 退避到期后重试成功则清除状态
 	cache.setErr = nil
@@ -246,7 +251,7 @@ func TestSchedulerHandleDirtyWorkGroupNotBlockedByFullRebuildBackoff(t *testing.
 
 	require.Error(t, svc.handleDirtyWork(ctx, SchedulerDirtyWork{Kind: SchedulerDirtyWorkGlobal, EntityID: 0}))
 	before := cache.lockCalls
-	require.Equal(t, 1, before)
+	require.Equal(t, 11, before, "full rebuild merges the registered group bucket with default buckets")
 
 	// 全量重建处于退避窗口内时，分组重建不得被阻塞
 	require.Error(t, svc.handleDirtyWork(ctx, SchedulerDirtyWork{Kind: SchedulerDirtyWorkGroup, EntityID: 1}))

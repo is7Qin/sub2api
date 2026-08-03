@@ -187,8 +187,8 @@ type snapshotVersionReader interface {
 }
 
 // snapshotAccountBatchReader 是可选接口：网关批量刷新候选账号时通过它直接读
-// Redis 快照全量 payload（秒级更新 + 限流状态实时写回），避免逐请求回源 DB。
-// cache 未实现时（仅测试 stub 或第三方实现）由调用方降级 DB 查询。
+// Redis 快照全量 payload（秒级更新 + 限流状态实时写回）。cache 未实现时，
+// 调用方将候选视为不可用，不会在请求路径查询数据库。
 type snapshotAccountBatchReader interface {
 	GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error)
 }
@@ -520,7 +520,7 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 
 // GetSchedulableAccountsByIDs 从快照批量读取账号调度元数据（meta payload）；
 // 缺失的 ID 不在返回 map 中（与“未在刷新 map 中视为已删除”的调用方语义一致）。
-// cache 缺失或未实现批量读（可选接口）时返回错误，由调用方降级 DB 查询。
+// cache 缺失或未实现批量读（可选接口）时返回错误，调用方据此排除候选。
 func (s *SchedulerSnapshotService) GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error) {
 	if s == nil || s.cache == nil {
 		return nil, ErrSchedulerCacheNotReady
@@ -1710,36 +1710,6 @@ func (s *SchedulerSnapshotService) resolveMode(platform string, hasForcePlatform
 		return SchedulerModeMixed
 	}
 	return SchedulerModeSingle
-}
-
-// fallbackQueryContext 构造 singleflight leader 的回源查询上下文：脱离调用方
-// 取消（leader 的 DB 工作不随首个请求断连中断），并施加硬性执行上限——
-// db_fallback_timeout_seconds 未配置（生产默认 0）时也必须兜底有限，否则 DB
-// 挂起会让 leader 无限阻塞，整桶 singleflight 等待者一起卡死。
-func (s *SchedulerSnapshotService) fallbackQueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	bounded, boundedCancel := context.WithTimeout(context.WithoutCancel(ctx), schedulerBucketRebuildLimit)
-	fallbackCtx, fallbackCancel := s.withFallbackTimeout(bounded)
-	return fallbackCtx, func() {
-		boundedCancel()
-		fallbackCancel()
-	}
-}
-
-func (s *SchedulerSnapshotService) withFallbackTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if s.cfg == nil || s.cfg.Gateway.Scheduling.DbFallbackTimeoutSeconds <= 0 {
-		return context.WithCancel(ctx)
-	}
-	timeout := time.Duration(s.cfg.Gateway.Scheduling.DbFallbackTimeoutSeconds) * time.Second
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return context.WithCancel(ctx)
-		}
-		if remaining < timeout {
-			timeout = remaining
-		}
-	}
-	return context.WithTimeout(ctx, timeout)
 }
 
 func (s *SchedulerSnapshotService) isRunModeSimple() bool {

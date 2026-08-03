@@ -2461,7 +2461,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if err != nil {
 		return nil
 	}
-	account = s.refreshSelectedOpenAIAccountFromDB(ctx, account)
+	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
 	if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
@@ -2537,12 +2537,12 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			survivors = append(survivors, fresh)
 		}
 	}
-	dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
-		if dbFresh != nil {
-			latest := dbFresh[acc.ID]
+		if cacheFresh != nil {
+			latest := cacheFresh[acc.ID]
 			if latest == nil {
 				continue
 			}
@@ -2707,7 +2707,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
-				account = s.refreshSelectedOpenAIAccountFromDB(ctx, account)
+				account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account)
 				if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				} else {
@@ -2864,12 +2864,12 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				survivors = append(survivors, fresh)
 			}
 		}
-		dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
 
 		for _, acc := range survivors {
 			fresh := acc
-			if dbFresh != nil {
-				latest := dbFresh[acc.ID]
+			if cacheFresh != nil {
+				latest := cacheFresh[acc.ID]
 				if latest == nil {
 					continue
 				}
@@ -2917,12 +2917,12 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				survivors = append(survivors, fresh)
 			}
 		}
-		dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
 
 		for _, acc := range survivors {
 			fresh := acc
-			if dbFresh != nil {
-				latest := dbFresh[acc.ID]
+			if cacheFresh != nil {
+				latest := cacheFresh[acc.ID]
 				if latest == nil {
 					continue
 				}
@@ -2981,12 +2981,12 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			survivors = append(survivors, fresh)
 		}
 	}
-	dbFresh := s.refreshOpenAICandidatesFromDB(ctx, survivors)
+	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, survivors)
 
 	for _, acc := range survivors {
 		fresh := acc
-		if dbFresh != nil {
-			latest := dbFresh[acc.ID]
+		if cacheFresh != nil {
+			latest := cacheFresh[acc.ID]
 			if latest == nil {
 				continue
 			}
@@ -3049,7 +3049,7 @@ func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accoun
 
 // filterSchedulableOpenAICandidate 对快照候选做廉价的纯本地过滤（资格 + 运行时
 // 屏蔽），不读 Redis。候选的实时状态与存在性由紧随其后的批量刷新统一承载：
-// refreshOpenAICandidatesFromDB 一次 meta MGET 覆盖全部候选，缺失 ID 视为已
+// refreshOpenAICandidatesFromSchedulerCache 一次 meta MGET 覆盖全部候选，缺失 ID 视为已
 // 删除（与逐候选 GetAccount 的 nil 语义一致）。此前每个候选单独 GetAccount
 // （每个候选一次 MGET）与批量刷新重复读同一批账号，是选择路径 Redis 往返的
 // 主要来源，已移除。
@@ -3066,7 +3066,7 @@ func (s *OpenAIGatewayService) filterSchedulableOpenAICandidate(ctx context.Cont
 	return account
 }
 
-func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Context, account *Account) *Account {
+func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromSchedulerCache(ctx context.Context, account *Account) *Account {
 	if account == nil {
 		return nil
 	}
@@ -3080,10 +3080,10 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromDB(ctx context.Co
 	return latest
 }
 
-// refreshOpenAICandidatesFromDB keeps its historical name, but scheduler-backed
-// requests exclusively refresh candidate metadata from the published cache.
-// A missing or unreadable batch excludes every candidate rather than querying DB.
-func (s *OpenAIGatewayService) refreshOpenAICandidatesFromDB(ctx context.Context, candidates []*Account) map[int64]*Account {
+// refreshOpenAICandidatesFromSchedulerCache refreshes candidate metadata from
+// worker-published scheduler cache state. A missing or unreadable batch excludes
+// every candidate rather than querying the database.
+func (s *OpenAIGatewayService) refreshOpenAICandidatesFromSchedulerCache(ctx context.Context, candidates []*Account) map[int64]*Account {
 	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil {
 		return nil
 	}
@@ -3122,8 +3122,8 @@ func (s *OpenAIGatewayService) recheckOpenAIAccountEligibility(ctx context.Conte
 	return account
 }
 
-func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
-	return s.recheckOpenAIAccountEligibility(ctx, s.refreshSelectedOpenAIAccountFromDB(ctx, account), requestedModel, requireCompact, requiredCapability)
+func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromSchedulerCache(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
+	return s.recheckOpenAIAccountEligibility(ctx, s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, account), requestedModel, requireCompact, requiredCapability)
 }
 
 func (s *OpenAIGatewayService) openAIStickyAccountMatchesSchedulingGroup(account *Account, groupID *int64) bool {

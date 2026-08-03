@@ -559,7 +559,7 @@ type ServerConfig struct {
 	TrustedProxies           []string  `mapstructure:"trusted_proxies"`       // 可信代理列表（CIDR/IP）
 	TrustedProxiesConfigured bool      `mapstructure:"-" json:"-" yaml:"-"`   // 是否显式配置了可信代理列表
 	MaxRequestBodySize       int64     `mapstructure:"max_request_body_size"` // 全局最大请求体限制
-	PprofEnabled             bool      `mapstructure:"pprof_enabled"`          // 是否暴露 /debug/pprof（仅 admin 鉴权可访问，默认关闭）
+	PprofEnabled             bool      `mapstructure:"pprof_enabled"`         // 是否暴露 /debug/pprof（仅 admin 鉴权可访问，默认关闭）
 	H2C                      H2CConfig `mapstructure:"h2c"`                   // HTTP/2 Cleartext 配置
 }
 
@@ -1114,13 +1114,6 @@ type GatewaySchedulingConfig struct {
 
 	// 过期槽位清理周期（0 表示禁用）
 	SlotCleanupInterval time.Duration `mapstructure:"slot_cleanup_interval"`
-
-	// 受控回源配置
-	DbFallbackEnabled bool `mapstructure:"db_fallback_enabled"`
-	// 受控回源超时（秒），0 表示不额外收紧超时
-	DbFallbackTimeoutSeconds int `mapstructure:"db_fallback_timeout_seconds"`
-	// 受控回源限流（实例级 QPS），0 表示不限制
-	DbFallbackMaxQPS int `mapstructure:"db_fallback_max_qps"`
 
 	// Outbox 轮询与滞后阈值配置
 	// Outbox 轮询周期（秒）
@@ -2001,9 +1994,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.snapshot_mget_chunk_size", 128)
 	viper.SetDefault("gateway.scheduling.snapshot_write_chunk_size", 256)
 	viper.SetDefault("gateway.scheduling.slot_cleanup_interval", 30*time.Second)
-	viper.SetDefault("gateway.scheduling.db_fallback_enabled", true)
-	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 0)
-	viper.SetDefault("gateway.scheduling.db_fallback_max_qps", 0)
 	viper.SetDefault("gateway.scheduling.outbox_poll_interval_seconds", 1)
 	viper.SetDefault("gateway.scheduling.outbox_lag_warn_seconds", 5)
 	viper.SetDefault("gateway.scheduling.outbox_lag_rebuild_seconds", 10)
@@ -2842,12 +2832,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.SlotCleanupInterval < 0 {
 		return fmt.Errorf("gateway.scheduling.slot_cleanup_interval must be non-negative")
-	}
-	if c.Gateway.Scheduling.DbFallbackTimeoutSeconds < 0 {
-		return fmt.Errorf("gateway.scheduling.db_fallback_timeout_seconds must be non-negative")
-	}
-	if c.Gateway.Scheduling.DbFallbackMaxQPS < 0 {
-		return fmt.Errorf("gateway.scheduling.db_fallback_max_qps must be non-negative")
 	}
 	if c.Gateway.Scheduling.OutboxPollIntervalSeconds <= 0 {
 		return fmt.Errorf("gateway.scheduling.outbox_poll_interval_seconds must be positive")

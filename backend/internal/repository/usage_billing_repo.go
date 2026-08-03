@@ -116,9 +116,10 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 	return result, nil
 }
 
-// ApplyBatchAndStageOutboxFinalizations 把整轮 worker 记录放进同一事务应用：
-// 每条记录一个 savepoint，失败记录单独回滚（失败隔离），其余记录照常提交。
-// 逐条语义与 ApplyAndStageOutboxFinalization 完全一致，仅事务边界变粗。
+// ApplyBatchAndStageOutboxFinalizations 把一批记录放进同一事务应用（worker
+// 按用户分片切分后，每次调用对应一个分片的事务）：每条记录一个 savepoint，
+// 失败记录单独回滚（失败隔离），其余记录照常提交。逐条语义与
+// ApplyAndStageOutboxFinalization 完全一致，仅事务边界变粗。
 func (r *usageBillingRepository) ApplyBatchAndStageOutboxFinalizations(ctx context.Context, items []service.UsageBillingBatchItem) ([]service.UsageBillingBatchOutcome, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("usage billing repository db is nil")

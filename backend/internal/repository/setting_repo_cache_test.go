@@ -5,6 +5,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,25 @@ import (
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
 )
+
+// blockingQueryDriver 包一层 dialect.Driver：匹配到的 SQL 先阻塞在
+// readStarted/release 通道上，用于确定性构造"读与写并发"的竞态场景。
+type blockingQueryDriver struct {
+	dialect.Driver
+	triggerSQL  string
+	readStarted chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func (d *blockingQueryDriver) Query(ctx context.Context, query string, args, v any) error {
+	if strings.Contains(query, d.triggerSQL) {
+		d.startOnce.Do(func() { close(d.readStarted) })
+		<-d.release
+	}
+	return d.Driver.Query(ctx, query, args, v)
+}
 
 func newSettingRepoWithSQLMock(t *testing.T) (*settingRepository, sqlmock.Sqlmock) {
 	t.Helper()
@@ -219,5 +240,54 @@ func TestSettingRepository_GetValueFailOpenOnDBError(t *testing.T) {
 	value, err := repo.GetValue(context.Background(), "broken")
 	require.NoError(t, err)
 	require.Equal(t, "v", value)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSettingRepository_StaleInFlightLoadDiscardedAfterSet 复现读失效竞态：
+// 慢读（DB 查询进行中）与 Set 提交重叠时，若慢读把读到的旧值回填缓存，
+// 下一次读取会命中旧值而非刚写入的新值。修复后回填必须被丢弃。
+func TestSettingRepository_StaleInFlightLoadDiscardedAfterSet(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	// 慢读在 wrapper 处阻塞、未达 sqlmock，Set 的 INSERT 先到：乱序匹配。
+	mock.MatchExpectationsInOrder(false)
+
+	readStarted := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	blocking := &blockingQueryDriver{
+		Driver:      entsql.OpenDB(dialect.Postgres, db),
+		triggerSQL:  `FROM "settings" WHERE "settings"."key" = $1`,
+		readStarted: readStarted,
+		release:     release,
+	}
+	client := dbent.NewClient(dbent.Driver(blocking))
+	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	repo := &settingRepository{client: client}
+
+	// 慢读先发起旧值查询并阻塞；Set 在慢读返回前提交新值并失效缓存。
+	expectSettingSelect(mock, "feature_x", "old")
+	expectSettingUpsert(mock, "feature_x", "new")
+
+	slowResult := make(chan error, 1)
+	go func() {
+		_, err := repo.GetValue(context.Background(), "feature_x")
+		slowResult <- err
+	}()
+
+	<-readStarted // 慢读已进入 DB 查询
+	require.NoError(t, repo.Set(context.Background(), "feature_x", "new"))
+
+	// 放行慢读：它此刻只能读到旧值，回填动作必须因版本推进而被丢弃。
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, <-slowResult)
+
+	// 缓存未被旧值污染：下一次读取仍走 DB 并得到新值。
+	expectSettingSelect(mock, "feature_x", "new")
+	value, err := repo.GetValue(context.Background(), "feature_x")
+	require.NoError(t, err)
+	require.Equal(t, "new", value)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

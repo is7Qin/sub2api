@@ -15,7 +15,9 @@ import (
 type billingOutboxRepoStub struct {
 	mu sync.Mutex
 
-	records                []BillingOutboxRecord
+	records []BillingOutboxRecord
+	// claimSeq 非空时，每次 Claim 依次返回对应记录集（测试不同轮次的记录组成）。
+	claimSeq               [][]BillingOutboxRecord
 	finalizationRecords    []BillingOutboxRecord
 	claimLimit             int
 	finalizationClaimLimit int
@@ -48,6 +50,11 @@ func (r *billingOutboxRepoStub) Claim(_ context.Context, workerID string, limit 
 	r.claimLimit = limit
 	r.workerID = workerID
 	r.lease = lease
+	if len(r.claimSeq) > 0 {
+		batch := r.claimSeq[0]
+		r.claimSeq = r.claimSeq[1:]
+		return append([]BillingOutboxRecord(nil), batch...), nil
+	}
 	return append([]BillingOutboxRecord(nil), r.records...), nil
 }
 

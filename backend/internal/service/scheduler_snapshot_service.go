@@ -395,12 +395,12 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	// 请求，同一时刻只有一个请求实际执行 DB 查询 + SetSnapshot 写回，其余请求
 	// 等待同一结果（回源失败时共享同一错误，下一请求自然重试）。leader 的 DB
 	// 工作使用脱离调用方取消的上下文，避免首个请求断连把整批等待者一起拖垮；
-	// 执行时长仍由 withFallbackTimeout 限制。
+	// 执行时长由 fallbackQueryContext 施加的硬性上限限制。
 	value, err, _ := s.snapshotFallbackGroup.Do(bucket.String(), func() (any, error) {
 		if err := s.guardFallback(ctx); err != nil {
 			return nil, err
 		}
-		fallbackCtx, cancel := s.withFallbackTimeout(context.WithoutCancel(ctx))
+		fallbackCtx, cancel := s.fallbackQueryContext(ctx)
 		defer cancel()
 
 		accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
@@ -1635,6 +1635,19 @@ func (s *SchedulerSnapshotService) guardFallback(ctx context.Context) error {
 		return ErrSchedulerFallbackLimited
 	}
 	return ErrSchedulerCacheNotReady
+}
+
+// fallbackQueryContext 构造 singleflight leader 的回源查询上下文：脱离调用方
+// 取消（leader 的 DB 工作不随首个请求断连中断），并施加硬性执行上限——
+// db_fallback_timeout_seconds 未配置（生产默认 0）时也必须兜底有限，否则 DB
+// 挂起会让 leader 无限阻塞，整桶 singleflight 等待者一起卡死。
+func (s *SchedulerSnapshotService) fallbackQueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	bounded, boundedCancel := context.WithTimeout(context.WithoutCancel(ctx), schedulerBucketRebuildLimit)
+	fallbackCtx, fallbackCancel := s.withFallbackTimeout(bounded)
+	return fallbackCtx, func() {
+		boundedCancel()
+		fallbackCancel()
+	}
 }
 
 func (s *SchedulerSnapshotService) withFallbackTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

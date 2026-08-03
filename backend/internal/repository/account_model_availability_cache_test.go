@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"sync"
 	"testing"
@@ -298,5 +299,123 @@ func TestListModelAvailabilityCandidates_ConcurrentMissQueriesOnce(t *testing.T)
 		require.Len(t, results[i], 1)
 	}
 	require.Equal(t, 1, counter.Count(), "并发 miss 应被 singleflight 合并为一次查询")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestListModelAvailabilityCandidates_ConcurrentSupportChecksRaceFree 验证缓存
+// 返回的账号与调用方解耦（按值拷贝）：多 goroutine 并发对同一缓存条目做
+// IsModelSupported（内部触发 model_mapping 无锁惰性缓存写入）不得产生数据竞争
+// （-race 下运行）。两轮并发：第一轮共享 singleflight leader 的结果，第二轮
+// 共享缓存 GET 的条目。
+func TestListModelAvailabilityCandidates_ConcurrentSupportChecksRaceFree(t *testing.T) {
+	counter := &countingQueryMatcher{}
+	repo, mock := newModelAvailabilityCandidateRepo(t, counter)
+
+	mock.ExpectQuery("model availability candidates").
+		WillReturnRows(addOAuthCandidateRow(modelAvailabilityCandidateRow()))
+
+	groupID := int64(42)
+	run := func() {
+		start := make(chan struct{})
+		errs := make([]error, 16)
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				accounts, err := repo.ListModelAvailabilityCandidates(context.Background(), &groupID, []string{service.PlatformOpenAI}, false)
+				errs[i] = err
+				if err == nil && len(accounts) > 0 {
+					_ = accounts[0].IsModelSupported("gpt-4o")
+					_ = accounts[0].IsModelSupported("deepseek-v4")
+				}
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		for i := range errs {
+			require.NoError(t, errs[i])
+		}
+	}
+
+	// 第一轮：并发 miss 合并为一次查询，singleflight 结果被 16 个调用方共享。
+	run()
+	require.Equal(t, 1, counter.Count(), "并发 miss 应被 singleflight 合并为一次查询")
+	// 第二轮：TTL 内全部命中缓存，走缓存 GET 路径。
+	run()
+	require.Equal(t, 1, counter.Count(), "第二轮应全部命中缓存，不再查询 DB")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// gatedSQLExecutor 捕获 QueryContext 收到的 ctx 并阻塞到放行后转发给底层 DB：
+// 用于验证 singleflight leader 的查询上下文是否脱离首个调用方的取消。
+type gatedSQLExecutor struct {
+	db       *sql.DB
+	started  chan struct{} // 首次捕获 ctx 后关闭
+	release  chan struct{} // 关闭后放行查询
+	captured context.Context
+	mu       sync.Mutex
+}
+
+func (g *gatedSQLExecutor) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	g.mu.Lock()
+	if g.captured == nil {
+		g.captured = ctx
+		close(g.started)
+	}
+	g.mu.Unlock()
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return g.db.QueryContext(ctx, query, args...)
+}
+
+func (g *gatedSQLExecutor) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return g.db.ExecContext(ctx, query, args...)
+}
+
+// TestListModelAvailabilityCandidates_LeaderQueryDetachedFromCallerCancel 验证
+// singleflight leader 的查询上下文脱离首个调用方的取消：首个请求断连不得让
+// 等待者共享瞬时错误；查询必须带独立执行上限，防止 DB 挂起时无限阻塞。
+func TestListModelAvailabilityCandidates_LeaderQueryDetachedFromCallerCancel(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(&countingQueryMatcher{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	t.Cleanup(func() { _ = client.Close() })
+	gate := &gatedSQLExecutor{db: db, started: make(chan struct{}), release: make(chan struct{})}
+	repo := newAccountRepositoryWithSQL(client, gate, nil)
+
+	mock.ExpectQuery("model availability candidates").
+		WillReturnRows(addOAuthCandidateRow(modelAvailabilityCandidateRow()))
+
+	groupID := int64(42)
+	callerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := repo.ListModelAvailabilityCandidates(callerCtx, &groupID, []string{service.PlatformOpenAI}, false)
+		done <- err
+	}()
+
+	// 等 leader 进入查询（ctx 已捕获）后取消首个调用方。
+	<-gate.started
+	cancel()
+
+	deadline, ok := gate.captured.Deadline()
+	require.True(t, ok, "leader 查询上下文必须带独立执行上限")
+	_ = deadline
+
+	// 放行查询：若 leader 上下文被调用方取消拖累，查询会以 ctx.Err 失败；
+	// 正确实现脱离取消，返回成功。
+	close(gate.release)
+	select {
+	case err := <-done:
+		require.NoError(t, err, "取消首个调用方不得中断 leader 的查询")
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader 查询未在放行后返回")
+	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }

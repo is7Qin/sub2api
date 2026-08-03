@@ -26,6 +26,10 @@ import (
 // 与本修复“消除热路径 DB 往返与解码开销”的目标相悖。
 const modelAvailabilityCandidatesCacheTTL = 30 * time.Second
 
+// modelAvailabilityCandidatesQueryTimeout 是 leader 查询脱离调用方取消后的独立
+// 执行上限：调用方无 deadline 时查询不能无限执行（等待者共享 leader 的阻塞）。
+const modelAvailabilityCandidatesQueryTimeout = 30 * time.Second
+
 // modelAvailabilityCandidateCache 按 groupID（含未分组）缓存判别候选账号，
 // TTL 到期后由 singleflight 合并并发 miss，避免缓存击穿。
 type modelAvailabilityCandidateCache struct {
@@ -47,6 +51,17 @@ func newModelAvailabilityCandidateCache() *modelAvailabilityCandidateCache {
 	}
 }
 
+// cloneModelAvailabilityAccounts 浅拷贝账号切片，使缓存条目与返回给调用方的
+// 切片相互独立。调用方会在热路径上对 Account 做无锁惰性缓存写入（model_mapping
+// 等，见 service.Account.GetModelMapping），共享同一结构体引用会形成数据竞争；
+// 浅拷贝即可：惰性写入只落在结构体自身字段，不修改共享的 Credentials/Extra map。
+func cloneModelAvailabilityAccounts(accounts []service.Account) []service.Account {
+	if len(accounts) == 0 {
+		return []service.Account{}
+	}
+	return append([]service.Account(nil), accounts...)
+}
+
 func (c *modelAvailabilityCandidateCache) get(key string) ([]service.Account, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -54,7 +69,7 @@ func (c *modelAvailabilityCandidateCache) get(key string) ([]service.Account, bo
 	if !ok || c.now().After(e.expiresAt) {
 		return nil, false
 	}
-	return e.accounts, true
+	return cloneModelAvailabilityAccounts(e.accounts), true
 }
 
 func (c *modelAvailabilityCandidateCache) set(key string, accounts []service.Account) {
@@ -264,7 +279,16 @@ func (r *accountRepository) ListModelAvailabilityCandidates(ctx context.Context,
 		return cached, nil
 	}
 	v, err, _ := r.modelAvailabilityCache.sf.Do(key, func() (any, error) {
-		accounts, err := r.queryModelAvailabilityCandidatesProjected(ctx, groupID, platforms, includeGrouped)
+		// leader 的查询脱离首个调用方的取消：singleflight 的等待者共享 leader
+		// 的结果/错误，首个请求断连不应把整批一起拖垮；执行时长用独立上限
+		// 兜底，防止 DB 挂起时 leader 无限等待（等待者同样被阻塞）。
+		queryCtx := context.WithoutCancel(ctx)
+		if deadline, ok := ctx.Deadline(); ok {
+			queryCtx, _ = context.WithDeadline(queryCtx, deadline)
+		} else {
+			queryCtx, _ = context.WithTimeout(queryCtx, modelAvailabilityCandidatesQueryTimeout)
+		}
+		accounts, err := r.queryModelAvailabilityCandidatesProjected(queryCtx, groupID, platforms, includeGrouped)
 		if err != nil {
 			// 查询失败不缓存：下个请求重试，行为与无缓存时一致。
 			return nil, err
@@ -275,7 +299,7 @@ func (r *accountRepository) ListModelAvailabilityCandidates(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	return v.([]service.Account), nil
+	return cloneModelAvailabilityAccounts(v.([]service.Account)), nil
 }
 
 // listModelAvailabilityCandidatesEnt 是未注入 SQL 执行器时的回退实现，

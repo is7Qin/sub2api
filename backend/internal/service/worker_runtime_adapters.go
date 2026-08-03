@@ -10,6 +10,32 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 )
 
+const concurrencySlotCleanupWorkerTimeout = 6 * time.Second
+
+// NewConcurrencySlotCleanupWorker adapts expired account-slot cleanup to the worker runtime.
+func NewConcurrencySlotCleanupWorker(svc *ConcurrencyService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("concurrency service is required")
+	}
+	if !svc.CleanupEnabled() {
+		return nil, nil
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "concurrency-slot-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "maintenance",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Removes expired account concurrency slots",
+			Tags:             []string{"concurrency", "account-slots", "cleanup"},
+		},
+		Interval:       svc.CleanupInterval(),
+		Timeout:        concurrencySlotCleanupWorkerTimeout,
+		RunImmediately: true,
+		Run:            svc.RunSlotCleanup,
+	})
+}
+
 // NewAccountExpiryWorker adapts account expiry maintenance to the worker runtime.
 func NewAccountExpiryWorker(svc *AccountExpiryService) (*workerruntime.PeriodicJob, error) {
 	if svc == nil {

@@ -537,17 +537,20 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 	return account, nil
 }
 
-// GetSchedulableAccountsByIDs 批量读取账号快照全量 payload（sched:acc:{id}，
-// 含 credentials/extra 完整序列化）。缺失的 ID 直接跳过——快照中不存在即视为
-// 不可调度，与“未在刷新 map 中”的调用方语义一致；仅 Redis 错误或 payload
-// 解码失败才返回错误（此时调用方整体降级 DB）。
+// GetSchedulableAccountsByIDs 批量读取账号快照的调度子集 meta payload
+// （sched:meta:{id}，仅调度/路由所需字段，不携带 api_key/access_token 等凭据）。
+// 每请求候选刷新若读全量 payload（~9KB/账号）会放大 Redis 网络吞吐；meta 仅
+// 含调度字段，足以支撑存在性判断与资格复检（调用方选中后经 GetAccount 重新
+// 水合全量账号再执行请求）。缺失的 ID 直接跳过——快照中不存在即视为不可调度，
+// 与“未在刷新 map 中”的调用方语义一致；仅 Redis 错误或 payload 解码失败才
+// 返回错误（此时调用方整体降级 DB）。
 func (c *schedulerCache) GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*service.Account, error) {
 	if len(ids) == 0 {
 		return map[int64]*service.Account{}, nil
 	}
 	keys := make([]string, 0, len(ids))
 	for _, id := range ids {
-		keys = append(keys, schedulerAccountKey(strconv.FormatInt(id, 10)))
+		keys = append(keys, schedulerAccountMetaKey(strconv.FormatInt(id, 10)))
 	}
 	values, err := c.mgetChunked(ctx, keys)
 	if err != nil {
@@ -950,7 +953,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
-	keys := []string{"model_mapping", "project_id", "oauth_type", "openai_capabilities"}
+	// compact_model_mapping 参与 compact 路径的通道上游模型限制检查，须随 meta 保留。
+	keys := []string{"model_mapping", "project_id", "oauth_type", "openai_capabilities", "compact_model_mapping"}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -1002,6 +1006,12 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_responses_mode",
 		"openai_responses_supported",
 		"privacy_mode",
+		// 以下三个字段是候选资格复检的调度决策输入（passthrough 快速通道 /
+		// compact tier 判定），全量 payload 中包含但 meta 白名单此前遗漏；
+		// 批量刷新改读 meta 后必须保留，否则复检语义会静默退化。
+		"openai_passthrough",
+		"openai_compact_mode",
+		"openai_compact_supported",
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",
 		"codex_5h_reset_at",

@@ -392,9 +392,9 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 	return s.accountRepo.GetByID(fallbackCtx, accountID)
 }
 
-// GetSchedulableAccountsByIDs 从快照批量读取账号全量数据；缺失的 ID 不在返回
-// map 中（与“未在刷新 map 中视为已删除”的调用方语义一致）。cache 缺失或未实现
-// 批量读（可选接口）时返回错误，由调用方降级 DB 查询。
+// GetSchedulableAccountsByIDs 从快照批量读取账号调度元数据（meta payload）；
+// 缺失的 ID 不在返回 map 中（与“未在刷新 map 中视为已删除”的调用方语义一致）。
+// cache 缺失或未实现批量读（可选接口）时返回错误，由调用方降级 DB 查询。
 func (s *SchedulerSnapshotService) GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error) {
 	if s == nil || s.cache == nil {
 		return nil, ErrSchedulerCacheNotReady

@@ -148,6 +148,16 @@ end
 return 1
 `)
 
+	// writeUnpublishedStaticStateZSetScript materializes a versioned membership
+	// set and gives it a bounded lifetime in one Redis transaction. This closes the
+	// interval where an accepted ZADD could be reported as failed before a separate
+	// EXPIRE reaches Redis.
+	writeUnpublishedStaticStateZSetScript = redis.NewScript(`
+	redis.call('ZADD', KEYS[1], unpack(ARGV, 2))
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+	return 1
+`)
+
 	// activateStaticStateScript switches candidate and persistent-support pools as
 	// one version. Readers see the former version until both new ZSETs are durable.
 	activateStaticStateScript = redis.NewScript(`
@@ -167,6 +177,11 @@ redis.call('SET', KEYS[2], '1')
 redis.call('SET', KEYS[3], ARGV[1])
 redis.call('SET', KEYS[4], '1')
 redis.call('SADD', KEYS[5], ARGV[2])
+
+-- Membership and payloads start with a bounded TTL while publication is uncertain.
+-- Once this transaction publishes the version, make the live ZSETs persistent.
+redis.call('PERSIST', KEYS[8])
+redis.call('PERSIST', KEYS[9])
 
 -- Payloads start with a bounded TTL while publication is uncertain. Once this
 -- transaction publishes the version, remove that safety TTL for the live state.
@@ -575,7 +590,7 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
-	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, candidatePayloadIDs); err != nil {
+	if err := c.writeStaticSnapshotAccountIDs(ctx, bucket, version, candidatePayloadIDs); err != nil {
 		_ = c.cleanupUnpublishedStaticState(ctx, bucket, version, candidatePayloadIDs, supportPayloadIDs)
 		return err
 	}
@@ -737,19 +752,11 @@ func (c *schedulerCache) writeSnapshotAccountIDs(ctx context.Context, bucket ser
 	snapshotKey := schedulerSnapshotKey(bucket, version)
 	members := make([]redis.Z, 0, len(accountIDs))
 	for idx, accountID := range accountIDs {
-		members = append(members, redis.Z{
-			Score:  float64(idx),
-			Member: strconv.FormatInt(accountID, 10),
-		})
+		members = append(members, redis.Z{Score: float64(idx), Member: strconv.FormatInt(accountID, 10)})
 	}
 	for start := 0; start < len(members); start += c.writeChunkSize {
-		end := start + c.writeChunkSize
-		if end > len(members) {
-			end = len(members)
-		}
+		end := min(start+c.writeChunkSize, len(members))
 		if err := c.rdb.ZAdd(ctx, snapshotKey, members[start:end]...).Err(); err != nil {
-			// This version was never published; best-effort cleanup avoids leaking a
-			// partially materialized key while preserving the active snapshot.
 			_ = c.rdb.Del(ctx, snapshotKey).Err()
 			return err
 		}
@@ -757,20 +764,31 @@ func (c *schedulerCache) writeSnapshotAccountIDs(ctx context.Context, bucket ser
 	return nil
 }
 
+func (c *schedulerCache) writeStaticSnapshotAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accountIDs []int64) error {
+	return c.writeStaticStateMembership(ctx, schedulerSnapshotKey(bucket, version), accountIDs)
+}
+
 // writeSupportAccountIDs materializes the persistent pool before its shared
-// version can become visible. A failed chunk deletes the unpublished key.
+// version can become visible. Failed or ambiguous writes retain a bounded TTL
+// until activation persists the live ZSET.
 func (c *schedulerCache) writeSupportAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accountIDs []int64) error {
+	return c.writeStaticStateMembership(ctx, schedulerSupportKey(bucket, version), accountIDs)
+}
+
+func (c *schedulerCache) writeStaticStateMembership(ctx context.Context, key string, accountIDs []int64) error {
 	if len(accountIDs) == 0 {
 		return nil
 	}
-	key := schedulerSupportKey(bucket, version)
-	members := make([]redis.Z, 0, len(accountIDs))
-	for index, accountID := range accountIDs {
-		members = append(members, redis.Z{Score: float64(index), Member: strconv.FormatInt(accountID, 10)})
-	}
-	for start := 0; start < len(members); start += c.writeChunkSize {
-		end := min(start+c.writeChunkSize, len(members))
-		if err := c.rdb.ZAdd(ctx, key, members[start:end]...).Err(); err != nil {
+	for start := 0; start < len(accountIDs); start += c.writeChunkSize {
+		end := min(start+c.writeChunkSize, len(accountIDs))
+		args := make([]any, 1, 1+(end-start)*2)
+		args[0] = staticStateUnpublishedPayloadTTLSeconds
+		for index, accountID := range accountIDs[start:end] {
+			args = append(args, float64(start+index), strconv.FormatInt(accountID, 10))
+		}
+		if err := writeUnpublishedStaticStateZSetScript.Run(ctx, c.rdb, []string{key}, args...).Err(); err != nil {
+			// This version was never published; best-effort cleanup leaves the TTL
+			// installed atomically with every accepted ZADD as the failure fallback.
 			_ = c.rdb.Del(ctx, key).Err()
 			return err
 		}

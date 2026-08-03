@@ -350,7 +350,7 @@ func (h *schedulerSnapshotWriteFailureHook) DialHook(next redis.DialHook) redis.
 
 func (h *schedulerSnapshotWriteFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		if cmd.Name() == "zadd" && h.zaddCalls.Add(1) == 2 {
+		if (cmd.Name() == "zadd" || cmd.Name() == "eval" || cmd.Name() == "evalsha") && h.zaddCalls.Add(1) == 2 {
 			return errors.New("injected snapshot zadd failure")
 		}
 		return next(ctx, cmd)
@@ -710,6 +710,7 @@ func (h *schedulerStaticPayloadPipelineFailureHook) ProcessPipelineHook(next red
 }
 
 type schedulerStaticActivationRaceHook struct {
+	bucket        service.SchedulerBucket
 	publishWinner func(context.Context) error
 	fired         atomic.Bool
 }
@@ -719,7 +720,7 @@ func (h *schedulerStaticActivationRaceHook) DialHook(next redis.DialHook) redis.
 func (h *schedulerStaticActivationRaceHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		err := next(ctx, cmd)
-		if err == nil && cmd.Name() == "zadd" && h.fired.CompareAndSwap(false, true) {
+		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && redisCommandContainsKey(cmd, schedulerSnapshotKey(h.bucket, "1")) && h.fired.CompareAndSwap(false, true) {
 			// Publish a complete newer state after this version is materialized but before activation.
 			return h.publishWinner(ctx)
 		}
@@ -732,6 +733,7 @@ func (h *schedulerStaticActivationRaceHook) ProcessPipelineHook(next redis.Proce
 }
 
 type schedulerStaticActivationResponseLostHook struct {
+	bucket      service.SchedulerBucket
 	publishNext func(context.Context) error
 	fired       atomic.Bool
 }
@@ -743,7 +745,7 @@ func (h *schedulerStaticActivationResponseLostHook) DialHook(next redis.DialHook
 func (h *schedulerStaticActivationResponseLostHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		err := next(ctx, cmd)
-		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && h.fired.CompareAndSwap(false, true) {
+		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && redisCommandContainsKey(cmd, schedulerBucketKey(schedulerActivePrefix, h.bucket)) && h.fired.CompareAndSwap(false, true) {
 			if publishErr := h.publishNext(ctx); publishErr != nil {
 				return publishErr
 			}
@@ -773,7 +775,7 @@ func TestSchedulerCache_StaticStateLostActivationResponsePreservesReaderGrace(t 
 	require.True(t, ok)
 	t.Cleanup(func() { _ = v2Cache.rdb.Close() })
 
-	hook := &schedulerStaticActivationResponseLostHook{publishNext: func(ctx context.Context) error {
+	hook := &schedulerStaticActivationResponseLostHook{bucket: bucket, publishNext: func(ctx context.Context) error {
 		return v2Cache.SetStaticState(ctx, bucket, []service.Account{v2}, []service.Account{v2})
 	}}
 	cache.rdb.AddHook(hook)
@@ -839,6 +841,120 @@ func TestSchedulerCache_StaticStateAmbiguousPayloadPipelineFailureCleansUnpublis
 	}
 }
 
+type schedulerStaticMembershipAmbiguousWriteHook struct {
+	targetKey string
+	failed    atomic.Bool
+}
+
+func (h *schedulerStaticMembershipAmbiguousWriteHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *schedulerStaticMembershipAmbiguousWriteHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "del" && redisCommandContainsKey(cmd, h.targetKey) {
+			// Keep the server-accepted membership key around to exercise the TTL fallback.
+			return errors.New("injected static membership cleanup failure")
+		}
+		err := next(ctx, cmd)
+		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && redisCommandContainsKey(cmd, h.targetKey) && h.failed.CompareAndSwap(false, true) {
+			// Redis accepted the ZADD, but the client lost the response.
+			return errors.New("injected ambiguous static membership zadd failure")
+		}
+		return err
+	}
+}
+
+func (h *schedulerStaticMembershipAmbiguousWriteHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		err := next(ctx, cmds)
+		if err != nil {
+			return err
+		}
+		for _, cmd := range cmds {
+			if (cmd.Name() == "eval" || cmd.Name() == "evalsha") && redisCommandContainsKey(cmd, h.targetKey) && h.failed.CompareAndSwap(false, true) {
+				// Both ZADD and its paired expiry reached Redis before the response was lost.
+				return errors.New("injected ambiguous static membership zadd failure")
+			}
+		}
+		return nil
+	}
+}
+
+func redisCommandContainsKey(cmd redis.Cmder, key string) bool {
+	for _, arg := range cmd.Args()[1:] {
+		if arg == key {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSchedulerCache_StaticStateAmbiguousMembershipWriteBoundsUnpublishedZSets(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name          string
+		membershipKey func(service.SchedulerBucket) string
+		wantKeys      func(service.SchedulerBucket) []string
+	}{
+		{
+			name: "candidate",
+			membershipKey: func(bucket service.SchedulerBucket) string {
+				return schedulerSnapshotKey(bucket, "1")
+			},
+			wantKeys: func(bucket service.SchedulerBucket) []string {
+				return []string{schedulerSnapshotKey(bucket, "1")}
+			},
+		},
+		{
+			name: "support",
+			membershipKey: func(bucket service.SchedulerBucket) string {
+				return schedulerSupportKey(bucket, "1")
+			},
+			wantKeys: func(bucket service.SchedulerBucket) []string {
+				return []string{schedulerSnapshotKey(bucket, "1"), schedulerSupportKey(bucket, "1")}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := newSchedulerCacheUnit(t)
+			bucket := service.SchedulerBucket{GroupID: 24, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+			hook := &schedulerStaticMembershipAmbiguousWriteHook{targetKey: tc.membershipKey(bucket)}
+			cache.rdb.AddHook(hook)
+
+			err := cache.SetStaticState(ctx, bucket,
+				[]service.Account{{ID: 90, Platform: service.PlatformOpenAI}},
+				[]service.Account{{ID: 90, Platform: service.PlatformOpenAI}, {ID: 91, Platform: service.PlatformOpenAI}},
+			)
+			require.ErrorContains(t, err, "injected ambiguous static membership zadd failure")
+			require.True(t, hook.failed.Load())
+			_, err = cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
+			require.ErrorIs(t, err, redis.Nil)
+
+			for _, key := range tc.wantKeys(bucket) {
+				ttl := cache.rdb.TTL(ctx, key).Val()
+				require.Greater(t, ttl, time.Duration(0), key)
+				require.LessOrEqual(t, ttl, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second, key)
+			}
+		})
+	}
+}
+
+func TestSchedulerCache_StaticStatePublicationPersistsActiveMembershipZSets(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 25, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	candidate := service.Account{ID: 92, Platform: service.PlatformOpenAI}
+	support := service.Account{ID: 93, Platform: service.PlatformOpenAI}
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{candidate}, []service.Account{candidate, support}))
+	version := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+	for _, key := range []string{schedulerSnapshotKey(bucket, version), schedulerSupportKey(bucket, version)} {
+		require.Equal(t, time.Duration(-1), cache.rdb.TTL(ctx, key).Val(), key)
+	}
+}
+
 func TestSchedulerCache_StaticStateStaleActivationCleansUnpublishedPayloads(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)
@@ -854,7 +970,7 @@ func TestSchedulerCache_StaticStateStaleActivationCleansUnpublishedPayloads(t *t
 	require.True(t, ok)
 	t.Cleanup(func() { _ = winnerCache.rdb.Close() })
 
-	hook := &schedulerStaticActivationRaceHook{publishWinner: func(ctx context.Context) error {
+	hook := &schedulerStaticActivationRaceHook{bucket: bucket, publishWinner: func(ctx context.Context) error {
 		return winnerCache.SetStaticState(ctx, bucket, []service.Account{winner}, []service.Account{winner})
 	}}
 	cache.rdb.AddHook(hook)

@@ -336,3 +336,36 @@ ok github.com/Wei-Shaw/sub2api/internal/service
 git diff --check
 # passed
 ```
+
+
+## Unpublished static membership retention bound fix
+
+### RED
+
+Added `TestSchedulerCache_StaticStateAmbiguousMembershipWriteBoundsUnpublishedZSets`, with candidate and support subtests. Each Redis hook reports an error only after Redis has accepted the version ZSET materialization and deliberately fails the following best-effort cleanup DEL. Before the fix, each retained ZSET had TTL `-1` while no active version was installed.
+
+Added `TestSchedulerCache_StaticStatePublicationPersistsActiveMembershipZSets`, asserting that both active candidate and support ZSETs have TTL `-1` after successful publication.
+
+### GREEN
+
+- Static candidate and support ZSET materialization now runs a Lua transaction that performs ZADD and the five-minute unpublished-artifact EXPIRE atomically. Thus an accepted membership write cannot remain indefinitely if the client loses its response and cleanup also fails.
+- The static activation Lua transaction PERSISTs both newly active ZSETs before publishing reader-visible state, preserving the existing indefinite lifetime for current active memberships. Existing replacement activation still grants old memberships their 60-second reader grace.
+- Legacy `SetSnapshot` continues to use its original unbounded materialization path; the new bound applies only to unpublished static candidate/support artifacts.
+
+### Verification
+
+```text
+cd backend && go test -tags=unit ./internal/repository -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+
+cd backend && go test -tags=unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService|.*DefaultBuckets)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+cd backend && go test -race -tags=unit ./internal/repository ./internal/service -run 'TestScheduler(Cache|SnapshotService)' -count=1
+ok github.com/Wei-Shaw/sub2api/internal/repository
+ok github.com/Wei-Shaw/sub2api/internal/service
+
+git diff --check
+# passed
+```

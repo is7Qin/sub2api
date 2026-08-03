@@ -27,6 +27,36 @@ func (c *missingSnapshotFallbackCache) SetSnapshot(context.Context, SchedulerBuc
 	return nil
 }
 
+// staticStateFallbackCache models the production static-cache capability: legacy
+// SetSnapshot changes only candidate state, leaving the support version untouched.
+type staticStateFallbackCache struct {
+	snapshotHydrationCache
+
+	candidateVersion string
+	supportVersion   string
+	snapshotWrites   int
+}
+
+func (c *staticStateFallbackCache) GetSnapshot(context.Context, SchedulerBucket) ([]*Account, bool, error) {
+	return nil, false, nil
+}
+
+func (c *staticStateFallbackCache) SetSnapshot(context.Context, SchedulerBucket, []Account) error {
+	c.snapshotWrites++
+	c.candidateVersion = "legacy"
+	return nil
+}
+
+func (c *staticStateFallbackCache) SetStaticState(context.Context, SchedulerBucket, []Account, []Account) error {
+	c.candidateVersion = "static"
+	c.supportVersion = "static"
+	return nil
+}
+
+func (c *staticStateFallbackCache) GetPersistentSupport(context.Context, SchedulerBucket) ([]*Account, bool, error) {
+	return nil, c.candidateVersion == c.supportVersion, nil
+}
+
 // slowGatedFallbackAccountRepo 回源查询先停留 fallbackQueryHold 再返回：让同一
 // 瞬间放行的所有并发调用都能加入 leader 的单飞组（确定性验证合并，而不是依赖
 // 时序碰运气）。前 failures 次查询报错。
@@ -56,6 +86,20 @@ func newSlowGatedFallbackTestService() (*SchedulerSnapshotService, *missingSnaps
 // TestSchedulerSnapshotFallback_SingleflightMergesConcurrentMisses 验证快照 miss
 // 时并发请求按分桶合并为一次 DB 回源 + 一次 SetSnapshot 写回，其余请求等待
 // 同一结果——快照 miss 风暴下不再每个请求各自回源 DB。
+func TestSchedulerSnapshotFallback_StaticCachePreservesCoherentState(t *testing.T) {
+	cache := &staticStateFallbackCache{candidateVersion: "static", supportVersion: "static"}
+	repo := &slowGatedFallbackAccountRepo{}
+	svc := &SchedulerSnapshotService{cache: cache, accountRepo: repo}
+
+	accounts, _, err := svc.ListSchedulableAccounts(context.Background(), nil, PlatformOpenAI, false)
+
+	require.NoError(t, err)
+	require.Equal(t, []Account{{ID: 1, Platform: PlatformOpenAI, Schedulable: true}}, accounts)
+	require.Equal(t, "static", cache.candidateVersion)
+	require.Equal(t, "static", cache.supportVersion)
+	require.Zero(t, cache.snapshotWrites)
+}
+
 func TestSchedulerSnapshotFallback_SingleflightMergesConcurrentMisses(t *testing.T) {
 	svc, cache, repo := newSlowGatedFallbackTestService()
 	ctx := context.Background()

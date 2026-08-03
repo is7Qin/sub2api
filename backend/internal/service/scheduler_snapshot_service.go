@@ -488,8 +488,12 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 
 		if s.cache != nil {
-			if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
+			// Static-state caches publish candidates with persistent support under one
+			// activated version. Request fallback cannot safely publish candidates alone.
+			if _, staticCache := s.cache.(SchedulerStaticStateCache); !staticCache {
+				if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
+					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
+				}
 			}
 		}
 

@@ -20,6 +20,7 @@ func provideWorkerRuntime(
 	outboxCleanup *service.OutboxCleanupService,
 	tokenRefresh *service.TokenRefreshService,
 	userMessageQueue *service.UserMessageQueueService,
+	concurrency *service.ConcurrencyService,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -53,6 +54,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	concurrencySlotCleanupWorker, err := service.NewConcurrencySlotCleanupWorker(concurrency)
+	if err != nil {
+		return nil, err
+	}
 
 	components := []workerruntime.Component{
 		accountExpiryWorker,
@@ -70,6 +75,9 @@ func provideWorkerRuntime(
 	}
 	if userMessageQueueCleanupWorker != nil {
 		components = append(components, userMessageQueueCleanupWorker)
+	}
+	if concurrencySlotCleanupWorker != nil {
+		components = append(components, concurrencySlotCleanupWorker)
 	}
 
 	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())

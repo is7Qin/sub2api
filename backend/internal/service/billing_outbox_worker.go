@@ -172,11 +172,11 @@ func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []B
 	return nil
 }
 
-// processApplyBatchBatched 把整轮记录放进一个批量事务应用，把每请求的
-// Apply 事务数从"每条记录一个"降到"每轮一个"。同一用户的多条记录在事务内
-// 天然串行；跨轮/跨 worker 的并发触碰由 lockBatchUsers 的用户分片互斥
-// 与 users 行锁兜底（与逐条路径的 billingApplyUserShardCount 语义一致）。
-// 逐条失败通过 savepoint 隔离：一条记录失败不拖垮整批，重试语义不变。
+// processApplyBatchBatched 把整轮记录按用户分片拆成多个批量事务（每分片
+// 一个事务，按分片升序处理）：同一分片的多条记录共享一个事务，行锁与
+// 分片锁的作用域都只覆盖本分片事务，不再横跨整轮——热点用户的行锁不会
+// 拖住整轮、其他分片的轮次也不会被整轮持锁阻塞。逐条失败仍通过 savepoint
+// 隔离（仓库内），重试与去重 Ack 语义不变。
 func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
 	items := make([]UsageBillingBatchItem, 0, len(records))
 	// 校验失败的记录不进批量事务，直接按 terminal 落库，与逐条路径一致。
@@ -208,46 +208,65 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 		return nil
 	}
 
-	unlock := w.lockBatchUsers(items)
 	applyCtx, applyCancel := context.WithTimeout(ctx, billingOutboxApplyTimeout)
-	outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(applyCtx, items)
-	applyCancel()
-	unlock()
-	if err == nil && len(outcomes) != len(items) {
-		err = fmt.Errorf("batch billing apply returned %d outcomes for %d items", len(outcomes), len(items))
-	}
-	if err != nil {
-		// 批量事务整体失败：没有任何一条记录提交，全部按瞬态错误退避重试。
-		for i := range items {
-			record := records[itemRecordIndex(records, items[i].Binding.OutboxID, i)]
-			w.recordFailure(err)
-			w.persistFailure(record, err, false)
+	defer applyCancel()
+	var firstErr error
+	for _, group := range groupBatchItemsByShard(items) {
+		groupItems := make([]UsageBillingBatchItem, len(group.indexes))
+		for gi, idx := range group.indexes {
+			groupItems[gi] = items[idx]
 		}
-		return err
-	}
-	for i, outcome := range outcomes {
-		record := records[itemRecordIndex(records, items[i].Binding.OutboxID, i)]
-		if outcome.Err != nil {
-			w.recordFailure(outcome.Err)
-			w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
+		// 逐分片加锁：同一时刻只持有一把分片锁（按升序获取，无嵌套，
+		// 天然无死锁），锁只覆盖本分片事务。
+		var unlock func()
+		if group.shard >= 0 {
+			unlock = w.lockUserShard(uint64(group.shard))
+		}
+		outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(applyCtx, groupItems)
+		if unlock != nil {
+			unlock()
+		}
+		if err == nil && len(outcomes) != len(groupItems) {
+			err = fmt.Errorf("batch billing apply returned %d outcomes for %d items", len(outcomes), len(groupItems))
+		}
+		if err != nil {
+			// 本分片事务失败：只重试本分片记录；其余分片独立事务照常处理。
+			if firstErr == nil {
+				firstErr = err
+			}
+			for gi := range groupItems {
+				idx := group.indexes[gi]
+				record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
+				w.recordFailure(err)
+				w.persistFailure(record, err, false)
+			}
 			continue
 		}
-		if outcome.Result == nil || outcome.Result.Applied {
-			// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
-			continue
+		for gi, outcome := range outcomes {
+			idx := group.indexes[gi]
+			record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
+			if outcome.Err != nil {
+				w.recordFailure(outcome.Err)
+				w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
+				continue
+			}
+			if outcome.Result == nil || outcome.Result.Applied {
+				// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
+				continue
+			}
+			// 已存在的去重键：本行无需 post-effects，直接确认完成。
+			ackCtx, ackCancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
+			ackErr := w.repo.Ack(ackCtx, record.ID, w.workerID)
+			ackCancel()
+			if ackErr != nil {
+				w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
+				continue
+			}
+			w.processed.Add(1)
+			w.lastError.Store("")
 		}
-		// 已存在的去重键：本行无需 post-effects，直接确认完成。
-		ackCtx, ackCancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
-		ackErr := w.repo.Ack(ackCtx, record.ID, w.workerID)
-		ackCancel()
-		if ackErr != nil {
-			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
-			continue
-		}
-		w.processed.Add(1)
-		w.lastError.Store("")
 	}
-	return nil
+	return firstErr
 }
 
 // itemRecordIndex 在整轮记录里按 outbox ID 找回 items 对应的原始记录。
@@ -261,36 +280,48 @@ func itemRecordIndex(records []BillingOutboxRecord, outboxID int64, fallback int
 	return fallback
 }
 
-// lockBatchUsers 对批量事务涉及的所有用户分片加锁（按分片序升序获取，
-// 避免并发批量事务间死锁），保证同一用户的扣费事务跨轮串行。
-// 返回的解锁函数按逆序释放。userID <= 0 的记录不触碰 users 行，无需加锁。
-func (w *BillingOutboxWorker) lockBatchUsers(items []UsageBillingBatchItem) func() {
-	if w == nil || len(items) == 0 {
-		return func() {}
+// billingShardGroup 一轮批量记录按用户分片的子集：同一分片的记录共享
+// 一个批量事务（savepoint 逐条失败隔离），分片间互不阻塞。
+type billingShardGroup struct {
+	shard   int   // -1 表示 userID<=0 的免锁记录组（不触碰 users 行）
+	indexes []int // 整轮 items 里的下标
+}
+
+// groupBatchItemsByShard 按用户分片分组，返回按分片升序的组序列；
+// userID<=0 的记录单独成组、无需分片锁。升序保证并发轮次间的加锁
+// 顺序一致（与单条路径的 billingApplyUserShardCount 语义一致）。
+func groupBatchItemsByShard(items []UsageBillingBatchItem) []billingShardGroup {
+	if len(items) == 0 {
+		return nil
 	}
-	seen := make(map[uint64]struct{}, len(items))
-	shards := make([]uint64, 0, len(items))
+	byShard := make(map[int][]int, 8)
 	for i := range items {
-		userID := items[i].Command.UserID
-		if userID <= 0 {
-			continue
+		shard := -1
+		if userID := items[i].Command.UserID; userID > 0 {
+			shard = int(uint64(userID) % billingApplyUserShardCount)
 		}
-		shard := uint64(userID) % billingApplyUserShardCount
-		if _, ok := seen[shard]; ok {
-			continue
-		}
-		seen[shard] = struct{}{}
+		byShard[shard] = append(byShard[shard], i)
+	}
+	shards := make([]int, 0, len(byShard))
+	for shard := range byShard {
 		shards = append(shards, shard)
 	}
-	sort.Slice(shards, func(i, j int) bool { return shards[i] < shards[j] })
+	sort.Ints(shards)
+	groups := make([]billingShardGroup, 0, len(shards))
 	for _, shard := range shards {
-		w.applyUserLocks[shard].Lock()
+		groups = append(groups, billingShardGroup{shard: shard, indexes: byShard[shard]})
 	}
-	return func() {
-		for i := len(shards) - 1; i >= 0; i-- {
-			w.applyUserLocks[shards[i]].Unlock()
-		}
+	return groups
+}
+
+// lockUserShard 锁定单个用户分片，返回解锁函数。逐分片加锁，同一时刻
+// 只持有一把锁，无嵌套获取。
+func (w *BillingOutboxWorker) lockUserShard(shard uint64) func() {
+	if w == nil || shard >= billingApplyUserShardCount {
+		return func() {}
 	}
+	w.applyUserLocks[shard].Lock()
+	return w.applyUserLocks[shard].Unlock
 }
 
 func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, records []BillingOutboxRecord, repo BillingOutboxFinalizationRepository) error {

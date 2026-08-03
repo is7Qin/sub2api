@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
@@ -14,17 +15,17 @@ import (
 )
 
 func expectSavepoint(mock sqlmock.Sqlmock, index int) {
-	mock.ExpectExec("SAVEPOINT billing_apply_" + string(rune('0'+index))).
+	mock.ExpectExec("SAVEPOINT billing_apply_" + strconv.Itoa(index)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
 func expectReleaseSavepoint(mock sqlmock.Sqlmock, index int) {
-	mock.ExpectExec("RELEASE SAVEPOINT billing_apply_" + string(rune('0'+index))).
+	mock.ExpectExec("RELEASE SAVEPOINT billing_apply_" + strconv.Itoa(index)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
 func expectRollbackToSavepoint(mock sqlmock.Sqlmock, index int) {
-	mock.ExpectExec("ROLLBACK TO SAVEPOINT billing_apply_" + string(rune('0'+index))).
+	mock.ExpectExec("ROLLBACK TO SAVEPOINT billing_apply_" + strconv.Itoa(index)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
@@ -104,6 +105,41 @@ func TestUsageBillingRepositoryApplyBatch_IsolatesItemFailureWithSavepoint(t *te
 	require.Nil(t, outcomes[0].Result)
 	require.Nil(t, outcomes[1].Err)
 	require.True(t, outcomes[1].Result.Applied)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageBillingRepositoryApplyBatch_SavepointIndexesBeyondNine(t *testing.T) {
+	// 回归：savepoint 名必须用十进制索引（10+ 条记录时不能用 rune 算术）。
+	db, mock := newUsageBillingSQLMock(t)
+	repo := &usageBillingRepository{db: db}
+
+	var items []service.UsageBillingBatchItem
+	for i := 1; i <= 12; i++ {
+		cmd := &service.UsageBillingCommand{
+			RequestID:          "batch-many-" + strconv.Itoa(i),
+			AccountID:          1,
+			APIKeyID:           int64(i),
+			RequestFingerprint: "fp-" + strconv.Itoa(i),
+		}
+		items = append(items, newBatchItem(int64(i), cmd))
+	}
+
+	mock.ExpectBegin()
+	for i := 1; i <= len(items); i++ {
+		expectSavepoint(mock, i)
+		expectUsageBillingClaimInserted(mock, &items[i-1].Command)
+		expectOutboxFinalizationStage(mock, int64(i))
+		expectReleaseSavepoint(mock, i)
+	}
+	mock.ExpectCommit()
+
+	outcomes, err := repo.ApplyBatchAndStageOutboxFinalizations(context.Background(), items)
+	require.NoError(t, err)
+	require.Len(t, outcomes, len(items))
+	for i := range outcomes {
+		require.Nil(t, outcomes[i].Err)
+		require.True(t, outcomes[i].Result.Applied)
+	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

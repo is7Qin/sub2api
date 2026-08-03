@@ -580,6 +580,16 @@ func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Accoun
 	return err
 }
 
+// SetAccounts 批量写入账号快照（全量 + meta），内部按 writeChunkSize 管线
+// 合并往返。dirty 工作消费端一次轮询把整批脏账号合并为单次调用。
+func (c *schedulerCache) SetAccounts(ctx context.Context, accounts []service.Account) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	_, err := c.writeAccountIDs(ctx, accounts)
+	return err
+}
+
 func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) error {
 	if accountID <= 0 {
 		return nil

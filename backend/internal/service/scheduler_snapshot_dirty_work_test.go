@@ -47,6 +47,22 @@ func (r *dirtyWorkTestAccountRepo) GetByID(context.Context, int64) (*Account, er
 	return r.account, r.err
 }
 
+func (r *dirtyWorkTestAccountRepo) GetByIDs(_ context.Context, ids []int64) ([]*Account, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.account == nil {
+		return nil, nil
+	}
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if id == r.account.ID {
+			out = append(out, r.account)
+		}
+	}
+	return out, nil
+}
+
 type dirtyWorkTestRepo struct {
 	promoteResults      []int
 	promoteCalls        int
@@ -121,17 +137,17 @@ func TestSchedulerSnapshotDirtyWorkPromotesUntilDrainedAndAcknowledges(t *testin
 		promoteResults: []int{1, 1, 0},
 		work:           []SchedulerDirtyWork{{Kind: SchedulerDirtyWorkAccount, EntityID: account.ID, Generation: 7}},
 	}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
 	svc := &SchedulerSnapshotService{
 		cache:         cache,
 		dirtyWorkRepo: repo,
 		accountRepo:   &dirtyWorkTestAccountRepo{account: account},
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		workerCtx:     context.Background(),
 	}
+	// 预关闭 Lost 通道让单轮 poll 完整执行后立即返回，避免 workerCtx 取消
+	// 与 poll 中段检查竞态导致的不确定性。
 	owner := newDirtyWorkTestOwnership()
+	close(owner.lost)
 
-	workerCancel()
 	svc.consumeDirtyWork(owner, time.Hour)
 
 	require.Equal(t, 3, repo.promoteCalls)
@@ -147,17 +163,15 @@ func TestSchedulerSnapshotDirtyWorkRecordsFailureWithoutAcknowledging(t *testing
 		promoteResults: []int{0},
 		work:           []SchedulerDirtyWork{{Kind: SchedulerDirtyWorkAccount, EntityID: account.ID, Generation: 3}},
 	}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
 	svc := &SchedulerSnapshotService{
 		cache:         cache,
 		dirtyWorkRepo: repo,
 		accountRepo:   &dirtyWorkTestAccountRepo{account: account},
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		workerCtx:     context.Background(),
 	}
 	owner := newDirtyWorkTestOwnership()
+	close(owner.lost)
 
-	workerCancel()
 	svc.consumeDirtyWork(owner, time.Hour)
 
 	require.Equal(t, repo.work, repo.failures)

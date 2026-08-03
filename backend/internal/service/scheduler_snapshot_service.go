@@ -139,6 +139,8 @@ type SchedulerSnapshotService struct {
 	// 命中时免解码；版本可用时以 active version 失效为主、TTL 兜底，
 	// 版本不可用时退化为短 TTL（见下方两个 TTL 常量）；调度器对快照账号只读使用。
 	decodeCache sync.Map // bucket.String() -> *snapshotDecodeCacheEntry
+	// dirtyRefreshThrottle 限制同一账号的脏刷新频率（见 dirtyAccountRefreshMinInterval）。
+	dirtyRefreshThrottle *accountWriteThrottle
 }
 
 // snapshotDecodeCacheTTL 是版本不可用（接口缺失或版本读取失败）时快照解码缓存
@@ -167,6 +169,18 @@ type snapshotVersionReader interface {
 type snapshotAccountBatchReader interface {
 	GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error)
 }
+
+// schedulerAccountBatchWriter 是 SchedulerCache 的可选批量写入能力：dirty 工作
+// 消费端把整批脏账号合并成一次 Redis 管线写入，避免逐账号往返。cache 未实现
+// 时（仅测试 stub 或第三方实现）退化为逐账号 SetAccount。
+type schedulerAccountBatchWriter interface {
+	SetAccounts(ctx context.Context, accounts []Account) error
+}
+
+// dirtyAccountRefreshMinInterval 同一账号两次脏刷新之间的最小间隔。1s 轮询下
+// 高频重复脏化的账号（例如批量生命周期变更）最多每秒全字段刷新一次，避免
+// “每轮 poll 都 3 条 SELECT + ~9KB Redis 写入”的放大。
+const dirtyAccountRefreshMinInterval = time.Second
 
 // snapshotStatsReporter 是可选接口：缓存实现时由统计 worker 周期输出
 // GetSnapshot 命中/未命中观测日志；未实现（仅测试 stub）时静默跳过。
@@ -199,17 +213,18 @@ func newSchedulerSnapshotService(
 	}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &SchedulerSnapshotService{
-		cache:         cache,
-		outboxRepo:    outboxRepo,
-		dirtyWorkRepo: dirtyWorkRepo,
-		ownershipRepo: ownershipRepo,
-		accountRepo:   accountRepo,
-		groupRepo:     groupRepo,
-		cfg:           cfg,
-		stopCh:        make(chan struct{}),
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
-		fallbackLimit: newFallbackLimiter(maxQPS),
+		cache:                cache,
+		outboxRepo:           outboxRepo,
+		dirtyWorkRepo:        dirtyWorkRepo,
+		ownershipRepo:        ownershipRepo,
+		accountRepo:          accountRepo,
+		groupRepo:            groupRepo,
+		cfg:                  cfg,
+		stopCh:               make(chan struct{}),
+		workerCtx:            workerCtx,
+		workerCancel:         workerCancel,
+		fallbackLimit:        newFallbackLimiter(maxQPS),
+		dirtyRefreshThrottle: newAccountWriteThrottle(dirtyAccountRefreshMinInterval),
 	}
 }
 
@@ -515,7 +530,18 @@ func (s *SchedulerSnapshotService) consumeDirtyWork(ownership SchedulerOwnership
 			return
 		}
 		s.clearDirtyListFailure()
+		// 账号脏项合并为一次批量读取 + 批量缓存写入；分组/全量项保持逐项处理。
+		// 账号项按批量结果逐项确认或记录失败，保持单项错误隔离。
+		accountWork := make([]SchedulerDirtyWork, 0, len(work))
+		otherWork := make([]SchedulerDirtyWork, 0, len(work))
 		for _, item := range work {
+			if item.Kind == SchedulerDirtyWorkAccount {
+				accountWork = append(accountWork, item)
+			} else {
+				otherWork = append(otherWork, item)
+			}
+		}
+		for _, item := range otherWork {
 			if consumeCtx.Err() != nil {
 				return
 			}
@@ -531,6 +557,34 @@ func (s *SchedulerSnapshotService) consumeDirtyWork(ownership SchedulerOwnership
 			}
 			if _, err := s.dirtyWorkRepo.Acknowledge(consumeCtx, ownership, item); err != nil && consumeCtx.Err() == nil {
 				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work acknowledgement failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, err)
+			}
+		}
+		if len(accountWork) > 0 {
+			if consumeCtx.Err() != nil {
+				return
+			}
+			accountIDs := make([]int64, 0, len(accountWork))
+			for _, item := range accountWork {
+				accountIDs = append(accountIDs, item.EntityID)
+			}
+			results := s.refreshDirtyAccounts(consumeCtx, accountIDs)
+			for i, item := range accountWork {
+				if consumeCtx.Err() != nil {
+					return
+				}
+				err := results[i]
+				if err != nil {
+					recorded, recordErr := s.dirtyWorkRepo.RecordFailure(consumeCtx, ownership, item, err)
+					if recordErr != nil && consumeCtx.Err() == nil {
+						logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failure recording failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, recordErr)
+					} else if recorded {
+						logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failed: kind=%d entity=%d", item.Kind, item.EntityID)
+					}
+					continue
+				}
+				if _, err := s.dirtyWorkRepo.Acknowledge(consumeCtx, ownership, item); err != nil && consumeCtx.Err() == nil {
+					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work acknowledgement failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, err)
+				}
 			}
 		}
 		s.checkDirtyWorkLag(consumeCtx)
@@ -591,6 +645,102 @@ func (s *SchedulerSnapshotService) refreshDirtyAccount(ctx context.Context, acco
 		return s.cache.SetAccount(ctx, account)
 	}
 	return nil
+}
+
+// refreshDirtyAccounts 批量刷新脏账号：一次 GetByIDs 全字段读取 + 一次批量
+// 缓存写入（缓存实现 schedulerAccountBatchWriter 时），替代逐账号
+// GetByID×3 + 逐账号 Redis 往返。返回与输入等长的错误切片（nil 表示成功），
+// 单个账号的失败（含缺失删除、缓存写入失败）不影响其他账号。
+//
+// 最小刷新间隔内的重复脏化直接视为成功：缓存最多落后 dirtyAccountRefreshMinInterval，
+// 这是节流策略接受的语义（失败项未被确认，下一轮在间隔到期后重试）。
+func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids []int64) []error {
+	results := make([]error, len(ids))
+	if len(ids) == 0 {
+		return results
+	}
+	if s.accountRepo == nil {
+		err := errors.New("account repository unavailable")
+		for i := range results {
+			results[i] = err
+		}
+		return results
+	}
+
+	// 去重并保留首次出现顺序；重复项与节流跳过项都直接视为成功。
+	uniqueIDs := make([]int64, 0, len(ids))
+	indexByID := make(map[int64]int, len(ids))
+	now := time.Now()
+	for i, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, dup := indexByID[id]; dup {
+			continue
+		}
+		indexByID[id] = i
+		if s.dirtyRefreshThrottle != nil && !s.dirtyRefreshThrottle.Allow(id, now) {
+			continue
+		}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return results
+	}
+
+	accounts, err := s.accountRepo.GetByIDs(ctx, uniqueIDs)
+	if err != nil {
+		for _, id := range uniqueIDs {
+			results[indexByID[id]] = err
+		}
+		return results
+	}
+
+	if s.cache == nil {
+		return results
+	}
+
+	foundByID := make(map[int64]Account, len(accounts))
+	found := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil || account.ID <= 0 {
+			continue
+		}
+		if _, ok := indexByID[account.ID]; !ok {
+			continue
+		}
+		foundByID[account.ID] = *account
+		found = append(found, *account)
+	}
+
+	// 缺失账号只做删除；其余账号合并为一次批量写入（可选接口，未实现则逐账号
+	// SetAccount，逐账号记录错误）。
+	batchWrite := false
+	var batchErr error
+	if writer, ok := s.cache.(schedulerAccountBatchWriter); ok {
+		batchWrite = true
+		batchErr = writer.SetAccounts(ctx, found)
+	} else {
+		for _, account := range found {
+			if err := s.cache.SetAccount(ctx, &account); err != nil {
+				results[indexByID[account.ID]] = err
+			}
+		}
+	}
+
+	for _, id := range uniqueIDs {
+		index := indexByID[id]
+		if _, exists := foundByID[id]; !exists {
+			if err := s.cache.DeleteAccount(ctx, id); err != nil {
+				results[index] = err
+			}
+			continue
+		}
+		if batchWrite {
+			results[index] = batchErr
+		}
+	}
+	return results
 }
 
 func (s *SchedulerSnapshotService) runOutboxWorker(interval time.Duration) {

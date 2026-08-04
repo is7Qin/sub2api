@@ -21,6 +21,7 @@ func provideWorkerRuntime(
 	tokenRefresh *service.TokenRefreshService,
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
+	emailQueue *service.EmailQueueService,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -66,6 +67,7 @@ func provideWorkerRuntime(
 		paymentOrderExpiryWorker,
 		outboxCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
+		service.NewEmailQueueWorker(emailQueue),
 	}
 	if pricingRemoteSyncWorker != nil {
 		components = append(components, pricingRemoteSyncWorker)

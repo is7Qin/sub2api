@@ -455,7 +455,24 @@ func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 }
 
 func isOpenAIImageGenerationModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
+	// 逐字节 ASCII 大小写不敏感前缀比较，避免 ToLower 的每调用分配：
+	// IsModelSupported 热路径每请求调用；前缀区出现非 ASCII 字节时两种
+	// 实现都不可能匹配 "gpt-image-"（Unicode 小写映射不会产生这些字符）。
+	model = strings.TrimSpace(model)
+	const prefix = "gpt-image-"
+	if len(model) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		c := model[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateOpenAIImagesModel(model string) error {

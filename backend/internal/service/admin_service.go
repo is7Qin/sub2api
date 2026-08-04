@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -2941,12 +2942,8 @@ func deepCopyAccount(a Account) Account {
 	a.Groups = deepCopyGroups(a.Groups)
 	// 非持久化的 model_mapping 热路径缓存按 Account 实例归属：复制后
 	// Credentials 指针已变化，旧缓存失效，置零避免共享（首次访问重新计算）。
-	a.modelMappingCache = nil
-	a.modelMappingCacheReady = false
-	a.modelMappingCacheCredentialsPtr = 0
-	a.modelMappingCacheRawPtr = 0
-	a.modelMappingCacheRawLen = 0
-	a.modelMappingCacheRawSig = 0
+	// 用全新的 atomic.Value 整体置零（Load 返回 nil 即未就绪）。
+	a.modelMappingCache = atomic.Value{}
 	return a
 }
 

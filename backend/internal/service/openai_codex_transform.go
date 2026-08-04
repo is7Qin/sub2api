@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
@@ -569,6 +570,20 @@ func codexModelLookupKey(modelID string) string {
 	if strings.Contains(modelID, "/") {
 		parts := strings.Split(modelID, "/")
 		modelID = parts[len(parts)-1]
+	}
+	// 快速路径：已符合键规范（小写、无空白）时原样返回。热路径判别
+	// （IsModelSupported）每请求调用，慢速路径的 ToLower/Fields/Join 会产生
+	// 分配；逐 rune 对照 unicode.ToLower / unicode.IsSpace 保证与慢速路径
+	// 输出完全一致。
+	canonical := true
+	for _, r := range modelID {
+		if unicode.IsSpace(r) || unicode.ToLower(r) != r {
+			canonical = false
+			break
+		}
+	}
+	if canonical {
+		return modelID
 	}
 	return strings.ToLower(strings.Join(strings.Fields(modelID), "-"))
 }

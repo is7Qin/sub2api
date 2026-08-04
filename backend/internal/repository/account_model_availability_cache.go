@@ -34,7 +34,7 @@ const modelAvailabilityCandidatesQueryTimeout = 30 * time.Second
 // TTL 到期后由 singleflight 合并并发 miss，避免缓存击穿。
 type modelAvailabilityCandidateCache struct {
 	mu      sync.Mutex
-	entries map[string]modelAvailabilityCandidateEntry
+	entries map[modelAvailabilityCandidateCacheKey]modelAvailabilityCandidateEntry
 	now     func() time.Time // 可注入时钟，便于测试 TTL 行为
 	sf      singleflight.Group
 }
@@ -46,51 +46,90 @@ type modelAvailabilityCandidateEntry struct {
 
 func newModelAvailabilityCandidateCache() *modelAvailabilityCandidateCache {
 	return &modelAvailabilityCandidateCache{
-		entries: make(map[string]modelAvailabilityCandidateEntry),
+		entries: make(map[modelAvailabilityCandidateCacheKey]modelAvailabilityCandidateEntry),
 		now:     time.Now,
 	}
 }
 
-// cloneModelAvailabilityAccounts 浅拷贝账号切片，使缓存条目与返回给调用方的
-// 切片相互独立。调用方会在热路径上对 Account 做无锁惰性缓存写入（model_mapping
-// 等，见 service.Account.GetModelMapping），共享同一结构体引用会形成数据竞争；
-// 浅拷贝即可：惰性写入只落在结构体自身字段，不修改共享的 Credentials/Extra map。
-func cloneModelAvailabilityAccounts(accounts []service.Account) []service.Account {
-	if len(accounts) == 0 {
-		return []service.Account{}
-	}
-	return append([]service.Account(nil), accounts...)
+// modelAvailabilityCandidateCacheKey 是零分配的缓存键：固定数组按字典序存放
+// 平台名（只复制字符串头部，不复制内容），配合 groupID / includeGrouped 参与
+// 相等比较。语义与旧的字符串键逐项对齐：groupID 区分 nil 与 0、平台列表顺序
+// 无关。缓存 GET 是全请求热路径，构建键不得产生分配；生产调用方最多传 2 个
+// 平台（isPureModelSupportMiss / isPureOpenAIModelSupportMiss），超过固定容量
+// 时退化为排序拼接字符串（仅正确性兜底，非热路径）。
+type modelAvailabilityCandidateCacheKey struct {
+	groupID        int64
+	hasGroupID     bool
+	includeGrouped bool
+	platformCount  int
+	platforms      [8]string
+	// overflow 仅在平台数超过 platforms 容量时非空，持有排序拼接后的平台串；
+	// 此时 platformCount 恒为 -1，正常键与溢出键永不相等。
+	overflow string
 }
 
-func (c *modelAvailabilityCandidateCache) get(key string) ([]service.Account, bool) {
+func makeModelAvailabilityCandidateCacheKey(groupID *int64, platforms []string, includeGrouped bool) modelAvailabilityCandidateCacheKey {
+	var k modelAvailabilityCandidateCacheKey
+	if groupID != nil {
+		k.hasGroupID = true
+		k.groupID = *groupID
+	}
+	k.includeGrouped = includeGrouped
+	if len(platforms) > len(k.platforms) {
+		sorted := append([]string(nil), platforms...)
+		sort.Strings(sorted)
+		k.platformCount = -1
+		k.overflow = strings.Join(sorted, ",")
+		return k
+	}
+	for _, p := range platforms {
+		// 按字典序插入，保持与平台列表顺序无关（与旧字符串键一致）。
+		i := k.platformCount
+		for i > 0 && k.platforms[i-1] > p {
+			k.platforms[i] = k.platforms[i-1]
+			i--
+		}
+		k.platforms[i] = p
+		k.platformCount++
+	}
+	return k
+}
+
+// modelAvailabilityCandidatesSFKey 由 struct 键生成 singleflight 去重键。
+// 仅 miss 路径使用（miss 稀少，字符串构建的分配可接受）；缓存命中路径
+// 始终走零分配的 struct 键。
+func modelAvailabilityCandidatesSFKey(k modelAvailabilityCandidateCacheKey) string {
+	groupPart := "ungrouped"
+	if k.hasGroupID {
+		groupPart = "group:" + strconv.FormatInt(k.groupID, 10)
+	}
+	platforms := k.overflow
+	if k.platformCount >= 0 {
+		platforms = strings.Join(k.platforms[:k.platformCount], ",")
+	}
+	return groupPart + "|" + platforms + "|" + strconv.FormatBool(k.includeGrouped)
+}
+
+func (c *modelAvailabilityCandidateCache) get(key modelAvailabilityCandidateCacheKey) ([]service.Account, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
 	if !ok || c.now().After(e.expiresAt) {
 		return nil, false
 	}
-	return cloneModelAvailabilityAccounts(e.accounts), true
+	// 直接返回缓存条目：model_mapping memo 已改为 atomic.Value 原子发布
+	// （见 service.Account.GetModelMapping），共享结构体并发读写无数据竞争，
+	// 无需再为每次请求克隆切片（克隆曾是 pprof 定位的 5.17GB 分配热点）。
+	return e.accounts, true
 }
 
-func (c *modelAvailabilityCandidateCache) set(key string, accounts []service.Account) {
+func (c *modelAvailabilityCandidateCache) set(key modelAvailabilityCandidateCacheKey, accounts []service.Account) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = modelAvailabilityCandidateEntry{
 		accounts:  accounts,
 		expiresAt: c.now().Add(modelAvailabilityCandidatesCacheTTL),
 	}
-}
-
-// modelAvailabilityCandidatesCacheKey 归一化缓存键：groupID（nil=未分组）、
-// 平台列表（排序后拼接，忽略顺序差异）、includeGrouped。
-func modelAvailabilityCandidatesCacheKey(groupID *int64, platforms []string, includeGrouped bool) string {
-	groupPart := "ungrouped"
-	if groupID != nil {
-		groupPart = "group:" + strconv.FormatInt(*groupID, 10)
-	}
-	sorted := append([]string(nil), platforms...)
-	sort.Strings(sorted)
-	return groupPart + "|" + strings.Join(sorted, ",") + "|" + strconv.FormatBool(includeGrouped)
 }
 
 // modelAvailabilityCredentialsSubKeys 是 404-vs-503 判别实际消费的 credentials
@@ -274,11 +313,11 @@ func (r *accountRepository) ListModelAvailabilityCandidates(ctx context.Context,
 		return r.listModelAvailabilityCandidatesEnt(ctx, groupID, platforms, includeGrouped)
 	}
 
-	key := modelAvailabilityCandidatesCacheKey(groupID, platforms, includeGrouped)
+	key := makeModelAvailabilityCandidateCacheKey(groupID, platforms, includeGrouped)
 	if cached, ok := r.modelAvailabilityCache.get(key); ok {
 		return cached, nil
 	}
-	v, err, _ := r.modelAvailabilityCache.sf.Do(key, func() (any, error) {
+	v, err, _ := r.modelAvailabilityCache.sf.Do(modelAvailabilityCandidatesSFKey(key), func() (any, error) {
 		// leader 的查询脱离首个调用方的取消：singleflight 的等待者共享 leader
 		// 的结果/错误，首个请求断连不应把整批一起拖垮；执行时长用独立上限
 		// 兜底，防止 DB 挂起时 leader 无限等待（等待者同样被阻塞）。
@@ -299,7 +338,9 @@ func (r *accountRepository) ListModelAvailabilityCandidates(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	return cloneModelAvailabilityAccounts(v.([]service.Account)), nil
+	// singleflight 结果与缓存条目共享同一切片（见 get 的去克隆注释），
+	// 并发调用方各自消费，memo 原子发布保证无数据竞争。
+	return v.([]service.Account), nil
 }
 
 // listModelAvailabilityCandidatesEnt 是未注入 SQL 执行器时的回退实现，

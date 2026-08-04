@@ -8,6 +8,29 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
+// TestAccountGetModelMapping_MemoHitZeroAllocations 验证 memo 命中路径零分配：
+// 缓存条目被多请求共享后（见 repository 账号可用性缓存），memo 命中必须不
+// 产生每账号每请求的分配（旧实现的签名计算与克隆随账号数线性增长）。
+func TestAccountGetModelMapping_MemoHitZeroAllocations(t *testing.T) {
+	account := &Account{
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-3-5-sonnet": "upstream-a",
+			},
+		},
+	}
+	if len(account.GetModelMapping()) != 1 {
+		t.Fatalf("unexpected first mapping")
+	}
+
+	allocs := testing.AllocsPerRun(200, func() {
+		_ = account.GetModelMapping()
+	})
+	if allocs != 0 {
+		t.Fatalf("memo 命中路径必须零分配，实际 %.2f allocs/run", allocs)
+	}
+}
+
 func TestMatchWildcard(t *testing.T) {
 	tests := []struct {
 		name     string

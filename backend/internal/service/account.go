@@ -4,12 +4,12 @@ package service
 import (
 	"encoding/json"
 	"errors"
-	"hash/fnv"
 	"log/slog"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -57,13 +57,22 @@ type Account struct {
 	GroupIDs      []int64
 	Groups        []*Group
 
-	// model_mapping 热路径缓存（非持久化字段）
-	modelMappingCache               map[string]string
-	modelMappingCacheReady          bool
-	modelMappingCacheCredentialsPtr uintptr
-	modelMappingCacheRawPtr         uintptr
-	modelMappingCacheRawLen         int
-	modelMappingCacheRawSig         uint64
+	// model_mapping 热路径缓存（非持久化字段）。
+	// 以 atomic.Value 整体发布 modelMappingMemo：缓存条目在多请求间共享
+	// （repository 的账号可用性缓存不再每请求克隆），散列字段的裸写入是数据
+	// 竞争，整体原子发布后并发读写安全且命中路径零分配。
+	modelMappingCache atomic.Value
+}
+
+// modelMappingMemo 是 model_mapping 热路径缓存的不可变快照：指纹字段用于
+// 检测 Credentials 被整体替换（指针变化）或 mapping 就地修改（指针不变但
+// 长度/内容指纹变化），命中时直接返回 memo.mapping，避免每请求重新计算。
+type modelMappingMemo struct {
+	credentialsPtr uintptr
+	rawPtr         uintptr
+	rawLen         int
+	rawSig         uint64
+	mapping        map[string]string
 }
 
 type OpenAIEndpointCapability string
@@ -510,31 +519,26 @@ func (a *Account) GetModelMapping() map[string]string {
 	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
 	rawPtr := mapPtr(rawMapping)
 	rawLen := len(rawMapping)
-	rawSig := uint64(0)
-	rawSigReady := false
 
-	if a.modelMappingCacheReady &&
-		a.modelMappingCacheCredentialsPtr == credentialsPtr &&
-		a.modelMappingCacheRawPtr == rawPtr &&
-		a.modelMappingCacheRawLen == rawLen {
-		rawSig = modelMappingSignature(rawMapping)
-		rawSigReady = true
-		if a.modelMappingCacheRawSig == rawSig {
-			return a.modelMappingCache
-		}
+	// 命中：指针、长度与内容指纹均未变化，直接返回缓存的映射（零分配）。
+	// 未命中时重新计算并以 atomic.Value 整体发布；并发 miss 各自计算后
+	// Store，结果内容一致，读取方通过 Load 获取完整快照，无数据竞争。
+	if memo, ok := a.modelMappingCache.Load().(modelMappingMemo); ok &&
+		memo.credentialsPtr == credentialsPtr &&
+		memo.rawPtr == rawPtr &&
+		memo.rawLen == rawLen &&
+		memo.rawSig == modelMappingSignature(rawMapping) {
+		return memo.mapping
 	}
 
 	mapping := a.resolveModelMapping(rawMapping)
-	if !rawSigReady {
-		rawSig = modelMappingSignature(rawMapping)
-	}
-
-	a.modelMappingCache = mapping
-	a.modelMappingCacheReady = true
-	a.modelMappingCacheCredentialsPtr = credentialsPtr
-	a.modelMappingCacheRawPtr = rawPtr
-	a.modelMappingCacheRawLen = rawLen
-	a.modelMappingCacheRawSig = rawSig
+	a.modelMappingCache.Store(modelMappingMemo{
+		credentialsPtr: credentialsPtr,
+		rawPtr:         rawPtr,
+		rawLen:         rawLen,
+		rawSig:         modelMappingSignature(rawMapping),
+		mapping:        mapping,
+	})
 	return mapping
 }
 
@@ -586,28 +590,43 @@ func mapPtr(m map[string]any) uintptr {
 	return reflect.ValueOf(m).Pointer()
 }
 
+// modelMappingSignature 计算 model_mapping 内容指纹，检测同指针映射的就地修改
+// （键值变化、长度变化都会改变指纹）。逐键值对计算 FNV-1a 后 XOR 聚合：
+// 结果与 map 遍历顺序无关（map 遍历本就无序），且全程零分配——签名在热路径
+// 每请求都会执行，不得产生分配（旧实现的排序拼接 + fnv 接口逃逸会线性分配）。
 func modelMappingSignature(rawMapping map[string]any) uint64 {
 	if len(rawMapping) == 0 {
 		return 0
 	}
-	keys := make([]string, 0, len(rawMapping))
-	for k := range rawMapping {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	h := fnv.New64a()
-	for _, k := range keys {
-		_, _ = h.Write([]byte(k))
-		_, _ = h.Write([]byte{0})
-		if v, ok := rawMapping[k].(string); ok {
-			_, _ = h.Write([]byte(v))
+	var sig uint64
+	for k, v := range rawMapping {
+		h := fnvOffsetBasis64
+		h = fnvAddString(h, k)
+		h = fnvAddByte(h, 0)
+		if s, ok := v.(string); ok {
+			h = fnvAddString(h, s)
 		} else {
-			_, _ = h.Write([]byte{1})
+			h = fnvAddByte(h, 1)
 		}
-		_, _ = h.Write([]byte{0xff})
+		sig ^= h
 	}
-	return h.Sum64()
+	return sig
+}
+
+// fnvOffsetBasis64 是 FNV-1a 64 位的偏移基值。
+const fnvOffsetBasis64 = uint64(14695981039346656037)
+
+func fnvAddString(h uint64, s string) uint64 {
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
+func fnvAddByte(h uint64, b byte) uint64 {
+	h ^= uint64(b)
+	return h * 1099511628211
 }
 
 func ensureAntigravityDefaultPassthrough(mapping map[string]string, model string) {

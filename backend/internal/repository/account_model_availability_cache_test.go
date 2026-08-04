@@ -348,6 +348,39 @@ func TestListModelAvailabilityCandidates_ConcurrentSupportChecksRaceFree(t *test
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestListModelAvailabilityCandidates_CachedPathZeroAllocations 验证缓存命中
+// 路径零分配：缓存 GET 直接返回共享切片（无每请求克隆），并发安全的
+// model_mapping memo 命中时不分配。旧实现每账号每次判别都会克隆切片并计算
+// 签名，分配随账号数线性增长（pprof alloc_space 定位的 5.17GB 热点）。
+func TestListModelAvailabilityCandidates_CachedPathZeroAllocations(t *testing.T) {
+	counter := &countingQueryMatcher{}
+	repo, mock := newModelAvailabilityCandidateRepo(t, counter)
+
+	mock.ExpectQuery("model availability candidates").
+		WillReturnRows(addOAuthCandidateRow(modelAvailabilityCandidateRow()))
+
+	groupID := int64(42)
+	// 预热：填充缓存条目并触发 memo 首次计算，使待测闭包全部走命中路径。
+	accounts, err := repo.ListModelAvailabilityCandidates(context.Background(), &groupID, []string{service.PlatformOpenAI}, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.True(t, accounts[0].IsModelSupported("codex-mini-latest"))
+
+	// 平台切片提升到闭包外：它在生产调用方按请求构建（常量成本），
+	// 与账号数无关；待测闭包衡量的是缓存命中 + 每账号判别本身。
+	platforms := []string{service.PlatformOpenAI}
+	allocs := testing.AllocsPerRun(200, func() {
+		got, err := repo.ListModelAvailabilityCandidates(context.Background(), &groupID, platforms, false)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = got[0].IsModelSupported("codex-mini-latest")
+	})
+	require.Zero(t, allocs, "缓存命中 + memo 命中路径必须零分配，实际 %.2f allocs/run", allocs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // gatedSQLExecutor 捕获 QueryContext 收到的 ctx 并阻塞到放行后转发给底层 DB：
 // 用于验证 singleflight leader 的查询上下文是否脱离首个调用方的取消。
 type gatedSQLExecutor struct {

@@ -53,7 +53,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
 	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
 
-	emailQueueSvc := service.NewEmailQueueService(nil, 1)
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
@@ -71,7 +70,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // apiKeyService
 		schedulerSnapshotSvc,
 		&service.UsageCleanupService{},
-		emailQueueSvc,
 		billingCacheSvc,
 		&service.SubscriptionService{},
 		&service.OpenAIOAuthStartupConfigValidation{},
@@ -91,6 +89,24 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	require.NotPanics(t, func() {
 		cleanup()
 	})
+}
+
+func TestEmailQueueLifecycleIsRuntimeOwned(t *testing.T) {
+	workerRuntimeSource, err := os.ReadFile("worker_runtime.go")
+	require.NoError(t, err)
+	require.Contains(t, string(workerRuntimeSource), "emailQueue *service.EmailQueueService")
+	require.Contains(t, string(workerRuntimeSource), "service.NewEmailQueueWorker(emailQueue)")
+
+	wireSource, err := os.ReadFile("wire.go")
+	require.NoError(t, err)
+	require.NotContains(t, string(wireSource), "emailQueue *service.EmailQueueService")
+	require.NotContains(t, string(wireSource), `{"EmailQueueService"`)
+}
+
+func TestEmailQueueInventoryIsRuntimeManaged(t *testing.T) {
+	content, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
+	require.NoError(t, err)
+	require.Contains(t, string(content), "| EmailQueueService | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter | Server runtime | `Runtime.StopAll` waits to deadline and reports still-running truthfully | per-instance | Ops worker status | Phase 6 |")
 }
 
 func TestWireGeneratedStartupValidationRunsBeforeSideEffectingProviders(t *testing.T) {

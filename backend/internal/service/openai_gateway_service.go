@@ -4007,6 +4007,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, wsErr
 	}
 
+	if shouldStripOpenAIResponsesInputNamespaces(c, account) {
+		strippedBody, stripErr := stripOpenAIResponsesInputNamespaces(body)
+		if stripErr != nil {
+			return nil, fmt.Errorf("normalize OpenAI input namespaces: %w", stripErr)
+		}
+		if !bytes.Equal(strippedBody, body) {
+			body = strippedBody
+			requestView = newOpenAIRequestView(body)
+			reqBody = nil
+		}
+	}
+
 	httpInvalidEncryptedContentRetryTried := false
 	agentIdentityTaskRecoveryTried := false
 	rejectedFieldRetryState := newOpenAIResponsesRejectedFieldRetryState(body)

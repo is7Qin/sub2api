@@ -22,16 +22,20 @@ func shouldNormalizeOpenAIResponsesNamespaces(account *Account, transport OpenAI
 }
 
 // shouldStripOpenAIResponsesInputNamespaces is the terminal counterpart to
-// request normalization. It is deliberately narrowed to the same native OAuth
-// HTTP path so setup-token and WebSocket payloads keep their native contract.
+// request normalization. OAuth follows its compatibility policy; API-key
+// adapters proactively remove unsupported call metadata only on HTTP Responses.
 func shouldStripOpenAIResponsesInputNamespaces(c *gin.Context, account *Account) bool {
-	if c == nil {
+	if c == nil || account == nil {
 		return false
 	}
 	transport, _ := c.Get("openai_ws_transport_decision")
+	upstreamTransport := OpenAIUpstreamTransport(strings.TrimSpace(fmt.Sprint(transport)))
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey {
+		return !account.IsOpenAIPassthroughEnabled() && upstreamTransport == OpenAIUpstreamTransportHTTPSSE
+	}
 	return shouldNormalizeOpenAIResponsesNamespaces(
 		account,
-		OpenAIUpstreamTransport(strings.TrimSpace(fmt.Sprint(transport))),
+		upstreamTransport,
 		GetOpenAIClientTransport(c),
 		isOpenAIResponsesCompactPath(c),
 	)

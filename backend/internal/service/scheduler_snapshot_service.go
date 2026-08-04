@@ -415,36 +415,65 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 
 	if s.cache != nil {
 		cacheKey := bucket.String()
-		// 解码缓存命中路径不再每个请求先读一次 Redis 激活版本：条目在存储时已
-		// 用当时的 active 版本校验，陈旧性由条目 TTL 兜底（见 snapshotDecodeCacheTTL
-		// / snapshotDecodeVersionedTTL）；重建导致的版本递增经本地版本缓存窗口
-		// 感知，最多滞后 snapshotVersionCacheWindow 即失效重取，窗口内命中为
-		// 纯本地判断（零 Redis 往返）。
+		_, staticCandidates := s.cache.(staticCandidateAccountReader)
+		// Static candidate payloads have a cache-only runtime overlay (for example,
+		// immediate model cooldowns). Do not return a process-local decoded static
+		// list before Redis applies that overlay; persistent support remains separate.
 		version := ""
-		if entry, ok := s.decodeCache.Load(cacheKey); ok {
-			if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
-				if v, fresh := s.cachedSnapshotVersion(cacheKey, time.Now()); fresh {
-					if e.version == v {
+		if !staticCandidates {
+			// 解码缓存命中路径不再每个请求先读一次 Redis 激活版本：条目在存储时已
+			// 用当时的 active 版本校验，陈旧性由条目 TTL 兜底（见 snapshotDecodeCacheTTL
+			// / snapshotDecodeVersionedTTL）；重建导致的版本递增经本地版本缓存窗口
+			// 感知，最多滞后 snapshotVersionCacheWindow 即失效重取，窗口内命中为
+			// 纯本地判断（零 Redis 往返）。
+			if entry, ok := s.decodeCache.Load(cacheKey); ok {
+				if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
+					if v, fresh := s.cachedSnapshotVersion(cacheKey, time.Now()); fresh {
+						if e.version == v {
+							return derefAccounts(e.accounts), useMixed, nil
+						}
+						version = v
+					} else if v := s.readSnapshotVersion(ctx, bucket); v != "" {
+						s.storeSnapshotVersion(cacheKey, v, time.Now())
+						version = v
+						if e.version == v {
+							return derefAccounts(e.accounts), useMixed, nil
+						}
+					} else if e.version == "" {
+						// 版本不可读时只允许命中无版本条目：带版本号的条目可能
+						// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
 						return derefAccounts(e.accounts), useMixed, nil
 					}
-					version = v
-				} else if v := s.readSnapshotVersion(ctx, bucket); v != "" {
-					s.storeSnapshotVersion(cacheKey, v, time.Now())
-					version = v
-					if e.version == v {
-						return derefAccounts(e.accounts), useMixed, nil
+				}
+			}
+			// 解码缓存未命中（或版本不一致）才读激活版本：重建后 active 版本立即
+			// 递增，据此失效本地解码缓存并选择条目 TTL。版本不可用（接口缺失/
+			// 读取失败）时退化为纯 TTL 兜底。
+			if version == "" {
+				version = s.readSnapshotVersion(ctx, bucket)
+				if version != "" {
+					s.storeSnapshotVersion(cacheKey, version, time.Now())
+				}
+			}
+			if !staticCandidates {
+				cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
+				if err != nil {
+					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
+				} else if hit {
+					ttl := snapshotDecodeCacheTTL
+					if version != "" {
+						ttl = snapshotDecodeVersionedTTL
 					}
-				} else if e.version == "" {
-					// 版本不可读时只允许命中无版本条目：带版本号的条目可能
-					// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
-					return derefAccounts(e.accounts), useMixed, nil
+					s.decodeCache.Store(cacheKey, &snapshotDecodeCacheEntry{
+						accounts: cached,
+						version:  version,
+						exp:      time.Now().Add(ttl),
+					})
+					return derefAccounts(cached), useMixed, nil
 				}
 			}
 		}
-		// 解码缓存未命中（或版本不一致）才读激活版本：重建后 active 版本立即
-		// 递增，据此失效本地解码缓存并选择条目 TTL。版本不可用（接口缺失/
-		// 读取失败）时退化为纯 TTL 兜底。
-		if version == "" {
+		if staticCandidates {
 			version = s.readSnapshotVersion(ctx, bucket)
 			if version != "" {
 				s.storeSnapshotVersion(cacheKey, version, time.Now())

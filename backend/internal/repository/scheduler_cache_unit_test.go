@@ -680,6 +680,62 @@ func (h *schedulerStaticStateTransitionReadHook) ProcessPipelineHook(next redis.
 	return next
 }
 
+func TestSchedulerCache_GetPersistentSupportRetriesStaticStateTransition(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 19, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	v1 := service.Account{ID: 87, Name: "support-v1", Platform: service.PlatformOpenAI}
+	v2 := service.Account{ID: 88, Name: "support-v2", Platform: service.PlatformOpenAI}
+	replacementCache, ok := newSchedulerCacheWithChunkSizes(
+		redis.NewClient(&redis.Options{Addr: cache.rdb.Options().Addr}),
+		defaultSchedulerSnapshotMGetChunkSize,
+		defaultSchedulerSnapshotWriteChunkSize,
+	).(*schedulerCache)
+	require.True(t, ok)
+	t.Cleanup(func() { _ = replacementCache.rdb.Close() })
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{v1}, []service.Account{v1}))
+	hook := &schedulerPersistentSupportTransitionReadHook{
+		bucket: bucket,
+		publishNext: func(ctx context.Context) error {
+			return replacementCache.SetStaticState(ctx, bucket, []service.Account{v2}, []service.Account{v2})
+		},
+	}
+	cache.rdb.AddHook(hook)
+
+	support, hit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hook.fired.Load())
+	if hit {
+		require.Equal(t, []int64{v2.ID}, schedulerCacheTestIDs(support), "a completed V2 activation must never return V1 support")
+		require.Equal(t, v2.Name, support[0].Name)
+	}
+}
+
+type schedulerPersistentSupportTransitionReadHook struct {
+	bucket      service.SchedulerBucket
+	publishNext func(context.Context) error
+	fired       atomic.Bool
+}
+
+func (h *schedulerPersistentSupportTransitionReadHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *schedulerPersistentSupportTransitionReadHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && cmd.Name() == "zrange" && len(cmd.Args()) > 1 && cmd.Args()[1] == schedulerSupportKey(h.bucket, "1") && h.fired.CompareAndSwap(false, true) {
+			return h.publishNext(ctx)
+		}
+		return err
+	}
+}
+
+func (h *schedulerPersistentSupportTransitionReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
 func TestSchedulerCache_GetSnapshotRetriesStaticStateTransitionBeforeChoosingPayload(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

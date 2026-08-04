@@ -523,6 +523,18 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
+	var dynamicValues []any
+	if isStaticState {
+		dynamicKeys := make([]string, 0, len(ids))
+		for _, id := range ids {
+			dynamicKeys = append(dynamicKeys, schedulerAccountMetaKey(id))
+		}
+		dynamicValues, err = c.mgetChunked(ctx, dynamicKeys)
+		if err != nil {
+			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+			return nil, false, err
+		}
+	}
 	lastUsedValues, err := c.mgetChunked(ctx, lastUsedKeys)
 	if err != nil {
 		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
@@ -544,6 +556,14 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		if err != nil {
 			c.stats.recordMiss(bucketKey, schedulerMissDecodeError)
 			return nil, false, err
+		}
+		if isStaticState && i < len(dynamicValues) && dynamicValues[i] != nil {
+			dynamicAccount, err := decodeCachedAccount(dynamicValues[i])
+			if err != nil {
+				c.stats.recordMiss(bucketKey, schedulerMissDecodeError)
+				return nil, false, err
+			}
+			applySchedulerDynamicAccountState(account, dynamicAccount)
 		}
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
 			c.stats.recordMiss(bucketKey, schedulerMissLastUsedError)
@@ -615,35 +635,57 @@ func (c *schedulerCache) SetStaticState(ctx context.Context, bucket service.Sche
 }
 
 func (c *schedulerCache) GetPersistentSupport(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
-	active, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
-	if err == redis.Nil {
-		return nil, false, nil
+	readyKey := schedulerBucketKey(schedulerSupportReadyPrefix, bucket)
+	for attempt := 0; attempt < 2; attempt++ {
+		active, marker, isStatic, coherent, err := c.readCoherentStaticState(ctx, bucket)
+		if err != nil {
+			return nil, false, err
+		}
+		if !coherent || !isStatic || marker != active {
+			return nil, false, nil
+		}
+		ready, err := c.rdb.Get(ctx, readyKey).Result()
+		if err == redis.Nil || ready != "1" {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		ids, err := c.rdb.ZRange(ctx, schedulerSupportKey(bucket, active), 0, -1).Result()
+		if err != nil {
+			return nil, false, err
+		}
+		var accounts []*service.Account
+		if len(ids) == 0 {
+			accounts = []*service.Account{}
+		} else {
+			var hit bool
+			accounts, hit, err = c.readSupportSnapshotAccounts(ctx, bucket, active, ids)
+			if err != nil || !hit {
+				return accounts, hit, err
+			}
+		}
+
+		// Old support payloads live through reader grace. Revalidate the version and
+		// marker after reading membership/payload so a completed activation cannot
+		// turn a crossed V1 read into a permanent-model-support decision.
+		currentActive, currentMarker, currentIsStatic, currentCoherent, err := c.readCoherentStaticState(ctx, bucket)
+		if err != nil {
+			return nil, false, err
+		}
+		currentReady, readyErr := c.rdb.Get(ctx, readyKey).Result()
+		if readyErr != nil && readyErr != redis.Nil {
+			return nil, false, readyErr
+		}
+		if !currentCoherent || !currentIsStatic || currentMarker != currentActive || readyErr == redis.Nil || currentReady != "1" {
+			return nil, false, nil
+		}
+		if currentActive != active || currentMarker != marker {
+			continue
+		}
+		return accounts, true, nil
 	}
-	if err != nil {
-		return nil, false, err
-	}
-	supportVersion, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportStatePrefix, bucket)).Result()
-	if err == redis.Nil || supportVersion != active {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	ready, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerSupportReadyPrefix, bucket)).Result()
-	if err == redis.Nil || ready != "1" {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	ids, err := c.rdb.ZRange(ctx, schedulerSupportKey(bucket, active), 0, -1).Result()
-	if err != nil {
-		return nil, false, err
-	}
-	if len(ids) == 0 {
-		return []*service.Account{}, true, nil
-	}
-	return c.readSupportSnapshotAccounts(ctx, bucket, active, ids)
+	return nil, false, nil
 }
 
 func (c *schedulerCache) readSupportSnapshotAccounts(ctx context.Context, bucket service.SchedulerBucket, version string, ids []string) ([]*service.Account, bool, error) {
@@ -890,11 +932,15 @@ func (c *schedulerCache) GetStaticCandidateAccount(ctx context.Context, bucket s
 		if isStatic {
 			key = schedulerVersionedAccountKey(bucket, active, id)
 		}
-		values, err := c.rdb.MGet(ctx, key, schedulerLastUsedKey(id)).Result()
+		keys := []string{key, schedulerLastUsedKey(id)}
+		if isStatic {
+			keys = append(keys, schedulerAccountKey(id))
+		}
+		values, err := c.rdb.MGet(ctx, keys...).Result()
 		if err != nil {
 			return nil, err
 		}
-		if len(values) != 2 || values[0] == nil {
+		if len(values) < 2 || values[0] == nil {
 			return nil, nil
 		}
 		currentActive, currentStatic, currentIsStatic, currentCoherent, err := c.readCoherentStaticState(ctx, bucket)
@@ -910,6 +956,13 @@ func (c *schedulerCache) GetStaticCandidateAccount(ctx context.Context, bucket s
 		account, err := decodeCachedAccount(values[0])
 		if err != nil {
 			return nil, err
+		}
+		if isStatic && len(values) == 3 && values[2] != nil {
+			dynamicAccount, err := decodeCachedAccount(values[2])
+			if err != nil {
+				return nil, err
+			}
+			applySchedulerDynamicAccountState(account, dynamicAccount)
 		}
 		if err := applySchedulerLastUsed(account, values[1]); err != nil {
 			return nil, err
@@ -949,7 +1002,18 @@ func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bu
 		if err != nil {
 			return nil, err
 		}
-		if len(values) != len(ids) {
+		var dynamicValues []any
+		if isStatic {
+			dynamicKeys := make([]string, 0, len(ids))
+			for _, accountID := range ids {
+				dynamicKeys = append(dynamicKeys, schedulerAccountMetaKey(strconv.FormatInt(accountID, 10)))
+			}
+			dynamicValues, err = c.mgetChunked(ctx, dynamicKeys)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(values) != len(ids) || (isStatic && len(dynamicValues) != len(ids)) {
 			return nil, errors.New("scheduler snapshot cache returned unexpected value count")
 		}
 
@@ -964,13 +1028,20 @@ func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bu
 			continue
 		}
 
-		for _, val := range values {
+		for i, val := range values {
 			if val == nil {
 				continue
 			}
 			account, err := decodeCachedAccount(val)
 			if err != nil {
 				return nil, err
+			}
+			if isStatic && dynamicValues[i] != nil {
+				dynamicAccount, err := decodeCachedAccount(dynamicValues[i])
+				if err != nil {
+					return nil, err
+				}
+				applySchedulerDynamicAccountState(account, dynamicAccount)
 			}
 			if account != nil && account.ID > 0 {
 				out[account.ID] = account
@@ -1480,6 +1551,37 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 		out = append(out, part...)
 	}
 	return out, nil
+}
+
+// applySchedulerDynamicAccountState overlays cache-only runtime scheduling state
+// onto a request candidate without changing its versioned membership, credentials,
+// or static projection. SetAccount is used for immediate rate-limit publication;
+// in particular model_rate_limits must take effect before the next bucket rebuild.
+func applySchedulerDynamicAccountState(candidate, dynamic *service.Account) {
+	if candidate == nil || dynamic == nil {
+		return
+	}
+	candidate.Status = dynamic.Status
+	candidate.Schedulable = dynamic.Schedulable
+	candidate.RateLimitedAt = dynamic.RateLimitedAt
+	candidate.RateLimitResetAt = dynamic.RateLimitResetAt
+	candidate.OverloadUntil = dynamic.OverloadUntil
+	candidate.TempUnschedulableUntil = dynamic.TempUnschedulableUntil
+	candidate.TempUnschedulableReason = dynamic.TempUnschedulableReason
+	candidate.SessionWindowStart = dynamic.SessionWindowStart
+	candidate.SessionWindowEnd = dynamic.SessionWindowEnd
+	candidate.SessionWindowStatus = dynamic.SessionWindowStatus
+	if dynamic.Extra == nil {
+		return
+	}
+	modelRateLimits, ok := dynamic.Extra["model_rate_limits"]
+	if !ok {
+		return
+	}
+	if candidate.Extra == nil {
+		candidate.Extra = make(map[string]any, 1)
+	}
+	candidate.Extra["model_rate_limits"] = modelRateLimits
 }
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {

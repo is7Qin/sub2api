@@ -1,6 +1,6 @@
 # Worker Runtime Inventory
 
-This inventory records all process-local background activity as of Issue #9 Phase 1.
+This inventory records all process-local background activity through Issue #9 Phase 6.
 `managed` means the component is registered in `workerruntime.Runtime` and appears in
 `GET /api/v1/admin/ops/workers/status`; `unmanaged` components retain their existing
 startup and shutdown behavior until a later phase. The status endpoint intentionally
@@ -26,7 +26,7 @@ reports no process identifier, credentials, payloads, stack traces, or raw upstr
 | SchedulerSnapshotService | No | `service.ProvideSchedulerSnapshotService` | initial rebuild plus outbox, dirty-work, and full-rebuild goroutines | Service provider; server cleanup | `Stop` cancels worker context/closes stop channel and waits for its `WaitGroup` | durable ownership for dirty work; per-instance legacy outbox/full rebuild with per-bucket locks | Scheduler cache behavior and logs | Later migration |
 | PricingService remote sync | Yes | `cmd/server/provideWorkerRuntime` | optional `workerruntime.PeriodicJob` | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance | Ops worker status; inactive when RemoteURL is empty | Phase 2 |
 | ScheduledTestRunnerService | No | `service.ProvideScheduledTestRunnerService` during server wiring | `robfig/cron` every minute; each callback delays 10 seconds, then runs due plans with at most 10 concurrent workers | Service provider; server cleanup | `Stop` waits up to 3 seconds for the cron scheduler's active jobs, then returns; each scheduled scan has a 5-minute context timeout | per-instance | Logs only | Later migration |
-| EmailQueueService | No | `service.ProvideEmailQueueService` constructor | fixed worker goroutine queue | Constructor; server cleanup | `Stop` closes its channel and waits for its `WaitGroup`; in-flight send is bounded to 30 seconds | per-instance | Logs only | Later migration |
+| EmailQueueService | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter | Server runtime | `Runtime.StopAll` waits to deadline and reports still-running truthfully | per-instance | Ops worker status | Phase 6 |
 | PaymentOrderExpiryService | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | singleton per run; reuses singleton leader lock | Ops worker status | Phase 2 |
 | ChannelMonitorRunner | No | `service.ProvideChannelMonitorRunner` | per-monitor timer goroutines plus bounded Pond pool | Service provider; server cleanup | `Stop` cancels scheduled tasks, waits for them, then `StopAndWait`s the pool | per-instance; per-monitor in-flight guard | Channel-monitor admin/user views and logs | Later migration |
 | UserPlatformQuotaUsageFlusher | No | `service.ProvideUserPlatformQuotaUsageFlusher` | TimingWheel recurring callback | Service provider; server cleanup | `Stop` cancels the timer then performs a final synchronous flush; no join guarantee for an already-running callback | per-instance | Gateway quota-flusher metrics / logs | Later migration |

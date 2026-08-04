@@ -83,7 +83,6 @@ func provideCleanup(
 	apiKeyService *service.APIKeyService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	usageCleanup *service.UsageCleanupService,
-	emailQueue *service.EmailQueueService,
 	billingCache *service.BillingCacheService,
 	subscriptionService *service.SubscriptionService,
 	openAIOAuthStartupConfigValidation *service.OpenAIOAuthStartupConfigValidation,
@@ -175,10 +174,6 @@ func provideCleanup(
 				if subscriptionService != nil {
 					subscriptionService.Stop()
 				}
-				return nil
-			}},
-			{"EmailQueueService", func() error {
-				emailQueue.Stop()
 				return nil
 			}},
 			{"BillingCacheService", func() error {

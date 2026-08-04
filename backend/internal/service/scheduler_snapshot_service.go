@@ -455,23 +455,6 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 					s.storeSnapshotVersion(cacheKey, version, time.Now())
 				}
 			}
-			if !staticCandidates {
-				cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
-				if err != nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
-				} else if hit {
-					ttl := snapshotDecodeCacheTTL
-					if version != "" {
-						ttl = snapshotDecodeVersionedTTL
-					}
-					s.decodeCache.Store(cacheKey, &snapshotDecodeCacheEntry{
-						accounts: cached,
-						version:  version,
-						exp:      time.Now().Add(ttl),
-					})
-					return derefAccounts(cached), useMixed, nil
-				}
-			}
 		}
 		if staticCandidates {
 			version = s.readSnapshotVersion(ctx, bucket)

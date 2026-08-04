@@ -213,6 +213,62 @@ func TestClaudeOAuthSessionCleanupLifecycleIsRuntimeOwned(t *testing.T) {
 	require.NotContains(t, string(content), "func (s *OAuthService) Stop")
 }
 
+func TestGeminiOAuthSessionCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
+	svc := NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{})
+	worker, err := NewGeminiOAuthSessionCleanupWorker(svc)
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "gemini-oauth-session-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "auth", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Removes expired Gemini OAuth authorization sessions", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"oauth", "gemini", "session-cleanup"}, snapshot.Descriptor.Tags)
+	require.Equal(t, 5*time.Minute, geminiOAuthSessionCleanupInterval)
+	require.Equal(t, 5*time.Second, geminiOAuthSessionCleanupTimeout)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestGeminiOAuthSessionCleanupWorkerDefersFirstRunAndStops(t *testing.T) {
+	svc := NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{})
+	worker, err := NewGeminiOAuthSessionCleanupWorker(svc)
+	require.NoError(t, err)
+	beforeStart := time.Now()
+	require.NoError(t, worker.Start(context.Background()))
+	var status workerruntime.PeriodicStatus
+	require.Eventually(t, func() bool {
+		status = worker.Snapshot().Status.(workerruntime.PeriodicStatus)
+		return !status.NextRunAt.IsZero()
+	}, time.Second, time.Millisecond)
+	observedAt := time.Now()
+	require.False(t, status.NextRunAt.Before(beforeStart.Add(5*time.Minute)))
+	require.False(t, status.NextRunAt.After(observedAt.Add(5*time.Minute)))
+	require.Zero(t, status.RunCount)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, worker.Stop(ctx))
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+}
+
+func TestGeminiOAuthSessionCleanupWorkerRejectsMissingService(t *testing.T) {
+	worker, err := NewGeminiOAuthSessionCleanupWorker(nil)
+	require.Nil(t, worker)
+	require.EqualError(t, err, "Gemini OAuth service is required")
+
+	worker, err = NewGeminiOAuthSessionCleanupWorker(&GeminiOAuthService{})
+	require.Nil(t, worker)
+	require.EqualError(t, err, "Gemini OAuth service is required")
+}
+
+func TestGeminiOAuthSessionCleanupLifecycleIsRuntimeOwned(t *testing.T) {
+	content, err := os.ReadFile("gemini_oauth_service.go")
+	require.NoError(t, err)
+	require.NotContains(t, string(content), "func (s *GeminiOAuthService) Stop")
+}
+
 func TestConcurrencySlotCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
 	cache := &slotCleanupCache{}
 	svc := NewConcurrencyService(cache)

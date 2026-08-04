@@ -20,6 +20,7 @@ func provideWorkerRuntime(
 	outboxCleanup *service.OutboxCleanupService,
 	tokenRefresh *service.TokenRefreshService,
 	oauth *service.OAuthService,
+	geminiOAuth *service.GeminiOAuthService,
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
@@ -56,6 +57,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	geminiOAuthSessionCleanupWorker, err := service.NewGeminiOAuthSessionCleanupWorker(geminiOAuth)
+	if err != nil {
+		return nil, err
+	}
 	userMessageQueueCleanupWorker, err := service.NewUserMessageQueueCleanupWorker(userMessageQueue)
 	if err != nil {
 		return nil, err
@@ -72,6 +77,7 @@ func provideWorkerRuntime(
 		paymentOrderExpiryWorker,
 		outboxCleanupWorker,
 		claudeOAuthSessionCleanupWorker,
+		geminiOAuthSessionCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
 	}

@@ -49,7 +49,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	cfg := &config.Config{}
 
 	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
-	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
 	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
 
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
@@ -73,7 +72,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		&service.SubscriptionService{},
 		&service.OpenAIOAuthStartupConfigValidation{},
 		openAIOAuthSvc,
-		geminiOAuthSvc,
 		antigravityOAuthSvc,
 		nil, // openAIGateway
 		nil, // scheduledTestRunner
@@ -105,6 +103,20 @@ func TestEmailQueueInventoryIsRuntimeManaged(t *testing.T) {
 	content, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
 	require.NoError(t, err)
 	require.Contains(t, string(content), "| EmailQueueService | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter | Server runtime | `Runtime.StopAll` waits to deadline and reports still-running truthfully | per-instance | Ops worker status | Phase 6 |")
+}
+
+func TestGeminiOAuthInventoryAndWireGraphAreRuntimeManaged(t *testing.T) {
+	inventory, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
+	require.NoError(t, err)
+	require.Contains(t, string(inventory), "This inventory records all process-local background activity through Issue #9 Phase 8.")
+	require.Contains(t, string(inventory), "| Gemini OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 8 |")
+
+	wireGen, err := os.ReadFile("wire_gen.go")
+	require.NoError(t, err)
+	generated := string(wireGen)
+	initialize := functionSource(generated, "initializeApplication")
+	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService,")
+	require.NotContains(t, functionSource(generated, "provideCleanup"), "geminiOAuth *service.GeminiOAuthService")
 }
 
 func TestWireGeneratedStartupValidationRunsBeforeSideEffectingProviders(t *testing.T) {

@@ -1,6 +1,6 @@
 # Worker Runtime Inventory
 
-This inventory records all process-local background activity through Issue #9 Phase 7.
+This inventory records all process-local background activity through Issue #9 Phase 8.
 `managed` means the component is registered in `workerruntime.Runtime` and appears in
 `GET /api/v1/admin/ops/workers/status`; `unmanaged` components retain their existing
 startup and shutdown behavior until a later phase. The status endpoint intentionally
@@ -33,7 +33,7 @@ reports no process identifier, credentials, payloads, stack traces, or raw upstr
 | OpenAI OAuth pending-session cleanup | No | `newOpenAIOAuthMemorySessionStore`; Redis failure cleanup starts in `newOpenAIOAuthSessionStore` when Redis is configured | two 5-minute ticker goroutines: memory expiry and Redis-write-failure-marker expiry | `OpenAIOAuthService`; server cleanup calls `openaiOAuth.Stop` | `Stop` closes stop channels; no join/`WaitGroup` guarantee | memory is per-instance; Redis session storage is shared, while Redis write-failure fallback markers are per-instance | Logs only | Later migration |
 | OpenAI WebSocket pool ping and cleanup | No | lazily by `OpenAIGatewayService.getOpenAIWSConnPool` on the first eligible WebSocket flow | ping and idle-connection cleanup ticker goroutines | lazily-created `OpenAIGatewayService` pool; server cleanup calls `CloseOpenAIWSPool` | `Close` closes the stop channel and waits for both worker goroutines via `WaitGroup` before closing idle connections | per-instance pool; account-pool mutexes coordinate connection state | `SnapshotOpenAIWSPerformanceMetrics` pool/transport metrics | Later migration |
 | Claude OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 7 |
-| Gemini OAuth session cleanup | No | `service.NewGeminiOAuthService` constructs `geminicli.NewSessionStore` during server wiring | 5-minute ticker goroutine | `GeminiOAuthService`; server cleanup calls `GeminiOAuthService.Stop` | `SessionStore.Stop` closes its stop channel; no join/`WaitGroup` guarantee | per-instance in-memory session map protected by an RW mutex | None | Later migration |
+| Gemini OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 8 |
 | Antigravity OAuth session cleanup | No | `service.NewAntigravityOAuthService` constructs `antigravity.NewSessionStore` during server wiring | 5-minute ticker goroutine | `AntigravityOAuthService`; server cleanup calls `AntigravityOAuthService.Stop` | `SessionStore.Stop` closes its stop channel; no join/`WaitGroup` guarantee | per-instance in-memory session map protected by an RW mutex | None | Later migration |
 
 ## Process-local status contract

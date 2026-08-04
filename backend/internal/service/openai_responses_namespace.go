@@ -74,16 +74,19 @@ func stripOpenAIResponsesInputNamespaces(body []byte) ([]byte, error) {
 			_ = rebuilt.WriteByte(',')
 		}
 		first = false
-		itemBody := []byte(item.Raw)
 		if item.IsObject() && item.Get("namespace").Exists() &&
 			isCodexToolCallInputType(strings.TrimSpace(item.Get("type").String())) {
-			itemBody, stripErr = sjson.DeleteBytes(itemBody, "namespace")
-			if stripErr != nil {
+			itemBody, err := sjson.DeleteBytes([]byte(item.Raw), "namespace")
+			if err != nil {
+				stripErr = err
 				return false
 			}
 			changed = true
+			_, _ = rebuilt.Write(itemBody)
+			return true
 		}
-		_, _ = rebuilt.Write(itemBody)
+		// 未修改的 item 直接透传原始字节，避免为每个 item 复制一份 []byte
+		_, _ = rebuilt.WriteString(item.Raw)
 		return true
 	})
 	if stripErr != nil {

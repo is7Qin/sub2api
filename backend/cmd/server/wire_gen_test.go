@@ -48,7 +48,6 @@ func TestShutdownErrorReturnsSoDeferredCleanupRuns(t *testing.T) {
 func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	cfg := &config.Config{}
 
-	oauthSvc := service.NewOAuthService(nil, nil)
 	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
 	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
 	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
@@ -73,7 +72,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		billingCacheSvc,
 		&service.SubscriptionService{},
 		&service.OpenAIOAuthStartupConfigValidation{},
-		oauthSvc,
 		openAIOAuthSvc,
 		geminiOAuthSvc,
 		antigravityOAuthSvc,

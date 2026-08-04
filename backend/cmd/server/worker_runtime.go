@@ -19,6 +19,7 @@ func provideWorkerRuntime(
 	pricing *service.PricingService,
 	outboxCleanup *service.OutboxCleanupService,
 	tokenRefresh *service.TokenRefreshService,
+	oauth *service.OAuthService,
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
@@ -51,6 +52,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	claudeOAuthSessionCleanupWorker, err := service.NewClaudeOAuthSessionCleanupWorker(oauth)
+	if err != nil {
+		return nil, err
+	}
 	userMessageQueueCleanupWorker, err := service.NewUserMessageQueueCleanupWorker(userMessageQueue)
 	if err != nil {
 		return nil, err
@@ -66,6 +71,7 @@ func provideWorkerRuntime(
 		subscriptionExpiryWorker,
 		paymentOrderExpiryWorker,
 		outboxCleanupWorker,
+		claudeOAuthSessionCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
 	}

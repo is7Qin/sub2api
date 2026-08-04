@@ -27,6 +27,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
@@ -35,7 +36,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "email-queue", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "claude-oauth-session-cleanup", "email-queue", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
@@ -64,6 +65,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		disabled,
+		service.NewOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
@@ -86,6 +88,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		enabled,
+		service.NewOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
@@ -106,6 +109,7 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewPricingService(&config.Config{}, nil),
 			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+			service.NewOAuthService(nil, nil),
 			service.NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: interval}),
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
@@ -135,6 +139,7 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			service.NewPricingService(&config.Config{}, nil),
 			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+			service.NewOAuthService(nil, nil),
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			concurrency,
 			service.NewEmailQueueService(nil, 1),

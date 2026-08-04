@@ -1450,6 +1450,16 @@ func (a *Account) IsOpenAIPassthroughEnabled() bool {
 	return a.IsOpenAIAPIKeyPassthroughEnabled()
 }
 
+// IsOpenAIResponsesFlattenNamespacesEnabled returns the OAuth compatibility
+// switch for relays that do not accept Codex namespace tool declarations.
+func (a *Account) IsOpenAIResponsesFlattenNamespacesEnabled() bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra["openai_responses_flatten_namespaces"].(bool)
+	return ok && enabled
+}
+
 // IsOpenAIResponsesWebSocketV2Enabled 返回 OpenAI 账号是否开启 Responses WebSocket v2。
 // OAuth 只读取迁移后的 openai_oauth_ws_mode，legacy OAuth 字段只允许迁移/校验代码识别。
 // APIKey 继续保持原有分类型字段与兼容字段回退行为。

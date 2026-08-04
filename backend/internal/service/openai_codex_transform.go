@@ -86,6 +86,7 @@ type codexOAuthTransformOptions struct {
 	IsCompact               bool
 	SkipDefaultInstructions bool
 	PreserveToolCallIDs     bool
+	PreserveNamespaces      bool
 }
 
 const (
@@ -249,6 +250,7 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		input = filterCodexInputWithOptions(input, codexInputFilterOptions{
 			PreserveReferences: needsToolContinuation,
 			PreserveCallIDs:    opts.PreserveToolCallIDs,
+			PreserveNamespaces: opts.PreserveNamespaces,
 		})
 		reqBody["input"] = input
 		result.Modified = true
@@ -1283,6 +1285,7 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 type codexInputFilterOptions struct {
 	PreserveReferences bool
 	PreserveCallIDs    bool
+	PreserveNamespaces bool
 }
 
 // filterCodexInput 按需过滤 item_reference 与 id。
@@ -1367,9 +1370,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			copied = true
 		}
 
-		// `namespace` is client-facing Responses metadata. ChatGPT's Codex
-		// request schema rejects it when a prior tool call is replayed.
-		if (typ == "function_call" || typ == "custom_tool_call") && m["namespace"] != nil {
+		// Compact and compatibility-flattened requests reject replayed namespace
+		// metadata; native Codex Responses requires it for multi-turn tool calls.
+		if !opts.PreserveNamespaces && (typ == "function_call" || typ == "custom_tool_call") && m["namespace"] != nil {
 			ensureCopy()
 			delete(newItem, "namespace")
 		}

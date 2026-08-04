@@ -187,6 +187,8 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 
 	type receivedPayload struct {
 		MaxCompletionTokensExists bool
+		InputNamespace            string
+		NamespaceToolType         string
 	}
 	receivedCh := make(chan receivedPayload, 1)
 
@@ -205,7 +207,11 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 			return
 		}
 		requestJSON := requestToJSONString(request)
-		receivedCh <- receivedPayload{MaxCompletionTokensExists: gjson.Get(requestJSON, "max_completion_tokens").Exists()}
+		receivedCh <- receivedPayload{
+			MaxCompletionTokensExists: gjson.Get(requestJSON, "max_completion_tokens").Exists(),
+			InputNamespace:            gjson.Get(requestJSON, "input.1.namespace").String(),
+			NamespaceToolType:         gjson.Get(requestJSON, "tools.1.type").String(),
+		}
 
 		if err := conn.WriteJSON(map[string]any{
 			"type": "response.completed",
@@ -257,7 +263,7 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 		Extra: map[string]any{"responses_websockets_v2_enabled": true},
 	}
 
-	body := []byte(`{"model":"gpt-5.4","stream":false,"max_completion_tokens":12,"tools":[{"type":"image_generation"}],"input":[{"type":"input_text","text":"hello"}]}`)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"max_completion_tokens":12,"tools":[{"type":"image_generation"},{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"input_text","text":"hello"},{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -265,6 +271,8 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 
 	received := <-receivedCh
 	require.False(t, received.MaxCompletionTokensExists)
+	require.Equal(t, "mcp", received.InputNamespace)
+	require.Equal(t, "namespace", received.NamespaceToolType)
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testing.T) {
@@ -677,10 +685,10 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 		"model":"gpt-5.1",
 		"stream":false,
 		"store":true,
-		"input":[{"type":"input_text","text":"hello"}],
+		"input":[{"type":"input_text","text":"hello"},{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}],
 		"instructions":"be helpful",
 		"reasoning":{"effort":"medium"},
-		"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"nonce":{"const":9007199254740993}}}}],
+		"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"nonce":{"const":9007199254740993}}}},{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],
 		"tool_choice":"auto",
 		"parallel_tool_calls":true,
 		"include":["reasoning.encrypted_content"],
@@ -712,6 +720,9 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	require.Equal(t, "be helpful", gjson.Get(requestJSON, "instructions").String())
 	require.Equal(t, "medium", gjson.Get(requestJSON, "reasoning.effort").String())
 	require.Equal(t, "function", gjson.Get(requestJSON, "tools.0.type").String())
+	require.Equal(t, "namespace", gjson.Get(requestJSON, "tools.1.type").String())
+	require.Equal(t, "mcp", gjson.Get(requestJSON, "tools.1.name").String())
+	require.Equal(t, "mcp", gjson.Get(requestJSON, "input.1.namespace").String())
 	require.Contains(t, requestJSON, "9007199254740993")
 	require.NotContains(t, requestJSON, "9007199254740992")
 	require.Equal(t, "auto", gjson.Get(requestJSON, "tool_choice").String())

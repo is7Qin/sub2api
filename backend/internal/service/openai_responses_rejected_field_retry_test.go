@@ -114,25 +114,30 @@ func TestNormalizeOpenAIResponsesRejectedFieldRetryBodyBindsMaxOutputTokensToRej
 	require.False(t, gjson.GetBytes(retryBody, "max_output_tokens").Exists())
 }
 
-func TestOpenAIGatewayService_RetriesRejectedIndexedNamespaceField(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"function_call","name":"first","namespace":"keep","arguments":"{}"},{"type":"custom_tool_call","name":"second","namespace":"remove","input":"{}"}]}`)
-	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		newOpenAIRejectedFieldTestResponse(http.StatusBadRequest, `{"error":{"code":"unknown_parameter","message":"Unknown parameter: 'input[1].namespace'.","param":"input[1].namespace","type":"invalid_request_error"}}`),
-		newOpenAIRejectedFieldTestResponse(http.StatusOK, `{"output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`),
-	}}
+func TestOpenAIGatewayService_APIKeyAdapterStripsInputNamespacesBeforeFirstHTTPRequest(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"function_call","name":"first","namespace":"mcp","arguments":"{}","metadata":{"namespace":"nested"}},{"type":"custom_tool_call","name":"second","namespace":"custom","input":"{}"},{"type":"message","namespace":"message-meta","content":"keep"}]}`)
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+		t.Run(path, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{
+				newOpenAIRejectedFieldTestResponse(http.StatusOK, `{"output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`),
+			}}
 
-	result, err := newOpenAIRejectedFieldTestService(upstream).Forward(
-		context.Background(),
-		newOpenAIRejectedFieldTestContext(body),
-		newOpenAIRejectedFieldTestAccount(),
-		body,
-	)
+			result, err := newOpenAIRejectedFieldTestService(upstream).Forward(
+				context.Background(),
+				newOpenAIRejectedFieldTestContextForPath(path, body),
+				newOpenAIRejectedFieldTestAccount(),
+				body,
+			)
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 2)
-	require.Equal(t, "keep", gjson.GetBytes(upstream.bodies[1], "input.0.namespace").String())
-	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.1.namespace").Exists())
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, upstream.bodies, 1)
+			require.False(t, gjson.GetBytes(upstream.bodies[0], "input.0.namespace").Exists())
+			require.False(t, gjson.GetBytes(upstream.bodies[0], "input.1.namespace").Exists())
+			require.Equal(t, "nested", gjson.GetBytes(upstream.bodies[0], "input.0.metadata.namespace").String())
+			require.Equal(t, "message-meta", gjson.GetBytes(upstream.bodies[0], "input.2.namespace").String())
+		})
+	}
 }
 
 func TestOpenAIGatewayService_RetriesExplicitMaxOutputTokensRejection(t *testing.T) {
@@ -157,10 +162,9 @@ func TestOpenAIGatewayService_RetriesExplicitMaxOutputTokensRejection(t *testing
 	require.Equal(t, "keep", gjson.GetBytes(upstream.bodies[1], "input.0.content.max_output_tokens").String())
 }
 
-func TestOpenAIGatewayService_ComposesDistinctRejectedFieldRetries(t *testing.T) {
+func TestOpenAIGatewayService_ComposesProactiveNamespaceCleanupWithRejectedFieldRetry(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","stream":false,"max_output_tokens":2048,"input":[{"type":"function_call","name":"first","namespace":"keep","arguments":"{}"},{"type":"custom_tool_call","name":"second","namespace":"remove","input":"{}"}]}`)
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		newOpenAIRejectedFieldTestResponse(http.StatusBadRequest, `{"error":{"code":"unknown_parameter","message":"Unknown parameter: 'input[1].namespace'.","param":"input[1].namespace"}}`),
 		newOpenAIRejectedFieldTestResponse(http.StatusBadRequest, `{"error":{"code":"unsupported_parameter","message":"Unsupported parameter: max_output_tokens","param":"max_output_tokens"}}`),
 		newOpenAIRejectedFieldTestResponse(http.StatusOK, `{"output":[],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`),
 	}}
@@ -174,12 +178,13 @@ func TestOpenAIGatewayService_ComposesDistinctRejectedFieldRetries(t *testing.T)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 3)
-	require.True(t, gjson.GetBytes(upstream.bodies[0], "input.1.namespace").Exists())
+	require.Len(t, upstream.bodies, 2)
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "input.0.namespace").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "input.1.namespace").Exists())
+	require.Equal(t, int64(2048), gjson.GetBytes(upstream.bodies[0], "max_output_tokens").Int())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.0.namespace").Exists())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.1.namespace").Exists())
-	require.Equal(t, int64(2048), gjson.GetBytes(upstream.bodies[1], "max_output_tokens").Int())
-	require.False(t, gjson.GetBytes(upstream.bodies[2], "input.1.namespace").Exists())
-	require.False(t, gjson.GetBytes(upstream.bodies[2], "max_output_tokens").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "max_output_tokens").Exists())
 }
 
 func newOpenAIRejectedFieldTestService(upstream *httpUpstreamRecorder) *OpenAIGatewayService {
@@ -192,10 +197,14 @@ func newOpenAIRejectedFieldTestService(upstream *httpUpstreamRecorder) *OpenAIGa
 }
 
 func newOpenAIRejectedFieldTestContext(body []byte) *gin.Context {
+	return newOpenAIRejectedFieldTestContextForPath("/v1/responses", body)
+}
+
+func newOpenAIRejectedFieldTestContextForPath(path string, body []byte) *gin.Context {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Request.Header.Set("User-Agent", "curl/8.0")
 	return c

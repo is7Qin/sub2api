@@ -3560,6 +3560,9 @@ export default {
         apiKeyPassthrough: 'API Key auto passthrough (auth only)',
         apiKeyPassthroughDesc:
           'Only applies to OpenAI API Key accounts. When enabled, requests and responses use the API Key passthrough path with auth replacement only, while billing/concurrency/audit and safety filtering are preserved. OAuth accounts always use the Codex/ChatGPT adapter path.',
+        flattenNamespaces: 'Flatten Codex namespace tools',
+        flattenNamespacesDesc:
+          'OAuth only. Leave disabled for native Codex namespace support. Enable only when a compatible relay rejects namespace declarations; compact requests remain flattened automatically.',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',

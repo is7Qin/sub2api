@@ -62,7 +62,7 @@ func TestStripOpenAIResponsesInputNamespaces_StripsOnlyVerifiedDirectCallTypes(t
 	require.Equal(t, "9007199254740995", gjson.GetBytes(stripped, "input.0.large").Raw)
 }
 
-func TestOpenAIGatewayService_OAuthHTTPFlattensNamespaceWireBodyAndRestoresBufferedResponse(t *testing.T) {
+func TestOpenAIGatewayService_OAuthHTTPFlattensNamespaceWireBodyAndRestoresBufferedResponseWhenEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, accountType := range []string{AccountTypeOAuth} {
 		t.Run(accountType, func(t *testing.T) {
@@ -101,6 +101,10 @@ func TestOpenAIGatewayService_OAuthHTTPFlattensNamespaceWireBodyAndRestoresBuffe
 			svc := &OpenAIGatewayService{httpUpstream: upstream}
 			account := httptestOpenAIOAuthBodyPolicyAccount()
 			account.Type = accountType
+			if account.Extra == nil {
+				account.Extra = make(map[string]any)
+			}
+			account.Extra["openai_responses_flatten_namespaces"] = true
 
 			_, err := svc.Forward(context.Background(), c, account, body)
 			require.NoError(t, err)
@@ -129,6 +133,27 @@ func TestOpenAIGatewayService_OAuthHTTPFlattensNamespaceWireBodyAndRestoresBuffe
 	}
 }
 
+func TestOpenAIGatewayService_OAuthHTTPKeepsNamespacesNativeByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"tools":[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_oauth","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	_, err := svc.Forward(context.Background(), c, httptestOpenAIOAuthBodyPolicyAccount(), body)
+	require.NoError(t, err)
+	require.Equal(t, "namespace", gjson.GetBytes(upstream.lastBody, "tools.0.type").String())
+	require.Equal(t, "mcp", gjson.GetBytes(upstream.lastBody, "tools.0.name").String())
+	require.Equal(t, "mcp", gjson.GetBytes(upstream.lastBody, "input.0.namespace").String())
+}
+
 func TestOpenAIGatewayService_SetupTokenHTTPKeepsNamespacesNative(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","stream":false,"tools":[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"tool_call","namespace":"mcp","name":"read"}]}`)
@@ -152,7 +177,7 @@ func TestOpenAIGatewayService_SetupTokenHTTPKeepsNamespacesNative(t *testing.T) 
 	require.Equal(t, "mcp", gjson.GetBytes(upstream.lastBody, "input.0.namespace").String())
 }
 
-func TestOpenAIGatewayService_OAuthHTTPRestoresNamespaceStreamingResponse(t *testing.T) {
+func TestOpenAIGatewayService_OAuthHTTPRestoresNamespaceStreamingResponseWhenEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","stream":true,"tools":[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":"hello"}`)
 	rec := httptest.NewRecorder()
@@ -177,8 +202,10 @@ func TestOpenAIGatewayService_OAuthHTTPRestoresNamespaceStreamingResponse(t *tes
 		Body:       io.NopCloser(strings.NewReader(strings.Join(frames, "\n"))),
 	}}
 	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := httptestOpenAIOAuthBodyPolicyAccount()
+	account.Extra = map[string]any{"openai_responses_flatten_namespaces": true}
 
-	_, err := svc.Forward(context.Background(), c, httptestOpenAIOAuthBodyPolicyAccount(), body)
+	_, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.Contains(t, rec.Body.String(), `"name":"read"`)
 	require.Contains(t, rec.Body.String(), `"namespace":"mcp"`)
@@ -194,8 +221,10 @@ func TestOpenAIGatewayService_OAuthNamespaceCollisionRejectedBeforeUpstream(t *t
 	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}}
 	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := httptestOpenAIOAuthBodyPolicyAccount()
+	account.Extra = map[string]any{"openai_responses_flatten_namespaces": true}
 
-	_, err := svc.Forward(context.Background(), c, httptestOpenAIOAuthBodyPolicyAccount(), body)
+	_, err := svc.Forward(context.Background(), c, account, body)
 	require.Error(t, err)
 	require.Empty(t, upstream.requests)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -210,41 +239,45 @@ func TestOpenAIGatewayService_OAuthNamespaceCollisionRejectedBeforeUpstream(t *t
 func TestOpenAIGatewayService_APIKeyPassthroughDoesNotNormalizeNamespaces(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","stream":false,"tools":[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}]}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
-	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_api","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
-	}}
-	svc := &OpenAIGatewayService{httpUpstream: upstream, cfg: &config.Config{}}
-	svc.cfg.Security.URLAllowlist.Enabled = false
-	account := &Account{ID: 55, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "secret"}, Extra: map[string]any{"openai_passthrough": true}}
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+			SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_api","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+			}}
+			svc := &OpenAIGatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+			svc.cfg.Security.URLAllowlist.Enabled = false
+			account := &Account{ID: 55, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "secret"}, Extra: map[string]any{"openai_passthrough": true}}
 
-	_, err := svc.Forward(context.Background(), c, account, body)
-	require.NoError(t, err)
-	require.JSONEq(t, string(body), string(upstream.lastBody))
+			_, err := svc.Forward(context.Background(), c, account, body)
+			require.NoError(t, err)
+			require.JSONEq(t, string(body), string(upstream.lastBody))
+		})
+	}
 }
 
-func TestOpenAIResponsesNamespaceAdapter_UsesExactOAuthHTTPPredicate(t *testing.T) {
+func TestOpenAIResponsesNamespaceAdapter_FlattensOnlyForCompatibility(t *testing.T) {
 	oauth := httptestOpenAIOAuthBodyPolicyAccount()
-	setupToken := httptestOpenAIOAuthBodyPolicyAccount()
-	setupToken.Type = AccountTypeSetupToken
+	if oauth.Extra == nil {
+		oauth.Extra = make(map[string]any)
+	}
 	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 
-	require.True(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP))
-	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportResponsesWebsocketV2, OpenAIClientTransportWS))
-	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportWS))
-	// Setup-token shares the Codex transport today, but no captured namespace
-	// rejection establishes that it needs this compatibility mutation.
-	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(setupToken, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP))
-	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(apiKey, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP))
-	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(nil, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP))
+	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP, false))
+	require.True(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP, true))
+	oauth.Extra["openai_responses_flatten_namespaces"] = true
+	require.True(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP, false))
+	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(oauth, OpenAIUpstreamTransportResponsesWebsocketV2, OpenAIClientTransportWS, false))
+	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(apiKey, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP, true))
+	require.False(t, shouldNormalizeOpenAIResponsesNamespaces(nil, OpenAIUpstreamTransportHTTPSSE, OpenAIClientTransportHTTP, true))
 }
 
-func TestOpenAIResponsesNamespaceAdapter_TerminalStripUsesExactOAuthHTTPPredicate(t *testing.T) {
+func TestOpenAIResponsesNamespaceAdapter_TerminalStripSeparatesAdapterAndNativePaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newContext := func(clientTransport OpenAIClientTransport, upstreamTransport OpenAIUpstreamTransport) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -255,10 +288,17 @@ func TestOpenAIResponsesNamespaceAdapter_TerminalStripUsesExactOAuthHTTPPredicat
 	oauth := httptestOpenAIOAuthBodyPolicyAccount()
 	setupToken := httptestOpenAIOAuthBodyPolicyAccount()
 	setupToken.Type = AccountTypeSetupToken
+	apiKeyAdapter := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	apiKeyPassthrough := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{"openai_passthrough": true}}
 
+	require.False(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportHTTP, OpenAIUpstreamTransportHTTPSSE), oauth))
+	oauth.Extra = map[string]any{"openai_responses_flatten_namespaces": true}
 	require.True(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportHTTP, OpenAIUpstreamTransportHTTPSSE), oauth))
 	require.False(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportWS, OpenAIUpstreamTransportResponsesWebsocketV2), oauth))
 	require.False(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportHTTP, OpenAIUpstreamTransportHTTPSSE), setupToken))
+	require.True(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportHTTP, OpenAIUpstreamTransportHTTPSSE), apiKeyAdapter))
+	require.False(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportWS, OpenAIUpstreamTransportResponsesWebsocketV2), apiKeyAdapter))
+	require.False(t, shouldStripOpenAIResponsesInputNamespaces(newContext(OpenAIClientTransportHTTP, OpenAIUpstreamTransportHTTPSSE), apiKeyPassthrough))
 	require.False(t, shouldStripOpenAIResponsesInputNamespaces(nil, oauth))
 }
 
@@ -275,7 +315,7 @@ func TestRestoreOpenAIResponsesNamespacePayload_NonObjectPayloadPassesThrough(t 
 
 func TestOpenAIGatewayService_OAuthFailoverToAPIKeyClearsNamespaceMapping(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-5.4","stream":false,"tools":[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":"hello"}`)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"tools":[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}]}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
@@ -311,6 +351,8 @@ func TestOpenAIGatewayService_OAuthFailoverToAPIKeyClearsNamespaceMapping(t *tes
 	require.Equal(t, "mcp__read", gjson.GetBytes(rec.Body.Bytes(), "output.0.name").String())
 	require.False(t, gjson.GetBytes(rec.Body.Bytes(), "output.0.namespace").Exists())
 	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "mcp", gjson.GetBytes(upstream.bodies[0], "input.0.namespace").String())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.0.namespace").Exists())
 }
 
 func TestRestoreOpenAIResponsesNamespacePayload_MappingIsRequestScoped(t *testing.T) {

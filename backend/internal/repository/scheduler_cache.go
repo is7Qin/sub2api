@@ -699,11 +699,19 @@ func (c *schedulerCache) readSupportSnapshotAccounts(ctx context.Context, bucket
 	if err != nil {
 		return nil, false, err
 	}
+	dynamicKeys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		dynamicKeys = append(dynamicKeys, schedulerAccountMetaKey(id))
+	}
+	dynamicValues, err := c.mgetChunked(ctx, dynamicKeys)
+	if err != nil {
+		return nil, false, err
+	}
 	lastUsedValues, err := c.mgetChunked(ctx, lastUsedKeys)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(values) != len(ids) || len(lastUsedValues) != len(ids) {
+	if len(values) != len(ids) || len(dynamicValues) != len(ids) || len(lastUsedValues) != len(ids) {
 		return nil, false, errors.New("scheduler snapshot cache returned unexpected value count")
 	}
 	accounts := make([]*service.Account, 0, len(values))
@@ -714,6 +722,13 @@ func (c *schedulerCache) readSupportSnapshotAccounts(ctx context.Context, bucket
 		account, err := decodeCachedAccount(val)
 		if err != nil {
 			return nil, false, err
+		}
+		if dynamicValues[i] != nil {
+			dynamic, err := decodeCachedAccount(dynamicValues[i])
+			if err != nil {
+				return nil, false, err
+			}
+			applySchedulerPersistentSupportState(account, dynamic)
 		}
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
 			return nil, false, err
@@ -1496,6 +1511,18 @@ func (c *schedulerCache) writeStaticStateVersionedAccountIDs(ctx context.Context
 	}
 	pipe := c.rdb.Pipeline()
 	accountIDs := make([]int64, 0, len(accounts))
+	pending := 0
+	flush := func() error {
+		if pending == 0 {
+			return nil
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
+		pipe = c.rdb.Pipeline()
+		pending = 0
+		return nil
+	}
 	for _, account := range accounts {
 		fullPayload, metaPayload, err := marshalSchedulerCacheAccount(account)
 		if err != nil {
@@ -1510,8 +1537,14 @@ func (c *schedulerCache) writeStaticStateVersionedAccountIDs(ctx context.Context
 			pipe.Set(ctx, schedulerVersionedAccountMetaKey(bucket, version, id), metaPayload, time.Duration(staticStateUnpublishedPayloadTTLSeconds)*time.Second)
 		}
 		accountIDs = append(accountIDs, account.ID)
+		pending++
+		if pending >= c.writeChunkSize {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
 	}
-	if _, err := pipe.Exec(ctx); err != nil {
+	if err := flush(); err != nil {
 		return nil, err
 	}
 	return accountIDs, nil
@@ -1553,15 +1586,26 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 	return out, nil
 }
 
-// applySchedulerDynamicAccountState overlays cache-only runtime scheduling state
-// onto a request candidate without changing its versioned membership, credentials,
-// or static projection. SetAccount is used for immediate rate-limit publication;
-// in particular model_rate_limits must take effect before the next bucket rebuild.
+// applySchedulerDynamicAccountState keeps the versioned membership immutable while
+// applying the latest mutable account payload. SetAccount publishes admin edits and
+// runtime cooldowns immediately, so request routing must not wait for a bucket rebuild.
 func applySchedulerDynamicAccountState(candidate, dynamic *service.Account) {
 	if candidate == nil || dynamic == nil {
 		return
 	}
+	candidate.Name = dynamic.Name
+	candidate.Type = dynamic.Type
+	candidate.Credentials = dynamic.Credentials
+	candidate.Extra = dynamic.Extra
+	candidate.ProxyID = dynamic.ProxyID
+	candidate.Proxy = dynamic.Proxy
+	candidate.Concurrency = dynamic.Concurrency
+	candidate.LoadFactor = dynamic.LoadFactor
+	candidate.Priority = dynamic.Priority
+	candidate.RateMultiplier = dynamic.RateMultiplier
 	candidate.Status = dynamic.Status
+	candidate.ExpiresAt = dynamic.ExpiresAt
+	candidate.AutoPauseOnExpired = dynamic.AutoPauseOnExpired
 	candidate.Schedulable = dynamic.Schedulable
 	candidate.RateLimitedAt = dynamic.RateLimitedAt
 	candidate.RateLimitResetAt = dynamic.RateLimitResetAt
@@ -1571,17 +1615,34 @@ func applySchedulerDynamicAccountState(candidate, dynamic *service.Account) {
 	candidate.SessionWindowStart = dynamic.SessionWindowStart
 	candidate.SessionWindowEnd = dynamic.SessionWindowEnd
 	candidate.SessionWindowStatus = dynamic.SessionWindowStatus
-	if dynamic.Extra == nil {
+}
+
+func applySchedulerPersistentSupportState(support, dynamic *service.Account) {
+	if support == nil || dynamic == nil {
 		return
 	}
-	modelRateLimits, ok := dynamic.Extra["model_rate_limits"]
-	if !ok {
-		return
+	support.Platform = dynamic.Platform
+	support.Type = dynamic.Type
+	support.Concurrency = dynamic.Concurrency
+	support.Priority = dynamic.Priority
+	support.Credentials = filterModelAvailabilityFields(dynamic.Credentials, modelAvailabilityCredentialsSubKeys)
+	support.Extra = filterModelAvailabilityFields(dynamic.Extra, modelAvailabilityExtraSubKeys)
+}
+
+func filterModelAvailabilityFields(values map[string]any, keys []string) map[string]any {
+	if len(values) == 0 {
+		return nil
 	}
-	if candidate.Extra == nil {
-		candidate.Extra = make(map[string]any, 1)
+	filtered := make(map[string]any)
+	for _, key := range keys {
+		if value, ok := values[key]; ok && value != nil {
+			filtered[key] = value
+		}
 	}
-	candidate.Extra["model_rate_limits"] = modelRateLimits
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
@@ -1674,8 +1735,17 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
-	// compact_model_mapping 参与 compact 路径的通道上游模型限制检查，须随 meta 保留。
-	keys := []string{"model_mapping", "project_id", "oauth_type", "openai_capabilities", "compact_model_mapping"}
+	// Keep the persistent model-support projection complete when mutable metadata
+	// overrides a versioned support payload. Bedrock model resolution needs both AWS keys.
+	keys := []string{
+		"model_mapping",
+		"project_id",
+		"oauth_type",
+		"openai_capabilities",
+		"compact_model_mapping",
+		"aws_region",
+		"aws_force_global",
+	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {

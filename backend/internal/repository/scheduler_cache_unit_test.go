@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,6 +131,30 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 	require.Equal(t, false, got.Extra["openai_responses_supported"])
 	require.Equal(t, true, got.Extra["mixed_scheduling"])
 	require.Nil(t, got.Extra["unused_large_field"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsModelAvailabilityCredentials(t *testing.T) {
+	account := service.Account{
+		ID:       43,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeBedrock,
+		Credentials: map[string]any{
+			"api_key":          "must-not-leak",
+			"model_mapping":    map[string]any{"claude": "upstream"},
+			"aws_region":       "us-west-2",
+			"aws_force_global": true,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, map[string]any{
+		"model_mapping":    map[string]any{"claude": "upstream"},
+		"aws_region":       "us-west-2",
+		"aws_force_global": true,
+		"has_api_key":      true,
+	}, got.Credentials)
+	require.NotContains(t, got.Credentials, "api_key")
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
@@ -342,6 +367,51 @@ func TestSchedulerCacheGetSchedulableAccountsByIDs_ChunkBoundary(t *testing.T) {
 	}
 }
 
+type schedulerStaticPayloadPipelineCountHook struct {
+	pipelineCalls atomic.Int32
+}
+
+func (h *schedulerStaticPayloadPipelineCountHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *schedulerStaticPayloadPipelineCountHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+
+func (h *schedulerStaticPayloadPipelineCountHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if len(cmds) > 0 && cmds[0].Name() == "set" && len(cmds[0].Args()) > 1 {
+			key, _ := cmds[0].Args()[1].(string)
+			if strings.HasPrefix(key, schedulerVersionedAccountPrefix) || strings.HasPrefix(key, schedulerVersionedSupportAccountPrefix) {
+				h.pipelineCalls.Add(1)
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+func TestSchedulerCache_StaticPayloadWritesHonorChunkSize(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	cache.writeChunkSize = 2
+	hook := &schedulerStaticPayloadPipelineCountHook{}
+	cache.rdb.AddHook(hook)
+	bucket := service.SchedulerBucket{GroupID: 24, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	accounts := []service.Account{
+		{ID: 741, Platform: service.PlatformOpenAI},
+		{ID: 742, Platform: service.PlatformOpenAI},
+		{ID: 743, Platform: service.PlatformOpenAI},
+		{ID: 744, Platform: service.PlatformOpenAI},
+		{ID: 745, Platform: service.PlatformOpenAI},
+	}
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, accounts, accounts))
+
+	// Five candidate and five support payloads produce three bounded pipelines each.
+	require.Equal(t, int32(6), hook.pipelineCalls.Load())
+}
+
 type schedulerSnapshotWriteFailureHook struct {
 	zaddCalls atomic.Int32
 }
@@ -494,6 +564,101 @@ func TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads(t *testin
 	require.Len(t, refreshed, 1)
 	require.Equal(t, resetAt, *refreshed[candidate.ID].RateLimitResetAt)
 	require.Equal(t, overloadUntil, *refreshed[candidate.ID].OverloadUntil)
+}
+
+func TestSchedulerCache_StaticCandidateUsesFreshMutableAccountPayload(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	oldProxyID := int64(20)
+	newProxyID := int64(21)
+	oldRateMultiplier := 1.0
+	newRateMultiplier := 1.5
+	oldLoadFactor := 2
+	newLoadFactor := 8
+	candidate := service.Account{
+		ID:             13,
+		Platform:       service.PlatformOpenAI,
+		Type:           service.AccountTypeAPIKey,
+		Status:         service.StatusActive,
+		Schedulable:    true,
+		Credentials:    map[string]any{"api_key": "old-secret"},
+		Extra:          map[string]any{"openai_passthrough": false},
+		ProxyID:        &oldProxyID,
+		Proxy:          &service.Proxy{ID: oldProxyID, Protocol: "http", Host: "old-proxy.test", Port: 8080},
+		Concurrency:    2,
+		LoadFactor:     &oldLoadFactor,
+		RateMultiplier: &oldRateMultiplier,
+	}
+	replacement := candidate
+	replacement.Credentials = map[string]any{"api_key": "new-secret"}
+	replacement.Extra = map[string]any{"openai_passthrough": true}
+	replacement.ProxyID = &newProxyID
+	replacement.Proxy = &service.Proxy{ID: newProxyID, Protocol: "http", Host: "new-proxy.test", Port: 8081}
+	replacement.Concurrency = 6
+	replacement.LoadFactor = &newLoadFactor
+	replacement.RateMultiplier = &newRateMultiplier
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{candidate}, []service.Account{candidate}))
+	require.NoError(t, cache.SetAccount(ctx, &replacement))
+
+	hydrated, err := cache.GetStaticCandidateAccount(ctx, bucket, candidate.ID)
+	require.NoError(t, err)
+	require.NotNil(t, hydrated)
+	require.Equal(t, "new-secret", hydrated.GetCredential("api_key"))
+	require.True(t, hydrated.IsOpenAIAPIKeyPassthroughEnabled())
+	require.Equal(t, newProxyID, *hydrated.ProxyID)
+	require.Equal(t, "http://new-proxy.test:8081", hydrated.Proxy.URL())
+	require.Equal(t, 6, hydrated.Concurrency)
+	require.Equal(t, newLoadFactor, *hydrated.LoadFactor)
+	require.Equal(t, newRateMultiplier, *hydrated.RateMultiplier)
+
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, candidates, 1)
+	require.True(t, candidates[0].IsOpenAIAPIKeyPassthroughEnabled())
+	require.Equal(t, 6, candidates[0].Concurrency)
+	require.Equal(t, newLoadFactor, *candidates[0].LoadFactor)
+	require.Equal(t, newRateMultiplier, *candidates[0].RateMultiplier)
+}
+
+func TestSchedulerCache_PersistentSupportUsesFreshMutableProjection(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	candidate := service.Account{
+		ID:          14,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":             "old-secret",
+			"model_mapping":       map[string]any{"old-model": "old-upstream"},
+			"openai_capabilities": []any{"chat_completions"},
+		},
+		Extra: map[string]any{"openai_passthrough": false},
+	}
+	replacement := candidate
+	replacement.Credentials = map[string]any{
+		"api_key":             "new-secret",
+		"model_mapping":       map[string]any{"new-model": "new-upstream"},
+		"openai_capabilities": []any{"embeddings"},
+	}
+	replacement.Extra = map[string]any{"openai_passthrough": true}
+
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{candidate}, []service.Account{candidate}))
+	require.NoError(t, cache.SetAccount(ctx, &replacement))
+
+	support, hit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, support, 1)
+	require.Equal(t, map[string]string{"new-model": "new-upstream"}, support[0].GetModelMapping())
+	require.True(t, support[0].SupportsOpenAIEndpointCapability(service.OpenAIEndpointCapabilityEmbeddings))
+	require.True(t, support[0].IsOpenAIAPIKeyPassthroughEnabled())
+	require.Empty(t, support[0].GetCredential("api_key"), "persistent support must not expose secrets")
 }
 
 func TestSchedulerCache_IncompleteStaticStateDoesNotHitPersistentSupport(t *testing.T) {

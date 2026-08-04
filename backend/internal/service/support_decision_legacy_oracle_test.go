@@ -289,43 +289,179 @@ func TestLegacyPureOpenAIModelSupportMissSemanticMatrix(t *testing.T) {
 
 func TestLegacyPureModelSupportMissSupportingAccountWins(t *testing.T) {
 	const model = "claude-sonnet-4-5"
-	supporting := Account{
-		Platform:    PlatformAnthropic,
-		Credentials: map[string]any{"model_mapping": map[string]any{model: model}},
+
+	tests := []struct {
+		name               string
+		account            Account
+		requirePrivacy     bool
+		upstreamRestricted func(account *Account, requestedModel string) bool
+		assertBlocked      func(t *testing.T, account *Account)
+	}{
+		{
+			name: "privacy",
+			account: Account{
+				Platform: PlatformAntigravity,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{model: model},
+				},
+				Extra: map[string]any{
+					"mixed_scheduling": true,
+					"privacy_mode":     "default",
+				},
+			},
+			requirePrivacy: true,
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.True(t, shouldBlockAccountForPrivacyRequirement(account, &Group{RequirePrivacySet: true}))
+			},
+		},
+		{
+			name: "upstream channel",
+			account: Account{
+				Platform: PlatformAnthropic,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{model: model},
+				},
+			},
+			upstreamRestricted: func(account *Account, requestedModel string) bool {
+				return resolveAccountUpstreamModel(account, requestedModel) == model
+			},
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.Equal(t, model, resolveAccountUpstreamModel(account, model))
+			},
+		},
 	}
 
-	got := legacyPureModelSupportMiss(legacyModelSupportMissInput{
-		Accounts:       []Account{supporting},
-		RequestedModel: model,
-		Platform:       PlatformAnthropic,
-		RequirePrivacy: true,
-		ModelSupported: func(account *Account, model string) bool { return account.IsModelSupported(model) },
-		UpstreamRestricted: func(*Account, string) bool {
-			return true
-		},
-	})
-	require.False(t, got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.True(t, tt.account.IsModelSupported(model), "fixture must support the requested model")
+			tt.assertBlocked(t, &tt.account)
+
+			got := legacyPureModelSupportMiss(legacyModelSupportMissInput{
+				Accounts:             []Account{tt.account},
+				RequestedModel:       model,
+				Platform:             PlatformAnthropic,
+				AllowMixedScheduling: tt.account.Platform == PlatformAntigravity,
+				RequirePrivacy:       tt.requirePrivacy,
+				ModelSupported: func(account *Account, model string) bool {
+					return account.IsModelSupported(model)
+				},
+				UpstreamRestricted: tt.upstreamRestricted,
+			})
+			require.False(t, got)
+		})
+	}
 }
 
 func TestLegacyPureOpenAIModelSupportMissSupportingAccountWins(t *testing.T) {
 	const model = "gpt-external"
-	supporting := Account{
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"model_mapping": map[string]any{model: "upstream"}},
-		Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOff},
+
+	oauthAccount := func() Account {
+		return Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{model: "gpt-5.4"},
+			},
+		}
+	}
+	apiKeyAccount := func() Account {
+		return Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{model: "upstream"},
+			},
+		}
 	}
 
-	got := legacyPureOpenAIModelSupportMiss(legacyOpenAIModelSupportMissInput{
-		Accounts:            []Account{supporting},
-		RequestedModel:      model,
-		RequirePrivacy:      true,
-		EndpointCapability:  OpenAIEndpointCapabilityEmbeddings,
-		ImageCapability:     OpenAIImagesCapabilityBasic,
-		RequireCompact:      true,
-		Transport:           OpenAIUpstreamTransportResponsesWebsocketV2,
-		UpstreamRestricted:  func(*Account, string, bool) bool { return true },
-		TransportCompatible: func(*Account, OpenAIUpstreamTransport) bool { return false },
-	})
-	require.False(t, got)
+	tests := []struct {
+		name                string
+		account             Account
+		requirePrivacy      bool
+		endpointCapability  OpenAIEndpointCapability
+		imageCapability     OpenAIImagesCapability
+		requireCompact      bool
+		transport           OpenAIUpstreamTransport
+		upstreamRestricted  bool
+		transportCompatible bool
+		assertBlocked       func(t *testing.T, account *Account)
+	}{
+		{
+			name:           "privacy",
+			account:        oauthAccount(),
+			requirePrivacy: true,
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.True(t, shouldBlockAccountForPrivacyRequirement(account, &Group{RequirePrivacySet: true}))
+			},
+		},
+		{
+			name:               "upstream channel",
+			account:            apiKeyAccount(),
+			upstreamRestricted: true,
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.NotEmpty(t, resolveOpenAIAccountUpstreamModelForRequest(account, model, false))
+			},
+		},
+		{
+			name:               "endpoint",
+			account:            oauthAccount(),
+			endpointCapability: OpenAIEndpointCapabilityEmbeddings,
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
+			},
+		},
+		{
+			name:            "image",
+			account:         func() Account { account := oauthAccount(); account.Type = AccountTypeSetupToken; return account }(),
+			imageCapability: OpenAIImagesCapabilityBasic,
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.False(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic))
+			},
+		},
+		{
+			name: "compact",
+			account: func() Account {
+				account := apiKeyAccount()
+				account.Extra = map[string]any{"openai_compact_mode": OpenAICompactModeForceOff}
+				return account
+			}(),
+			requireCompact: true,
+			assertBlocked: func(t *testing.T, account *Account) {
+				require.Zero(t, openAICompactSupportTier(account))
+			},
+		},
+		{
+			name:                "transport",
+			account:             apiKeyAccount(),
+			transport:           OpenAIUpstreamTransportResponsesWebsocketV2,
+			transportCompatible: false,
+			assertBlocked: func(t *testing.T, _ *Account) {
+				require.NotEqual(t, OpenAIUpstreamTransportAny, OpenAIUpstreamTransportResponsesWebsocketV2)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.True(t, tt.account.IsModelSupported(model), "fixture must support the requested model")
+			tt.assertBlocked(t, &tt.account)
+
+			got := legacyPureOpenAIModelSupportMiss(legacyOpenAIModelSupportMissInput{
+				Accounts:           []Account{tt.account},
+				RequestedModel:     model,
+				RequirePrivacy:     tt.requirePrivacy,
+				EndpointCapability: tt.endpointCapability,
+				ImageCapability:    tt.imageCapability,
+				RequireCompact:     tt.requireCompact,
+				Transport:          tt.transport,
+				UpstreamRestricted: func(*Account, string, bool) bool {
+					return tt.upstreamRestricted
+				},
+				TransportCompatible: func(*Account, OpenAIUpstreamTransport) bool {
+					return tt.transportCompatible
+				},
+			})
+			require.False(t, got)
+		})
+	}
 }

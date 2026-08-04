@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/stretchr/testify/require"
 )
 
 // --- mock: ClaudeOAuthClient ---
@@ -544,6 +546,19 @@ func TestOAuthService_RefreshAccountToken_WithProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshAccountToken 返回错误: %v", err)
 	}
+}
+
+func TestOAuthServiceCleanupSessionsDelegatesToSessionStore(t *testing.T) {
+	svc := NewOAuthService(nil, nil)
+	svc.sessionStore.Set("expired", &oauth.OAuthSession{CreatedAt: time.Now().Add(-oauth.SessionTTL - time.Second)})
+
+	require.NoError(t, svc.CleanupSessions(context.Background()))
+	_, ok := svc.sessionStore.Get("expired")
+	require.False(t, ok)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, svc.CleanupSessions(ctx), context.Canceled)
 }
 
 func TestOAuthService_ExchangeCode_NilOrg(t *testing.T) {

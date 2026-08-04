@@ -1,6 +1,6 @@
 # Worker Runtime Inventory
 
-This inventory records all process-local background activity through Issue #9 Phase 6.
+This inventory records all process-local background activity through Issue #9 Phase 7.
 `managed` means the component is registered in `workerruntime.Runtime` and appears in
 `GET /api/v1/admin/ops/workers/status`; `unmanaged` components retain their existing
 startup and shutdown behavior until a later phase. The status endpoint intentionally

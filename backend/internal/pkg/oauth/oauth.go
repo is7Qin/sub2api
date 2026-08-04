@@ -86,10 +86,13 @@ func (s *SessionStore) Delete(sessionID string) {
 
 // CleanupExpired removes sessions older than SessionTTL for one runtime callback.
 func (s *SessionStore) CleanupExpired(ctx context.Context) error {
+	return s.cleanupExpiredAt(ctx, time.Now())
+}
+
+func (s *SessionStore) cleanupExpiredAt(ctx context.Context, now time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, session := range s.sessions {

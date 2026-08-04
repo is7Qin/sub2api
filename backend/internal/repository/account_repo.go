@@ -899,6 +899,7 @@ func (r *accountRepository) ListOAuthRefreshCandidates(ctx context.Context) ([]s
 		SELECT id
 		FROM accounts
 		WHERE deleted_at IS NULL
+			AND schedulable = TRUE
 			AND status = 'active'
 			AND type IN ('oauth', 'setup-token')
 			AND platform IN ('anthropic', 'openai', 'gemini', 'antigravity')

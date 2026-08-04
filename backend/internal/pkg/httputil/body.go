@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -145,6 +146,14 @@ func NormalizeLenientJSONRequestBody(body []byte, limit int64) ([]byte, error) {
 		return nil, &http.MaxBytesError{Limit: limit}
 	}
 
+	// 快路径：整段不存在任何原始控制字节（<0x20）时状态机必然空转，直接返回
+	// 原切片（零拷贝）。词级预扫描会误报字符串外的控制字节，但仅作为存在性
+	// 预筛——命中即回退到下面的逐字节状态机按字符串边界精确处理，语义与旧实现
+	// 完全一致。
+	if !hasRawControlByte(body) {
+		return body, nil
+	}
+
 	var out []byte
 	inString, escaped := false, false
 	for i, b := range body {
@@ -180,4 +189,27 @@ func NormalizeLenientJSONRequestBody(body []byte, limit int64) ([]byte, error) {
 		return out, nil
 	}
 	return body, nil
+}
+
+// hasRawControlByte 按 8 字节一组快速检测是否存在原始控制字节（<0x20）。
+// 经典 SWAR 技巧：对每 8 字节 v，(v-0x2020202020202020)&^v&0x8080808080808080
+// 非零当且仅当存在字节 <0x20（&^v 用于排除 >=0x80 字节的减法借位误报）。
+func hasRawControlByte(b []byte) bool {
+	const (
+		less = 0x2020202020202020 // 每字节减 0x20，小于 0x20 时向高位借位
+		high = 0x8080808080808080 // 借位结果高位字节为 1 的掩码
+	)
+	for len(b) >= 8 {
+		v := binary.LittleEndian.Uint64(b)
+		if (v-less)&^v&high != 0 {
+			return true
+		}
+		b = b[8:]
+	}
+	for _, c := range b {
+		if c < 0x20 {
+			return true
+		}
+	}
+	return false
 }

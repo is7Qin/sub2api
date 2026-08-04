@@ -28,6 +28,7 @@ const (
 	schedulerVersionedSupportAccountPrefix     = "sched:support:acc:v:"
 	schedulerVersionedSupportAccountMetaPrefix = "sched:support:meta:v:"
 	schedulerAccountLastUsedPrefix             = "sched:acc:last_used:"
+	schedulerAccountDeletedPrefix              = "sched:deleted:"
 	schedulerActivePrefix                      = "sched:active:"
 	schedulerReadyPrefix                       = "sched:ready:"
 	schedulerVersionPrefix                     = "sched:ver:"
@@ -213,6 +214,11 @@ if currentActive ~= false and currentActive ~= ARGV[1] then
 end
 
 return 1
+`)
+
+	deleteSchedulerAccountScript = redis.NewScript(`
+redis.call('SET', KEYS[1], '1')
+return redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
 `)
 
 	unlockBucketScript = redis.NewScript(`
@@ -523,24 +529,21 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
-	var dynamicValues []any
-	if isStaticState {
-		dynamicKeys := make([]string, 0, len(ids))
-		for _, id := range ids {
-			dynamicKeys = append(dynamicKeys, schedulerAccountMetaKey(id))
-		}
-		dynamicValues, err = c.mgetChunked(ctx, dynamicKeys)
-		if err != nil {
-			c.stats.recordMiss(bucketKey, schedulerMissRedisError)
-			return nil, false, err
-		}
-	}
 	lastUsedValues, err := c.mgetChunked(ctx, lastUsedKeys)
 	if err != nil {
 		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, err
 	}
-	if len(values) != len(ids) || len(lastUsedValues) != len(ids) {
+	deletedKeys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		deletedKeys = append(deletedKeys, schedulerDeletedAccountKey(id))
+	}
+	deletedValues, err := c.mgetChunked(ctx, deletedKeys)
+	if err != nil {
+		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
+		return nil, false, err
+	}
+	if len(values) != len(ids) || len(lastUsedValues) != len(ids) || len(deletedValues) != len(ids) {
 		// MGET 返回条数与请求不一致属于 Redis 响应形状异常，归入 redis_error。
 		c.stats.recordMiss(bucketKey, schedulerMissRedisError)
 		return nil, false, errors.New("scheduler snapshot cache returned unexpected value count")
@@ -548,6 +551,9 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 
 	accounts := make([]*service.Account, 0, len(values))
 	for i, val := range values {
+		if deletedValues[i] != nil {
+			continue
+		}
 		if val == nil {
 			c.stats.recordMiss(bucketKey, schedulerMissMetaMissing)
 			return nil, false, nil
@@ -556,14 +562,6 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		if err != nil {
 			c.stats.recordMiss(bucketKey, schedulerMissDecodeError)
 			return nil, false, err
-		}
-		if isStaticState && i < len(dynamicValues) && dynamicValues[i] != nil {
-			dynamicAccount, err := decodeCachedAccount(dynamicValues[i])
-			if err != nil {
-				c.stats.recordMiss(bucketKey, schedulerMissDecodeError)
-				return nil, false, err
-			}
-			applySchedulerDynamicAccountState(account, dynamicAccount)
 		}
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
 			c.stats.recordMiss(bucketKey, schedulerMissLastUsedError)
@@ -711,11 +709,22 @@ func (c *schedulerCache) readSupportSnapshotAccounts(ctx context.Context, bucket
 	if err != nil {
 		return nil, false, err
 	}
-	if len(values) != len(ids) || len(dynamicValues) != len(ids) || len(lastUsedValues) != len(ids) {
+	deletedKeys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		deletedKeys = append(deletedKeys, schedulerDeletedAccountKey(id))
+	}
+	deletedValues, err := c.mgetChunked(ctx, deletedKeys)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(values) != len(ids) || len(dynamicValues) != len(ids) || len(lastUsedValues) != len(ids) || len(deletedValues) != len(ids) {
 		return nil, false, errors.New("scheduler snapshot cache returned unexpected value count")
 	}
 	accounts := make([]*service.Account, 0, len(values))
 	for i, val := range values {
+		if deletedValues[i] != nil {
+			continue
+		}
 		if val == nil {
 			return nil, false, nil
 		}
@@ -947,7 +956,7 @@ func (c *schedulerCache) GetStaticCandidateAccount(ctx context.Context, bucket s
 		if isStatic {
 			key = schedulerVersionedAccountKey(bucket, active, id)
 		}
-		keys := []string{key, schedulerLastUsedKey(id)}
+		keys := []string{key, schedulerLastUsedKey(id), schedulerDeletedAccountKey(id)}
 		if isStatic {
 			keys = append(keys, schedulerAccountKey(id))
 		}
@@ -955,7 +964,7 @@ func (c *schedulerCache) GetStaticCandidateAccount(ctx context.Context, bucket s
 		if err != nil {
 			return nil, err
 		}
-		if len(values) < 2 || values[0] == nil {
+		if len(values) < 3 || values[0] == nil || values[2] != nil {
 			return nil, nil
 		}
 		currentActive, currentStatic, currentIsStatic, currentCoherent, err := c.readCoherentStaticState(ctx, bucket)
@@ -972,8 +981,8 @@ func (c *schedulerCache) GetStaticCandidateAccount(ctx context.Context, bucket s
 		if err != nil {
 			return nil, err
 		}
-		if isStatic && len(values) == 3 && values[2] != nil {
-			dynamicAccount, err := decodeCachedAccount(values[2])
+		if isStatic && len(values) == 4 && values[3] != nil {
+			dynamicAccount, err := decodeCachedAccount(values[3])
 			if err != nil {
 				return nil, err
 			}
@@ -1017,6 +1026,14 @@ func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bu
 		if err != nil {
 			return nil, err
 		}
+		deletedKeys := make([]string, 0, len(ids))
+		for _, accountID := range ids {
+			deletedKeys = append(deletedKeys, schedulerDeletedAccountKey(strconv.FormatInt(accountID, 10)))
+		}
+		deletedValues, err := c.mgetChunked(ctx, deletedKeys)
+		if err != nil {
+			return nil, err
+		}
 		var dynamicValues []any
 		if isStatic {
 			dynamicKeys := make([]string, 0, len(ids))
@@ -1028,7 +1045,7 @@ func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bu
 				return nil, err
 			}
 		}
-		if len(values) != len(ids) || (isStatic && len(dynamicValues) != len(ids)) {
+		if len(values) != len(ids) || len(deletedValues) != len(ids) || (isStatic && len(dynamicValues) != len(ids)) {
 			return nil, errors.New("scheduler snapshot cache returned unexpected value count")
 		}
 
@@ -1044,7 +1061,7 @@ func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bu
 		}
 
 		for i, val := range values {
-			if val == nil {
+			if val == nil || deletedValues[i] != nil {
 				continue
 			}
 			account, err := decodeCachedAccount(val)
@@ -1070,28 +1087,35 @@ func (c *schedulerCache) GetStaticCandidateAccountsByIDs(ctx context.Context, bu
 func (c *schedulerCache) readCoherentStaticState(ctx context.Context, bucket service.SchedulerBucket) (active, static string, isStatic, coherent bool, err error) {
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	staticKey := schedulerBucketKey(schedulerSupportStatePrefix, bucket)
-	active, err = c.rdb.Get(ctx, activeKey).Result()
-	if err == redis.Nil {
-		return "", "", false, false, nil
-	}
-	if err != nil {
+	pipe := c.rdb.Pipeline()
+	activeCmd := pipe.Get(ctx, activeKey)
+	staticCmd := pipe.Get(ctx, staticKey)
+	activeAgainCmd := pipe.Get(ctx, activeKey)
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		return "", "", false, false, err
 	}
-	static, err = c.rdb.Get(ctx, staticKey).Result()
-	if err != nil && err != redis.Nil {
-		return "", "", false, false, err
-	}
-	activeAgain, activeErr := c.rdb.Get(ctx, activeKey).Result()
+	active, activeErr := activeCmd.Result()
 	if activeErr == redis.Nil {
 		return "", "", false, false, nil
 	}
 	if activeErr != nil {
 		return "", "", false, false, activeErr
 	}
+	static, staticErr := staticCmd.Result()
+	if staticErr != nil && staticErr != redis.Nil {
+		return "", "", false, false, staticErr
+	}
+	activeAgain, activeAgainErr := activeAgainCmd.Result()
+	if activeAgainErr == redis.Nil {
+		return "", "", false, false, nil
+	}
+	if activeAgainErr != nil {
+		return "", "", false, false, activeAgainErr
+	}
 	if activeAgain != active {
 		return "", "", false, false, nil
 	}
-	if err == redis.Nil {
+	if staticErr == redis.Nil {
 		return active, "", false, true, nil
 	}
 	if static != active {
@@ -1139,8 +1163,11 @@ func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Accoun
 	if account == nil || account.ID <= 0 {
 		return nil
 	}
-	_, err := c.writeAccountIDs(ctx, []service.Account{*account})
-	return err
+	ids, err := c.writeAccountIDs(ctx, []service.Account{*account})
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	return c.rdb.Del(ctx, schedulerDeletedAccountKey(strconv.FormatInt(account.ID, 10))).Err()
 }
 
 // SetAccounts 批量写入账号快照（全量 + meta），内部按 writeChunkSize 管线
@@ -1149,8 +1176,15 @@ func (c *schedulerCache) SetAccounts(ctx context.Context, accounts []service.Acc
 	if len(accounts) == 0 {
 		return nil
 	}
-	_, err := c.writeAccountIDs(ctx, accounts)
-	return err
+	ids, err := c.writeAccountIDs(ctx, accounts)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, schedulerDeletedAccountKey(strconv.FormatInt(id, 10)))
+	}
+	return c.rdb.Del(ctx, keys...).Err()
 }
 
 func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) error {
@@ -1158,7 +1192,16 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
 		return nil
 	}
 	id := strconv.FormatInt(accountID, 10)
-	return c.rdb.Del(ctx, schedulerAccountKey(id), schedulerAccountMetaKey(id), schedulerLastUsedKey(id)).Err()
+	return deleteSchedulerAccountScript.Run(
+		ctx,
+		c.rdb,
+		[]string{
+			schedulerDeletedAccountKey(id),
+			schedulerAccountKey(id),
+			schedulerAccountMetaKey(id),
+			schedulerLastUsedKey(id),
+		},
+	).Err()
 }
 
 func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
@@ -1303,6 +1346,10 @@ func schedulerVersionedSupportAccountMetaKey(bucket service.SchedulerBucket, ver
 
 func schedulerLastUsedKey(id string) string {
 	return schedulerAccountLastUsedPrefix + id
+}
+
+func schedulerDeletedAccountKey(id string) string {
+	return schedulerAccountDeletedPrefix + id
 }
 
 func ptrTime(t time.Time) *time.Time {

@@ -20,16 +20,52 @@ type versionedSnapshotCache struct {
 	versionErr       error
 	getSnapshotCalls int
 	versionCalls     int
+	batchReadCalls   int
+	batchAccounts    map[int64]*Account
+	activeAccounts   map[int64]*Account
 }
 
 func (c *versionedSnapshotCache) GetSnapshot(context.Context, SchedulerBucket) ([]*Account, bool, error) {
 	c.getSnapshotCalls++
+	c.activeAccounts = make(map[int64]*Account, len(c.snapshot))
+	for _, candidate := range c.snapshot {
+		if candidate != nil {
+			c.activeAccounts[candidate.ID] = candidate
+		}
+	}
 	return c.snapshot, true, nil
 }
 
 func (c *versionedSnapshotCache) GetSnapshotVersion(context.Context, SchedulerBucket) (string, error) {
 	c.versionCalls++
 	return c.version, c.versionErr
+}
+
+func (c *versionedSnapshotCache) GetStaticCandidateAccount(context.Context, SchedulerBucket, int64) (*Account, error) {
+	return nil, nil
+}
+
+func (c *versionedSnapshotCache) GetStaticCandidateAccountsByIDs(_ context.Context, _ SchedulerBucket, ids []int64) (map[int64]*Account, error) {
+	c.batchReadCalls++
+	if c.batchAccounts != nil {
+		return c.batchAccounts, nil
+	}
+	staticAccounts := c.activeAccounts
+	if staticAccounts == nil {
+		staticAccounts = make(map[int64]*Account, len(c.snapshot))
+		for _, candidate := range c.snapshot {
+			if candidate != nil {
+				staticAccounts[candidate.ID] = candidate
+			}
+		}
+	}
+	accounts := make(map[int64]*Account, len(ids))
+	for _, id := range ids {
+		if candidate := staticAccounts[id]; candidate != nil {
+			accounts[id] = candidate
+		}
+	}
+	return accounts, nil
 }
 
 // ttlOnlySnapshotCache 不实现 snapshotVersionReader：验证退化路径与现状一致（TTL 兜底）。
@@ -73,6 +109,23 @@ func TestSchedulerSnapshotDecodeCache_InvalidatedOnVersionChange(t *testing.T) {
 
 // TestSchedulerSnapshotDecodeCache_ReusedWhenVersionUnchanged 验证版本未变时
 // TTL 内的条目命中解码缓存，不重复调用 GetSnapshot。
+func TestSchedulerSnapshotDecodeCache_FirstFillAppliesCurrentStaticCandidateState(t *testing.T) {
+	cache := &versionedSnapshotCache{
+		snapshot: []*Account{{ID: 1, Platform: PlatformOpenAI, Schedulable: true}},
+		version:  "v1",
+		batchAccounts: map[int64]*Account{
+			1: {ID: 1, Platform: PlatformOpenAI, Schedulable: false},
+		},
+	}
+	svc := &SchedulerSnapshotService{cache: cache}
+
+	accounts, _, err := svc.ListSchedulableAccounts(context.Background(), nil, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.False(t, accounts[0].Schedulable)
+	require.Equal(t, 1, cache.batchReadCalls)
+}
+
 func TestSchedulerSnapshotDecodeCache_ReusedWhenVersionUnchanged(t *testing.T) {
 	cache := &versionedSnapshotCache{
 		snapshot: []*Account{{ID: 1, Platform: PlatformOpenAI}},

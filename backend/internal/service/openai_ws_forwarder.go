@@ -4945,8 +4945,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
-	account = s.refreshSelectedOpenAIAccountFromSchedulerCache(ctx, groupID, account)
-	if account == nil || !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
+	if !s.openAIStickyAccountMatchesSchedulingGroup(account, groupID) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
@@ -4961,7 +4960,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	}
 	schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
 	var ok bool
-	account, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, account, schedGroup)
+	account, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, account, schedGroup)
 	if !ok {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
@@ -4987,42 +4986,6 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
-	}
-	if s.schedulerSnapshot != nil {
-		// Scheduler-backed sticky routing only uses the published full account.
-		// Cache unavailability invalidates the binding; request paths never query DB.
-		latest, latestErr := s.schedulerSnapshot.GetAccount(ctx, account.ID)
-		if latestErr != nil || latest == nil {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return nil, nil
-		}
-		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return nil, nil
-		}
-		if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
-			return nil, nil
-		}
-		if !latest.SupportsOpenAIEndpointCapability(requiredCapability) {
-			return nil, nil
-		}
-		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, latest); paused {
-			return nil, nil
-		}
-		latest, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, latest, schedGroup)
-		if !ok {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return nil, nil
-		}
-		if !s.openAIStickyAccountMatchesSchedulingGroup(latest, groupID) {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return nil, nil
-		}
-		if s.isOpenAIAccountRuntimeBlocked(latest) {
-			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return nil, nil
-		}
-		account = latest
 	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)

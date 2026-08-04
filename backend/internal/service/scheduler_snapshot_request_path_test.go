@@ -180,6 +180,7 @@ func TestResolveOpenAIAccountForPrivacyRequirement_SchedulerUsesPublishedAccount
 
 	resolved, ok := svc.resolveOpenAIAccountForPrivacyRequirement(
 		context.Background(),
+		nil,
 		&Account{ID: account.ID, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
 		&Group{ID: 811, Platform: PlatformOpenAI, RequirePrivacySet: true},
 	)
@@ -205,15 +206,16 @@ func TestOpenAIWSPreviousResponse_SchedulerUsesPublishedAccount(t *testing.T) {
 	}
 	gatewayCache := &schedulerTestGatewayCache{}
 	store := NewOpenAIWSStateStore(gatewayCache)
+	snapshotCache := &snapshotHydrationCache{
+		staticAccounts: map[int64]*Account{account.ID: account},
+	}
 	svc := &OpenAIGatewayService{
 		accountRepo:        panicSchedulerDBRepo{},
 		cache:              gatewayCache,
 		cfg:                newOpenAIWSV2TestConfig(),
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 		openaiWSStateStore: store,
-		schedulerSnapshot: NewSchedulerSnapshotService(
-			&openAISnapshotCacheStub{accountsByID: map[int64]*Account{account.ID: account}}, nil, nil, nil, nil,
-		),
+		schedulerSnapshot:  NewSchedulerSnapshotService(snapshotCache, nil, nil, nil, nil),
 	}
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_scheduler_cached", account.ID, time.Hour))
 
@@ -222,6 +224,7 @@ func TestOpenAIWSPreviousResponse_SchedulerUsesPublishedAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.Equal(t, account.ID, selection.Account.ID)
+	require.Equal(t, 1, snapshotCache.staticReadCalls, "sticky routing must hydrate the published account once")
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

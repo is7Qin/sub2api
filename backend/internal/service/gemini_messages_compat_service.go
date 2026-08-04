@@ -115,7 +115,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	// 2. 尝试粘性会话命中
 	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling); account != nil {
+	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling, hasForcePlatform); account != nil {
 		return account, nil
 	}
 
@@ -150,7 +150,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
 	}
 
-	return s.hydrateSelectedAccount(ctx, selected)
+	return s.hydrateSelectedAccount(ctx, groupID, platform, hasForcePlatform, selected)
 }
 
 // resolvePlatformAndSchedulingMode 解析目标平台和调度模式。
@@ -196,6 +196,7 @@ func (s *GeminiMessagesCompatService) tryStickySessionHit(
 	excludedIDs map[int64]struct{},
 	platform string,
 	useMixedScheduling bool,
+	hasForcePlatform bool,
 ) *Account {
 	if sessionHash == "" {
 		return nil
@@ -210,7 +211,7 @@ func (s *GeminiMessagesCompatService) tryStickySessionHit(
 		return nil
 	}
 
-	account, err := s.getSchedulableAccount(ctx, accountID)
+	account, err := s.getSchedulableAccount(ctx, groupID, platform, hasForcePlatform, accountID)
 	if err != nil {
 		return nil
 	}
@@ -422,18 +423,18 @@ func (s *GeminiMessagesCompatService) GetAntigravityGatewayService() *Antigravit
 	return s.antigravityGatewayService
 }
 
-func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
+func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, accountID int64) (*Account, error) {
 	if s.schedulerSnapshot != nil {
-		return s.schedulerSnapshot.GetAccount(ctx, accountID)
+		return s.schedulerSnapshot.GetStaticCandidateAccount(ctx, groupID, platform, hasForcePlatform, accountID)
 	}
 	return s.accountRepo.GetByID(ctx, accountID)
 }
 
-func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
+func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, account *Account) (*Account, error) {
 	if account == nil || s.schedulerSnapshot == nil {
 		return account, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	hydrated, err := s.schedulerSnapshot.GetStaticCandidateAccount(ctx, groupID, platform, hasForcePlatform, account.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -577,7 +578,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 	if selected == nil {
 		return nil, errors.New("no available Gemini accounts")
 	}
-	return s.hydrateSelectedAccount(ctx, selected)
+	return s.hydrateSelectedAccount(ctx, groupID, PlatformGemini, true, selected)
 }
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {

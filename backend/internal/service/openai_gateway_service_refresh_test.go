@@ -4,37 +4,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
-// batchReaderSnapshotCache 实现 SchedulerCache + snapshotAccountBatchReader
-// （可选接口），用于验证网关候选刷新优先读快照、不再回源 DB。
-type batchReaderSnapshotCache struct {
-	SchedulerCache
-	accounts map[int64]*Account
-	err      error
-	calls    int
-}
-
-func (c *batchReaderSnapshotCache) GetSchedulableAccountsByIDs(_ context.Context, ids []int64) (map[int64]*Account, error) {
-	c.calls++
-	if c.err != nil {
-		return nil, c.err
-	}
-	out := make(map[int64]*Account, len(ids))
-	for _, id := range ids {
-		if account, ok := c.accounts[id]; ok {
-			out[id] = account
-		}
-	}
-	return out, nil
-}
-
-// metaHydrationSnapshotCache 模拟生产快照缓存的双形状读取：批量读
+// metaHydrationSnapshotCache 模拟生产静态分桶的双形状读取：批量读
 // （GetSchedulableAccountsByIDs）返回调度 meta payload（无 api_key 等凭据），
 // 单账号读（GetAccount）与快照列表（GetSnapshot）返回全量 payload（含凭据）。
 // 用于端到端验证调度器选中 meta 候选后必须经 GetAccount 重新水合。
@@ -56,6 +32,14 @@ func (c *metaHydrationSnapshotCache) GetSnapshot(_ context.Context, _ SchedulerB
 }
 
 func (c *metaHydrationSnapshotCache) GetAccount(_ context.Context, accountID int64) (*Account, error) {
+	return c.fullAccount(accountID)
+}
+
+func (c *metaHydrationSnapshotCache) GetStaticCandidateAccount(_ context.Context, _ SchedulerBucket, accountID int64) (*Account, error) {
+	return c.fullAccount(accountID)
+}
+
+func (c *metaHydrationSnapshotCache) fullAccount(accountID int64) (*Account, error) {
 	c.getAccountCalls++
 	account := c.fullAccounts[accountID]
 	if account == nil {
@@ -65,7 +49,15 @@ func (c *metaHydrationSnapshotCache) GetAccount(_ context.Context, accountID int
 	return &cloned, nil
 }
 
+func (c *metaHydrationSnapshotCache) GetStaticCandidateAccountsByIDs(_ context.Context, _ SchedulerBucket, ids []int64) (map[int64]*Account, error) {
+	return c.batchAccounts(ids)
+}
+
 func (c *metaHydrationSnapshotCache) GetSchedulableAccountsByIDs(_ context.Context, ids []int64) (map[int64]*Account, error) {
+	return c.batchAccounts(ids)
+}
+
+func (c *metaHydrationSnapshotCache) batchAccounts(ids []int64) (map[int64]*Account, error) {
 	c.batchCalls++
 	out := make(map[int64]*Account, len(ids))
 	for _, id := range ids {
@@ -76,91 +68,7 @@ func (c *metaHydrationSnapshotCache) GetSchedulableAccountsByIDs(_ context.Conte
 	return out, nil
 }
 
-// ttlOnlyRefreshCache 不实现 snapshotAccountBatchReader：验证网关排除缺少批量快照的候选。
-type ttlOnlyRefreshCache struct {
-	SchedulerCache
-}
-
-type spyGetByIDsAccountRepo struct {
-	AccountRepository
-	getByIDsCalls int
-	accounts      []*Account
-	err           error
-}
-
-func (r *spyGetByIDsAccountRepo) GetByIDs(context.Context, []int64) ([]*Account, error) {
-	r.getByIDsCalls++
-	if r.err != nil {
-		return nil, r.err
-	}
-	return r.accounts, nil
-}
-
-func newRefreshTestService(cache SchedulerCache, repo AccountRepository) *OpenAIGatewayService {
-	var snapshot *SchedulerSnapshotService
-	if cache != nil {
-		snapshot = NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
-	}
-	return &OpenAIGatewayService{accountRepo: repo, schedulerSnapshot: snapshot}
-}
-
-// 快照批量读成功时：候选刷新来自 Redis 快照，不再逐请求回源 DB。
-func TestRefreshOpenAICandidates_ReadsFromSnapshotBatch(t *testing.T) {
-	cache := &batchReaderSnapshotCache{
-		accounts: map[int64]*Account{
-			1: {ID: 1, Platform: PlatformOpenAI, Status: StatusActive},
-			2: {ID: 2, Platform: PlatformOpenAI, Status: StatusActive},
-		},
-	}
-	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 99, Platform: PlatformOpenAI}}}
-	svc := newRefreshTestService(cache, repo)
-
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{
-		{ID: 1}, {ID: 2}, {ID: 2}, nil, {ID: 3},
-	})
-	require.Equal(t, 1, cache.calls)
-	require.Zero(t, repo.getByIDsCalls, "快照命中时不得回源 DB")
-	require.Len(t, got, 2)
-	require.Equal(t, int64(1), got[1].ID)
-	require.Equal(t, int64(2), got[2].ID)
-	require.Nil(t, got[3], "快照缺失的 ID 与 DB 版“未在刷新 map 中”语义一致：视为不存在")
-}
-
-// Snapshot errors exclude candidates instead of falling back to DB.
-func TestRefreshOpenAICandidates_SnapshotErrorDoesNotQueryDB(t *testing.T) {
-	cache := &batchReaderSnapshotCache{err: errors.New("redis down")}
-	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 1, Platform: PlatformOpenAI}, {ID: 3, Platform: PlatformOpenAI}}}
-	svc := newRefreshTestService(cache, repo)
-
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{{ID: 1}, {ID: 3}})
-	require.Equal(t, 1, cache.calls)
-	require.Zero(t, repo.getByIDsCalls)
-	require.Empty(t, got)
-}
-
-// A cache without the optional batch reader also excludes candidates without DB access.
-func TestRefreshOpenAICandidates_NoBatchReaderDoesNotQueryDB(t *testing.T) {
-	cache := &ttlOnlyRefreshCache{}
-	repo := &spyGetByIDsAccountRepo{accounts: []*Account{{ID: 5, Platform: PlatformOpenAI}}}
-	svc := newRefreshTestService(cache, repo)
-
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{{ID: 5}})
-	require.Zero(t, repo.getByIDsCalls)
-	require.Empty(t, got)
-}
-
-// 快照服务缺失（未启用）时不刷新也不查询 DB，与既有行为一致。
-func TestRefreshOpenAICandidates_NoSnapshotReturnsNil(t *testing.T) {
-	repo := &spyGetByIDsAccountRepo{}
-	svc := &OpenAIGatewayService{accountRepo: repo}
-
-	got := svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, []*Account{{ID: 1}})
-	require.Nil(t, got)
-	require.Zero(t, repo.getByIDsCalls)
-	require.Nil(t, svc.refreshOpenAICandidatesFromSchedulerCache(context.Background(), nil, nil))
-}
-
-// 端到端调度器水合测试的公共构造：开启高级调度器 + 快照（meta 批量读/全量单读）。
+// 端到端调度器水合测试的公共构造：开启高级调度器 + 静态分桶（meta 批量读/全量单读）。
 func newMetaHydrationSchedulerService(cache *metaHydrationSnapshotCache, accountID int64, blocked bool) *OpenAIGatewayService {
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.LoadBatchEnabled = true

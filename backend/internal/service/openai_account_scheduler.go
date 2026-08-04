@@ -839,22 +839,14 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		}
 		survivors = append(survivors, fresh)
 	}
-	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, req.GroupID, survivors)
-
-	for _, acc := range survivors {
-		fresh := acc
-		if cacheFresh != nil {
-			latest := cacheFresh[acc.ID]
-			if latest == nil {
-				continue
-			}
-			if !isOpenAIAccountEligibleForRequest(ctx, latest, req.RequestedModel, false, req.RequiredCapability) {
-				continue
-			}
-			if s.service.isOpenAIAccountRuntimeBlocked(latest) {
-				continue
-			}
-			fresh = latest
+	// ListSchedulableAccounts already applied the request bucket's single batch
+	// freshness overlay. Re-check that fresh metadata locally before acquisition.
+	for _, fresh := range survivors {
+		if !isOpenAIAccountEligibleForRequest(ctx, fresh, req.RequestedModel, false, req.RequiredCapability) {
+			continue
+		}
+		if s.service.isOpenAIAccountRuntimeBlocked(fresh) {
+			continue
 		}
 		if !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
@@ -987,7 +979,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			continue
 		}
 		var ok bool
-		account, ok = s.service.resolveOpenAIAccountForPrivacyRequirement(ctx, account, schedGroup)
+		account, ok = s.service.resolveOpenAIAccountForPrivacyRequirement(ctx, req.GroupID, account, schedGroup)
 		if !ok {
 			filterStats.exclude("privacy_not_set")
 			continue
@@ -1075,22 +1067,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		survivors = append(survivors, fresh)
 	}
-	cacheFresh := s.service.refreshOpenAICandidatesFromSchedulerCache(ctx, req.GroupID, survivors)
-
-	for _, acc := range survivors {
-		fresh := acc
-		if cacheFresh != nil {
-			latest := cacheFresh[acc.ID]
-			if latest == nil {
-				continue
-			}
-			if !isOpenAIAccountEligibleForRequest(ctx, latest, req.RequestedModel, false, req.RequiredCapability) {
-				continue
-			}
-			if s.service.isOpenAIAccountRuntimeBlocked(latest) {
-				continue
-			}
-			fresh = latest
+	// ListSchedulableAccounts already applied the request bucket's single batch
+	// freshness overlay. Re-check that fresh metadata locally before acquisition.
+	for _, fresh := range survivors {
+		if !isOpenAIAccountEligibleForRequest(ctx, fresh, req.RequestedModel, false, req.RequiredCapability) {
+			continue
+		}
+		if s.service.isOpenAIAccountRuntimeBlocked(fresh) {
+			continue
 		}
 		if !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue

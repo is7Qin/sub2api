@@ -566,6 +566,91 @@ func TestSchedulerCache_StaticStateSameIDReadersUseIndependentPayloads(t *testin
 	require.Equal(t, overloadUntil, *refreshed[candidate.ID].OverloadUntil)
 }
 
+func TestSchedulerCache_DeleteAccountImmediatelyRevokesStaticState(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	account := service.Account{
+		ID:          706,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "must-not-survive-delete"},
+	}
+
+	require.NoError(t, cache.SetAccount(ctx, &account))
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{account}, []service.Account{account}))
+	require.NoError(t, cache.DeleteAccount(ctx, account.ID))
+
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Empty(t, candidates)
+
+	hydrated, err := cache.GetStaticCandidateAccount(ctx, bucket, account.ID)
+	require.NoError(t, err)
+	require.Nil(t, hydrated)
+
+	refreshed, err := cache.GetStaticCandidateAccountsByIDs(ctx, bucket, []int64{account.ID})
+	require.NoError(t, err)
+	require.Empty(t, refreshed)
+
+	support, supportHit, err := cache.GetPersistentSupport(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, supportHit)
+	require.Empty(t, support)
+}
+
+func TestSchedulerCache_CanonicalWritesRestoreDeletedAccountID(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("SetAccount", func(t *testing.T) {
+		cache := newSchedulerCacheUnit(t)
+		account := service.Account{ID: 707, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+		require.NoError(t, cache.DeleteAccount(ctx, account.ID))
+		require.NoError(t, cache.SetAccount(ctx, &account))
+
+		got, err := cache.GetAccount(ctx, account.ID)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Zero(t, cache.rdb.Exists(ctx, schedulerDeletedAccountKey("707")).Val())
+	})
+
+	t.Run("SetAccounts", func(t *testing.T) {
+		cache := newSchedulerCacheUnit(t)
+		accounts := []service.Account{
+			{ID: 708, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+			{ID: 709, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey},
+		}
+		for _, account := range accounts {
+			require.NoError(t, cache.DeleteAccount(ctx, account.ID))
+		}
+		require.NoError(t, cache.SetAccounts(ctx, accounts))
+
+		for _, account := range accounts {
+			got, err := cache.GetAccount(ctx, account.ID)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Zero(t, cache.rdb.Exists(ctx, schedulerDeletedAccountKey(strconv.FormatInt(account.ID, 10))).Val())
+		}
+	})
+}
+
+func TestSchedulerCache_StaticRebuildCannotRestoreDeletedAccountID(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 7, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	account := service.Account{ID: 710, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+
+	require.NoError(t, cache.DeleteAccount(ctx, account.ID))
+	require.NoError(t, cache.SetStaticState(ctx, bucket, []service.Account{account}, []service.Account{account}))
+
+	candidates, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Empty(t, candidates)
+	require.Equal(t, int64(1), cache.rdb.Exists(ctx, schedulerDeletedAccountKey("710")).Val())
+}
+
 func TestSchedulerCache_StaticCandidateUsesFreshMutableAccountPayload(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)
@@ -617,10 +702,10 @@ func TestSchedulerCache_StaticCandidateUsesFreshMutableAccountPayload(t *testing
 	require.NoError(t, err)
 	require.True(t, hit)
 	require.Len(t, candidates, 1)
-	require.True(t, candidates[0].IsOpenAIAPIKeyPassthroughEnabled())
-	require.Equal(t, 6, candidates[0].Concurrency)
-	require.Equal(t, newLoadFactor, *candidates[0].LoadFactor)
-	require.Equal(t, newRateMultiplier, *candidates[0].RateMultiplier)
+	require.False(t, candidates[0].IsOpenAIAPIKeyPassthroughEnabled(), "snapshot list retains immutable versioned metadata")
+	require.Equal(t, 2, candidates[0].Concurrency)
+	require.Equal(t, oldLoadFactor, *candidates[0].LoadFactor)
+	require.Equal(t, oldRateMultiplier, *candidates[0].RateMultiplier)
 }
 
 func TestSchedulerCache_PersistentSupportUsesFreshMutableProjection(t *testing.T) {
@@ -842,7 +927,17 @@ func (h *schedulerStaticStateTransitionReadHook) ProcessHook(next redis.ProcessH
 }
 
 func (h *schedulerStaticStateTransitionReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
-	return next
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			if cmd.Name() == "get" && len(cmd.Args()) > 1 && cmd.Args()[1] == schedulerBucketKey(schedulerSupportStatePrefix, h.bucket) && h.fired.CompareAndSwap(false, true) {
+				if err := h.publishNext(ctx); err != nil {
+					return err
+				}
+				break
+			}
+		}
+		return next(ctx, cmds)
+	}
 }
 
 func TestSchedulerCache_GetPersistentSupportRetriesStaticStateTransition(t *testing.T) {

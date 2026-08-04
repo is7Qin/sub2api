@@ -415,12 +415,8 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 
 	if s.cache != nil {
 		cacheKey := bucket.String()
-		_, staticCandidates := s.cache.(staticCandidateAccountReader)
-		// Static candidate payloads have a cache-only runtime overlay (for example,
-		// immediate model cooldowns). Do not return a process-local decoded static
-		// list before Redis applies that overlay; persistent support remains separate.
 		version := ""
-		if !staticCandidates {
+		{
 			// 解码缓存命中路径不再每个请求先读一次 Redis 激活版本：条目在存储时已
 			// 用当时的 active 版本校验，陈旧性由条目 TTL 兜底（见 snapshotDecodeCacheTTL
 			// / snapshotDecodeVersionedTTL）；重建导致的版本递增经本地版本缓存窗口
@@ -430,19 +426,19 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 				if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
 					if v, fresh := s.cachedSnapshotVersion(cacheKey, time.Now()); fresh {
 						if e.version == v {
-							return derefAccounts(e.accounts), useMixed, nil
+							return s.refreshStaticCandidateList(ctx, bucket, e.accounts, useMixed)
 						}
 						version = v
 					} else if v := s.readSnapshotVersion(ctx, bucket); v != "" {
 						s.storeSnapshotVersion(cacheKey, v, time.Now())
 						version = v
 						if e.version == v {
-							return derefAccounts(e.accounts), useMixed, nil
+							return s.refreshStaticCandidateList(ctx, bucket, e.accounts, useMixed)
 						}
 					} else if e.version == "" {
 						// 版本不可读时只允许命中无版本条目：带版本号的条目可能
 						// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
-						return derefAccounts(e.accounts), useMixed, nil
+						return s.refreshStaticCandidateList(ctx, bucket, e.accounts, useMixed)
 					}
 				}
 			}
@@ -454,12 +450,6 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 				if version != "" {
 					s.storeSnapshotVersion(cacheKey, version, time.Now())
 				}
-			}
-		}
-		if staticCandidates {
-			version = s.readSnapshotVersion(ctx, bucket)
-			if version != "" {
-				s.storeSnapshotVersion(cacheKey, version, time.Now())
 			}
 		}
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
@@ -475,11 +465,38 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 				version:  version,
 				exp:      time.Now().Add(ttl),
 			})
-			return derefAccounts(cached), useMixed, nil
+			return s.refreshStaticCandidateList(ctx, bucket, cached, useMixed)
 		}
 	}
 
 	return nil, useMixed, ErrSchedulerCacheNotReady
+}
+
+func (s *SchedulerSnapshotService) refreshStaticCandidateList(ctx context.Context, bucket SchedulerBucket, cached []*Account, useMixed bool) ([]Account, bool, error) {
+	reader, ok := s.cache.(staticCandidateAccountReader)
+	if !ok {
+		return derefAccounts(cached), useMixed, nil
+	}
+	ids := make([]int64, 0, len(cached))
+	for _, account := range cached {
+		if account != nil && account.ID > 0 {
+			ids = append(ids, account.ID)
+		}
+	}
+	fresh, err := reader.GetStaticCandidateAccountsByIDs(ctx, bucket, ids)
+	if err != nil {
+		return nil, useMixed, err
+	}
+	accounts := make([]Account, 0, len(cached))
+	for _, account := range cached {
+		if account == nil {
+			continue
+		}
+		if current := fresh[account.ID]; current != nil {
+			accounts = append(accounts, *current)
+		}
+	}
+	return accounts, useMixed, nil
 }
 
 // cachedSnapshotVersion 返回本地版本缓存中窗口内的版本；ttl<=0 时总是返回
@@ -1481,8 +1498,8 @@ func (s *SchedulerSnapshotService) checkDirtyWorkLag(ctx context.Context) {
 
 // runRebuildWithRetryBackoff 执行一次全量重建并登记退避状态：成功清除失败计数与
 // 重试时间，失败按指数退避（5s 起，5min 封顶）推迟下一次尝试。所有 outbox/dirty
-// 触发的重建都经由这里，失败后不会在下一轮 poll 立即重试，避免重建失败→请求
-// 回源 DB→DB 过载→重建再失败的死循环。
+// 触发的重建都经由这里，失败后不会在下一轮 poll 立即重试，避免重建失败时持续
+// 放大数据库负载并阻碍快照恢复。
 func (s *SchedulerSnapshotService) runRebuildWithRetryBackoff(ctx context.Context, reason string) error {
 	err := s.triggerFullRebuildContext(ctx, reason)
 	s.lagMu.Lock()

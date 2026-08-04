@@ -428,12 +428,6 @@ gateway:
     # Slot cleanup interval (duration)
     # 并发槽位清理周期（时间段）
     slot_cleanup_interval: 30s
-    # 是否允许受控回源到 DB（默认 true，保持现有行为）
-    db_fallback_enabled: true
-    # 受控回源超时（秒），0 表示不额外收紧超时
-    db_fallback_timeout_seconds: 0
-    # 受控回源限流（实例级 QPS），0 表示不限制
-    db_fallback_max_qps: 0
     # outbox 轮询周期（秒）
     outbox_poll_interval_seconds: 1
     # outbox 滞后告警阈值（秒）

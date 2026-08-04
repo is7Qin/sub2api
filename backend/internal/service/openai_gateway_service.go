@@ -2070,7 +2070,7 @@ func (s *OpenAIGatewayService) resolveOpenAISchedulingGroup(ctx context.Context,
 	return nil
 }
 
-func (s *OpenAIGatewayService) resolveOpenAIAccountForPrivacyRequirement(ctx context.Context, account *Account, group *Group) (*Account, bool) {
+func (s *OpenAIGatewayService) resolveOpenAIAccountForPrivacyRequirement(ctx context.Context, groupID *int64, account *Account, group *Group) (*Account, bool) {
 	if account == nil {
 		return nil, false
 	}
@@ -2083,7 +2083,7 @@ func (s *OpenAIGatewayService) resolveOpenAIAccountForPrivacyRequirement(ctx con
 	if s != nil && s.schedulerSnapshot != nil {
 		// Scheduler-backed request paths only trust the worker-published full account.
 		// A cache miss fails closed rather than querying the source database.
-		latest, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+		latest, err := s.schedulerSnapshot.GetStaticCandidateAccount(ctx, groupID, PlatformOpenAI, false, account.ID)
 		if err != nil || latest == nil {
 			return nil, false
 		}
@@ -2521,8 +2521,8 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
 
-	// 先做廉价的快照级过滤，再对幸存候选做一次批量 DB 刷新，
-	// 避免大账号池下对每个候选各执行一次 GetByID。
+	// Do local filtering on the freshness overlay already applied by
+	// ListSchedulableAccounts; request paths never re-query the candidate batch.
 	survivors := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -2537,22 +2537,14 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			survivors = append(survivors, fresh)
 		}
 	}
-	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
-
-	for _, acc := range survivors {
-		fresh := acc
-		if cacheFresh != nil {
-			latest := cacheFresh[acc.ID]
-			if latest == nil {
-				continue
-			}
-			if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, false, requiredCapability) {
-				continue
-			}
-			if s.isOpenAIAccountRuntimeBlocked(latest) {
-				continue
-			}
-			fresh = latest
+	// ListSchedulableAccounts already applied the request bucket's single batch
+	// freshness overlay. Re-check that fresh metadata locally before ranking.
+	for _, fresh := range survivors {
+		if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, false, requiredCapability) {
+			continue
+		}
+		if s.isOpenAIAccountRuntimeBlocked(fresh) {
+			continue
 		}
 		var ok bool
 		fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
@@ -2730,8 +2722,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						} else {
 							result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 							if err == nil && result != nil && result.Acquired {
-								// account 已由 GetAccount + DB 刷新持有全量 payload，
-								// 直接构造结果，跳过重复的 GetAccount 水合读。
+								// account already holds the bucket-published full payload;
+								// construct the result without another hydration read.
 								selection := newSelectionResultFromAccount(account, true, result.ReleaseFunc, nil)
 								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
 								return selection, nil
@@ -2768,7 +2760,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			continue
 		}
 		var ok bool
-		acc, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, acc, schedGroup)
+		acc, ok = s.resolveOpenAIAccountForPrivacyRequirement(ctx, groupID, acc, schedGroup)
 		if !ok {
 			continue
 		}
@@ -2849,8 +2841,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			selectionOrder = appendTier(selectionOrder, 2)
 			selectionOrder = appendTier(selectionOrder, 1)
-			// tier 0 候选作为兜底追加：DB recheck 时若发现 cache tier 0 实际
-			// 已升级为 1/2（探测刚跑完，cache 尚未刷新），仍可正常命中。
+			// Keep tier 0 candidates as fallback: the bucket freshness overlay may
+			// already contain a newly discovered tier 1/2 capability.
 			selectionOrder = appendTier(selectionOrder, 0)
 		} else {
 			selectionOrder = append(selectionOrder, available...)
@@ -2864,22 +2856,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				survivors = append(survivors, fresh)
 			}
 		}
-		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
-
-		for _, acc := range survivors {
-			fresh := acc
-			if cacheFresh != nil {
-				latest := cacheFresh[acc.ID]
-				if latest == nil {
-					continue
-				}
-				if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
-					continue
-				}
-				if s.isOpenAIAccountRuntimeBlocked(latest) {
-					continue
-				}
-				fresh = latest
+		// Candidate metadata was refreshed once when the bucket list was loaded.
+		for _, fresh := range survivors {
+			if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability) {
+				continue
+			}
+			if s.isOpenAIAccountRuntimeBlocked(fresh) {
+				continue
 			}
 			var ok bool
 			fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
@@ -2917,22 +2900,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				survivors = append(survivors, fresh)
 			}
 		}
-		cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
-
-		for _, acc := range survivors {
-			fresh := acc
-			if cacheFresh != nil {
-				latest := cacheFresh[acc.ID]
-				if latest == nil {
-					continue
-				}
-				if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
-					continue
-				}
-				if s.isOpenAIAccountRuntimeBlocked(latest) {
-					continue
-				}
-				fresh = latest
+		// Candidate metadata was refreshed once when the bucket list was loaded.
+		for _, fresh := range survivors {
+			if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability) {
+				continue
+			}
+			if s.isOpenAIAccountRuntimeBlocked(fresh) {
+				continue
 			}
 			var ok bool
 			fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
@@ -2981,22 +2955,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			survivors = append(survivors, fresh)
 		}
 	}
-	cacheFresh := s.refreshOpenAICandidatesFromSchedulerCache(ctx, groupID, survivors)
-
-	for _, acc := range survivors {
-		fresh := acc
-		if cacheFresh != nil {
-			latest := cacheFresh[acc.ID]
-			if latest == nil {
-				continue
-			}
-			if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
-				continue
-			}
-			if s.isOpenAIAccountRuntimeBlocked(latest) {
-				continue
-			}
-			fresh = latest
+	// Candidate metadata was refreshed once when the bucket list was loaded.
+	for _, fresh := range survivors {
+		if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability) {
+			continue
+		}
+		if s.isOpenAIAccountRuntimeBlocked(fresh) {
+			continue
 		}
 		var ok bool
 		fresh, ok = s.resolveFreshOpenAIAccountForPrivacyRequirement(ctx, fresh, schedGroup)
@@ -3047,12 +3012,9 @@ func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accoun
 	return s.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
 }
 
-// filterSchedulableOpenAICandidate 对快照候选做廉价的纯本地过滤（资格 + 运行时
-// 屏蔽），不读 Redis。候选的实时状态与存在性由紧随其后的批量刷新统一承载：
-// refreshOpenAICandidatesFromSchedulerCache 一次 meta MGET 覆盖全部候选，缺失 ID 视为已
-// 删除（与逐候选 GetAccount 的 nil 语义一致）。此前每个候选单独 GetAccount
-// （每个候选一次 MGET）与批量刷新重复读同一批账号，是选择路径 Redis 往返的
-// 主要来源，已移除。
+// filterSchedulableOpenAICandidate 对 ListSchedulableAccounts 已批量刷新过的候选做
+// 纯本地资格与运行时过滤，不再读取 Redis。缺失或已删除账号已在分桶 freshness
+// overlay 阶段被剔除，因此后续排序、并发获取和等待计划共用同一批当前元数据。
 func (s *OpenAIGatewayService) filterSchedulableOpenAICandidate(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
 	if account == nil {
 		return nil
@@ -3078,35 +3040,6 @@ func (s *OpenAIGatewayService) refreshSelectedOpenAIAccountFromSchedulerCache(ct
 		return nil
 	}
 	return latest
-}
-
-// refreshOpenAICandidatesFromSchedulerCache refreshes candidate metadata from
-// worker-published scheduler cache state. A missing or unreadable batch excludes
-// every candidate rather than querying the database.
-func (s *OpenAIGatewayService) refreshOpenAICandidatesFromSchedulerCache(ctx context.Context, groupID *int64, candidates []*Account) map[int64]*Account {
-	if len(candidates) == 0 || s == nil || s.schedulerSnapshot == nil {
-		return nil
-	}
-	ids := make([]int64, 0, len(candidates))
-	seen := make(map[int64]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		if candidate == nil {
-			continue
-		}
-		if _, ok := seen[candidate.ID]; ok {
-			continue
-		}
-		seen[candidate.ID] = struct{}{}
-		ids = append(ids, candidate.ID)
-	}
-	// Missing IDs remain absent so callers exclude them as unusable.
-	refreshed, err := s.schedulerSnapshot.GetStaticCandidateAccountsByIDs(ctx, groupID, PlatformOpenAI, false, ids)
-	if err != nil {
-		slog.Warn("candidate refresh snapshot batch read failed", "error", err, "candidate_count", len(ids))
-		// No cache freshness signal means no candidate is safe to select.
-		return map[int64]*Account{}
-	}
-	return refreshed
 }
 
 func (s *OpenAIGatewayService) recheckOpenAIAccountEligibility(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {
@@ -3188,10 +3121,8 @@ func (s *OpenAIGatewayService) newAcquiredSelectionResult(ctx context.Context, g
 }
 
 // newSelectionResultFromAccount 构造已持有全量 payload 账号的选中结果：调用方
-// 确认账号已经水合（粘性命中路径刚经 GetAccount + DB 刷新、selectAccountForModel
-// WithExclusions 返回前已水合）时使用，跳过重复的 GetAccount 水合读，每次选中
-// 省一次 Redis 往返。与 newSelectionResult 的差异：newSelectionResult 面向批量
-// 刷新得到的 meta payload 候选，必须水合全量账号后才能执行请求。
+// 确认账号已经由分桶静态缓存水合时使用，跳过重复的缓存水合读。批量刷新得到的
+// meta payload 候选仍须通过 newSelectionResult 水合后才能执行请求。
 func newSelectionResultFromAccount(account *Account, acquired bool, release func(), waitPlan *AccountWaitPlan) *AccountSelectionResult {
 	return &AccountSelectionResult{
 		Account:     account,

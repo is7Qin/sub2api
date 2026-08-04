@@ -39,6 +39,14 @@ func (s *openAISnapshotCacheStub) GetSchedulableAccountsByIDs(_ context.Context,
 	return accounts, nil
 }
 
+func (s *openAISnapshotCacheStub) GetStaticCandidateAccountsByIDs(ctx context.Context, _ SchedulerBucket, ids []int64) (map[int64]*Account, error) {
+	return s.GetSchedulableAccountsByIDs(ctx, ids)
+}
+
+func (s *openAISnapshotCacheStub) GetStaticCandidateAccount(ctx context.Context, _ SchedulerBucket, accountID int64) (*Account, error) {
+	return s.GetAccount(ctx, accountID)
+}
+
 func newPublishedOpenAISnapshotCache(accounts []Account) *openAISnapshotCacheStub {
 	cache := &openAISnapshotCacheStub{accountsByID: make(map[int64]*Account, len(accounts))}
 	for i := range accounts {
@@ -56,6 +64,14 @@ type noBatchOpenAISnapshotCache struct {
 
 func (c noBatchOpenAISnapshotCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
 	return c.cache.GetSnapshot(ctx, bucket)
+}
+
+func (c noBatchOpenAISnapshotCache) GetStaticCandidateAccountsByIDs(context.Context, SchedulerBucket, []int64) (map[int64]*Account, error) {
+	return map[int64]*Account{}, nil
+}
+
+func (c noBatchOpenAISnapshotCache) GetStaticCandidateAccount(context.Context, SchedulerBucket, int64) (*Account, error) {
+	return nil, nil
 }
 
 func (c noBatchOpenAISnapshotCache) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -2685,7 +2701,7 @@ func TestOpenAIGatewayService_OpenAIAPIKeyAndSetupTokenBypassPrivacyDBRefresh(t 
 				Schedulable: true,
 			}
 
-			got, ok := svc.resolveOpenAIAccountForPrivacyRequirement(ctx, account, group)
+			got, ok := svc.resolveOpenAIAccountForPrivacyRequirement(ctx, nil, account, group)
 
 			require.True(t, ok)
 			require.Same(t, account, got)

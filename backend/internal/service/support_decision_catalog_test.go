@@ -31,6 +31,16 @@ func TestResolveSupportDecisionHotModelsPrecedence(t *testing.T) {
 		require.Empty(t, got.FallbackModels)
 	})
 
+	t.Run("enabled whitespace-only group list falls through to configured list", func(t *testing.T) {
+		group := &Group{ModelsListConfig: GroupModelsListConfig{
+			Enabled: true,
+			Models:  []string{" ", "\t", ""},
+		}}
+		got := ResolveSupportDecisionHotModels(PlatformOpenAI, group, configured)
+		require.Equal(t, []string{"configured-openai"}, got.HotModels)
+		require.Empty(t, got.FallbackModels)
+	})
+
 	t.Run("configured platform list", func(t *testing.T) {
 		group := &Group{ModelsListConfig: GroupModelsListConfig{
 			Enabled: false,
@@ -43,6 +53,15 @@ func TestResolveSupportDecisionHotModelsPrecedence(t *testing.T) {
 
 	t.Run("default platform catalog", func(t *testing.T) {
 		got := ResolveSupportDecisionHotModels(PlatformAnthropic, nil, configured)
+		require.Equal(t, modelcatalog.DefaultModelIDs(PlatformAnthropic), got.HotModels)
+		require.Empty(t, got.FallbackModels)
+	})
+
+	t.Run("whitespace-only configured list falls through to default catalog", func(t *testing.T) {
+		whitespaceConfigured := config.SupportDecisionHotModelsConfig{
+			Anthropic: []string{"", " ", "\t"},
+		}
+		got := ResolveSupportDecisionHotModels(PlatformAnthropic, nil, whitespaceConfigured)
 		require.Equal(t, modelcatalog.DefaultModelIDs(PlatformAnthropic), got.HotModels)
 		require.Empty(t, got.FallbackModels)
 	})

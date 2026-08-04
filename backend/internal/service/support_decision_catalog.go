@@ -19,16 +19,17 @@ type SupportDecisionModelCatalog struct {
 // ResolveSupportDecisionHotModels resolves group, process configuration, and
 // platform defaults in precedence order, then applies the bounded hot-table cap.
 func ResolveSupportDecisionHotModels(platform string, group *Group, configured config.SupportDecisionHotModelsConfig) SupportDecisionModelCatalog {
-	var models []string
-	if group != nil && group.ModelsListConfig.Enabled && len(group.ModelsListConfig.Models) > 0 {
-		models = group.ModelsListConfig.Models
-	} else if configuredModels := configured.ForPlatform(platform); len(configuredModels) > 0 {
-		models = configuredModels
-	} else {
-		models = modelcatalog.DefaultModelIDs(platform)
+	var normalized []string
+	if group != nil && group.ModelsListConfig.Enabled {
+		normalized = normalizeSupportDecisionModels(group.ModelsListConfig.Models)
+	}
+	if len(normalized) == 0 {
+		normalized = normalizeSupportDecisionModels(configured.ForPlatform(platform))
+	}
+	if len(normalized) == 0 {
+		normalized = normalizeSupportDecisionModels(modelcatalog.DefaultModelIDs(platform))
 	}
 
-	normalized := normalizeSupportDecisionModels(models)
 	hotCount := min(len(normalized), SupportDecisionHotModelLimit)
 	return SupportDecisionModelCatalog{
 		HotModels:      normalized[:hotCount:hotCount],

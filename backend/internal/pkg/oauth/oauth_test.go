@@ -1,43 +1,46 @@
 package oauth
 
 import (
-	"sync"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestSessionStore_Stop_Idempotent(t *testing.T) {
+func TestSessionStoreCleanupExpiredRemovesExpiredSessions(t *testing.T) {
 	store := NewSessionStore()
+	store.Set("expired", &OAuthSession{CreatedAt: time.Now().Add(-SessionTTL - time.Second)})
+	store.Set("fresh", &OAuthSession{CreatedAt: time.Now()})
 
-	store.Stop()
-	store.Stop()
-
-	select {
-	case <-store.stopCh:
-		// ok
-	case <-time.After(time.Second):
-		t.Fatal("stopCh 未关闭")
-	}
+	require.NoError(t, store.CleanupExpired(context.Background()))
+	_, ok := store.Get("expired")
+	require.False(t, ok)
+	_, ok = store.Get("fresh")
+	require.True(t, ok)
 }
 
-func TestSessionStore_Stop_Concurrent(t *testing.T) {
+func TestSessionStoreCleanupExpiredHonorsCancellation(t *testing.T) {
 	store := NewSessionStore()
+	store.Set("expired", &OAuthSession{CreatedAt: time.Now().Add(-SessionTTL - time.Second)})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	var wg sync.WaitGroup
-	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			store.Stop()
-		}()
-	}
+	require.ErrorIs(t, store.CleanupExpired(ctx), context.Canceled)
+	store.mu.RLock()
+	_, ok := store.sessions["expired"]
+	store.mu.RUnlock()
+	require.True(t, ok)
+}
 
-	wg.Wait()
+func TestSessionStoreConstructionDoesNotStartCleanup(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("expired", &OAuthSession{CreatedAt: time.Now().Add(-SessionTTL - time.Second)})
 
-	select {
-	case <-store.stopCh:
-		// ok
-	case <-time.After(time.Second):
-		t.Fatal("stopCh 未关闭")
-	}
+	// Cleanup is runtime-owned; construction must not remove sessions asynchronously.
+	time.Sleep(10 * time.Millisecond)
+	store.mu.RLock()
+	_, ok := store.sessions["expired"]
+	store.mu.RUnlock()
+	require.True(t, ok)
 }

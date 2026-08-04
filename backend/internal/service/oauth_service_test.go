@@ -122,14 +122,12 @@ func TestNewOAuthService(t *testing.T) {
 	}
 
 	// 清理
-	svc.Stop()
 }
 
 func TestOAuthService_GenerateAuthURL(t *testing.T) {
 	t.Parallel()
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
-	defer svc.Stop()
 
 	result, err := svc.GenerateAuthURL(context.Background(), nil)
 	if err != nil {
@@ -169,7 +167,6 @@ func TestOAuthService_GenerateAuthURL_WithProxy(t *testing.T) {
 		},
 	}
 	svc := NewOAuthService(proxyRepo, &mockClaudeOAuthClient{})
-	defer svc.Stop()
 
 	proxyID := int64(1)
 	result, err := svc.GenerateAuthURL(context.Background(), &proxyID)
@@ -190,7 +187,6 @@ func TestOAuthService_GenerateSetupTokenURL(t *testing.T) {
 	t.Parallel()
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
-	defer svc.Stop()
 
 	result, err := svc.GenerateSetupTokenURL(context.Background(), nil)
 	if err != nil {
@@ -214,7 +210,6 @@ func TestOAuthService_ExchangeCode_SessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
-	defer svc.Stop()
 
 	_, err := svc.ExchangeCode(context.Background(), &ExchangeCodeInput{
 		SessionID: "nonexistent-session",
@@ -254,7 +249,6 @@ func TestOAuthService_ExchangeCode_Success(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	// 先生成 URL 以创建 session
 	result, err := svc.GenerateAuthURL(context.Background(), nil)
@@ -324,7 +318,6 @@ func TestOAuthService_ExchangeCode_SetupToken(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	// 使用 SetupToken URL（inference scope）
 	result, err := svc.GenerateSetupTokenURL(context.Background(), nil)
@@ -354,7 +347,6 @@ func TestOAuthService_ExchangeCode_ClientError(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	result, _ := svc.GenerateAuthURL(context.Background(), nil)
 	_, err := svc.ExchangeCode(context.Background(), &ExchangeCodeInput{
@@ -391,7 +383,6 @@ func TestOAuthService_RefreshToken(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	tokenInfo, err := svc.RefreshToken(context.Background(), "my-refresh-token", "")
 	if err != nil {
@@ -421,7 +412,6 @@ func TestOAuthService_RefreshToken_Error(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	_, err := svc.RefreshToken(context.Background(), "expired-token", "")
 	if err == nil {
@@ -433,7 +423,6 @@ func TestOAuthService_RefreshAccountToken_NoRefreshToken(t *testing.T) {
 	t.Parallel()
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
-	defer svc.Stop()
 
 	// 无 refresh_token 的账号
 	account := &Account{
@@ -457,7 +446,6 @@ func TestOAuthService_RefreshAccountToken_EmptyRefreshToken(t *testing.T) {
 	t.Parallel()
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
-	defer svc.Stop()
 
 	account := &Account{
 		ID:       2,
@@ -492,7 +480,6 @@ func TestOAuthService_RefreshAccountToken_Success(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	account := &Account{
 		ID:       3,
@@ -541,7 +528,6 @@ func TestOAuthService_RefreshAccountToken_WithProxy(t *testing.T) {
 	}
 
 	svc := NewOAuthService(proxyRepo, client)
-	defer svc.Stop()
 
 	proxyID := int64(10)
 	account := &Account{
@@ -576,7 +562,6 @@ func TestOAuthService_ExchangeCode_NilOrg(t *testing.T) {
 	}
 
 	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
-	defer svc.Stop()
 
 	result, _ := svc.GenerateAuthURL(context.Background(), nil)
 	tokenInfo, err := svc.ExchangeCode(context.Background(), &ExchangeCodeInput{
@@ -592,16 +577,4 @@ func TestOAuthService_ExchangeCode_NilOrg(t *testing.T) {
 	if tokenInfo.AccountUUID != "" {
 		t.Fatalf("AccountUUID 应为空: got=%q", tokenInfo.AccountUUID)
 	}
-}
-
-func TestOAuthService_Stop_NoPanic(t *testing.T) {
-	t.Parallel()
-
-	svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
-
-	// 调用 Stop 不应 panic
-	svc.Stop()
-
-	// 多次调用也不应 panic
-	svc.Stop()
 }

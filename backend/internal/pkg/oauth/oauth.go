@@ -2,6 +2,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -48,25 +49,11 @@ type OAuthSession struct {
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*OAuthSession
-	stopOnce sync.Once
-	stopCh   chan struct{}
 }
 
-// NewSessionStore creates a new session store
+// NewSessionStore creates a new session store. Cleanup is owned by the worker runtime.
 func NewSessionStore() *SessionStore {
-	store := &SessionStore{
-		sessions: make(map[string]*OAuthSession),
-		stopCh:   make(chan struct{}),
-	}
-	go store.cleanup()
-	return store
-}
-
-// Stop stops the cleanup goroutine
-func (s *SessionStore) Stop() {
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-	})
+	return &SessionStore{sessions: make(map[string]*OAuthSession)}
 }
 
 // Set stores a session
@@ -97,24 +84,23 @@ func (s *SessionStore) Delete(sessionID string) {
 	delete(s.sessions, sessionID)
 }
 
-// cleanup removes expired sessions periodically
-func (s *SessionStore) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.mu.Lock()
-			for id, session := range s.sessions {
-				if time.Since(session.CreatedAt) > SessionTTL {
-					delete(s.sessions, id)
-				}
-			}
-			s.mu.Unlock()
+// CleanupExpired removes sessions older than SessionTTL for one runtime callback.
+func (s *SessionStore) CleanupExpired(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, session := range s.sessions {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if now.Sub(session.CreatedAt) > SessionTTL {
+			delete(s.sessions, id)
 		}
 	}
+	return nil
 }
 
 // GenerateRandomBytes generates cryptographically secure random bytes

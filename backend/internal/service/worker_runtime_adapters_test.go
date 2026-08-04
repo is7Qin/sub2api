@@ -181,6 +181,38 @@ func TestUsageRecordWorkerPoolWorkerStopReturnsSuccessAfterCompletionWithExpired
 	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
 }
 
+func TestClaudeOAuthSessionCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
+	svc := NewOAuthService(nil, nil)
+	worker, err := NewClaudeOAuthSessionCleanupWorker(svc)
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "claude-oauth-session-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "auth", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestClaudeOAuthSessionCleanupWorkerDefersFirstRunAndStops(t *testing.T) {
+	svc := NewOAuthService(nil, nil)
+	worker, err := NewClaudeOAuthSessionCleanupWorker(svc)
+	require.NoError(t, err)
+	require.NoError(t, worker.Start(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, worker.Stop(ctx))
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+}
+
+func TestClaudeOAuthSessionCleanupLifecycleIsRuntimeOwned(t *testing.T) {
+	content, err := os.ReadFile("oauth_service.go")
+	require.NoError(t, err)
+	require.NotContains(t, string(content), "func (s *OAuthService) Stop")
+}
+
 func TestConcurrencySlotCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
 	cache := &slotCleanupCache{}
 	svc := NewConcurrencyService(cache)

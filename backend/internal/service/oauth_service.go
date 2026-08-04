@@ -47,6 +47,14 @@ func NewOAuthService(proxyRepo ProxyRepository, oauthClient ClaudeOAuthClient) *
 	}
 }
 
+// CleanupSessions removes expired Claude OAuth sessions for one runtime cycle.
+func (s *OAuthService) CleanupSessions(ctx context.Context) error {
+	if s == nil || s.sessionStore == nil {
+		return nil
+	}
+	return s.sessionStore.CleanupExpired(ctx)
+}
+
 // GenerateAuthURLResult contains the authorization URL and session info
 type GenerateAuthURLResult struct {
 	AuthURL   string `json:"auth_url"`
@@ -307,9 +315,4 @@ func (s *OAuthService) RefreshAccountToken(ctx context.Context, account *Account
 	}
 
 	return s.RefreshToken(ctx, refreshToken, proxyURL)
-}
-
-// Stop stops the session store cleanup goroutine
-func (s *OAuthService) Stop() {
-	s.sessionStore.Stop()
 }

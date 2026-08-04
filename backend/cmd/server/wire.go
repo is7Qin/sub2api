@@ -86,9 +86,7 @@ func provideCleanup(
 	billingCache *service.BillingCacheService,
 	subscriptionService *service.SubscriptionService,
 	openAIOAuthStartupConfigValidation *service.OpenAIOAuthStartupConfigValidation,
-	oauth *service.OAuthService,
 	openaiOAuth *service.OpenAIOAuthService,
-	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
@@ -180,16 +178,8 @@ func provideCleanup(
 				billingCache.Stop()
 				return nil
 			}},
-			{"OAuthService", func() error {
-				oauth.Stop()
-				return nil
-			}},
 			{"OpenAIOAuthService", func() error {
 				openaiOAuth.Stop()
-				return nil
-			}},
-			{"GeminiOAuthService", func() error {
-				geminiOAuth.Stop()
 				return nil
 			}},
 			{"AntigravityOAuthService", func() error {

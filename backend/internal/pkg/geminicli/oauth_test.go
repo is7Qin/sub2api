@@ -1,7 +1,10 @@
 package geminicli
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +17,6 @@ import (
 
 func TestSessionStore_SetAndGet(t *testing.T) {
 	store := NewSessionStore()
-	defer store.Stop()
 
 	session := &OAuthSession{
 		State:     "test-state",
@@ -34,7 +36,6 @@ func TestSessionStore_SetAndGet(t *testing.T) {
 
 func TestSessionStore_GetNotFound(t *testing.T) {
 	store := NewSessionStore()
-	defer store.Stop()
 
 	_, ok := store.Get("不存在的ID")
 	if ok {
@@ -44,7 +45,6 @@ func TestSessionStore_GetNotFound(t *testing.T) {
 
 func TestSessionStore_GetExpired(t *testing.T) {
 	store := NewSessionStore()
-	defer store.Stop()
 
 	// 创建一个已过期的 session（CreatedAt 设置为 SessionTTL+1 分钟之前）
 	session := &OAuthSession{
@@ -62,7 +62,6 @@ func TestSessionStore_GetExpired(t *testing.T) {
 
 func TestSessionStore_Delete(t *testing.T) {
 	store := NewSessionStore()
-	defer store.Stop()
 
 	session := &OAuthSession{
 		State:     "to-delete",
@@ -83,18 +82,64 @@ func TestSessionStore_Delete(t *testing.T) {
 	}
 }
 
-func TestSessionStore_Stop_Idempotent(t *testing.T) {
+func TestSessionStore_CleanupExpiredAtUsesExactTTLBoundary(t *testing.T) {
 	store := NewSessionStore()
+	now := time.Date(2026, time.August, 5, 12, 0, 0, 0, time.UTC)
+	store.Set("expired", &OAuthSession{CreatedAt: now.Add(-SessionTTL - time.Nanosecond)})
+	store.Set("boundary", &OAuthSession{CreatedAt: now.Add(-SessionTTL)})
+	store.Set("fresh", &OAuthSession{CreatedAt: now.Add(-SessionTTL + time.Nanosecond)})
 
-	// 多次调用 Stop 不应 panic
-	store.Stop()
-	store.Stop()
-	store.Stop()
+	if err := store.cleanupExpiredAt(context.Background(), now); err != nil {
+		t.Fatalf("cleanupExpiredAt returned error: %v", err)
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if _, ok := store.sessions["expired"]; ok {
+		t.Fatal("SessionTTL + 1ns entry was not deleted")
+	}
+	if _, ok := store.sessions["boundary"]; !ok {
+		t.Fatal("entry exactly SessionTTL old was deleted")
+	}
+	if _, ok := store.sessions["fresh"]; !ok {
+		t.Fatal("SessionTTL - 1ns entry was deleted")
+	}
+}
+
+func TestSessionStore_CleanupExpiredPreCanceledLeavesExpiredEntry(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("expired", &OAuthSession{CreatedAt: time.Now().Add(-SessionTTL - time.Second)})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := store.CleanupExpired(ctx)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CleanupExpired error = %v, want context.Canceled", err)
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if _, ok := store.sessions["expired"]; !ok {
+		t.Fatal("pre-canceled cleanup removed the expired entry")
+	}
+}
+
+func TestSessionStore_ConstructorOwnsNoCleanupLifecycle(t *testing.T) {
+	content, err := os.ReadFile("oauth.go")
+	if err != nil {
+		t.Fatalf("read oauth.go: %v", err)
+	}
+	constructor := sessionStoreFunctionSource(string(content), "NewSessionStore")
+	if strings.Contains(constructor, "go ") {
+		t.Fatal("NewSessionStore starts a goroutine")
+	}
+	if strings.Contains(constructor, "time.NewTicker") {
+		t.Fatal("NewSessionStore starts a ticker")
+	}
 }
 
 func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	store := NewSessionStore()
-	defer store.Stop()
 
 	const goroutines = 50
 	var wg sync.WaitGroup
@@ -132,6 +177,18 @@ func TestSessionStore_ConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func sessionStoreFunctionSource(source, name string) string {
+	start := strings.Index(source, "func "+name)
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(source[start:], "\nfunc ")
+	if end < 0 {
+		return source[start:]
+	}
+	return source[start : start+end]
 }
 
 // ---------------------------------------------------------------------------

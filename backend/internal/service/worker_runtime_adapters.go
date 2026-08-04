@@ -10,7 +10,55 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 )
 
-const concurrencySlotCleanupWorkerTimeout = 6 * time.Second
+const (
+	claudeOAuthSessionCleanupInterval   = 5 * time.Minute
+	claudeOAuthSessionCleanupTimeout    = 5 * time.Second
+	geminiOAuthSessionCleanupInterval   = 5 * time.Minute
+	geminiOAuthSessionCleanupTimeout    = 5 * time.Second
+	concurrencySlotCleanupWorkerTimeout = 6 * time.Second
+)
+
+// NewClaudeOAuthSessionCleanupWorker adapts Claude OAuth session cleanup to the worker runtime.
+func NewClaudeOAuthSessionCleanupWorker(svc *OAuthService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil || svc.sessionStore == nil {
+		return nil, fmt.Errorf("Claude OAuth service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "claude-oauth-session-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Removes expired Claude OAuth authorization sessions",
+			Tags:             []string{"oauth", "claude", "session-cleanup"},
+		},
+		Interval:       claudeOAuthSessionCleanupInterval,
+		Timeout:        claudeOAuthSessionCleanupTimeout,
+		RunImmediately: false,
+		Run:            svc.CleanupSessions,
+	})
+}
+
+// NewGeminiOAuthSessionCleanupWorker adapts Gemini OAuth session cleanup to the worker runtime.
+func NewGeminiOAuthSessionCleanupWorker(svc *GeminiOAuthService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil || svc.sessionStore == nil {
+		return nil, fmt.Errorf("Gemini OAuth service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "gemini-oauth-session-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Removes expired Gemini OAuth authorization sessions",
+			Tags:             []string{"oauth", "gemini", "session-cleanup"},
+		},
+		Interval:       geminiOAuthSessionCleanupInterval,
+		Timeout:        geminiOAuthSessionCleanupTimeout,
+		RunImmediately: false,
+		Run:            svc.CleanupSessions,
+	})
+}
 
 // NewConcurrencySlotCleanupWorker adapts expired account-slot cleanup to the worker runtime.
 func NewConcurrencySlotCleanupWorker(svc *ConcurrencyService) (*workerruntime.PeriodicJob, error) {

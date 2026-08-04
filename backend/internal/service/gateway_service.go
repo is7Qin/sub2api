@@ -2005,24 +2005,19 @@ func (s *GatewayService) isPureModelSupportMiss(
 	}
 
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	otherwiseEligible := 0
-	for i := range accounts {
-		acc := &accounts[i]
-		if acc == nil || !s.isAccountAllowedForPlatform(acc, platform, allowMixedScheduling) {
-			continue
-		}
-		if s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-			return false
-		}
-		if shouldBlockAccountForPrivacyRequirement(acc, schedGroup) {
-			continue
-		}
-		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
-			continue
-		}
-		otherwiseEligible++
-	}
-	return otherwiseEligible > 0
+	return legacyPureModelSupportMiss(legacyModelSupportMissInput{
+		Accounts:             accounts,
+		RequestedModel:       requestedModel,
+		Platform:             platform,
+		AllowMixedScheduling: allowMixedScheduling,
+		RequirePrivacy:       schedGroup != nil && schedGroup.RequirePrivacySet,
+		ModelSupported: func(account *Account, model string) bool {
+			return s.isModelSupportedByAccountWithContext(ctx, account, model)
+		},
+		UpstreamRestricted: func(account *Account, model string) bool {
+			return needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, model)
+		},
+	})
 }
 
 // SelectAccountWithLoadAwareness selects account with load-awareness and wait plan.

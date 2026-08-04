@@ -1962,37 +1962,19 @@ func isPureOpenAIModelSupportMiss(ctx context.Context, service *OpenAIGatewaySer
 		return false
 	}
 	needsUpstreamCheck := service.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-
-	otherwiseEligible := 0
-	for i := range accounts {
-		account := &accounts[i]
-		if account == nil || !account.IsOpenAI() {
-			continue
-		}
-		if account.IsModelSupported(requestedModel) {
-			return false
-		}
-		if shouldBlockAccountForPrivacyRequirement(account, schedGroup) {
-			continue
-		}
-		if needsUpstreamCheck && service.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
-			continue
-		}
-		if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
-			continue
-		}
-		if !account.SupportsOpenAIImageCapability(requiredImageCapability) {
-			continue
-		}
-		if requireCompact && openAICompactSupportTier(account) == 0 {
-			continue
-		}
-		if service != nil && !service.isOpenAIAccountTransportCompatible(account, requiredTransport) {
-			continue
-		}
-		otherwiseEligible++
-	}
-	return otherwiseEligible > 0
+	return legacyPureOpenAIModelSupportMiss(legacyOpenAIModelSupportMissInput{
+		Accounts:           accounts,
+		RequestedModel:     requestedModel,
+		RequirePrivacy:     schedGroup != nil && schedGroup.RequirePrivacySet,
+		EndpointCapability: requiredCapability,
+		ImageCapability:    requiredImageCapability,
+		RequireCompact:     requireCompact,
+		Transport:          requiredTransport,
+		UpstreamRestricted: func(account *Account, model string, compact bool) bool {
+			return needsUpstreamCheck && service.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, model, compact)
+		},
+		TransportCompatible: service.isOpenAIAccountTransportCompatible,
+	})
 }
 
 // openAICompactSupportTier classifies an OpenAI account by compact capability.

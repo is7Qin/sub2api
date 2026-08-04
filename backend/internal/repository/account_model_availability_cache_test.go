@@ -303,10 +303,10 @@ func TestListModelAvailabilityCandidates_ConcurrentMissQueriesOnce(t *testing.T)
 }
 
 // TestListModelAvailabilityCandidates_ConcurrentSupportChecksRaceFree 验证缓存
-// 返回的账号与调用方解耦（按值拷贝）：多 goroutine 并发对同一缓存条目做
-// IsModelSupported（内部触发 model_mapping 无锁惰性缓存写入）不得产生数据竞争
-// （-race 下运行）。两轮并发：第一轮共享 singleflight leader 的结果，第二轮
-// 共享缓存 GET 的条目。
+// 返回的账号由多调用方直接共享（无拷贝）：并发对同一缓存条目做
+// IsModelSupported 不得产生数据竞争——并发安全性来自 GetModelMapping 的
+// atomic.Value 惰性记忆化（非拷贝）。两轮并发：第一轮共享 singleflight
+// leader 的结果，第二轮共享缓存 GET 的条目。
 func TestListModelAvailabilityCandidates_ConcurrentSupportChecksRaceFree(t *testing.T) {
 	counter := &countingQueryMatcher{}
 	repo, mock := newModelAvailabilityCandidateRepo(t, counter)

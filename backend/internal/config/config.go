@@ -1091,8 +1091,34 @@ type TLSProfileConfig struct {
 	Extensions []uint16 `mapstructure:"extensions"`
 }
 
+// SupportDecisionHotModelsConfig configures bounded hot-table model catalogs by platform.
+type SupportDecisionHotModelsConfig struct {
+	OpenAI      []string `mapstructure:"openai"`
+	Anthropic   []string `mapstructure:"anthropic"`
+	Gemini      []string `mapstructure:"gemini"`
+	Antigravity []string `mapstructure:"antigravity"`
+}
+
+// ForPlatform returns the configured catalog for platform. Unknown and empty
+// platforms retain the historical Anthropic default.
+func (c SupportDecisionHotModelsConfig) ForPlatform(platform string) []string {
+	switch platform {
+	case "openai":
+		return c.OpenAI
+	case "gemini":
+		return c.Gemini
+	case "antigravity":
+		return c.Antigravity
+	default:
+		return c.Anthropic
+	}
+}
+
 // GatewaySchedulingConfig accounts scheduling configuration.
 type GatewaySchedulingConfig struct {
+	// SupportDecisionHotModels overrides platform defaults for the support decision hot table.
+	SupportDecisionHotModels SupportDecisionHotModelsConfig `mapstructure:"support_decision_hot_models"`
+
 	// 粘性会话排队配置
 	StickySessionMaxWaiting  int           `mapstructure:"sticky_session_max_waiting"`
 	StickySessionWaitTimeout time.Duration `mapstructure:"sticky_session_wait_timeout"`
@@ -1514,6 +1540,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.CORS.AllowedOrigins = normalizeStringSlice(cfg.CORS.AllowedOrigins)
 	cfg.Security.ResponseHeaders.AdditionalAllowed = normalizeStringSlice(cfg.Security.ResponseHeaders.AdditionalAllowed)
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
+	hotModels := &cfg.Gateway.Scheduling.SupportDecisionHotModels
+	hotModels.OpenAI = normalizeUniqueStringSlice(hotModels.OpenAI)
+	hotModels.Anthropic = normalizeUniqueStringSlice(hotModels.Anthropic)
+	hotModels.Gemini = normalizeUniqueStringSlice(hotModels.Gemini)
+	hotModels.Antigravity = normalizeUniqueStringSlice(hotModels.Antigravity)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(cfg.Security.ForwardedClientIPHeaders)
 	if err != nil {
@@ -1991,6 +2022,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
+	viper.SetDefault("gateway.scheduling.support_decision_hot_models.openai", []string{})
+	viper.SetDefault("gateway.scheduling.support_decision_hot_models.anthropic", []string{})
+	viper.SetDefault("gateway.scheduling.support_decision_hot_models.gemini", []string{})
+	viper.SetDefault("gateway.scheduling.support_decision_hot_models.antigravity", []string{})
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
@@ -2894,6 +2929,26 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("dingtalk_connect: %w", err)
 	}
 	return nil
+}
+
+func normalizeUniqueStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized
 }
 
 func normalizeStringSlice(values []string) []string {

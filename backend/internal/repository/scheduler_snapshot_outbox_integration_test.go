@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,8 +49,17 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
 	require.NoError(t, cache.SetAccount(ctx, account))
 
 	svc := service.NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, nil, cfg)
-	svc.Start()
-	t.Cleanup(svc.Stop)
+	worker, err := service.NewSchedulerSnapshotWorker(svc)
+	require.NoError(t, err)
+	runtime := workerruntime.NewRuntime(workerruntime.NewRegistry())
+	require.NoError(t, runtime.Register(worker))
+	require.NoError(t, runtime.StartAll(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := runtime.StopAll(stopCtx)
+		require.NoError(t, err)
+	})
 
 	require.NoError(t, accountRepo.UpdateLastUsed(ctx, account.ID))
 	updated, err := accountRepo.GetByID(ctx, account.ID)

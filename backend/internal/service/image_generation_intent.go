@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -141,6 +142,8 @@ func openAIJSONInputContainsImageGenerationTooling(input gjson.Result) bool {
 	return found
 }
 
+// openAIRequestBodyMayContainAdditionalImageTooling 用 bytes.Contains（内部 SIMD 子串匹配）替换
+// 逐字节 hasMarkerAt 扫描：命中条件不变——additional_tools 与任意 image 类标记都出现才返回 true。
 func openAIRequestBodyMayContainAdditionalImageTooling(body []byte) bool {
 	const (
 		additionalToolsMarker = "additional_tools"
@@ -149,23 +152,12 @@ func openAIRequestBodyMayContainAdditionalImageTooling(body []byte) bool {
 		namespaceMarker       = "namespace"
 	)
 
-	seenAdditionalTools := false
-	seenImageMarker := false
-	for i := 0; i < len(body); i++ {
-		if !seenAdditionalTools && hasMarkerAt(body, i, additionalToolsMarker) {
-			seenAdditionalTools = true
-		}
-		if !seenImageMarker &&
-			(hasMarkerAt(body, i, imageGenerationMarker) ||
-				hasMarkerAt(body, i, imageGenMarker) ||
-				hasMarkerAt(body, i, namespaceMarker)) {
-			seenImageMarker = true
-		}
-		if seenAdditionalTools && seenImageMarker {
-			return true
-		}
+	if !bytes.Contains(body, []byte(additionalToolsMarker)) {
+		return false
 	}
-	return false
+	return bytes.Contains(body, []byte(imageGenerationMarker)) ||
+		bytes.Contains(body, []byte(imageGenMarker)) ||
+		bytes.Contains(body, []byte(namespaceMarker))
 }
 
 func hasMarkerAt(body []byte, offset int, marker string) bool {

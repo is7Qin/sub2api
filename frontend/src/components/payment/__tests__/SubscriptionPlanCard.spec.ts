@@ -24,7 +24,10 @@ const i18n = createI18n({
   },
 });
 
-const mountPlanCard = (groupPlatform: string) =>
+const mountPlanCard = (
+  groupPlatform: string,
+  overrides: Record<string, unknown> = {},
+) =>
   mount(SubscriptionPlanCard, {
     props: {
       plan: {
@@ -40,6 +43,7 @@ const mountPlanCard = (groupPlatform: string) =>
         validity_unit: "day",
         supported_model_scopes: ["claude", "gemini_text", "gemini_image"],
         is_active: true,
+        ...overrides,
       },
     },
     global: { plugins: [i18n] },
@@ -60,5 +64,50 @@ describe("SubscriptionPlanCard", () => {
     expect(text).toContain("Claude");
     expect(text).toContain("Gemini");
     expect(text).toContain("Imagen");
+  });
+
+  it.each([
+    ["long Chinese", "企业全球加速专业订阅套餐（含高级模型与优先支持）"],
+    ["long English", "Enterprise Global Acceleration Subscription with Priority Support"],
+    ["unbroken token", "EnterpriseGlobalAccelerationSubscriptionWithPrioritySupport1234567890"],
+  ])("keeps the full %s plan title accessible in a bounded two-line area", (_label, name) => {
+    const wrapper = mountPlanCard("openai", { name });
+    const title = wrapper.get("h3");
+
+    expect(title.text()).toBe(name);
+    expect(title.attributes("title")).toBe(name);
+    expect(title.classes()).toEqual(expect.arrayContaining([
+      "min-w-0",
+      "h-12",
+      "break-words",
+      "line-clamp-2",
+      "[overflow-wrap:anywhere]",
+    ]));
+    expect(title.classes()).not.toContain("truncate");
+  });
+
+  it("keeps title, badge, price, description, and purchase action in separate bounded regions", () => {
+    const wrapper = mountPlanCard("openai", {
+      name: "Enterprise Global Acceleration Subscription with Priority Support",
+      price: 123.45,
+      description: "Includes advanced models and priority support.",
+    });
+    const title = wrapper.get("h3");
+    const badge = wrapper.findAll("span").find((node) => node.text() === "OpenAI");
+    const price = wrapper.findAll("span").find((node) => node.text() === "123.45");
+
+    expect(title.element.parentElement?.classList).toContain("min-w-0");
+    expect(title.element.parentElement?.classList).toContain("flex-1");
+    expect(badge?.classes()).toContain("shrink-0");
+    expect([...(badge?.element.parentElement?.classList ?? [])]).toEqual(expect.arrayContaining([
+      "flex",
+      "items-center",
+      "justify-end",
+    ]));
+    expect(badge?.element.parentElement?.textContent).toContain("/ 30payment.days");
+    expect(badge?.element.parentElement?.parentElement?.classList).toContain("shrink-0");
+    expect(price?.element.parentElement?.parentElement?.classList).toContain("shrink-0");
+    expect(wrapper.get("p").text()).toBe("Includes advanced models and priority support.");
+    expect(wrapper.get("button").text()).toBe("payment.subscribeNow");
   });
 });

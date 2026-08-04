@@ -247,6 +247,30 @@ describe('EditAccountModal', () => {
     })
   })
 
+  it('loads and submits the Codex namespace flatten compatibility toggle for OAuth', async () => {
+    const account = buildAccount()
+    account.type = 'oauth'
+    account.extra = { openai_responses_flatten_namespaces: true }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const toggle = wrapper.get('[data-testid="edit-openai-flatten-namespaces-toggle"]')
+    await toggle.trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty(
+      'openai_responses_flatten_namespaces'
+    )
+  })
+
+  it('hides the Codex namespace flatten toggle for non-OAuth accounts', () => {
+    const wrapper = mountModal(buildAccount())
+    expect(wrapper.find('[data-testid="edit-openai-flatten-namespaces-toggle"]').exists()).toBe(false)
+  })
+
   it('removes legacy passthrough and WS flags when saving OpenAI setup-token accounts', async () => {
     const account = buildAccount()
     account.type = 'setup-token'

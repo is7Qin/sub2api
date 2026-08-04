@@ -3586,7 +3586,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		if shouldNormalizeOpenAIResponsesNamespaces(account, wsDecision.Transport, clientTransport) {
+		if shouldNormalizeOpenAIResponsesNamespaces(account, wsDecision.Transport, clientTransport, isCompactRequest) {
 			changed, namespaceErr := normalizeOpenAIResponsesNamespaces(c, decoded)
 			if namespaceErr != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -3598,13 +3598,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				markDecodedModified()
 			}
 		}
+		preserveNamespaces := account.IsOpenAIOAuth() && !isCompactRequest && !account.IsOpenAIResponsesFlattenNamespacesEnabled()
 		codexResult := codexTransformResult{}
 		if compatMessagesBridge {
-			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{IsCodexCLI: isCodexCLI, IsCompact: isCompactRequest, SkipDefaultInstructions: true, PreserveToolCallIDs: true})
+			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{IsCodexCLI: isCodexCLI, IsCompact: isCompactRequest, SkipDefaultInstructions: true, PreserveToolCallIDs: true, PreserveNamespaces: preserveNamespaces})
 			ensureCodexOAuthInstructionsField(decoded)
 			markDecodedModified()
 		} else {
-			codexResult = applyCodexOAuthTransform(decoded, isCodexCLI, isCompactRequest)
+			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{IsCodexCLI: isCodexCLI, IsCompact: isCompactRequest, PreserveNamespaces: preserveNamespaces})
 		}
 		if codexResult.Modified {
 			markDecodedModified()

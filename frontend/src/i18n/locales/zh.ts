@@ -3629,6 +3629,9 @@ export default {
         apiKeyPassthrough: 'API Key 自动透传（仅替换认证）',
         apiKeyPassthroughDesc:
           '仅对 OpenAI API Key 生效。开启后请求与响应走 API Key 透传链路，仅替换认证并保留计费/并发/审计及必要安全过滤。OAuth 账号始终走 Codex/ChatGPT adapter 链路。',
+        flattenNamespaces: '摊平 Codex namespace 工具',
+        flattenNamespacesDesc:
+          '仅 OAuth。默认关闭以保留 Codex 原生 namespace；仅当兼容中转拒绝 namespace 声明时开启。compact 请求仍会自动摊平。',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           '默认关闭。开启后可启用 responses_websockets_v2 协议能力（受网关全局开关与账号类型开关约束）。',

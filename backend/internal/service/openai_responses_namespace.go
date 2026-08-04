@@ -14,10 +14,11 @@ import (
 
 const openAIResponsesNamespaceNamesContextKey = "openai_responses_namespace_names"
 
-func shouldNormalizeOpenAIResponsesNamespaces(account *Account, transport OpenAIUpstreamTransport, clientTransport OpenAIClientTransport) bool {
-	return account != nil && account.IsOpenAIOAuth() &&
-		clientTransport == OpenAIClientTransportHTTP &&
-		transport == OpenAIUpstreamTransportHTTPSSE
+func shouldNormalizeOpenAIResponsesNamespaces(account *Account, transport OpenAIUpstreamTransport, clientTransport OpenAIClientTransport, compactPath bool) bool {
+	if account == nil || !account.IsOpenAIOAuth() || clientTransport != OpenAIClientTransportHTTP || transport != OpenAIUpstreamTransportHTTPSSE {
+		return false
+	}
+	return compactPath || account.IsOpenAIResponsesFlattenNamespacesEnabled()
 }
 
 // shouldStripOpenAIResponsesInputNamespaces is the terminal counterpart to
@@ -32,6 +33,7 @@ func shouldStripOpenAIResponsesInputNamespaces(c *gin.Context, account *Account)
 		account,
 		OpenAIUpstreamTransport(strings.TrimSpace(fmt.Sprint(transport))),
 		GetOpenAIClientTransport(c),
+		isOpenAIResponsesCompactPath(c),
 	)
 }
 

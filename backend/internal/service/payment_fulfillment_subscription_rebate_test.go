@@ -206,6 +206,10 @@ func (r *paymentFulfillmentUserSubRepo) GetByID(_ context.Context, id int64) (*U
 	return &cp, nil
 }
 
+func (r *paymentFulfillmentUserSubRepo) GetByIDForUpdate(ctx context.Context, id int64) (*UserSubscription, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *paymentFulfillmentUserSubRepo) GetByUserIDAndGroupID(_ context.Context, userID, groupID int64) (*UserSubscription, error) {
 	if r.getWitnessError != nil {
 		return nil, r.getWitnessError

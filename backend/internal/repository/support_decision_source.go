@@ -11,7 +11,8 @@ import (
 )
 
 type supportDecisionSource struct {
-	db *sql.DB
+	db      *sql.DB
+	beginTx func(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
 
 // NewSupportDecisionSource is wired only into background construction workers;
@@ -21,7 +22,11 @@ func NewSupportDecisionSource(db *sql.DB) service.SupportDecisionSource {
 }
 
 func (s *supportDecisionSource) Load(ctx context.Context) (*service.SupportDecisionConstructionSnapshot, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	beginTx := s.beginTx
+	if beginTx == nil {
+		beginTx = s.db.BeginTx
+	}
+	tx, err := beginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("begin support decision snapshot: %w", err)
 	}
@@ -144,7 +149,9 @@ ORDER BY g.id`)
 }
 
 func loadSupportDecisionChannels(ctx context.Context, tx *sql.Tx) ([]service.SupportDecisionChannel, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.status, c.model_mapping, c.restrict_models, c.billing_model_source,
+	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.status, c.model_mapping,
+       COALESCE(c.restrict_models, FALSE),
+       COALESCE(NULLIF(c.billing_model_source, ''), 'channel_mapped'),
        COALESCE((SELECT jsonb_agg(cg.group_id ORDER BY cg.group_id) FROM channel_groups cg WHERE cg.channel_id = c.id), '[]'::jsonb) AS group_ids,
        COALESCE((SELECT jsonb_agg(jsonb_build_object('platform', cmp.platform, 'models', cmp.models) ORDER BY cmp.id) FROM channel_model_pricing cmp WHERE cmp.channel_id = c.id), '[]'::jsonb) AS pricing_models
 FROM channels c
@@ -158,8 +165,15 @@ ORDER BY c.id`)
 	for rows.Next() {
 		var channel service.SupportDecisionChannel
 		var mappingJSON, groupIDsJSON, pricingJSON []byte
-		if err := rows.Scan(&channel.ID, &channel.Status, &mappingJSON, &channel.RestrictModels, &channel.BillingModelSource, &groupIDsJSON, &pricingJSON); err != nil {
+		var restrictModels sql.NullBool
+		var billingModelSource sql.NullString
+		if err := rows.Scan(&channel.ID, &channel.Status, &mappingJSON, &restrictModels, &billingModelSource, &groupIDsJSON, &pricingJSON); err != nil {
 			return nil, err
+		}
+		channel.RestrictModels = restrictModels.Valid && restrictModels.Bool
+		channel.BillingModelSource = billingModelSource.String
+		if channel.BillingModelSource == "" {
+			channel.BillingModelSource = service.BillingModelSourceChannelMapped
 		}
 		if len(mappingJSON) > 0 {
 			if err := json.Unmarshal(mappingJSON, &channel.ModelMapping); err != nil {

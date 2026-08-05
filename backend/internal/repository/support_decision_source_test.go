@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
 	"strings"
@@ -20,10 +21,15 @@ type supportDecisionQueryCapture struct {
 	queries []string
 }
 
-func (m *supportDecisionQueryCapture) Match(_, actual string) error {
+func (m *supportDecisionQueryCapture) Match(expected, actual string) error {
+	expected = normalizeSQLWhitespace(expected)
+	actual = normalizeSQLWhitespace(actual)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.queries = append(m.queries, normalizeSQLWhitespace(actual))
+	m.queries = append(m.queries, actual)
+	if !strings.Contains(actual, expected) {
+		return errors.New("query does not contain expected SQL fragment: " + expected)
+	}
 	return nil
 }
 
@@ -60,8 +66,8 @@ func addSupportDecisionAccountRow(rows *sqlmock.Rows) *sqlmock.Rows {
 func expectCompleteSupportDecisionSnapshot(mock sqlmock.Sqlmock, accounts *sqlmock.Rows) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("accounts").WillReturnRows(accounts)
-	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}).AddRow(int64(7), int64(42)))
-	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}).AddRow(int64(42), service.PlatformOpenAI, true, `{"enabled":true,"models":["gpt-5.4-high"]}`))
+	mock.ExpectQuery("FROM account_groups").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}).AddRow(int64(7), int64(42)))
+	mock.ExpectQuery("FROM groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}).AddRow(int64(42), service.PlatformOpenAI, true, `{"enabled":true,"models":["gpt-5.4-high"]}`))
 	mock.ExpectQuery("channels").WillReturnRows(sqlmock.NewRows([]string{"id", "status", "model_mapping", "restrict_models", "billing_model_source", "group_ids", "pricing_models"}).AddRow(int64(5), service.StatusActive, `{"openai":{"alias":"gpt-5.4-high"}}`, true, service.BillingModelSourceRequested, `[42]`, `[{"platform":"openai","models":["gpt-5.4-high"]}]`))
 	mock.ExpectCommit()
 }
@@ -141,13 +147,35 @@ func TestSupportDecisionSourceLoadsMembershipsGroupsAndChannelsInOneSnapshot(t *
 	snapshot, err := source.Load(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
-	require.Len(t, capture.all(), 4)
+	queries := capture.all()
+	require.Len(t, queries, 4)
 	require.Equal(t, []service.SupportDecisionMembership{{AccountID: 7, GroupID: 42}}, snapshot.Memberships)
 	require.Equal(t, service.PlatformOpenAI, snapshot.Groups[0].Platform)
 	require.True(t, snapshot.Groups[0].RequirePrivacySet)
 	require.True(t, snapshot.Groups[0].ModelsListConfig.Enabled)
 	require.Equal(t, []int64{42}, snapshot.Channels[0].GroupIDs)
 	require.Equal(t, []string{"gpt-5.4-high"}, snapshot.Channels[0].PricingModels[0].Models)
+
+	require.Contains(t, queries[1], "SELECT ag.account_id, ag.group_id FROM account_groups ag")
+	require.Contains(t, queries[1], "JOIN accounts a ON a.id = ag.account_id")
+	require.Contains(t, queries[1], "JOIN groups g ON g.id = ag.group_id")
+	require.Contains(t, queries[1], "a.deleted_at IS NULL")
+	require.Contains(t, queries[1], "g.deleted_at IS NULL")
+	require.NotContains(t, queries[1], "credentials")
+	require.NotContains(t, queries[1], "models_list_config")
+
+	require.Contains(t, queries[2], "SELECT g.id, g.platform, g.require_privacy_set, g.models_list_config FROM groups g")
+	for _, unrelated := range []string{"g.name", "g.description", "g.rate_limit", "g.created_at", "g.updated_at"} {
+		require.NotContains(t, queries[2], unrelated)
+	}
+
+	require.Contains(t, queries[3], "c.model_mapping")
+	require.Contains(t, queries[3], "FROM channel_groups cg WHERE cg.channel_id = c.id")
+	require.Contains(t, queries[3], "FROM channel_model_pricing cmp WHERE cmp.channel_id = c.id")
+	require.Contains(t, queries[3], "'platform', cmp.platform, 'models', cmp.models")
+	for _, unrelated := range []string{"base_url", "api_key", "price", "currency", "interval", "created_at", "updated_at"} {
+		require.NotContains(t, queries[3], unrelated)
+	}
 }
 
 func TestSupportDecisionSourceIgnoresTransientSchedulerState(t *testing.T) {
@@ -191,8 +219,8 @@ func TestSupportDecisionSourcePreservesEmptyChannelMappingSemantics(t *testing.T
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
-	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
-	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("FROM account_groups").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("FROM groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
 	mock.ExpectQuery("channels").WillReturnRows(sqlmock.NewRows([]string{"id", "status", "model_mapping", "restrict_models", "billing_model_source", "group_ids", "pricing_models"}).
 		AddRow(int64(5), service.StatusActive, nil, false, service.BillingModelSourceRequested, `[]`, `[]`))
 	mock.ExpectCommit()
@@ -204,12 +232,52 @@ func TestSupportDecisionSourcePreservesEmptyChannelMappingSemantics(t *testing.T
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSupportDecisionSourceNormalizesNullableChannelDefaults(t *testing.T) {
+	source, mock, _ := newSupportDecisionSourceTestDB(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
+	mock.ExpectQuery("FROM account_groups").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("FROM groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("COALESCE(c.restrict_models, FALSE)").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "status", "model_mapping", "restrict_models", "billing_model_source", "group_ids", "pricing_models"}).
+			AddRow(int64(5), service.StatusActive, nil, nil, nil, `[]`, `[]`).
+			AddRow(int64(6), service.StatusActive, nil, false, "", `[]`, `[]`),
+	)
+	mock.ExpectCommit()
+
+	snapshot, err := source.Load(context.Background())
+	require.NoError(t, err)
+	require.Len(t, snapshot.Channels, 2)
+	for _, channel := range snapshot.Channels {
+		require.False(t, channel.RestrictModels)
+		require.Equal(t, service.BillingModelSourceChannelMapped, channel.BillingModelSource)
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSupportDecisionSourceUsesReadOnlyRepeatableReadTransaction(t *testing.T) {
+	var captured *sql.TxOptions
+	source := &supportDecisionSource{
+		beginTx: func(_ context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+			captured = opts
+			return nil, errors.New("stop after begin")
+		},
+	}
+
+	snapshot, err := source.Load(context.Background())
+	require.Nil(t, snapshot)
+	require.ErrorContains(t, err, "begin support decision snapshot")
+	require.NotNil(t, captured)
+	require.True(t, captured.ReadOnly)
+	require.Equal(t, sql.LevelRepeatableRead, captured.Isolation)
+}
+
 func TestSupportDecisionSourceRollsBackOnPartialReadFailure(t *testing.T) {
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery("accounts").WillReturnRows(addSupportDecisionAccountRow(supportDecisionAccountRows()))
-	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
-	mock.ExpectQuery("groups").WillReturnError(errors.New("group read failed"))
+	mock.ExpectQuery("FROM account_groups").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("FROM groups").WillReturnError(errors.New("group read failed"))
 	mock.ExpectRollback()
 
 	snapshot, err := source.Load(context.Background())
@@ -234,7 +302,7 @@ func TestSupportDecisionSourceRollsBackOnMembershipReadFailure(t *testing.T) {
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
-	mock.ExpectQuery("memberships").WillReturnError(errors.New("membership read failed"))
+	mock.ExpectQuery("FROM account_groups").WillReturnError(errors.New("membership read failed"))
 	mock.ExpectRollback()
 
 	snapshot, err := source.Load(context.Background())
@@ -247,8 +315,8 @@ func TestSupportDecisionSourceRollsBackOnChannelReadFailure(t *testing.T) {
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
-	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
-	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("FROM account_groups").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("FROM groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
 	mock.ExpectQuery("channels").WillReturnError(errors.New("channel read failed"))
 	mock.ExpectRollback()
 
@@ -262,8 +330,8 @@ func TestSupportDecisionSourceRollsBackOnCommitFailure(t *testing.T) {
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
-	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
-	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("FROM account_groups").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("FROM groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
 	mock.ExpectQuery("channels").WillReturnRows(sqlmock.NewRows([]string{"id", "status", "model_mapping", "restrict_models", "billing_model_source", "group_ids", "pricing_models"}))
 	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
 

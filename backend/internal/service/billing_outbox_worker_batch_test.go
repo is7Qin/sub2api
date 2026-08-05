@@ -81,8 +81,9 @@ func TestBillingOutboxWorker_BatchAppliesSameShardRecordsInOneBatchCall(t *testi
 }
 
 func TestBillingOutboxWorker_BatchSplitsCrossShardRecordsIntoPerShardCalls(t *testing.T) {
-	// 不同用户（不同分片）的记录拆分到各自分片事务，按分片升序处理；
-	// userID<=0 的记录不触碰 users 行，作为免锁组最先处理。
+	// 不同用户（不同分片）的记录拆分到各自分片事务；userID<=0 的记录不触碰
+	// users 行，作为免锁组。组并行后跨分片调用顺序不再确定，只断言分片组成
+	// （组内记录序仍与整轮顺序一致）。
 	records := []BillingOutboxRecord{
 		batchValidRecord(1, 42),
 		batchValidRecord(2, 100),
@@ -99,10 +100,11 @@ func TestBillingOutboxWorker_BatchSplitsCrossShardRecordsIntoPerShardCalls(t *te
 
 	calls, items := billing.batchSnapshot()
 	require.Equal(t, 4, calls, "one per-shard batch transaction per shard")
-	require.Equal(t, []int64{6}, outboxIDsOf(items[0]), "no-user records form the first lock-free group")
-	require.Equal(t, []int64{5}, outboxIDsOf(items[1]))
-	require.Equal(t, []int64{1, 3}, outboxIDsOf(items[2]), "same-shard records stay in one batch")
-	require.Equal(t, []int64{2, 4}, outboxIDsOf(items[3]))
+	var groups [][]int64
+	for _, group := range items {
+		groups = append(groups, outboxIDsOf(group))
+	}
+	require.ElementsMatch(t, [][]int64{{6}, {5}, {1, 3}, {2, 4}}, groups, "same-shard records stay in one batch")
 	require.Empty(t, repo.acked)
 	require.Empty(t, repo.retried)
 }
@@ -229,21 +231,18 @@ func TestBillingOutboxWorker_BatchInfraFailureRetriesOnlyFailingShard(t *testing
 func TestBillingOutboxWorker_BatchShardLockScopeIsPerShard(t *testing.T) {
 	// 轮 1 在分片 5 的事务内阻塞时，只涉及分片 200 的轮 2 必须能直接完成：
 	// 分片锁只在各自分片事务期间持有，而非整轮批量持有（修复前锁到整轮结束）。
+	// 组并行后轮内分片处理顺序不再确定，按分片内容（outbox ID 1）定位轮 1
+	// 的阻塞事务，使断言与调度顺序无关。
 	round1 := []BillingOutboxRecord{batchValidRecord(1, 5), batchValidRecord(2, 200)}
 	round2 := []BillingOutboxRecord{batchValidRecord(3, 200)}
 	repo := &billingOutboxRepoStub{claimSeq: [][]BillingOutboxRecord{round1, round2}}
 
-	var mu sync.Mutex
-	callCount := 0
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startedOnce, releaseOnce sync.Once
 	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
-		mu.Lock()
-		callCount++
-		first := callCount == 1
-		mu.Unlock()
-		if first {
+		if len(items) > 0 && items[0].Binding.OutboxID == 1 {
+			// 轮 1 的分片 5 事务：持锁期间阻塞，验证该锁不拖住只涉及分片 200 的轮 2。
 			startedOnce.Do(func() { close(started) })
 			<-release
 		}
@@ -257,7 +256,7 @@ func TestBillingOutboxWorker_BatchShardLockScopeIsPerShard(t *testing.T) {
 
 	round1Done := make(chan error, 1)
 	go func() { round1Done <- worker.processBatch(context.Background()) }()
-	<-started // 轮 1 已阻塞在分片 5 的事务中（分片 200 的锁尚未获取）
+	<-started // 轮 1 已阻塞在分片 5 的事务中
 
 	round2Done := make(chan error, 1)
 	go func() { round2Done <- worker.processBatch(context.Background()) }()
@@ -340,6 +339,114 @@ func TestBillingOutboxWorker_BatchSerializesSameUserShardAcrossRounds(t *testing
 	require.Equal(t, 1, maxActive, "same-user batch transactions must be serialized")
 	require.Len(t, repo.acked, 0)
 	require.Len(t, repo.retried, 0)
+}
+
+func TestBillingOutboxApplyGroupsRunInParallel(t *testing.T) {
+	// 不同用户分片的批量事务必须并发执行：100 条记录分布在 8 个分片，
+	// ApplyBatch 的并发峰值至少为 2（修复前逐组串行，峰值恒为 1）。
+	records := make([]BillingOutboxRecord, 100)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), int64(1+i%8))
+	}
+	repo := &billingOutboxRepoStub{records: records}
+
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	started := make(chan struct{}, 100)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: true}
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+
+	finished := make(chan error, 1)
+	go func() { finished <- worker.processBatch(context.Background()) }()
+
+	// 等待至少 2 个分片事务同时进入批量调用；串行实现下第二个永远不会出现。
+	startedCount := 0
+	for startedCount < 2 {
+		select {
+		case <-started:
+			startedCount++
+		case <-time.After(2 * time.Second):
+			releaseOnce.Do(func() { close(release) })
+			t.Fatalf("distinct-shard batch transactions did not run in parallel: only %d of 2 concurrent calls observed", startedCount)
+		}
+	}
+	mu.Lock()
+	peak := maxActive
+	mu.Unlock()
+	require.GreaterOrEqual(t, peak, 2, "distinct-shard batch transactions must run concurrently")
+	require.LessOrEqual(t, peak, billingOutboxApplyGroupParallelism, "batch concurrency must be capped by the group parallelism limit")
+
+	close(release)
+	require.NoError(t, <-finished)
+	require.Empty(t, repo.acked)
+	require.Empty(t, repo.retried)
+}
+
+func TestBillingOutboxApplyGroupsParallelismOneIsSerial(t *testing.T) {
+	// 注入 parallelism=1 必须退化为逐组串行：并发峰值恒为 1，且组按分片
+	// 升序依次处理（顺序回归断言，若注入失效则顺序随机、该断言不稳定）。
+	records := make([]BillingOutboxRecord, 40)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), int64(1+i%4))
+	}
+	repo := &billingOutboxRepoStub{records: records}
+
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: true}
+		}
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+	worker.applyGroupParallelism = 1
+
+	require.NoError(t, worker.processBatch(context.Background()))
+
+	mu.Lock()
+	peak := maxActive
+	mu.Unlock()
+	require.Equal(t, 1, peak, "parallelism=1 must serialize batch transactions")
+
+	// userID 1..4 → 分片 1..4：串行退化时按分片升序，每组 10 条、组内序保持。
+	calls, items := billing.batchSnapshot()
+	require.Equal(t, 4, calls)
+	require.Equal(t, []int64{1, 5, 9, 13, 17, 21, 25, 29, 33, 37}, outboxIDsOf(items[0]))
+	require.Equal(t, []int64{2, 6, 10, 14, 18, 22, 26, 30, 34, 38}, outboxIDsOf(items[1]))
+	require.Equal(t, []int64{3, 7, 11, 15, 19, 23, 27, 31, 35, 39}, outboxIDsOf(items[2]))
+	require.Equal(t, []int64{4, 8, 12, 16, 20, 24, 28, 32, 36, 40}, outboxIDsOf(items[3]))
+	require.Empty(t, repo.acked)
+	require.Empty(t, repo.retried)
 }
 
 func TestBillingOutboxWorker_BatchFallbackPreservesPerRecordPath(t *testing.T) {

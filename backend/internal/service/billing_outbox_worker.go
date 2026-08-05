@@ -31,6 +31,10 @@ const (
 	// 同一用户的扣费事务按分片互斥串行化，避免多个 apply worker 同时
 	// UPDATE 同一 users 余额行形成行锁链（热点用户下可阻塞整轮 worker）。
 	billingApplyUserShardCount = 256
+	// 分片组并行：不同用户分片的批量事务并发执行的上限。同一用户必在同一
+	// 分片（userID % 256），组内单个事务天然保持用户级串行；组间无共享锁、
+	// 无嵌套获取，并发获取不同分片锁不可能死锁。测试可注入 1 退化为串行。
+	billingOutboxApplyGroupParallelism = 8
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -71,6 +75,7 @@ type BillingOutboxWorker struct {
 	failures                       atomic.Uint64
 	lastError                      atomic.Value
 	applyUserLocks                 [billingApplyUserShardCount]sync.Mutex
+	applyGroupParallelism          int
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -83,6 +88,7 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 		repo: repo, billing: billing, postProcessor: processor, workerID: uuid.NewString(),
 		finalizationLease: billingOutboxLease, finalizationLeaseRenewInterval: billingOutboxFinalizationRenewInterval,
 		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, ctx: ctx, cancel: cancel,
+		applyGroupParallelism: billingOutboxApplyGroupParallelism,
 	}
 	worker.lastError.Store("")
 	return worker
@@ -173,10 +179,11 @@ func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []B
 }
 
 // processApplyBatchBatched 把整轮记录按用户分片拆成多个批量事务（每分片
-// 一个事务，按分片升序处理）：同一分片的多条记录共享一个事务，行锁与
-// 分片锁的作用域都只覆盖本分片事务，不再横跨整轮——热点用户的行锁不会
-// 拖住整轮、其他分片的轮次也不会被整轮持锁阻塞。逐条失败仍通过 savepoint
-// 隔离（仓库内），重试与去重 Ack 语义不变。
+// 一个事务）：同一分片的多条记录共享一个事务，行锁与分片锁的作用域都只
+// 覆盖本分片事务，不再横跨整轮——热点用户的行锁不会拖住整轮、其他分片的
+// 轮次也不会被整轮持锁阻塞。不同分片的批量事务并发执行（组并行上限
+// billingOutboxApplyGroupParallelism），逐条失败仍通过 savepoint 隔离（仓库内），
+// 重试与去重 Ack 语义不变。整轮 applyCtx（30s 总时限）在所有组之间共享。
 func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
 	items := make([]UsageBillingBatchItem, 0, len(records))
 	// 校验失败的记录不进批量事务，直接按 terminal 落库，与逐条路径一致。
@@ -210,63 +217,90 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 
 	applyCtx, applyCancel := context.WithTimeout(ctx, billingOutboxApplyTimeout)
 	defer applyCancel()
+	// 分片组并行：不同分片的批量事务并发执行。同一用户必在同一分片，组内
+	// 单个事务天然保持用户级串行；组间无共享锁、无嵌套获取，并发获取不同
+	// 分片锁不可能死锁。错误聚合保留第一错误语义（并发下由互斥保护）。
 	var firstErr error
+	var errMu sync.Mutex
+	parallelism := w.applyGroupParallelism
+	if parallelism < 1 {
+		parallelism = billingOutboxApplyGroupParallelism
+	}
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
 	for _, group := range groupBatchItemsByShard(items) {
-		groupItems := make([]UsageBillingBatchItem, len(group.indexes))
-		for gi, idx := range group.indexes {
-			groupItems[gi] = items[idx]
-		}
-		// 逐分片加锁：同一时刻只持有一把分片锁（按升序获取，无嵌套，
-		// 天然无死锁），锁只覆盖本分片事务。
-		var unlock func()
-		if group.shard >= 0 {
-			unlock = w.lockUserShard(uint64(group.shard))
-		}
-		outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(applyCtx, groupItems)
-		if unlock != nil {
-			unlock()
-		}
-		if err == nil && len(outcomes) != len(groupItems) {
-			err = fmt.Errorf("batch billing apply returned %d outcomes for %d items", len(outcomes), len(groupItems))
-		}
-		if err != nil {
-			// 本分片事务失败：只重试本分片记录；其余分片独立事务照常处理。
-			if firstErr == nil {
-				firstErr = err
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(group billingShardGroup) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := w.applyBatchGroup(applyCtx, group, items, records, batchRepo); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
 			}
-			for gi := range groupItems {
-				idx := group.indexes[gi]
-				record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
-				w.recordFailure(err)
-				w.persistFailure(record, err, false)
-			}
-			continue
-		}
-		for gi, outcome := range outcomes {
+		}(group)
+	}
+	wg.Wait()
+	return firstErr
+}
+
+// applyBatchGroup 在单个分片事务内应用一组批量记录：分片锁只覆盖本事务的
+// 持锁区间（lockUserShard → ApplyBatchAndStageOutboxFinalizations → unlock），
+// 逐条失败经 savepoint 隔离（仓库内），outcome 处理与串行路径一致。返回
+// 组级错误（批量事务失败时非 nil；组内逐条失败只落库不返回）。
+func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billingShardGroup, items []UsageBillingBatchItem, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
+	groupItems := make([]UsageBillingBatchItem, len(group.indexes))
+	for gi, idx := range group.indexes {
+		groupItems[gi] = items[idx]
+	}
+	var unlock func()
+	if group.shard >= 0 {
+		unlock = w.lockUserShard(uint64(group.shard))
+	}
+	outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(ctx, groupItems)
+	if unlock != nil {
+		unlock()
+	}
+	if err == nil && len(outcomes) != len(groupItems) {
+		err = fmt.Errorf("batch billing apply returned %d outcomes for %d items", len(outcomes), len(groupItems))
+	}
+	if err != nil {
+		// 本分片事务失败：只重试本分片记录；其余分片独立事务照常处理。
+		for gi := range groupItems {
 			idx := group.indexes[gi]
 			record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
-			if outcome.Err != nil {
-				w.recordFailure(outcome.Err)
-				w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
-				continue
-			}
-			if outcome.Result == nil || outcome.Result.Applied {
-				// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
-				continue
-			}
-			// 已存在的去重键：本行无需 post-effects，直接确认完成。
-			ackCtx, ackCancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
-			ackErr := w.repo.Ack(ackCtx, record.ID, w.workerID)
-			ackCancel()
-			if ackErr != nil {
-				w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
-				continue
-			}
-			w.processed.Add(1)
-			w.lastError.Store("")
+			w.recordFailure(err)
+			w.persistFailure(record, err, false)
 		}
+		return err
 	}
-	return firstErr
+	for gi, outcome := range outcomes {
+		idx := group.indexes[gi]
+		record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
+		if outcome.Err != nil {
+			w.recordFailure(outcome.Err)
+			w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
+			continue
+		}
+		if outcome.Result == nil || outcome.Result.Applied {
+			// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
+			continue
+		}
+		// 已存在的去重键：本行无需 post-effects，直接确认完成。
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
+		ackErr := w.repo.Ack(ackCtx, record.ID, w.workerID)
+		ackCancel()
+		if ackErr != nil {
+			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
+			continue
+		}
+		w.processed.Add(1)
+		w.lastError.Store("")
+	}
+	return nil
 }
 
 // itemRecordIndex 在整轮记录里按 outbox ID 找回 items 对应的原始记录。

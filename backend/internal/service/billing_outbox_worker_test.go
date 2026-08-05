@@ -1402,6 +1402,70 @@ func TestBillingOutboxWorker_TerminalGrowthWarnBoundedUnderPersistentFailure(t *
 		"the warn must stop once Stats recovers")
 }
 
+func TestBillingOutboxWorker_TerminalGrowthRecoveryAfterLongStatsFailureResetsBaseline(t *testing.T) {
+	// R2 回归（基线老化）：evaluateTerminalGrowth 原先只对"无历史基线"（首次
+	// 采样）跳过速率评估——已有基线时，长时间 repo.Stats 失败后的恢复采样会拿
+	// 整段失败窗口的平均速率评估（600s 间隔 +5000 行 = 8.33 行/s > 5.0）误报
+	// 速率告警，"跨失败窗口的 delta 不误报速率"的保证只覆盖首次采样场景。修复：
+	// 距上次成功采样超过 billingOutboxTerminalGrowthMaxSampleGap（默认 120s =
+	// 2 个采样节奏）的成功采样按"首次采样"重建基线、不评估速率。本测试先建立
+	// 正常基线（1000 行）→ Stats 持续失败 10 分钟（10 个 60s 冷却窗口各恰 1 条
+	// Warn/1 次查询）→ 恢复采样 +5000 行：不得按陈旧平均误报；基线已重置 →
+	// 下一采样（60s 后）再 +5000 行 = 83 行/s > 5.0 → 速率检查重新武装并告警。
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	repo := &statsCountingRepoStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 1_000_000 // 抬高绝对量阈：只验证速率维度
+	worker.terminalGrowthRate = 5.0
+	worker.terminalSampleInterval = time.Nanosecond // 采样门每轮放行
+	worker.terminalStatsWarnCooldown = 60 * time.Second
+
+	ctx := context.Background()
+	now := time.Now()
+
+	// 建立正常基线（存在历史基线，与"首次采样"场景区分开）。
+	repo.stats = BillingOutboxStats{Terminal: 1000}
+	worker.sampleTerminalGrowth(ctx, now)
+	require.Empty(t, worker.Health(ctx).TerminalAlert)
+
+	// 持续失败 10 分钟：每 61s 一探（越过 60s Warn 冷却边界），10 条 Warn + 10
+	// 次 Stats 查询；基线（lastAt/lastCount）保持不动。
+	repo.statsErr = errors.New("stats down")
+	for i := 0; i < 10; i++ {
+		worker.sampleTerminalGrowth(ctx, now.Add(time.Duration(i)*61*time.Second+time.Second))
+	}
+	require.Equal(t, 10, strings.Count(logBuf.String(), "billing outbox terminal growth stats sampling failed"),
+		"persistent Stats failure must warn exactly once per 60s cooldown window")
+	require.Empty(t, worker.Health(ctx).TerminalAlert)
+
+	// 恢复采样（now + 612s：距上次成功采样 612s > 120s 上限，距上次 Warn 62s
+	// ≥ 60s 冷却边界）：+5000 行 / 612s ≈ 8.2 行/s > 5.0，若按整段失败窗口的
+	// 平均速率评估必误报；现按"首次采样"重建基线（terminal=6000、lastAt=恢复
+	// 时刻）、不评估速率 → 无告警。
+	repo.statsErr = nil
+	repo.stats = BillingOutboxStats{Terminal: 6000}
+	statsCallsBeforeRecovery := repo.statsCalls
+	recoveryAt := now.Add(10*61*time.Second + 2*time.Second)
+	worker.sampleTerminalGrowth(ctx, recoveryAt)
+	require.Equal(t, statsCallsBeforeRecovery+1, repo.statsCalls,
+		"the recovered sample must actually query Stats (Health() also queries Stats; assert the delta)")
+	require.Empty(t, worker.Health(ctx).TerminalAlert,
+		"recovery after a long Stats failure must not compute a stale-window average rate (8.2/s > 5.0 would falsely alert)")
+
+	// 基线已重置：下一采样（正常 60s 节奏）再 +5000 行 = 83 行/s > 5.0 → 速率
+	// 检查重新武装并触发告警（"billing outbox terminal growth:" 是告警专属前缀，
+	// Warn 文案是 "…stats sampling failed"，不匹配）。
+	repo.stats = BillingOutboxStats{Terminal: 11000}
+	worker.sampleTerminalGrowth(ctx, recoveryAt.Add(60*time.Second))
+	require.Contains(t, logBuf.String(), "billing outbox terminal growth:")
+	require.NotEmpty(t, worker.Health(ctx).TerminalAlert,
+		"the next sample after the reset baseline must re-arm the rate check and alert")
+}
+
 func TestBillingOutboxWorker_RunLoopSamplesTerminalGrowthAtCadence(t *testing.T) {
 	// run 循环按注入采样间隔调用 repo.Stats 并评估告警（与轮次节奏解耦）：
 	// 首次循环即采样，terminal 超阈后 Health.TerminalAlert 置位、slog.Error 落日志。

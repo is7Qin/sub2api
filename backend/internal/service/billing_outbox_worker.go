@@ -97,6 +97,14 @@ const (
 	billingOutboxTerminalAlertThreshold = 500_000
 	billingOutboxTerminalGrowthRate     = 5.0 // 行/秒
 	billingOutboxTerminalSampleInterval = 60 * time.Second
+	// 基线老化上限：距上次成功采样超过该时长（默认 120s = 2 个采样节奏）的成功
+	// 采样按"首次采样"重建基线、不评估速率——长时间 repo.Stats 失败后的恢复采样
+	// 若拿整段失败窗口的平均速率评估（如 600s 间隔 +5000 行 = 8.33 行/s > 5.0）
+	// 会误报速率告警，违背"跨失败窗口的 delta 不误报速率"的保证（见
+	// evaluateTerminalGrowth）。取 2 个采样节奏：≤2 个节奏的间隔仍是近期的真实
+	// 平均（符合 delta/实际间隔定义），更大间隔则反映整个故障期的累计、而非当前
+	// churn——不评估速率，绝对量超阈仍告警，下一采样从新基线起算。
+	billingOutboxTerminalGrowthMaxSampleGap = 2 * billingOutboxTerminalSampleInterval
 	// repo.Stats 失败（告警传感器故障）的 Warn/重试冷却：持续失败下不随 run 轮次
 	// 节奏（积压热循环 ~100 轮/秒）刷屏或放大查询负载，而是按本窗口硬性 ≤1 次
 	// 重试 + ≤1 条 Warn/60s（与采样间隔解耦的独立限频，见 sampleTerminalGrowth）。
@@ -194,7 +202,9 @@ type BillingOutboxWorker struct {
 // 条件回落只清除 active/message、不重置 lastAlertAt，振荡不放大日志频率）。
 // lastStatsWarnAt 记录上次失败采样 Warn 的时刻（失败冷却：窗口内不重试
 // repo.Stats 也不重复 Warn；与 lastAt 基线解耦——失败绝不更新基线，成功路径
-// 也不重置该时间戳，见 sampleTerminalGrowth）。
+// 也不重置该时间戳，见 sampleTerminalGrowth）。lastAt/lastCount 基线只在成功
+// 采样时推进；距上次成功采样超过 billingOutboxTerminalGrowthMaxSampleGap 时
+// 按首次采样重建（基线老化防护，见 evaluateTerminalGrowth）。
 type billingOutboxTerminalAlertState struct {
 	mu              sync.Mutex
 	lastCount       int64
@@ -979,7 +989,9 @@ func (w *BillingOutboxWorker) terminalStatsWarnCooldownDuration() time.Duration 
 // 节奏（积压热循环 ~100 轮/秒）无关，不会刷屏，也不在 DB 可能故障时放大查询
 // 负载。冷却锚定在 lastStatsWarnAt（仅失败记 Warn 时更新；成功路径不重置它，
 // 恢复后再次失败的 Warn 仍需越过窗口）。lastAt/lastCount 在失败时绝不更新：
-// 恢复后的首次成功采样仍按"首次采样"建立基线，跨失败窗口的 delta 不误报速率。
+// 恢复采样距上次成功采样超过 billingOutboxTerminalGrowthMaxSampleGap（默认
+// 120s = 2 个采样节奏）时按"首次采样"重建基线，跨失败窗口的陈旧平均不误报
+// 速率（见 evaluateTerminalGrowth）。
 func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time.Time) {
 	state := &w.terminalAlert
 	state.mu.Lock()
@@ -1000,8 +1012,10 @@ func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time
 	}
 	stats, err := w.repo.Stats(ctx)
 	if err != nil {
-		// 记 Warn 并锚定失败冷却窗口。lastAt/lastCount 保持不动：恢复后首次
-		// 成功采样仍按"首次采样"建立基线，跨失败窗口的 delta 不会误报速率。
+		// 记 Warn 并锚定失败冷却窗口。lastAt/lastCount 保持不动：恢复后距上次
+		// 成功采样超过 billingOutboxTerminalGrowthMaxSampleGap 的成功采样按
+		// "首次采样"重建基线，跨失败窗口的陈旧平均不会误报速率（见
+		// evaluateTerminalGrowth）。
 		state.mu.Lock()
 		state.lastStatsWarnAt = now
 		state.mu.Unlock()
@@ -1016,23 +1030,34 @@ func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time
 // billingOutboxTerminalAlertThreshold（既有堆积）或相对上次采样的增长速率超过
 // billingOutboxTerminalGrowthRate（delta/实际间隔，行/秒）时置位
 // Health.TerminalAlert 并记 slog.Error。首次采样无基线（增长速率不可得），但
-// 绝对量超阈立即告警——重启后遗留的大堆积同样要被看到。去重：告警在触发沿记
-// 一次日志，冷却窗口（billingOutboxTerminalAlertCooldown，30 分钟）内无论中间
-// 是否回落（阈值附近振荡）都不重复——重新告警的最小间隔 = 冷却时长；条件回落
-// 只清除 active/message（Health.TerminalAlert 归空），不重置 lastAlertAt，窗口
-// 结束后仍越界重新确认。清理删除产生负 delta，不会误报。
+// 绝对量超阈立即告警——重启后遗留的大堆积同样要被看到。距上次成功采样超过
+// billingOutboxTerminalGrowthMaxSampleGap（默认 120s = 2 个采样节奏）时同样按
+// 首次采样处理：长时间失败（如 repo.Stats 故障）后的恢复采样不按跨失败窗口的
+// 陈旧平均评估速率，避免误报；绝对量超阈仍告警，下一采样从新基线起算。去重：
+// 告警在触发沿记一次日志，冷却窗口（billingOutboxTerminalAlertCooldown，30
+// 分钟）内无论中间是否回落（阈值附近振荡）都不重复——重新告警的最小间隔 =
+// 冷却时长；条件回落只清除 active/message（Health.TerminalAlert 归空），不
+// 重置 lastAlertAt，窗口结束后仍越界重新确认。清理删除产生负 delta，不会误报。
 func (w *BillingOutboxWorker) evaluateTerminalGrowth(terminal int64, now time.Time) {
 	threshold := w.terminalAlertThresholdValue()
 	rateLimit := w.terminalGrowthRateValue()
 	state := &w.terminalAlert
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.lastAt.IsZero() {
+	elapsed := now.Sub(state.lastAt)
+	// 基线老化防护：无基线（首次采样）或距上次成功采样超过
+	// billingOutboxTerminalGrowthMaxSampleGap（如长时间 repo.Stats 失败后的恢复
+	// 采样）时按"首次采样"处理——只重建基线、不按整段间隔的平均速率评估。
+	// 否则跨失败窗口的陈旧平均会误报速率（如 600s 间隔 +5000 行 = 8.33 行/s
+	// > 5.0 的假告警）。绝对量超阈仍走下方 over 检查；下一采样（正常 60s 节奏）
+	// 从新基线起算速率，速率检查随即重新武装。
+	if state.lastAt.IsZero() || elapsed > billingOutboxTerminalGrowthMaxSampleGap {
 		state.lastAt = now
 		state.lastCount = terminal
+		elapsed = 0
 	}
 	var rate float64
-	if elapsed := now.Sub(state.lastAt); elapsed > 0 && terminal >= state.lastCount {
+	if elapsed > 0 && terminal >= state.lastCount {
 		rate = float64(terminal-state.lastCount) / elapsed.Seconds()
 	}
 	over := terminal > threshold || rate > rateLimit

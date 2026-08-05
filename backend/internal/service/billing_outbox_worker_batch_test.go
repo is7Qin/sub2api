@@ -293,8 +293,10 @@ func TestBillingOutboxWorker_BatchSkipsInvalidRecordsButRetriesThemTerminally(t 
 	require.True(t, repo.retried[0].terminal)
 }
 
-func TestBillingOutboxWorker_BatchSerializesSameUserShardAcrossRounds(t *testing.T) {
-	// 同一用户的多条记录进入同一轮批量事务；跨轮并发调用仍按用户分片互斥。
+func TestBillingOutboxWorker_BatchAllowsConcurrentSameUserRounds(t *testing.T) {
+	// 进程内分片锁已移除：同一用户的跨轮并发改由 DB 层 advisory xact lock
+	// 串行（跨实例生效），worker 自身不再限制并发——两轮同用户批量事务
+	// 可以同时进入仓库调用。串行性断言移到 repository 集成测试。
 	records := make([]BillingOutboxRecord, 4)
 	for i := range records {
 		records[i] = batchValidRecord(int64(i+1), 42)
@@ -303,17 +305,16 @@ func TestBillingOutboxWorker_BatchSerializesSameUserShardAcrossRounds(t *testing
 
 	var mu sync.Mutex
 	active, maxActive := 0, 0
-	var startOnce sync.Once
-	started := make(chan struct{})
+	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	billing := &batchUsageBillingRepoStub{batchFn: func(context.Context, []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
-		startOnce.Do(func() { close(started) })
 		mu.Lock()
 		active++
 		if active > maxActive {
 			maxActive = active
 		}
 		mu.Unlock()
+		started <- struct{}{}
 		<-release
 		mu.Lock()
 		active--
@@ -328,15 +329,26 @@ func TestBillingOutboxWorker_BatchSerializesSameUserShardAcrossRounds(t *testing
 
 	errs := make(chan error, 2)
 	go func() { errs <- worker.processBatch(context.Background()) }()
-	<-started // 第一轮已进入批量事务
+	select {
+	case <-started: // 第一轮已进入批量事务
+	case <-time.After(2 * time.Second):
+		t.Fatal("round 1 did not reach the batch transaction")
+	}
 	go func() { errs <- worker.processBatch(context.Background()) }()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-started: // 第二轮也已进入：worker 不再串行同用户
+	case <-time.After(2 * time.Second):
+		t.Fatal("round 2 blocked behind round 1: worker still serializes same-user rounds in-process")
+	}
 	close(release)
 
 	for i := 0; i < 2; i++ {
 		require.NoError(t, <-errs)
 	}
-	require.Equal(t, 1, maxActive, "same-user batch transactions must be serialized")
+	mu.Lock()
+	peak := maxActive
+	mu.Unlock()
+	require.Equal(t, 2, peak, "worker must not serialize same-user rounds in-process; DB advisory lock is the serializer")
 	require.Len(t, repo.acked, 0)
 	require.Len(t, repo.retried, 0)
 }
@@ -509,37 +521,22 @@ func TestBillingOutboxApplyGroupParallelismInjectionClamped(t *testing.T) {
 	require.Empty(t, repo.retried)
 }
 
-func TestBillingOutboxApplyShardLockReleasedOnPanic(t *testing.T) {
-	// 事务调用 panic 时，分片锁必须随 defer 栈展开释放：unlock 无 defer 保护
-	// 时锁永久泄漏，该分片后续轮次的批量事务永久卡死。恢复后能重新获取
-	// 同一分片锁即通过；锁泄漏时重获会无限阻塞直至超时。
-	record := batchValidRecord(1, 42) // userID 42 → 分片 42
-	items := []UsageBillingBatchItem{{
-		Command: record.Command.Billing,
-		Binding: UsageBillingOutboxBinding{OutboxID: record.ID},
-	}}
-	repo := &billingOutboxRepoStub{records: []BillingOutboxRecord{record}}
-	panicBilling := &batchUsageBillingRepoStub{batchFn: func(context.Context, []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
-		panic("simulated batch transaction panic")
-	}}
-	worker := NewBillingOutboxWorker(repo, panicBilling)
-	group := billingShardGroup{shard: 42, indexes: []int{0}}
-
-	require.Panics(t, func() {
-		_ = worker.applyBatchGroup(context.Background(), group, items, []BillingOutboxRecord{record}, panicBilling)
-	})
-
-	relocked := make(chan struct{})
-	go func() {
-		unlock := worker.lockUserShard(42)
-		unlock()
-		close(relocked)
-	}()
-	select {
-	case <-relocked:
-	case <-time.After(2 * time.Second):
-		t.Fatal("shard lock leaked after batch transaction panic")
+func TestBillingOutboxGroupShardingUsesAdvisoryShardFormula(t *testing.T) {
+	// 分片公式必须与 repository 侧 advisory 锁推导一致：uint64(userID) % 1024。
+	// 常量被改小或公式漂移时，userID 1024+7 会映射到错误分片，跨实例串行失效。
+	items := []UsageBillingBatchItem{
+		{Command: UsageBillingCommand{UserID: 7}},
+		{Command: UsageBillingCommand{UserID: 1024 + 7}},
+		{Command: UsageBillingCommand{UserID: 0}},
+		{Command: UsageBillingCommand{UserID: -3}},
 	}
+	groups := groupBatchItemsByShard(items)
+	require.Len(t, groups, 2)
+	require.Equal(t, -1, groups[0].shard, "userID<=0 记录归入免锁组")
+	require.Equal(t, 7, groups[1].shard, "uint64(userID) %% 1024 与 advisory 锁分片必须一致")
+	require.ElementsMatch(t, []int{2, 3}, groups[0].indexes)
+	require.ElementsMatch(t, []int{0, 1}, groups[1].indexes)
+	require.Equal(t, 1024, billingApplyUserShardCount, "worker 分片常量必须保持 1024（repository 侧同值）")
 }
 
 func TestBillingOutboxWorker_BatchFallbackPreservesPerRecordPath(t *testing.T) {

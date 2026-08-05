@@ -14,6 +14,17 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
+const (
+	// billingAdvisoryLockClass 是 billing apply 事务 advisory 锁的类 ID（"BILL"），
+	// 与迁移锁（migrationsAdvisoryLockID，单参 bigint 形式）及调度锁
+	// （schedulerAdvisoryLockNamespace，0x53324150）分属不同命名空间，互不冲突。
+	billingAdvisoryLockClass int32 = 0x42494C4C
+	// billingApplyUserShardCount 与 service 包 worker 的分片常量保持一致：
+	// 同一 userID 必须映射同一分片（uint64(userID) % 1024），
+	// 跨实例 advisory 锁才能按用户串行。
+	billingApplyUserShardCount = 1024
+)
+
 type usageBillingRepository struct {
 	db *sql.DB
 }
@@ -105,6 +116,14 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 		}
 	}()
 
+	// 与批量路径同一套锁协议：SET LOCAL lock_timeout 先于 advisory 锁。
+	if err := setBillingApplyLockTimeout(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := acquireBillingApplyAdvisoryLock(ctx, tx, cmd.UserID); err != nil {
+		return nil, err
+	}
+
 	result, err := r.applyAndStageOutboxFinalizationTx(ctx, tx, cmd, binding)
 	if err != nil {
 		return nil, err
@@ -116,10 +135,51 @@ func (r *usageBillingRepository) ApplyAndStageOutboxFinalization(ctx context.Con
 	return result, nil
 }
 
+// setBillingApplyLockTimeout 把当前事务的锁等待上限设为 10s：热分片风暴下，
+// 等待 advisory 锁（或行锁）的事务在 10s 后得到 55P03（lock_not_available）
+// 并整体回滚，由 worker 按可重试错误重新入队，避免无限等锁占住连接池。
+func setBillingApplyLockTimeout(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '10s'"); err != nil {
+		return fmt.Errorf("set billing apply lock timeout: %w", err)
+	}
+	return nil
+}
+
+// acquireBillingApplyAdvisoryLock 在当前事务内获取用户分片级 advisory xact
+// 锁（pg_advisory_xact_lock，随事务提交/回滚自动释放，不随 savepoint 回滚
+// 释放）。同分片 = 同用户（uint64(userID) % billingApplyUserShardCount），
+// 跨实例、跨 worker 由 DB 保证同一用户的 apply 事务串行；userID <= 0 的
+// 指令不触碰 users 余额行，免锁。
+func acquireBillingApplyAdvisoryLock(ctx context.Context, tx *sql.Tx, userID int64) error {
+	if userID <= 0 {
+		return nil
+	}
+	shard := int64(uint64(userID) % billingApplyUserShardCount)
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1, $2)", int64(billingAdvisoryLockClass), shard); err != nil {
+		return fmt.Errorf("acquire billing apply advisory lock (shard %d): %w", shard, err)
+	}
+	return nil
+}
+
+// billingApplyShardUserID 返回批量事务用于推导 advisory 锁分片的 userID：
+// 取组内第一条正 userID（worker 保证同组记录分片一致，任意代表即可；取首
+// 个正 userID 让混入 userID<=0 记录的组也能正确取锁）。
+func billingApplyShardUserID(items []service.UsageBillingBatchItem) int64 {
+	for i := range items {
+		if items[i].Command.UserID > 0 {
+			return items[i].Command.UserID
+		}
+	}
+	return 0
+}
+
 // ApplyBatchAndStageOutboxFinalizations 把一批记录放进同一事务应用（worker
 // 按用户分片切分后，每次调用对应一个分片的事务）：每条记录一个 savepoint，
 // 失败记录单独回滚（失败隔离），其余记录照常提交。逐条语义与
 // ApplyAndStageOutboxFinalization 完全一致，仅事务边界变粗。
+// 事务开头先取用户分片级 advisory xact 锁：同分片 = 同用户，跨实例/跨
+// worker 由 DB 保证同一用户的 apply 事务串行（锁随事务提交/回滚自动释放，
+// 不随 savepoint 回滚释放）。
 func (r *usageBillingRepository) ApplyBatchAndStageOutboxFinalizations(ctx context.Context, items []service.UsageBillingBatchItem) ([]service.UsageBillingBatchOutcome, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("usage billing repository db is nil")
@@ -158,6 +218,16 @@ func (r *usageBillingRepository) ApplyBatchAndStageOutboxFinalizations(ctx conte
 			_ = tx.Rollback()
 		}
 	}()
+
+	// 锁必须在事务第一条语句位置：SET LOCAL lock_timeout 先于 advisory 锁，
+	// 二者都先于任何 dedup/行更新。热分片风暴下等锁超过 10s 得到 55P03
+	// （lock_not_available）整体回滚，由 worker 按可重试错误重新入队。
+	if err := setBillingApplyLockTimeout(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := acquireBillingApplyAdvisoryLock(ctx, tx, billingApplyShardUserID(items)); err != nil {
+		return nil, err
+	}
 
 	for _, i := range applyIndexes {
 		savepoint := fmt.Sprintf("billing_apply_%d", i+1)
@@ -541,7 +611,7 @@ func incrementUsageBillingAccountQuota(ctx context.Context, tx *sql.Tx, accountI
 		_ = rows.Close()
 		return nil, err
 	}
-	// 必须在执行下一条 SQL 前显式关闭 rows：pq 驱动在同一连接上
+	// 必须在执行下一条 SQL 前显式关闭 rows：pgx 驱动在同一连接上
 	// 不允许前一条查询的结果集未耗尽时启动新查询，否则会返回
 	// "unexpected Parse response" 错误。
 	if err := rows.Close(); err != nil {

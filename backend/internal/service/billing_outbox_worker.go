@@ -28,11 +28,12 @@ const (
 	billingOutboxFinalizationRenewInterval = 20 * time.Second
 	billingOutboxFinalizationDBTimeout     = 2 * time.Second
 	billingOutboxMaxAttempts               = 10
-	// 同一用户的扣费事务按分片互斥串行化，避免多个 apply worker 同时
-	// UPDATE 同一 users 余额行形成行锁链（热点用户下可阻塞整轮 worker）。
-	billingApplyUserShardCount = 256
+	// 同一用户的扣费事务按分片在 DB 层跨实例串行：apply 事务在 repository
+	// 侧通过 pg_advisory_xact_lock(类 ID, uint64(userID) % 1024) 取锁（同分片
+	// = 同用户），本常量与 repository 侧常量保持同值，两处分片推导必须一致。
+	billingApplyUserShardCount = 1024
 	// 分片组并行：不同用户分片的批量事务并发执行的上限。同一用户必在同一
-	// 分片（userID % 256），组内单个事务天然保持用户级串行；组间无共享锁、
+	// 分片（userID % 1024），组内单个事务天然保持用户级串行；组间无共享锁、
 	// 无嵌套获取，并发获取不同分片锁不可能死锁。测试可注入 1 退化为串行。
 	billingOutboxApplyGroupParallelism = 8
 	// 注入并行度的上限：测试/调参误注入超大值会同时开爆 goroutine 与 DB
@@ -77,7 +78,6 @@ type BillingOutboxWorker struct {
 	processed                      atomic.Uint64
 	failures                       atomic.Uint64
 	lastError                      atomic.Value
-	applyUserLocks                 [billingApplyUserShardCount]sync.Mutex
 	applyGroupParallelism          int
 }
 
@@ -194,9 +194,9 @@ func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []B
 }
 
 // processApplyBatchBatched 把整轮记录按用户分片拆成多个批量事务（每分片
-// 一个事务）：同一分片的多条记录共享一个事务，行锁与分片锁的作用域都只
-// 覆盖本分片事务，不再横跨整轮——热点用户的行锁不会拖住整轮、其他分片的
-// 轮次也不会被整轮持锁阻塞。不同分片的批量事务并发执行（组并行上限
+// 一个事务）：同一分片的多条记录共享一个事务，行锁与 advisory 锁的作用域
+// 都只覆盖本分片事务，不再横跨整轮——热点用户的行锁不会拖住整轮、其他
+// 分片的轮次也不会被整轮持锁阻塞。不同分片的批量事务并发执行（组并行上限
 // billingOutboxApplyGroupParallelism），逐条失败仍通过 savepoint 隔离（仓库内），
 // 重试与去重 Ack 语义不变。整轮 applyCtx（30s 总时限）在所有组之间共享。
 func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
@@ -233,10 +233,11 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 	applyCtx, applyCancel := context.WithTimeout(ctx, billingOutboxApplyTimeout)
 	defer applyCancel()
 	// 分片组并行：不同分片的批量事务并发执行。同一用户必在同一分片，组内
-	// 单个事务天然保持用户级串行；组间无共享锁、无嵌套获取，并发获取不同
-	// 分片锁不可能死锁。注入值经 clampApplyGroupParallelism 收敛（<1 回退
-	// 默认 8，超上限截断 32），防误注入导致 goroutine/DB 事务爆炸。错误
-	// 聚合保留第一错误语义（并发下由互斥保护）。
+	// 单个事务天然保持用户级串行；每个事务只取一把 advisory 锁（按组分片），
+	// 组间无共享锁、无嵌套获取，并发取不同分片锁不可能死锁。注入值经
+	// clampApplyGroupParallelism 收敛（<1 回退默认 8，超上限截断 32），防误
+	// 注入导致 goroutine/DB 事务爆炸。错误聚合保留第一错误语义（并发下由
+	// 互斥保护）。
 	var firstErr error
 	var errMu sync.Mutex
 	parallelism := clampApplyGroupParallelism(w.applyGroupParallelism)
@@ -274,20 +275,15 @@ func clampApplyGroupParallelism(v int) int {
 	return v
 }
 
-// applyBatchGroup 在单个分片事务内应用一组批量记录：分片锁覆盖
-// lockUserShard 到函数返回（defer 释放，事务调用 panic 时随栈展开解锁，
-// 避免分片锁永久泄漏卡死该分片后续轮次）。outcome 处理在锁内执行，但不
-// 获取任何锁、无嵌套加锁死锁风险；逐条失败经 savepoint 隔离（仓库内），
-// outcome 处理与串行路径一致。返回组级错误（批量事务失败时非 nil；组内
-// 逐条失败只落库不返回）。
+// applyBatchGroup 在单个分片事务内应用一组批量记录：同用户串行由 repository
+// 侧事务级 pg_advisory_xact_lock 保证（跨实例生效，随事务提交/回滚自动
+// 释放），worker 不再持有任何进程内锁。outcome 处理无嵌套加锁死锁风险；
+// 逐条失败经 savepoint 隔离（仓库内），outcome 处理与串行路径一致。返回
+// 组级错误（批量事务失败时非 nil；组内逐条失败只落库不返回）。
 func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billingShardGroup, items []UsageBillingBatchItem, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
 	groupItems := make([]UsageBillingBatchItem, len(group.indexes))
 	for gi, idx := range group.indexes {
 		groupItems[gi] = items[idx]
-	}
-	if group.shard >= 0 {
-		unlock := w.lockUserShard(uint64(group.shard))
-		defer unlock()
 	}
 	outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(ctx, groupItems)
 	if err == nil && len(outcomes) != len(groupItems) {
@@ -348,8 +344,9 @@ type billingShardGroup struct {
 }
 
 // groupBatchItemsByShard 按用户分片分组，返回按分片升序的组序列；
-// userID<=0 的记录单独成组、无需分片锁。升序保证并发轮次间的加锁
-// 顺序一致（与单条路径的 billingApplyUserShardCount 语义一致）。
+// userID<=0 的记录单独成组、免 advisory 锁。分片公式与 repository 侧
+// advisory 锁推导一致（uint64(userID) % billingApplyUserShardCount），
+// 每组的批量事务在仓库内按组取一次锁。
 func groupBatchItemsByShard(items []UsageBillingBatchItem) []billingShardGroup {
 	if len(items) == 0 {
 		return nil
@@ -372,16 +369,6 @@ func groupBatchItemsByShard(items []UsageBillingBatchItem) []billingShardGroup {
 		groups = append(groups, billingShardGroup{shard: shard, indexes: byShard[shard]})
 	}
 	return groups
-}
-
-// lockUserShard 锁定单个用户分片，返回解锁函数。逐分片加锁，同一时刻
-// 只持有一把锁，无嵌套获取。
-func (w *BillingOutboxWorker) lockUserShard(shard uint64) func() {
-	if w == nil || shard >= billingApplyUserShardCount {
-		return func() {}
-	}
-	w.applyUserLocks[shard].Lock()
-	return w.applyUserLocks[shard].Unlock
 }
 
 func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, records []BillingOutboxRecord, repo BillingOutboxFinalizationRepository) error {
@@ -418,8 +405,6 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 	var result *UsageBillingApplyResult
 	var err error
 	if staged, ok := w.billing.(UsageBillingFinalizationRepository); ok {
-		unlock := w.lockUserApply(command.Billing.UserID)
-		defer unlock()
 		result, err = staged.ApplyAndStageOutboxFinalization(applyCtx, &command.Billing, UsageBillingOutboxBinding{OutboxID: record.ID, WorkerID: w.workerID})
 		applyCancel()
 		if err != nil {
@@ -497,21 +482,6 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 	}
 	w.processed.Add(1)
 	w.lastError.Store("")
-}
-
-// lockUserApply 按用户分片串行化同一用户的扣费事务。固定 256 个分片互斥，
-// 无动态 map 增长；分片冲突只会让不同用户的事务偶发排队，不影响正确性。
-// userID <= 0 的指令不触碰 users 余额行，无需加锁。
-// 注意：分片互斥为进程内机制，多副本下同一用户跨进程仍可能并发触碰
-// users 行，残余竞争由行锁串行化（最坏并发数 = 副本数，改造前为
-// 副本数 × worker 并发数）。
-func (w *BillingOutboxWorker) lockUserApply(userID int64) func() {
-	if w == nil || userID <= 0 {
-		return func() {}
-	}
-	shard := &w.applyUserLocks[uint64(userID)%billingApplyUserShardCount]
-	shard.Lock()
-	return shard.Unlock
 }
 
 // renewFinalizationLease fences finalization state transitions while Finalize is

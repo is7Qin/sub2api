@@ -107,7 +107,7 @@ func TestSupportDecisionAtomicReaderInstallFreezesMutableInput(t *testing.T) {
 	table.Scopes[table.scopeIndex[supportDecisionScopeKey{Platform: PlatformAnthropic, GroupID: 42}]].Hot[0].Profile = supportDecisionProfile{}
 	require.Equal(t, want, table.Lookup(query))
 	require.Equal(t, want, reader.Lookup(query))
-	installed, err := EncodeSupportDecisionDocument(reader.table.Load())
+	installed, err := EncodeSupportDecisionDocument(reader.state.Load().table)
 	require.NoError(t, err)
 	require.Equal(t, before, installed)
 	encoded, err := EncodeSupportDecisionDocument(table)

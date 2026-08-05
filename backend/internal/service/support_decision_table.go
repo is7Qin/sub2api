@@ -527,12 +527,17 @@ func validSupportDecisionTailBits(bits []byte, coordinateCount int) bool {
 	return bits[len(bits)-1]&^byte((1<<uint(coordinateCount&7))-1) == 0
 }
 
-// SupportDecisionAtomicReader owns only a verified immutable table pointer.
+type supportDecisionReaderState struct {
+	table          *SupportDecisionTable
+	verifiedUnixNS int64
+}
+
+// SupportDecisionAtomicReader owns one atomic snapshot containing the verified
+// immutable table and its verification time.
 type SupportDecisionAtomicReader struct {
-	table          atomic.Pointer[SupportDecisionTable]
-	verifiedUnixNS atomic.Int64
-	maxStale       time.Duration
-	now            func() time.Time
+	state    atomic.Pointer[supportDecisionReaderState]
+	maxStale time.Duration
+	now      func() time.Time
 }
 
 func NewSupportDecisionAtomicReader(maxStale time.Duration) *SupportDecisionAtomicReader {
@@ -547,9 +552,24 @@ func (r *SupportDecisionAtomicReader) Install(table *SupportDecisionTable, verif
 	if !ok {
 		return false
 	}
-	r.table.Store(frozen)
-	r.verifiedUnixNS.Store(verifiedAt.UnixNano())
+	r.state.Store(&supportDecisionReaderState{table: frozen, verifiedUnixNS: verifiedAt.UnixNano()})
 	return true
+}
+
+func (r *SupportDecisionAtomicReader) installNewer(table *SupportDecisionTable, verifiedAt time.Time) bool {
+	if r == nil || table == nil || !table.verified {
+		return false
+	}
+	for {
+		current := r.state.Load()
+		if current != nil && current.table.generation >= table.generation {
+			return false
+		}
+		next := &supportDecisionReaderState{table: table, verifiedUnixNS: verifiedAt.UnixNano()}
+		if r.state.CompareAndSwap(current, next) {
+			return true
+		}
+	}
 }
 
 func (t *SupportDecisionTable) frozenCopy() (*SupportDecisionTable, bool) {
@@ -565,17 +585,65 @@ func (t *SupportDecisionTable) frozenCopy() (*SupportDecisionTable, bool) {
 }
 
 func (r *SupportDecisionAtomicReader) Verify(verifiedAt time.Time) {
-	if r != nil && r.table.Load() != nil {
-		r.verifiedUnixNS.Store(verifiedAt.UnixNano())
+	if r == nil {
+		return
 	}
+	for {
+		current := r.state.Load()
+		if current == nil {
+			return
+		}
+		next := &supportDecisionReaderState{table: current.table, verifiedUnixNS: verifiedAt.UnixNano()}
+		if r.state.CompareAndSwap(current, next) {
+			return
+		}
+	}
+}
+
+func (r *SupportDecisionAtomicReader) verifyGeneration(generation uint64, verifiedAt time.Time) bool {
+	if r == nil {
+		return false
+	}
+	for {
+		current := r.state.Load()
+		if current == nil || current.table.generation != generation {
+			return false
+		}
+		next := &supportDecisionReaderState{table: current.table, verifiedUnixNS: verifiedAt.UnixNano()}
+		if r.state.CompareAndSwap(current, next) {
+			return true
+		}
+	}
+}
+
+func (r *SupportDecisionAtomicReader) generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	state := r.state.Load()
+	if state == nil {
+		return 0
+	}
+	return state.table.generation
+}
+
+func (r *SupportDecisionAtomicReader) verifiedAt() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	state := r.state.Load()
+	if state == nil {
+		return time.Time{}
+	}
+	return time.Unix(0, state.verifiedUnixNS)
 }
 
 func (r *SupportDecisionAtomicReader) Lookup(query SupportDecisionQuery) SupportDecisionResult {
 	if r == nil {
 		return SupportDecisionUnknown
 	}
-	table := r.table.Load()
-	if table == nil {
+	state := r.state.Load()
+	if state == nil {
 		return SupportDecisionUnknown
 	}
 	if r.maxStale > 0 {
@@ -583,9 +651,9 @@ func (r *SupportDecisionAtomicReader) Lookup(query SupportDecisionQuery) Support
 		if r.now != nil {
 			now = r.now
 		}
-		if now().Sub(time.Unix(0, r.verifiedUnixNS.Load())) > r.maxStale {
+		if now().Sub(time.Unix(0, state.verifiedUnixNS)) > r.maxStale {
 			return SupportDecisionUnknown
 		}
 	}
-	return table.Lookup(query)
+	return state.table.Lookup(query)
 }

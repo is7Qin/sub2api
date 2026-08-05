@@ -40,13 +40,13 @@ if active and not canonical(active) then
     return redis.error_reply("malformed active generation")
 end
 
-if redis.call("EXISTS", KEYS[2]) == 0 then
-    return redis.error_reply("support decision document not found")
-end
-
 -- Compare canonical decimals as strings: Lua numbers lose uint64 precision.
 if active and (#active > #candidate or (#active == #candidate and active >= candidate)) then
     return 0
+end
+
+if redis.call("EXISTS", KEYS[2]) == 0 then
+    return redis.error_reply("support decision document not found")
 end
 
 redis.call("SET", KEYS[1], candidate)
@@ -76,8 +76,8 @@ func (s *supportDecisionRedis) PutDocument(ctx context.Context, generation uint6
 	if len(payload) == 0 {
 		return errors.New("support decision payload must be nonempty")
 	}
-	if ttl <= 0 || ttl > maxSupportDecisionDocumentTTL {
-		return fmt.Errorf("support decision document TTL must be within (0, %s]", maxSupportDecisionDocumentTTL)
+	if ttl < time.Millisecond || ttl > maxSupportDecisionDocumentTTL || ttl%time.Millisecond != 0 {
+		return fmt.Errorf("support decision document TTL must be a whole millisecond within [%s, %s]", time.Millisecond, maxSupportDecisionDocumentTTL)
 	}
 	return s.rdb.Set(ctx, supportDecisionDocumentKey(generation), payload, ttl).Err()
 }

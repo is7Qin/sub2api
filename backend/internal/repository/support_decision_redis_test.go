@@ -97,6 +97,26 @@ func TestSupportDecisionRedisActivationRejectsEqualGeneration(t *testing.T) {
 	require.Equal(t, uint64(20), generation)
 }
 
+func TestSupportDecisionRedisRejectsLowerOrEqualWithoutDocument(t *testing.T) {
+	store, rdb, server := newSupportDecisionRedisTestStore(t)
+	ctx := context.Background()
+	putAndActivateSupportDecision(t, ctx, store, 20)
+
+	// Equal candidates remain stale even after the active document expires.
+	server.FastForward(time.Minute)
+	_, err := rdb.Get(ctx, supportDecisionDocumentKey(20)).Result()
+	require.ErrorIs(t, err, redis.Nil)
+	activated, err := store.Activate(ctx, 20)
+	require.NoError(t, err)
+	require.False(t, activated)
+
+	// Lower candidates are stale without ever having written a document.
+	activated, err = store.Activate(ctx, 19)
+	require.NoError(t, err)
+	require.False(t, activated)
+	require.Equal(t, "20", rdb.Get(ctx, supportDecisionActiveKey).Val())
+}
+
 func TestSupportDecisionRedisDelayedPublisherCannotRollbackActiveState(t *testing.T) {
 	store, rdb, _ := newSupportDecisionRedisTestStore(t)
 	ctx := context.Background()
@@ -233,7 +253,11 @@ func TestSupportDecisionRedisRejectsInvalidInputs(t *testing.T) {
 	require.Error(t, store.PutDocument(ctx, 1, nil, time.Minute))
 	require.Error(t, store.PutDocument(ctx, 1, []byte("document"), 0))
 	require.Error(t, store.PutDocument(ctx, 1, []byte("document"), -time.Second))
+	require.Error(t, store.PutDocument(ctx, 1, []byte("document"), time.Nanosecond))
+	require.Error(t, store.PutDocument(ctx, 1, []byte("document"), time.Millisecond-time.Nanosecond))
+	require.Error(t, store.PutDocument(ctx, 1, []byte("document"), time.Millisecond+time.Nanosecond))
 	require.Error(t, store.PutDocument(ctx, 1, []byte("document"), maxSupportDecisionDocumentTTL+time.Millisecond))
+	require.NoError(t, store.PutDocument(ctx, 1, []byte("document"), time.Millisecond))
 	_, err := store.Activate(ctx, 0)
 	require.Error(t, err)
 	_, err = store.GetDocument(ctx, 0)

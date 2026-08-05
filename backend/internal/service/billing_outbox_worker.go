@@ -47,10 +47,11 @@ const (
 	// 分片组并行：不同用户分片的批量事务并发执行的上限。同一用户必在同一
 	// 分片（userID % 1024），组内单个事务天然保持用户级串行；组间无共享锁、
 	// 无嵌套获取，并发获取不同分片锁不可能死锁。测试可注入 1 退化为串行。
-	billingOutboxApplyGroupParallelism = 8
+	// 32 与 Claim 批量 500 的组合：单轮 ≈16 波、事务 ≤10ms 时约 3.1K/s/实例。
+	billingOutboxApplyGroupParallelism = 32
 	// 注入并行度的上限：测试/调参误注入超大值会同时开爆 goroutine 与 DB
-	// 事务（每个分片组一个事务），clamp 到 32 保证最坏情况资源可控。
-	billingOutboxApplyGroupParallelismMax = 32
+	// 事务（每个分片组一个事务），clamp 到 128 保证最坏情况资源可控。
+	billingOutboxApplyGroupParallelismMax = 128
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -299,7 +300,7 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 	// 分片组并行：不同分片的批量事务并发执行。同一用户必在同一分片，组内
 	// 单个事务天然保持用户级串行；每个事务只取一把 advisory 锁（按组分片），
 	// 组间无共享锁、无嵌套获取，并发取不同分片锁不可能死锁。注入值经
-	// clampApplyGroupParallelism 收敛（<1 回退默认 8，超上限截断 32），防误
+	// clampApplyGroupParallelism 收敛（<1 回退默认 32，超上限截断 128），防误
 	// 注入导致 goroutine/DB 事务爆炸。错误聚合保留第一错误语义（并发下由
 	// 互斥保护）。
 	var firstErr error
@@ -332,8 +333,8 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 }
 
 // clampApplyGroupParallelism 将注入的组并行度收敛到 [1, 上限]：<1 回退
-// 默认 8，超过上限截断到 32。上限防测试/调参误注入超大值导致 goroutine
-// 与 DB 事务同时爆炸；32 已远超默认 8 的吞吐需求。
+// 默认 32，超过上限截断到 128。上限防测试/调参误注入超大值导致 goroutine
+// 与 DB 事务同时爆炸；128 已远超默认 32 的吞吐需求。
 func clampApplyGroupParallelism(v int) int {
 	if v < 1 {
 		v = billingOutboxApplyGroupParallelism

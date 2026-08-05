@@ -362,11 +362,12 @@ func TestBillingOutboxWorker_BatchAllowsConcurrentSameUserRounds(t *testing.T) {
 }
 
 func TestBillingOutboxApplyGroupsRunInParallel(t *testing.T) {
-	// 不同用户分片的批量事务必须并发执行：100 条记录分布在 8 个分片，
-	// ApplyBatch 的并发峰值至少为 2（修复前逐组串行，峰值恒为 1）。
+	// 不同用户分片的批量事务必须并发执行：100 条记录分布在 32 个分片，
+	// ApplyBatch 的并发峰值必须超过旧默认并行度 8（Task C 把默认提到 32；
+	// 若回退到旧默认 8，本断言失败）。
 	records := make([]BillingOutboxRecord, 100)
 	for i := range records {
-		records[i] = batchValidRecord(int64(i+1), int64(1+i%8))
+		records[i] = batchValidRecord(int64(i+1), int64(1+i%32))
 	}
 	repo := &billingOutboxRepoStub{records: records}
 
@@ -398,25 +399,26 @@ func TestBillingOutboxApplyGroupsRunInParallel(t *testing.T) {
 	finished := make(chan error, 1)
 	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 
-	// 等待至少 2 个分片事务同时进入批量调用；串行实现下第二个永远不会出现。
-	startedCount := 0
-	for startedCount < 2 {
+	// 等满默认并行度个分片事务同时进入批量调用：32 个分片组在默认并行度下
+	// 全部并发在途（若并行度退回旧默认 8，最多 8 个并发，此处超时暴露）。
+	for i := 0; i < billingOutboxApplyGroupParallelism; i++ {
 		select {
 		case <-started:
-			startedCount++
 		case <-time.After(2 * time.Second):
 			releaseOnce.Do(func() { close(release) })
-			t.Fatalf("distinct-shard batch transactions did not run in parallel: only %d of 2 concurrent calls observed", startedCount)
+			t.Fatalf("only %d/%d concurrent batch transactions observed: default group parallelism below the expected value?", i, billingOutboxApplyGroupParallelism)
 		}
 	}
+	// 先释放再断言：断言失败（如并行度退回旧默认 8）时事务 goroutine 能
+	// 正常收尾，不会泄漏阻塞 goroutine 拖住测试二进制。
+	close(release)
+	require.NoError(t, <-finished)
+
 	mu.Lock()
 	peak := maxActive
 	mu.Unlock()
-	require.GreaterOrEqual(t, peak, 2, "distinct-shard batch transactions must run concurrently")
+	require.Greater(t, peak, 8, "default group parallelism must exceed the old default of 8")
 	require.LessOrEqual(t, peak, billingOutboxApplyGroupParallelism, "batch concurrency must be capped by the group parallelism limit")
-
-	close(release)
-	require.NoError(t, <-finished)
 	require.Empty(t, repo.acked)
 	require.Empty(t, repo.retried)
 }
@@ -471,9 +473,72 @@ func TestBillingOutboxApplyGroupsParallelismOneIsSerial(t *testing.T) {
 }
 
 func TestBillingOutboxApplyGroupParallelismInjectionClamped(t *testing.T) {
-	// 注入的并行度超过上限时必须 clamp：40 个不同分片、注入 1000，并发峰值
-	// 必须恰好是上限（未 clamp 时 40 个事务全部并发、峰值 40）。上限防测试/
+	// 注入的并行度超过上限时必须 clamp：200 个不同分片、注入 200，并发峰值
+	// 必须恰好是上限（未 clamp 时 200 个事务全部并发、峰值 200）。上限防测试/
 	// 调参误注入超大值导致 goroutine 与 DB 事务同时爆炸。
+	records := make([]BillingOutboxRecord, 200)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), int64(i+1001)) // 200 个不同分片
+	}
+	repo := &billingOutboxRepoStub{records: records}
+
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	// 缓冲区必须容纳全部 200 个分片组的 started 信号：release 后所有事务
+	// 一次性涌出，缓冲不足会阻塞事务 goroutine、导致 wg.Wait 永不返回。
+	started := make(chan struct{}, len(records))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: true}
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+	worker.applyGroupParallelism = 200
+
+	finished := make(chan error, 1)
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
+
+	// clamp 生效时最多同时阻塞上限个事务：等满上限个即可确认未超限
+	// （若上限被误调低，此处超时暴露）。
+	for i := 0; i < billingOutboxApplyGroupParallelismMax; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			releaseOnce.Do(func() { close(release) })
+			t.Fatalf("only %d/%d concurrent batch transactions observed: parallelism clamped below max?", i, billingOutboxApplyGroupParallelismMax)
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, <-finished)
+
+	mu.Lock()
+	peak := maxActive
+	mu.Unlock()
+	require.Equal(t, billingOutboxApplyGroupParallelismMax, peak, "parallelism injected above max must be clamped to the cap")
+	require.Empty(t, repo.acked)
+	require.Empty(t, repo.retried)
+}
+
+func TestBillingOutboxApplyGroupParallelismBelowOneFallsBackToDefault(t *testing.T) {
+	// 注入值 <1（0/负值）必须回退到默认并行度，而不是退化为 1 或死锁：
+	// 40 个不同分片、注入 0，并发峰值必须等于当前默认常量（Task C 后为 32）。
+	// 断言相对常量进行，随默认值自适应；回退失效（退化为串行/死锁）时超时
+	// 暴露。上限/下限两条防御语义共同防止误注入搞垮资源预算。
 	records := make([]BillingOutboxRecord, 40)
 	for i := range records {
 		records[i] = batchValidRecord(int64(i+1), int64(i+1001)) // 40 个不同分片
@@ -504,19 +569,19 @@ func TestBillingOutboxApplyGroupParallelismInjectionClamped(t *testing.T) {
 		return outcomes, nil
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
-	worker.applyGroupParallelism = 1000
+	worker.applyGroupParallelism = 0
 
 	finished := make(chan error, 1)
 	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 
-	// clamp 生效时最多同时阻塞上限个事务：等满上限个即可确认未超限
-	// （若上限被误调低，此处超时暴露）。
-	for i := 0; i < billingOutboxApplyGroupParallelismMax; i++ {
+	// 回退默认生效时最多同时阻塞默认并行度个事务：等满默认并行度即可确认
+	// 未退化为串行（若回退逻辑失效，此处超时暴露）。
+	for i := 0; i < billingOutboxApplyGroupParallelism; i++ {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
 			releaseOnce.Do(func() { close(release) })
-			t.Fatalf("only %d/%d concurrent batch transactions observed: parallelism clamped below max?", i, billingOutboxApplyGroupParallelismMax)
+			t.Fatalf("only %d/%d concurrent batch transactions observed: injection below 1 did not fall back to the default?", i, billingOutboxApplyGroupParallelism)
 		}
 	}
 	releaseOnce.Do(func() { close(release) })
@@ -525,7 +590,7 @@ func TestBillingOutboxApplyGroupParallelismInjectionClamped(t *testing.T) {
 	mu.Lock()
 	peak := maxActive
 	mu.Unlock()
-	require.Equal(t, billingOutboxApplyGroupParallelismMax, peak, "parallelism injected above max must be clamped to the cap")
+	require.Equal(t, billingOutboxApplyGroupParallelism, peak, "parallelism injected below 1 must fall back to the default")
 	require.Empty(t, repo.acked)
 	require.Empty(t, repo.retried)
 }

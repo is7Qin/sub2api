@@ -17,8 +17,12 @@ import (
 )
 
 const (
-	billingOutboxBatchSize    = 100
-	billingOutboxPollInterval = 500 * time.Millisecond
+	// 单轮 apply Claim 批量：与并发数（billingOutboxConcurrency）解耦，
+	// pending 与过期租约分支共用。Claim 拉满即认为队列可能仍有积压，
+	// run 循环据此跳过 poll 间隔连续拉（背压感知）；空拉/部分拉取回落
+	// 固定 poll 间隔，防止空转忙循环。
+	billingOutboxClaimBatchSize = 500
+	billingOutboxPollInterval   = 500 * time.Millisecond
 	// Apply is bounded within the lease. Finalization may block indefinitely, so
 	// its claim is renewed until the synchronous Finalize call returns.
 	billingOutboxLease                     = 90 * time.Second
@@ -81,6 +85,9 @@ type BillingOutboxWorker struct {
 	failures                       atomic.Uint64
 	lastError                      atomic.Value
 	applyGroupParallelism          int
+	// pollInterval 是 run 循环非积压轮之间的等待间隔（测试注入更小值
+	// 加速节奏断言；<=0 时回退 billingOutboxPollInterval）。
+	pollInterval time.Duration
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -94,6 +101,7 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 		finalizationLease: billingOutboxLease, finalizationLeaseRenewInterval: billingOutboxFinalizationRenewInterval,
 		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, ctx: ctx, cancel: cancel,
 		applyGroupParallelism: billingOutboxApplyGroupParallelism,
+		pollInterval:          billingOutboxPollInterval,
 	}
 	worker.lastError.Store("")
 	return worker
@@ -124,75 +132,109 @@ func (w *BillingOutboxWorker) Stop() {
 func (w *BillingOutboxWorker) run() {
 	defer w.wg.Done()
 	defer w.running.Store(false)
-	ticker := time.NewTicker(billingOutboxPollInterval)
-	defer ticker.Stop()
+	pollInterval := w.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = billingOutboxPollInterval
+	}
 	for {
-		if err := w.processBatch(w.ctx); err != nil && w.ctx.Err() == nil {
+		backlogged, err := w.processBatch(w.ctx)
+		if err != nil && w.ctx.Err() == nil {
 			w.recordFailure(err)
 		}
+		if w.ctx.Err() != nil {
+			// Stop 取消在每轮 processBatch 返回后立即生效：连续拉循环不
+			// 会因跳过 select 而无法退出。
+			return
+		}
+		if backlogged {
+			// 背压：本轮 Claim 拉满且实际消化了记录，跳过 poll 间隔立即
+			// 下一轮，直到队列见底；空拉/部分拉取/失败自然回落下方等待。
+			continue
+		}
+		timer := time.NewTimer(pollInterval)
 		select {
 		case <-w.ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
 
-func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
+// processBatch 处理一轮 Claim（finalization + apply）。返回 backlogged
+// 表示队列可能仍有积压、run 循环应跳过 poll 间隔连续拉取；语义见 run 注释。
+func (w *BillingOutboxWorker) processBatch(ctx context.Context) (backlogged bool, err error) {
 	if finalRepo, ok := w.repo.(BillingOutboxFinalizationRepository); ok {
 		finalRecords, err := finalRepo.ClaimFinalization(ctx, w.workerID, billingOutboxConcurrency, w.finalizationLease)
 		if err != nil {
-			return fmt.Errorf("claim billing outbox finalizations: %w", err)
+			return false, fmt.Errorf("claim billing outbox finalizations: %w", err)
 		}
 		expiredFinalRecords, err := finalRepo.ClaimFinalizationExpiredLeased(ctx, w.workerID, billingOutboxConcurrency, w.finalizationLease)
 		if err != nil {
-			return fmt.Errorf("claim expired billing outbox finalizations: %w", err)
+			return false, fmt.Errorf("claim expired billing outbox finalizations: %w", err)
 		}
 		finalRecords = append(finalRecords, expiredFinalRecords...)
 		if err := w.processFinalizationBatch(ctx, finalRecords, finalRepo); err != nil {
-			return err
+			return false, err
 		}
 	}
 	// pending 分支与过期租约分支分开 Claim（各自命中部分索引），合并后
 	// 一次 apply：两批记录共享同一 processApplyBatch，apply 语义不变。
-	records, err := w.repo.Claim(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
+	// Claim 批量 = billingOutboxClaimBatchSize（500），与并发数解耦：积压
+	// 时单轮最多消化 500 条，配合 run 循环的背压连续拉消除固定 ticker 上限。
+	pendingRecords, err := w.repo.Claim(ctx, w.workerID, billingOutboxClaimBatchSize, billingOutboxLease)
 	if err != nil {
-		return fmt.Errorf("claim billing outbox commands: %w", err)
+		return false, fmt.Errorf("claim billing outbox commands: %w", err)
 	}
-	expiredRecords, err := w.repo.ClaimExpiredLeased(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
+	expiredRecords, err := w.repo.ClaimExpiredLeased(ctx, w.workerID, billingOutboxClaimBatchSize, billingOutboxLease)
 	if err != nil {
-		return fmt.Errorf("claim expired billing outbox commands: %w", err)
+		return false, fmt.Errorf("claim expired billing outbox commands: %w", err)
 	}
-	records = append(records, expiredRecords...)
-	if err := w.processApplyBatch(ctx, records); err != nil {
-		return err
+	records := append(pendingRecords, expiredRecords...)
+	handled, err := w.processApplyBatch(ctx, records)
+	if err != nil {
+		return false, err
 	}
-	return nil
+	// 背压语义：仅当 apply Claim 任一分支拉满且本轮实际消化了记录时报告
+	// 积压（run 循环据此跳过 poll 间隔连续拉）。空拉、部分拉取、失败或
+	// "拉满但 0 消化"（竞态/空转）一律返回 false，回落到固定 poll 等待，
+	// 从设计上杜绝空转忙循环。
+	full := len(pendingRecords) == billingOutboxClaimBatchSize || len(expiredRecords) == billingOutboxClaimBatchSize
+	return full && handled > 0, nil
 }
 
-func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []BillingOutboxRecord) error {
+// processApplyBatch 应用一轮 Claim 的记录，返回实际被消化（转入
+// finalization、Ack 成功、或失败落库）的记录数。ACK 失败（去重键已存在但
+// 确认失败）的记录仍被租约持有、未离开队列，不计入——防止 run 循环仅凭
+// "拉满"误判积压而空转。旧仓库回退路径逐条独立事务，并发保持 16，语义不变。
+func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []BillingOutboxRecord) (int, error) {
 	if batchRepo, ok := w.billing.(UsageBillingBatchFinalizationRepository); ok {
 		return w.processApplyBatchBatched(ctx, records, batchRepo)
 	}
-	// 旧仓库回退路径：逐条独立事务，16 并发，语义不变。
 	semaphore := make(chan struct{}, billingOutboxConcurrency)
 	var wg sync.WaitGroup
+	var handled int
+	var handledMu sync.Mutex
 	for i := range records {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
-			return ctx.Err()
+			return handled, ctx.Err()
 		case semaphore <- struct{}{}:
 		}
 		wg.Add(1)
 		go func(record BillingOutboxRecord) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			w.processRecord(ctx, record)
+			if w.processRecord(ctx, record) {
+				handledMu.Lock()
+				handled++
+				handledMu.Unlock()
+			}
 		}(records[i])
 	}
 	wg.Wait()
-	return nil
+	return handled, nil
 }
 
 // processApplyBatchBatched 把整轮记录按用户分片拆成多个批量事务（每分片
@@ -201,7 +243,7 @@ func (w *BillingOutboxWorker) processApplyBatch(ctx context.Context, records []B
 // 分片的轮次也不会被整轮持锁阻塞。不同分片的批量事务并发执行（组并行上限
 // billingOutboxApplyGroupParallelism），逐条失败仍通过 savepoint 隔离（仓库内），
 // 重试与去重 Ack 语义不变。整轮 applyCtx（30s 总时限）在所有组之间共享。
-func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
+func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) (int, error) {
 	items := make([]UsageBillingBatchItem, 0, len(records))
 	// 校验失败的记录不进批量事务，直接按 terminal 落库，与逐条路径一致。
 	var invalid []struct {
@@ -228,8 +270,9 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 	for _, f := range invalid {
 		w.persistFailure(f.record, f.err, true)
 	}
+	handled := len(invalid)
 	if len(items) == 0 {
-		return nil
+		return handled, nil
 	}
 
 	applyCtx, applyCancel := context.WithTimeout(ctx, billingOutboxApplyTimeout)
@@ -242,6 +285,7 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 	// 互斥保护）。
 	var firstErr error
 	var errMu sync.Mutex
+	handledMu := sync.Mutex{}
 	parallelism := clampApplyGroupParallelism(w.applyGroupParallelism)
 	sem := make(chan struct{}, parallelism)
 	var wg sync.WaitGroup
@@ -251,7 +295,11 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 		go func(group billingShardGroup) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := w.applyBatchGroup(applyCtx, group, items, records, batchRepo); err != nil {
+			groupHandled, err := w.applyBatchGroup(applyCtx, group, items, records, batchRepo)
+			handledMu.Lock()
+			handled += groupHandled
+			handledMu.Unlock()
+			if err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -261,7 +309,7 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 		}(group)
 	}
 	wg.Wait()
-	return firstErr
+	return handled, firstErr
 }
 
 // clampApplyGroupParallelism 将注入的组并行度收敛到 [1, 上限]：<1 回退
@@ -281,8 +329,10 @@ func clampApplyGroupParallelism(v int) int {
 // 侧事务级 pg_advisory_xact_lock 保证（跨实例生效，随事务提交/回滚自动
 // 释放），worker 不再持有任何进程内锁。outcome 处理无嵌套加锁死锁风险；
 // 逐条失败经 savepoint 隔离（仓库内），outcome 处理与串行路径一致。返回
-// 组级错误（批量事务失败时非 nil；组内逐条失败只落库不返回）。
-func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billingShardGroup, items []UsageBillingBatchItem, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
+// 组级错误（批量事务失败时非 nil；组内逐条失败只落库不返回）与本组实际
+// 消化（转入 finalization / Ack 成功 / 失败落库）的记录数；Ack 失败的不
+// 计入，防止背压语义把"拉满但零进展"误判为积压。
+func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billingShardGroup, items []UsageBillingBatchItem, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) (int, error) {
 	groupItems := make([]UsageBillingBatchItem, len(group.indexes))
 	for gi, idx := range group.indexes {
 		groupItems[gi] = items[idx]
@@ -299,18 +349,21 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 			w.recordFailure(err)
 			w.persistFailure(record, err, false)
 		}
-		return err
+		return len(groupItems), err
 	}
+	handled := 0
 	for gi, outcome := range outcomes {
 		idx := group.indexes[gi]
 		record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
 		if outcome.Err != nil {
 			w.recordFailure(outcome.Err)
 			w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
+			handled++
 			continue
 		}
 		if outcome.Result == nil || outcome.Result.Applied {
 			// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
+			handled++
 			continue
 		}
 		// 已存在的去重键：本行无需 post-effects，直接确认完成。
@@ -323,8 +376,9 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		}
 		w.processed.Add(1)
 		w.lastError.Store("")
+		handled++
 	}
-	return nil
+	return handled, nil
 }
 
 // itemRecordIndex 在整轮记录里按 outbox ID 找回 items 对应的原始记录。
@@ -394,13 +448,15 @@ func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, reco
 	return nil
 }
 
-func (w *BillingOutboxWorker) processRecord(parent context.Context, record BillingOutboxRecord) {
+// processRecord 处理单条记录（旧仓库回退路径）。返回该记录是否被实际消化
+// （转入 finalization / Ack 成功 / 失败落库）；仅 Ack 失败时返回 false。
+func (w *BillingOutboxWorker) processRecord(parent context.Context, record BillingOutboxRecord) bool {
 	command := record.Command
 	command.Normalize()
 	if err := command.Validate(); err != nil {
 		w.recordFailure(err)
 		w.persistFailure(record, err, true)
-		return
+		return true
 	}
 
 	applyCtx, applyCancel := context.WithTimeout(parent, billingOutboxApplyTimeout)
@@ -413,12 +469,12 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 			terminal := billingOutboxIsTerminalError(err)
 			w.recordFailure(err)
 			w.persistFailure(record, err, terminal)
-			return
+			return true
 		}
 		if result == nil || result.Applied {
 			// Staging atomically records the Apply outcome and transfers ownership
 			// to the finalization phase. A later claim performs post-effects.
-			return
+			return true
 		}
 		// A pre-existing deduplication key means this row did not own unfinished
 		// finalization, so it can complete without post-effects.
@@ -427,11 +483,11 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 		ackCancel()
 		if ackErr != nil {
 			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
-			return
+			return false
 		}
 		w.processed.Add(1)
 		w.lastError.Store("")
-		return
+		return true
 	}
 	applyCancel()
 	// Monetary Apply and the durable finalization handoff must be one repository
@@ -440,6 +496,7 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 	err = ErrBillingOutboxFinalizationUnsupported
 	w.recordFailure(err)
 	w.persistFailure(record, err, false)
+	return true
 }
 
 func (w *BillingOutboxWorker) processFinalization(parent context.Context, record BillingOutboxRecord, repo BillingOutboxFinalizationRepository) {

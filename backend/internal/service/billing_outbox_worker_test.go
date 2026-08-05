@@ -21,6 +21,7 @@ type billingOutboxRepoStub struct {
 	claimLimit                 int
 	expiredLeaseRecords        []BillingOutboxRecord
 	expiredLeaseErr            error
+	ackErr                     error
 	expiredLeaseClaimLimit     int
 	finalizationRecords        []BillingOutboxRecord
 	finalizationExpiredRecords []BillingOutboxRecord
@@ -35,6 +36,8 @@ type billingOutboxRepoStub struct {
 	finalizationRetried        []billingOutboxRetry
 	stats                      BillingOutboxStats
 	statsErr                   error
+	// claims 非 nil 时每次 Claim 发送一个时间戳（run 循环轮次节奏断言）。
+	claims chan time.Time
 }
 
 type billingOutboxRetry struct {
@@ -58,7 +61,13 @@ func (r *billingOutboxRepoStub) Claim(_ context.Context, workerID string, limit 
 	if len(r.claimSeq) > 0 {
 		batch := r.claimSeq[0]
 		r.claimSeq = r.claimSeq[1:]
+		if r.claims != nil {
+			r.claims <- time.Now()
+		}
 		return append([]BillingOutboxRecord(nil), batch...), nil
+	}
+	if r.claims != nil {
+		r.claims <- time.Now()
 	}
 	return append([]BillingOutboxRecord(nil), r.records...), nil
 }
@@ -89,7 +98,7 @@ func (r *billingOutboxRepoStub) Ack(_ context.Context, id int64, workerID string
 	defer r.mu.Unlock()
 	r.acked = append(r.acked, id)
 	r.workerID = workerID
-	return nil
+	return r.ackErr
 }
 
 func (r *billingOutboxRepoStub) Retry(_ context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error {
@@ -299,7 +308,8 @@ func TestBillingOutboxWorker_FinalizesOnlyDurablyClaimedEffects(t *testing.T) {
 	postProcessor := &billingOutboxPostProcessorStub{}
 	worker := NewBillingOutboxWorker(repo, billing, postProcessor)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	require.Equal(t, 1, postProcessor.calls)
 	require.Equal(t, "attempt-1", postProcessor.command.AttemptID)
@@ -355,7 +365,8 @@ func TestBillingOutboxWorker_ReplaysDurablyStagedFinalizationWithoutApplyingAgai
 	postProcessor := &billingOutboxPostProcessorStub{}
 	worker := NewBillingOutboxWorker(repo, billing, postProcessor)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	require.Empty(t, billing.commands)
 	require.Equal(t, 1, postProcessor.calls)
@@ -376,7 +387,7 @@ func TestBillingOutboxWorkerProcessesFinalizationBatchConcurrently(t *testing.T)
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
 
 	finished := make(chan error, 1)
-	go func() { finished <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 	for range billingOutboxConcurrency {
 		select {
 		case <-started:
@@ -426,7 +437,7 @@ func TestBillingOutboxWorker_RenewsFinalizationLeaseUntilBlockedFinalizeReturns(
 	worker.finalizationDBTimeout = 20 * time.Millisecond
 
 	finished := make(chan error, 1)
-	go func() { finished <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -440,7 +451,8 @@ func TestBillingOutboxWorker_RenewsFinalizationLeaseUntilBlockedFinalizeReturns(
 	secondWorker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, secondPostProcessor)
 	secondWorker.workerID = "worker-b"
 	secondWorker.finalizationLease = worker.finalizationLease
-	require.NoError(t, secondWorker.processBatch(context.Background()))
+	_, err := secondWorker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.Zero(t, secondPostProcessor.calls)
 	require.GreaterOrEqual(t, repo.renewalCount(), 2)
 
@@ -471,7 +483,7 @@ func TestBillingOutboxWorker_KeepsRenewingAfterFailureUntilUninterruptibleFinali
 	worker.finalizationDBTimeout = 20 * time.Millisecond
 
 	finished := make(chan error, 1)
-	go func() { finished <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -487,7 +499,8 @@ func TestBillingOutboxWorker_KeepsRenewingAfterFailureUntilUninterruptibleFinali
 	secondWorker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, secondPostProcessor)
 	secondWorker.workerID = "worker-b"
 	secondWorker.finalizationLease = worker.finalizationLease
-	require.NoError(t, secondWorker.processBatch(context.Background()))
+	_, err := secondWorker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.Zero(t, secondPostProcessor.calls)
 
 	close(release)
@@ -512,7 +525,8 @@ func TestBillingOutboxWorker_CancelsFinalizerAndDoesNotTransitionAfterRenewalFai
 	worker.finalizationLeaseRenewInterval = 10 * time.Millisecond
 	worker.finalizationDBTimeout = 20 * time.Millisecond
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 	select {
 	case <-canceled:
 	case <-time.After(time.Second):
@@ -545,7 +559,8 @@ func TestBillingOutboxWorker_RetriesFinalizationFailureWithoutAcknowledging(t *t
 	postProcessor := &billingOutboxPostProcessorStub{err: errors.New("cache unavailable")}
 	worker := NewBillingOutboxWorker(repo, billing, postProcessor)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	require.Empty(t, repo.finalizationAcked)
 	require.Len(t, repo.finalizationRetried, 1)
@@ -561,7 +576,8 @@ func TestBillingOutboxWorker_KeepsAppliedFinalizationRetryablePastAttemptLimit(t
 	postProcessor := &billingOutboxPostProcessorStub{err: errors.New("notification provider unavailable")}
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	require.Empty(t, repo.finalizationAcked)
 	require.Len(t, repo.finalizationRetried, 1)
@@ -639,13 +655,16 @@ func TestBillingOutboxLeaseOutlivesBoundedApplyAndFinalization(t *testing.T) {
 }
 
 func TestBillingOutboxWorker_ClaimsOnlyRunnableApplyBatch(t *testing.T) {
+	// apply Claim 批量与并发数解耦：pending 与过期租约分支都以
+	// billingOutboxClaimBatchSize（500）为限；空拉不报告积压。
 	repo := &billingOutboxRepoStub{}
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
 
-	require.NoError(t, worker.processBatch(context.Background()))
-	require.Equal(t, billingOutboxConcurrency, repo.claimLimit)
-	require.NotEqual(t, billingOutboxBatchSize, repo.claimLimit)
-	require.Equal(t, billingOutboxConcurrency, repo.expiredLeaseClaimLimit)
+	backlogged, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.False(t, backlogged, "empty claim must not report backlog")
+	require.Equal(t, billingOutboxClaimBatchSize, repo.claimLimit)
+	require.Equal(t, billingOutboxClaimBatchSize, repo.expiredLeaseClaimLimit)
 }
 
 func TestBillingOutboxWorker_MergesPendingAndExpiredLeaseClaimsIntoOneApplyBatch(t *testing.T) {
@@ -657,7 +676,8 @@ func TestBillingOutboxWorker_MergesPendingAndExpiredLeaseClaimsIntoOneApplyBatch
 	billing := &batchUsageBillingRepoStub{}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	calls, items := billing.batchSnapshot()
 	require.Equal(t, 1, calls, "merged claims must share one per-shard batch transaction")
@@ -681,7 +701,8 @@ func TestBillingOutboxWorker_MergesFinalizationClaimsFromBothBranches(t *testing
 	postProcessor := &billingOutboxPostProcessorStub{}
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	require.Equal(t, 2, postProcessor.calls)
 	require.ElementsMatch(t, []int64{80, 81}, repo.finalizationAcked)
@@ -691,7 +712,7 @@ func TestBillingOutboxWorker_ReturnsErrorWhenExpiredLeaseClaimFails(t *testing.T
 	repo := &billingOutboxRepoStub{expiredLeaseErr: errors.New("database temporarily unavailable")}
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
 
-	err := worker.processBatch(context.Background())
+	_, err := worker.processBatch(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expired")
 }
@@ -703,7 +724,8 @@ func TestBillingOutboxWorker_ReportsHealth(t *testing.T) {
 	}}
 	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.NotEmpty(t, repo.workerID)
 	require.Equal(t, billingOutboxLease, repo.lease)
 
@@ -729,7 +751,8 @@ func TestBillingOutboxWorker_ProcessesBatchConcurrently(t *testing.T) {
 	worker := NewBillingOutboxWorker(repo, billing)
 
 	started := time.Now()
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.Less(t, time.Since(started), time.Second)
 	require.Len(t, repo.acked, 32)
 }
@@ -740,6 +763,125 @@ func TestBillingOutboxWorker_LifecycleIsManagedAndIdempotent(t *testing.T) {
 	worker.Start()
 	require.Eventually(t, func() bool { return worker.Health(context.Background()).Running }, time.Second, 10*time.Millisecond)
 	require.NotPanics(t, func() { worker.Stop(); worker.Stop() })
+	require.False(t, worker.Health(context.Background()).Running)
+}
+
+// fullBillingOutboxClaimBatch 构造一个恰好拉满 apply Claim 批量上限的记录集。
+func fullBillingOutboxClaimBatch() []BillingOutboxRecord {
+	records := make([]BillingOutboxRecord, billingOutboxClaimBatchSize)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), int64(i%7+1))
+	}
+	return records
+}
+
+func TestBillingOutboxWorker_DrainsContinuouslyWhileBacklogged(t *testing.T) {
+	// 背压感知连续拉：满额 Claim 轮之间不得等待 poll 间隔。固定 ticker 实现
+	// 每轮都等 poll（4 次 Claim 最早也要 3*poll 完成），背压实现应远小于一个
+	// poll 完成 3 轮满额 + 1 轮空拉（空拉本身不触发连续拉）。
+	const poll = 400 * time.Millisecond
+	repo := &billingOutboxRepoStub{claims: make(chan time.Time, 16)}
+	repo.claimSeq = [][]BillingOutboxRecord{
+		fullBillingOutboxClaimBatch(), fullBillingOutboxClaimBatch(), fullBillingOutboxClaimBatch(), nil,
+	}
+	worker := NewBillingOutboxWorker(repo, &batchUsageBillingRepoStub{})
+	worker.pollInterval = poll
+	worker.Start()
+	defer worker.Stop()
+
+	first := <-repo.claims
+	var last time.Time
+	for i := 1; i <= 3; i++ {
+		select {
+		case last = <-repo.claims:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("claim %d never happened", i+1)
+		}
+	}
+	require.Less(t, last.Sub(first), poll,
+		"backlogged rounds must not wait for the poll interval between claims")
+}
+
+func TestBillingOutboxWorker_WaitsPollIntervalAfterEmptyRound(t *testing.T) {
+	// 背压语义的防忙循环半边：满额轮立即接下一轮（不等 poll），空拉轮必须
+	// 回落 poll 间隔（不能空转），且之后仍会继续轮询（不能停摆）。
+	const poll = 300 * time.Millisecond
+	repo := &billingOutboxRepoStub{claims: make(chan time.Time, 16)}
+	repo.claimSeq = [][]BillingOutboxRecord{fullBillingOutboxClaimBatch(), nil}
+	worker := NewBillingOutboxWorker(repo, &batchUsageBillingRepoStub{})
+	worker.pollInterval = poll
+	worker.Start()
+	defer worker.Stop()
+
+	fullAt := <-repo.claims  // 轮 1：满额
+	emptyAt := <-repo.claims // 轮 2：空拉
+	require.Less(t, emptyAt.Sub(fullAt), poll/2,
+		"full round must drain immediately into the next round")
+
+	select {
+	case next := <-repo.claims: // 轮 3：等待 poll 之后才到
+		require.GreaterOrEqual(t, next.Sub(emptyAt), poll/2,
+			"empty round must wait for the poll interval before the next claim")
+	case <-time.After(2 * poll):
+		t.Fatal("worker stopped polling after an empty round")
+	}
+}
+
+func TestBillingOutboxWorker_WaitsAfterFullClaimWithZeroProgress(t *testing.T) {
+	// 防忙循环的最坏情形：Claim 拉满（500）但没有任何记录被消化（全部
+	// 走去重 Ack 且 Ack 失败，记录仍被租约持有）。此时必须回落 poll 间隔
+	// 等待，不能因"拉满"就连续拉——否则同样 500 条会一直空转。
+	const poll = 300 * time.Millisecond
+	repo := &billingOutboxRepoStub{claims: make(chan time.Time, 16), ackErr: errors.New("ack unavailable")}
+	repo.claimSeq = [][]BillingOutboxRecord{fullBillingOutboxClaimBatch(), nil}
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: false} // 全部走去重 Ack 路径
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+	worker.pollInterval = poll
+	worker.Start()
+	defer worker.Stop()
+
+	fullAt := <-repo.claims // 轮 1：拉满 500，零消化
+	select {
+	case next := <-repo.claims: // 轮 2：必须等到 poll 之后
+		require.GreaterOrEqual(t, next.Sub(fullAt), poll/2,
+			"full claim with zero progress must not loop immediately")
+	case <-time.After(2 * poll):
+		t.Fatal("worker never polled again after the zero-progress round")
+	}
+}
+
+func TestBillingOutboxWorker_StopExitsPromptlyDuringContinuousDrain(t *testing.T) {
+	// 连续拉循环中 Stop 必须及时退出：ctx 取消经每轮 processBatch 返回后的
+	// 检查生效，不能被无限拉取卡住。poll 保持默认值，证明退出不依赖 poll 命中。
+	repo := &billingOutboxRepoStub{claims: make(chan time.Time, 16)}
+	repo.claimSeq = [][]BillingOutboxRecord{
+		fullBillingOutboxClaimBatch(), fullBillingOutboxClaimBatch(), fullBillingOutboxClaimBatch(),
+		fullBillingOutboxClaimBatch(), fullBillingOutboxClaimBatch(),
+	}
+	worker := NewBillingOutboxWorker(repo, &batchUsageBillingRepoStub{})
+	worker.Start()
+
+	select {
+	case <-repo.claims: // 至少一轮满额拉取后立即停止
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never claimed")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked during continuous drain")
+	}
 	require.False(t, worker.Health(context.Background()).Running)
 }
 

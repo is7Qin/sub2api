@@ -66,7 +66,8 @@ func TestBillingOutboxWorker_BatchAppliesSameShardRecordsInOneBatchCall(t *testi
 	billing := &batchUsageBillingRepoStub{}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	calls, items := billing.batchSnapshot()
 	require.Equal(t, 1, calls, "same-shard records must share one per-shard batch transaction")
@@ -96,7 +97,8 @@ func TestBillingOutboxWorker_BatchSplitsCrossShardRecordsIntoPerShardCalls(t *te
 	billing := &batchUsageBillingRepoStub{}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	calls, items := billing.batchSnapshot()
 	require.Equal(t, 4, calls, "one per-shard batch transaction per shard")
@@ -125,7 +127,8 @@ func TestBillingOutboxWorker_BatchAcksDeduplicatedRecords(t *testing.T) {
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.ElementsMatch(t, []int64{1, 3}, repo.acked)
 	require.Empty(t, repo.retried)
 }
@@ -149,7 +152,8 @@ func TestBillingOutboxWorker_BatchIsolatesRecordFailureAndRetries(t *testing.T) 
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	// 只有失败的记录被重试；其余记录正常 Ack。
 	require.Len(t, repo.retried, 1)
@@ -167,7 +171,8 @@ func TestBillingOutboxWorker_BatchMarksDeterministicFailureTerminal(t *testing.T
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.Len(t, repo.retried, 1)
 	require.True(t, repo.retried[0].terminal)
 	require.True(t, repo.retried[0].availableAt.IsZero(), "terminal failures must be marked without backoff")
@@ -184,7 +189,7 @@ func TestBillingOutboxWorker_BatchRetriesAllRecordsOnBatchInfraFailure(t *testin
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	err := worker.processBatch(context.Background())
+	_, err := worker.processBatch(context.Background())
 	require.Error(t, err)
 	calls, _ := billing.batchSnapshot()
 	require.Equal(t, 1, calls, "one same-shard transaction must fail atomically")
@@ -217,7 +222,7 @@ func TestBillingOutboxWorker_BatchInfraFailureRetriesOnlyFailingShard(t *testing
 	}}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	err := worker.processBatch(context.Background())
+	_, err := worker.processBatch(context.Background())
 	require.Error(t, err)
 	calls, _ := billing.batchSnapshot()
 	require.Equal(t, 2, calls)
@@ -257,11 +262,11 @@ func TestBillingOutboxWorker_BatchAdvisoryLockScopeIsPerShardTransaction(t *test
 	worker := NewBillingOutboxWorker(repo, billing)
 
 	round1Done := make(chan error, 1)
-	go func() { round1Done <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); round1Done <- err }()
 	<-started // 轮 1 已阻塞在分片 5 的事务中
 
 	round2Done := make(chan error, 1)
-	go func() { round2Done <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); round2Done <- err }()
 	select {
 	case err := <-round2Done:
 		require.NoError(t, err, "round 2 (different shard) must not wait for round 1's in-flight transaction")
@@ -284,7 +289,8 @@ func TestBillingOutboxWorker_BatchSkipsInvalidRecordsButRetriesThemTerminally(t 
 	billing := &batchUsageBillingRepoStub{}
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	calls, items := billing.batchSnapshot()
 	require.Equal(t, 1, calls)
@@ -330,13 +336,13 @@ func TestBillingOutboxWorker_BatchAllowsConcurrentSameUserRounds(t *testing.T) {
 	worker := NewBillingOutboxWorker(repo, billing)
 
 	errs := make(chan error, 2)
-	go func() { errs <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); errs <- err }()
 	select {
 	case <-started: // 第一轮已进入批量事务
 	case <-time.After(2 * time.Second):
 		t.Fatal("round 1 did not reach the batch transaction")
 	}
-	go func() { errs <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); errs <- err }()
 	select {
 	case <-started: // 第二轮也已进入：worker 不再串行同用户
 	case <-time.After(2 * time.Second):
@@ -390,7 +396,7 @@ func TestBillingOutboxApplyGroupsRunInParallel(t *testing.T) {
 	worker := NewBillingOutboxWorker(repo, billing)
 
 	finished := make(chan error, 1)
-	go func() { finished <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 
 	// 等待至少 2 个分片事务同时进入批量调用；串行实现下第二个永远不会出现。
 	startedCount := 0
@@ -445,7 +451,8 @@ func TestBillingOutboxApplyGroupsParallelismOneIsSerial(t *testing.T) {
 	worker := NewBillingOutboxWorker(repo, billing)
 	worker.applyGroupParallelism = 1
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 
 	mu.Lock()
 	peak := maxActive
@@ -500,7 +507,7 @@ func TestBillingOutboxApplyGroupParallelismInjectionClamped(t *testing.T) {
 	worker.applyGroupParallelism = 1000
 
 	finished := make(chan error, 1)
-	go func() { finished <- worker.processBatch(context.Background()) }()
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
 
 	// clamp 生效时最多同时阻塞上限个事务：等满上限个即可确认未超限
 	// （若上限被误调低，此处超时暴露）。
@@ -551,6 +558,7 @@ func TestBillingOutboxWorker_BatchFallbackPreservesPerRecordPath(t *testing.T) {
 	billing := &stagedUsageBillingRepoStub{} // 未实现批量接口
 	worker := NewBillingOutboxWorker(repo, billing)
 
-	require.NoError(t, worker.processBatch(context.Background()))
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
 	require.Equal(t, 8, billing.stageCalls)
 }

@@ -10,6 +10,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAuthorizeURLMatchesClaudeCodeCLI(t *testing.T) {
+	const want = "https://claude.com/cai/oauth/authorize"
+	require.Equal(t, want, AuthorizeURL)
+
+	authURL := BuildAuthorizationURL("state-value", "challenge-value", ScopeOAuth)
+	require.True(t, strings.HasPrefix(authURL, want+"?"), authURL)
+	for _, part := range []string{
+		"code=true",
+		"client_id=" + ClientID,
+		"response_type=code",
+		"code_challenge=challenge-value",
+		"code_challenge_method=S256",
+		"state=state-value",
+	} {
+		require.Contains(t, authURL, part)
+	}
+}
+
 func TestSessionStoreCleanupExpiredPreservesTTLBoundary(t *testing.T) {
 	now := time.Date(2026, time.August, 4, 8, 0, 0, 0, time.UTC)
 	store := NewSessionStore()

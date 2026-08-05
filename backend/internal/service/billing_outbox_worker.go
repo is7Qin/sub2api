@@ -69,6 +69,29 @@ const (
 	// 注入并行度的上限：测试/调参误注入超大值会同时开爆 goroutine 与 DB
 	// 事务（每个分片组一个事务），clamp 到 128 保证最坏情况资源可控。
 	billingOutboxApplyGroupParallelismMax = 128
+	// terminal 增长告警：run 循环按 billingOutboxTerminalSampleInterval（默认 60s）
+	// 节奏采样 repo.Stats（与轮次节奏解耦，DB 额外负载 ≤1 次/分钟的已索引 Stats
+	// 查询，与 Health 共用 repo.Stats 不新增查询形状），terminal 行绝对量超阈或
+	// 相对上次采样的增长速率（delta/实际间隔，行/秒）超阈时触发 slog.Error 告警
+	// 并暴露到 Health.TerminalAlert（评估在 run 循环内完成，Health 只读快照——
+	// ops 面板轮询不会触发告警路径）。阈值推演（10K/s 摄入基准）：
+	//   - 健康稳态的终态化只来自确定性毒药/哨兵与实体删除竞态（not-found 类
+	//     sentinel），预算 ≤ 0.1 行/s（摄入的 0.001%）；按 30 天保留窗口
+	//     （outbox_cleanup.terminal_retention_days 默认 30 天）稳态堆积（速率 ×
+	//     保留期）≈ 26 万行。billingOutboxTerminalAlertThreshold = 50 万 ≈ 2× 该
+	//     上限：健康累计不误报，超阈说明终态化率长期偏离预算或清理停摆。
+	//   - 增长速率阈值 5 行/s = 健康预算的 50×（摄入的 0.05%）：持续超阈说明
+	//     系统性误分类（如 schema 破坏导致全员 42P01 在 maxAttempts=10 后终态
+	//     化）。60s 采样一次越界需 ≥300 条新增 terminal 行，零星坏记录不可能
+	//     触发。5 行/s 持续约 28 小时才把堆积推过绝对量阈——速率告警先行，
+	//     绝对量阈兜底既有大堆积（含重启后遗留）。
+	//   - 去重：同一条件只在触发沿（条件从正常越界）记一次日志，持续条件在
+	//     billingOutboxTerminalAlertCooldown（30 分钟）内不重复刷屏，条件回落
+	//     自动解除并重新武装（见 evaluateTerminalGrowth）。
+	billingOutboxTerminalAlertThreshold = 500_000
+	billingOutboxTerminalGrowthRate     = 5.0 // 行/秒
+	billingOutboxTerminalSampleInterval = 60 * time.Second
+	billingOutboxTerminalAlertCooldown  = 30 * time.Minute
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -85,13 +108,25 @@ type BillingOutboxHealth struct {
 	MaxAttempts int           `json:"max_attempts"`
 	// 熔断状态（worker 实例内内存态）：连续永久错误 ≥ billingOutboxCircuitBreakThreshold
 	// 时 CircuitOpen，apply Claim/处理被跳过直至冷却结束后的试探恢复成功。
-	CircuitOpen       bool       `json:"circuit_open"`
-	CircuitError      string     `json:"circuit_error,omitempty"`
-	CircuitOpenedAt   *time.Time `json:"circuit_opened_at,omitempty"`
+	CircuitOpen     bool       `json:"circuit_open"`
+	CircuitError    string     `json:"circuit_error,omitempty"`
+	CircuitOpenedAt *time.Time `json:"circuit_opened_at,omitempty"`
 	// PermanentFailures 是熔断累计永久错误数（单调不减的累计值，非连续计数）：
 	// 消费方应取相邻两次采样的差值（delta）判断新增永久错误，而非单次绝对值；
 	// 连续计数语义见 CircuitOpen。
 	PermanentFailures uint64 `json:"permanent_failures"`
+	// BackloggedRounds 是 processBatch 判定积压（Claim 拉满且实际消化 > 0）的
+	// 累计轮次：背压连续拉密集程度的观测。无界单调计数，消费方取相邻采样 delta。
+	BackloggedRounds uint64 `json:"backlogged_rounds"`
+	// RoundTimeouts 是 finalization 批次 deadline（billingOutboxFinalizationBatchTimeout）
+	// 触发而提前结束的累计轮次（无界单调计数，消费方取 delta）。per-record 时限
+	// （billingOutboxFinalizeRecordTimeout）到期不计入——那是单条记录的退避释放，
+	// 不是整轮被 deadline 截断。
+	RoundTimeouts uint64 `json:"round_timeouts"`
+	// TerminalAlert 是 terminal 增长告警信息（run 循环采样 repo.Stats 评估的
+	// 快照，评估不在 Health 内做——ops 面板轮询不得触发告警路径）；空字符串
+	// 表示无告警，条件回落自动清除。语义与阈值见 evaluateTerminalGrowth。
+	TerminalAlert string `json:"terminal_alert,omitempty"`
 }
 
 // BillingOutboxPostProcessor replays non-transactional enforcement updates
@@ -129,6 +164,29 @@ type BillingOutboxWorker struct {
 	// 更小值加速恢复断言；<=0 时回退 billingOutboxCircuitCoolDown）。
 	circuit         billingOutboxCircuit
 	circuitCooldown time.Duration
+	// 积压轮与 finalization 轮次超时计数（单调不减，delta 消费；见 Health 注释）。
+	backloggedRounds atomic.Uint64
+	roundTimeouts    atomic.Uint64
+	// terminal 增长告警采样参数（测试注入更小值/阈值加速断言；<=0 时回退各自
+	// 常量，见 terminalSampleIntervalDuration 等访问器）与采样/去重状态。
+	terminalSampleInterval time.Duration
+	terminalAlertThreshold int64
+	terminalGrowthRate     float64
+	terminalAlertCooldown  time.Duration
+	terminalAlert          billingOutboxTerminalAlertState
+}
+
+// billingOutboxTerminalAlertState 是 terminal 增长告警的采样与去重状态：lastCount/
+// lastAt 是上次采样基线（增长速率 = delta/实际间隔），active 标记当前告警条件
+// 是否成立（成立时 Health.TerminalAlert 持续暴露），lastAlertAt 记录上次告警
+// 时刻（冷却期内持续条件不重复刷屏）。
+type billingOutboxTerminalAlertState struct {
+	mu          sync.Mutex
+	lastCount   int64
+	lastAt      time.Time
+	lastAlertAt time.Time
+	active      bool
+	message     string
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -142,9 +200,13 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 		finalizationLease: billingOutboxLease, finalizationLeaseRenewInterval: billingOutboxFinalizationRenewInterval,
 		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, finalizeRecordTimeout: billingOutboxFinalizeRecordTimeout,
 		finalizationBatchTimeout: billingOutboxFinalizationBatchTimeout, ctx: ctx, cancel: cancel,
-		applyGroupParallelism: billingOutboxApplyGroupParallelism,
-		pollInterval:          billingOutboxPollInterval,
-		circuitCooldown:       billingOutboxCircuitCoolDown,
+		applyGroupParallelism:  billingOutboxApplyGroupParallelism,
+		pollInterval:           billingOutboxPollInterval,
+		circuitCooldown:        billingOutboxCircuitCoolDown,
+		terminalSampleInterval: billingOutboxTerminalSampleInterval,
+		terminalAlertThreshold: billingOutboxTerminalAlertThreshold,
+		terminalGrowthRate:     billingOutboxTerminalGrowthRate,
+		terminalAlertCooldown:  billingOutboxTerminalAlertCooldown,
 	}
 	worker.lastError.Store("")
 	return worker
@@ -189,6 +251,9 @@ func (w *BillingOutboxWorker) run() {
 			// 会因跳过 select 而无法退出。
 			return
 		}
+		// terminal 增长告警采样检查点：与轮次节奏解耦的慢节奏检查（默认 60s
+		// 一次 repo.Stats；DB 负载与采样语义见 sampleTerminalGrowth）。
+		w.sampleTerminalGrowth(w.ctx, time.Now())
 		if backlogged {
 			// 背压：本轮 Claim 拉满且实际消化了记录，跳过 poll 间隔立即
 			// 下一轮，直到队列见底；空拉/部分拉取/失败自然回落下方等待。
@@ -257,7 +322,12 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) (backlogged bool
 	// "拉满但 0 消化"（竞态/空转）一律返回 false，回落到固定 poll 等待，
 	// 从设计上杜绝空转忙循环。
 	full := len(pendingRecords) == billingOutboxClaimBatchSize || len(expiredRecords) == billingOutboxClaimBatchSize
-	return full && handled > 0, nil
+	backlogged = full && handled > 0
+	if backlogged {
+		// 积压轮计数（单调不减，delta 消费）：背压连续拉密集程度的观测。
+		w.backloggedRounds.Add(1)
+	}
+	return backlogged, nil
 }
 
 // processApplyBatch 应用一轮 Claim 的记录，返回实际被消化（转入
@@ -551,6 +621,8 @@ func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, reco
 		select {
 		case <-batchCtx.Done():
 			wg.Wait()
+			// 批次 deadline 触发且仍有记录待启动：本轮被整轮时限截断。
+			w.roundTimeouts.Add(1)
 			return fmt.Errorf("billing outbox finalization batch: %w", batchCtx.Err())
 		case semaphore <- struct{}{}:
 		}
@@ -562,6 +634,12 @@ func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, reco
 		}(records[i])
 	}
 	wg.Wait()
+	if batchCtx.Err() != nil {
+		// 在场记录收敛期间批次 deadline 到期：本轮实际被整轮时限截断
+		// （per-record 时限到期不在两处任何一处分支——那是单条记录的退避
+		// 释放，不算轮次超时）。
+		w.roundTimeouts.Add(1)
+	}
 	return nil
 }
 
@@ -796,8 +874,8 @@ type billingOutboxCircuit struct {
 	errMessage     string
 	total          uint64 // 累计会重试的永久错误（立即 terminal 的不计；Health.PermanentFailures，单调不减）
 	streak         uint64 // 连续永久错误（成功/暂时性错误复位为 0）
-	probing        bool  // 冷却结束后的试探恢复轮进行中
-	probePermanent bool  // 试探轮内已观察到永久错误（首个即重启冷却窗口）
+	probing        bool   // 冷却结束后的试探恢复轮进行中
+	probePermanent bool   // 试探轮内已观察到永久错误（首个即重启冷却窗口）
 }
 
 // circuitCooldownDuration 返回可注入冷却时长；<=0（测试注入 0/负值或未注入）
@@ -825,6 +903,107 @@ func (w *BillingOutboxWorker) finalizationBatchTimeoutDuration() time.Duration {
 		return billingOutboxFinalizationBatchTimeout
 	}
 	return w.finalizationBatchTimeout
+}
+
+// terminalSampleIntervalDuration 返回告警采样间隔；<=0 回退默认
+// billingOutboxTerminalSampleInterval。
+func (w *BillingOutboxWorker) terminalSampleIntervalDuration() time.Duration {
+	if w.terminalSampleInterval <= 0 {
+		return billingOutboxTerminalSampleInterval
+	}
+	return w.terminalSampleInterval
+}
+
+// terminalAlertThresholdValue 返回 terminal 绝对量阈值；<=0 回退默认
+// billingOutboxTerminalAlertThreshold。
+func (w *BillingOutboxWorker) terminalAlertThresholdValue() int64 {
+	if w.terminalAlertThreshold <= 0 {
+		return billingOutboxTerminalAlertThreshold
+	}
+	return w.terminalAlertThreshold
+}
+
+// terminalGrowthRateValue 返回 terminal 增长速率阈值（行/秒）；<=0 回退默认
+// billingOutboxTerminalGrowthRate。
+func (w *BillingOutboxWorker) terminalGrowthRateValue() float64 {
+	if w.terminalGrowthRate <= 0 {
+		return billingOutboxTerminalGrowthRate
+	}
+	return w.terminalGrowthRate
+}
+
+// terminalAlertCooldownDuration 返回告警冷却时长；<=0 回退默认
+// billingOutboxTerminalAlertCooldown。
+func (w *BillingOutboxWorker) terminalAlertCooldownDuration() time.Duration {
+	if w.terminalAlertCooldown <= 0 {
+		return billingOutboxTerminalAlertCooldown
+	}
+	return w.terminalAlertCooldown
+}
+
+// sampleTerminalGrowth 是 run 循环的慢节奏告警检查点：按
+// billingOutboxTerminalSampleInterval（默认 60s，与轮次节奏解耦——每轮只做
+// 一次时间比较，超过间隔才真正查询）采样 repo.Stats，把 terminal 计数交给
+// evaluateTerminalGrowth 评估。DB 额外负载 ≤1 次/分钟的已索引 Stats 查询
+// （与 Health 共用 repo.Stats，不新增查询形状）。repo.Stats 失败时跳过本次
+// 采样且不更新基线（避免用跨失败窗口的 delta 误判速率）。
+func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time.Time) {
+	state := &w.terminalAlert
+	state.mu.Lock()
+	lastAt := state.lastAt
+	state.mu.Unlock()
+	if !lastAt.IsZero() && now.Sub(lastAt) < w.terminalSampleIntervalDuration() {
+		return
+	}
+	if w.repo == nil {
+		return
+	}
+	stats, err := w.repo.Stats(ctx)
+	if err != nil {
+		return
+	}
+	w.evaluateTerminalGrowth(stats.Terminal, now)
+}
+
+// evaluateTerminalGrowth 评估一次 terminal 采样：行数超过
+// billingOutboxTerminalAlertThreshold（既有堆积）或相对上次采样的增长速率超过
+// billingOutboxTerminalGrowthRate（delta/实际间隔，行/秒）时置位
+// Health.TerminalAlert 并记 slog.Error。首次采样无基线（增长速率不可得），但
+// 绝对量超阈立即告警——重启后遗留的大堆积同样要被看到。去重：同一条件只在
+// 触发沿（条件从正常越界）记一次日志，持续条件在冷却期内不重复刷屏（保留
+// 既有告警信息），条件回落自动解除并重新武装。清理删除产生负 delta，不会误报。
+func (w *BillingOutboxWorker) evaluateTerminalGrowth(terminal int64, now time.Time) {
+	threshold := w.terminalAlertThresholdValue()
+	rateLimit := w.terminalGrowthRateValue()
+	state := &w.terminalAlert
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.lastAt.IsZero() {
+		state.lastAt = now
+		state.lastCount = terminal
+	}
+	var rate float64
+	if elapsed := now.Sub(state.lastAt); elapsed > 0 && terminal >= state.lastCount {
+		rate = float64(terminal-state.lastCount) / elapsed.Seconds()
+	}
+	over := terminal > threshold || rate > rateLimit
+	state.lastCount = terminal
+	state.lastAt = now
+	if !over {
+		state.active = false
+		state.message = ""
+		return
+	}
+	if state.active && !state.lastAlertAt.IsZero() && now.Sub(state.lastAlertAt) < w.terminalAlertCooldownDuration() {
+		return // 冷却期内持续条件不重复刷屏，保留既有告警信息
+	}
+	state.active = true
+	state.lastAlertAt = now
+	state.message = fmt.Sprintf("billing outbox terminal growth: terminal rows %d over threshold %d or rate %.1f rows/s over limit %.1f",
+		terminal, threshold, rate, rateLimit)
+	slog.Error(state.message,
+		"terminal_rows", terminal, "terminal_threshold", threshold,
+		"terminal_growth_rate", rate, "terminal_growth_limit", rateLimit)
 }
 
 // observeApplyError 在 apply 处理失败时调用：永久错误累加计数并可能打开/
@@ -916,13 +1095,14 @@ func (w *BillingOutboxWorker) endApplyRound() {
 
 // billingOutboxFailureTerminal 是 apply 与 finalization 两条路径共用的 terminal
 // 决策：仅永久错误可能 terminal——
-//   1. PG 42xxx/22xxx（部署可修复，字段教训）：受 billingOutboxMaxAttempts
-//      约束——attempts ≥ maxAttempts 才 terminal，落库带 [SQLSTATE xxxxx] 前缀。
-//      finalization 路径同样受此约束：已扣费记录的后置效应必须保持可重放，
-//      PG 错误在 attempts 未到上限时保持 pending 重试（terminal→pending 手动
-//      重放会命中去重键直接 Ack，不会重放后置效应）。
-//   2. legacy 立即 terminal 列表（infra 4xx + 哨兵，确定性客户端数据毒药）：
-//      重试无意义，立即 terminal（pre-existing 行为，不受 maxAttempts 约束）。
+//  1. PG 42xxx/22xxx（部署可修复，字段教训）：受 billingOutboxMaxAttempts
+//     约束——attempts ≥ maxAttempts 才 terminal，落库带 [SQLSTATE xxxxx] 前缀。
+//     finalization 路径同样受此约束：已扣费记录的后置效应必须保持可重放，
+//     PG 错误在 attempts 未到上限时保持 pending 重试（terminal→pending 手动
+//     重放会命中去重键直接 Ack，不会重放后置效应）。
+//  2. legacy 立即 terminal 列表（infra 4xx + 哨兵，确定性客户端数据毒药）：
+//     重试无意义，立即 terminal（pre-existing 行为，不受 maxAttempts 约束）。
+//
 // 暂时性错误（含 40001/40P01/55P03/57014/57P01-03/08xxx/context 超时）即使
 // attempts 已达上限也绝不 terminal。PG 判定先于 legacy 立即 terminal：被 infra
 // 4xx 包装的 PgError 仍按 SQLSTATE 判定（与 billingOutboxIsPermanentError 的
@@ -1067,6 +1247,8 @@ func (w *BillingOutboxWorker) Health(ctx context.Context) BillingOutboxHealth {
 	health.Running = w.running.Load()
 	health.Processed = w.processed.Load()
 	health.Failures = w.failures.Load()
+	health.BackloggedRounds = w.backloggedRounds.Load()
+	health.RoundTimeouts = w.roundTimeouts.Load()
 	if value := w.lastError.Load(); value != nil {
 		health.LastError, _ = value.(string)
 	}
@@ -1079,6 +1261,11 @@ func (w *BillingOutboxWorker) Health(ctx context.Context) BillingOutboxHealth {
 		health.CircuitOpenedAt = &openedAt
 	}
 	w.circuit.mu.Unlock()
+	// 告警状态是 run 循环采样评估后的快照（不在 Health 内做告警评估——
+	// ops 面板轮询不得触发告警路径）。
+	w.terminalAlert.mu.Lock()
+	health.TerminalAlert = w.terminalAlert.message
+	w.terminalAlert.mu.Unlock()
 	if w.repo == nil {
 		return health
 	}

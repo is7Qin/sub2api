@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -1088,4 +1090,182 @@ func TestBillingOutboxRetryDelayIsBounded(t *testing.T) {
 		require.GreaterOrEqual(t, delay, 800*time.Millisecond)
 		require.LessOrEqual(t, delay, 308*time.Second)
 	}
+}
+
+func TestBillingOutboxWorker_CountsBackloggedRounds(t *testing.T) {
+	// 积压轮计数：processBatch 判定积压（Claim 拉满且实际消化 > 0）的轮次累计
+	// 为 BackloggedRounds（单调不减，消费方取相邻采样 delta）；空拉轮不计数。
+	empty := NewBillingOutboxWorker(&billingOutboxRepoStub{}, &batchUsageBillingRepoStub{})
+	backlogged, err := empty.processBatch(context.Background())
+	require.NoError(t, err)
+	require.False(t, backlogged)
+	require.Zero(t, empty.Health(context.Background()).BackloggedRounds)
+
+	repo := &billingOutboxRepoStub{records: fullBillingOutboxClaimBatch()}
+	worker := NewBillingOutboxWorker(repo, &batchUsageBillingRepoStub{})
+
+	backlogged, err = worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.True(t, backlogged)
+	require.Equal(t, uint64(1), worker.Health(context.Background()).BackloggedRounds)
+
+	backlogged, err = worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.True(t, backlogged)
+	require.Equal(t, uint64(2), worker.Health(context.Background()).BackloggedRounds)
+}
+
+func TestBillingOutboxWorker_CountsFinalizationBatchRoundTimeouts(t *testing.T) {
+	// RoundTimeouts 语义：finalization 整轮 deadline（batch 时限）触发而提前结束
+	// 的累计轮次。Finalize 阻塞至 ctx 取消时，batch deadline 到期结束本轮并计数。
+	records := make([]BillingOutboxRecord, billingOutboxConcurrency)
+	for i := range records {
+		records[i] = validBillingOutboxRecord(int64(i + 1))
+		records[i].Status = "finalizing"
+		records[i].ApplyResult = &UsageBillingApplyResult{Applied: true}
+	}
+	repo := &billingOutboxRepoStub{finalizationRecords: records}
+	postProcessor := billingOutboxPostProcessorFunc(func(ctx context.Context, _ *BillingOutboxCommand, _ *UsageBillingApplyResult) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+	worker.finalizeRecordTimeout = 10 * time.Second
+	worker.finalizationBatchTimeout = 100 * time.Millisecond
+
+	finished := make(chan error, 1)
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
+	select {
+	case err := <-finished:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("finalization batch did not return within the batch deadline")
+	}
+	require.Equal(t, uint64(1), worker.Health(context.Background()).RoundTimeouts)
+}
+
+func TestBillingOutboxWorker_PerRecordTimeoutDoesNotCountAsRoundTimeout(t *testing.T) {
+	// per-record 时限到期是单条记录的退避释放（回到 finalization_pending 补领池），
+	// 不是整轮被 deadline 截断：不得计入 RoundTimeouts。
+	record := validBillingOutboxRecord(79)
+	record.Status = "finalizing"
+	record.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{finalizationRecords: []BillingOutboxRecord{record}}
+	postProcessor := billingOutboxPostProcessorFunc(func(ctx context.Context, _ *BillingOutboxCommand, _ *UsageBillingApplyResult) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+	worker.finalizeRecordTimeout = 50 * time.Millisecond
+	worker.finalizationBatchTimeout = 5 * time.Second
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, worker.Health(context.Background()).RoundTimeouts,
+		"per-record deadline release must not count as a round timeout")
+	require.Len(t, repo.finalizationRetried, 1)
+}
+
+func TestBillingOutboxWorker_TerminalGrowthAlertTriggersOnThresholdAndDedups(t *testing.T) {
+	// 告警触发与去重：terminal 绝对量超阈 → slog.Error + Health.TerminalAlert；
+	// 冷却期内持续条件不重复刷屏；条件回落清除告警状态；新一次越界重新触发。
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	repo := &billingOutboxRepoStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 5
+	worker.terminalAlertCooldown = 30 * time.Minute
+	worker.terminalSampleInterval = time.Nanosecond
+
+	ctx := context.Background()
+	now := time.Now()
+	repo.stats = BillingOutboxStats{Terminal: 10}
+	worker.sampleTerminalGrowth(ctx, now)
+	require.Contains(t, logBuf.String(), "billing outbox terminal growth")
+	require.NotEmpty(t, worker.Health(ctx).TerminalAlert)
+	alertLogs := strings.Count(logBuf.String(), "billing outbox terminal growth")
+
+	repo.stats = BillingOutboxStats{Terminal: 12}
+	worker.sampleTerminalGrowth(ctx, now.Add(time.Minute))
+	require.Equal(t, alertLogs, strings.Count(logBuf.String(), "billing outbox terminal growth"),
+		"persistent condition within the cooldown must not re-alert")
+
+	repo.stats = BillingOutboxStats{Terminal: 3}
+	worker.sampleTerminalGrowth(ctx, now.Add(2*time.Minute))
+	require.Empty(t, worker.Health(ctx).TerminalAlert, "condition recovery must clear the alert flag")
+
+	repo.stats = BillingOutboxStats{Terminal: 9}
+	worker.sampleTerminalGrowth(ctx, now.Add(3*time.Minute))
+	require.Greater(t, strings.Count(logBuf.String(), "billing outbox terminal growth"), alertLogs,
+		"a new spike after recovery must re-alert")
+	require.NotEmpty(t, worker.Health(ctx).TerminalAlert)
+}
+
+func TestBillingOutboxWorker_TerminalGrowthAlertTriggersOnRate(t *testing.T) {
+	// 速率维度：首次采样只建立基线（无增长速率可言），第二次采样 delta/实际间隔
+	// 超阈即告警——60s 内新增 300 行 = 5 行/s，超过注入的 4 行/s 阈值。
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	repo := &billingOutboxRepoStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 1_000_000 // 抬高绝对量阈值：只验证速率维度
+	worker.terminalGrowthRate = 4.0           // 注入 4 行/s 速率阈值
+	worker.terminalSampleInterval = time.Nanosecond
+
+	ctx := context.Background()
+	now := time.Now()
+	repo.stats = BillingOutboxStats{Terminal: 1000}
+	worker.sampleTerminalGrowth(ctx, now)
+	require.Empty(t, worker.Health(ctx).TerminalAlert, "first sample only establishes the baseline")
+
+	repo.stats = BillingOutboxStats{Terminal: 1300}
+	worker.sampleTerminalGrowth(ctx, now.Add(60*time.Second))
+	require.Contains(t, logBuf.String(), "billing outbox terminal growth")
+	require.NotEmpty(t, worker.Health(ctx).TerminalAlert)
+}
+
+func TestBillingOutboxWorker_TerminalGrowthNoAlertWithinBudget(t *testing.T) {
+	// 健康稳态（绝对量低于阈值、增长速率在预算内）不告警、不置位；terminal 回落
+	// （清理删除）产生负 delta，同样不告警。
+	repo := &billingOutboxRepoStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 500_000
+	worker.terminalGrowthRate = 5.0
+	worker.terminalSampleInterval = time.Nanosecond
+
+	ctx := context.Background()
+	now := time.Now()
+	repo.stats = BillingOutboxStats{Terminal: 1000}
+	worker.sampleTerminalGrowth(ctx, now)
+	repo.stats = BillingOutboxStats{Terminal: 1050}
+	worker.sampleTerminalGrowth(ctx, now.Add(60*time.Second)) // ~0.83 行/s，预算内
+	repo.stats = BillingOutboxStats{Terminal: 500}
+	worker.sampleTerminalGrowth(ctx, now.Add(2*time.Minute)) // 清理删除：负 delta
+	require.Empty(t, worker.Health(ctx).TerminalAlert)
+}
+
+func TestBillingOutboxWorker_RunLoopSamplesTerminalGrowthAtCadence(t *testing.T) {
+	// run 循环按注入采样间隔调用 repo.Stats 并评估告警（与轮次节奏解耦）：
+	// 首次循环即采样，terminal 超阈后 Health.TerminalAlert 置位、slog.Error 落日志。
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	repo := &billingOutboxRepoStub{stats: BillingOutboxStats{Terminal: 1000}}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 5
+	worker.terminalSampleInterval = 20 * time.Millisecond
+	worker.Start()
+	require.Eventually(t, func() bool {
+		return worker.Health(context.Background()).TerminalAlert != ""
+	}, time.Second, 10*time.Millisecond)
+	worker.Stop()
+	require.Contains(t, logBuf.String(), "billing outbox terminal growth")
 }

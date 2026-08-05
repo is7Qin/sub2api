@@ -6,6 +6,7 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
+import { refreshAuthTokens } from './tokenRefresh'
 import { buildApiUrl, getAPIBaseURL } from './url'
 
 // ==================== Axios Instance Configuration ====================
@@ -22,28 +23,6 @@ export const apiClient: AxiosInstance = axios.create({
     'Content-Type': 'application/json'
   }
 })
-
-// ==================== Token Refresh State ====================
-
-// Track if a token refresh is in progress to prevent multiple simultaneous refresh requests
-let isRefreshing = false
-// Queue of requests waiting for token refresh
-let refreshSubscribers: Array<(token: string) => void> = []
-
-/**
- * Subscribe to token refresh completion
- */
-function subscribeTokenRefresh(callback: (token: string) => void): void {
-  refreshSubscribers.push(callback)
-}
-
-/**
- * Notify all subscribers that token has been refreshed
- */
-function onTokenRefreshed(token: string): void {
-  refreshSubscribers.forEach((callback) => callback(token))
-  refreshSubscribers = []
-}
 
 // ==================== Request Interceptor ====================
 
@@ -158,76 +137,37 @@ apiClient.interceptors.response.use(
         const isAuthEndpoint =
           url.includes('/auth/login') || url.includes('/auth/register') || url.includes('/auth/refresh')
 
-        // If we have a refresh token and this is not an auth endpoint, try to refresh
+        // If we have a refresh token and this is not an auth endpoint, try to refresh.
         if (refreshToken && !isAuthEndpoint) {
-          if (isRefreshing) {
-            // Wait for the ongoing refresh to complete
-            return new Promise((resolve, reject) => {
-              subscribeTokenRefresh((newToken: string) => {
-                if (newToken) {
-                  // Mark as retried to prevent infinite loop if retry also returns 401
-                  originalRequest._retry = true
-                  if (originalRequest.headers) {
-                    originalRequest.headers.Authorization = `Bearer ${newToken}`
-                  }
-                  resolve(apiClient(originalRequest))
-                } else {
-                  // Refresh failed, reject with original error
-                  reject({
-                    status,
-                    code: apiData.code,
-                    message: apiData.message || apiData.detail || error.message
-                  })
-                }
-              })
-            })
-          }
-
+          const refreshSessionUser = localStorage.getItem('auth_user')
           originalRequest._retry = true
-          isRefreshing = true
 
           try {
-            // Call refresh endpoint directly to avoid circular dependency
-            const refreshResponse = await axios.post(
-              `${API_BASE_URL}/auth/refresh`,
-              { refresh_token: refreshToken },
-              { headers: { 'Content-Type': 'application/json' } }
-            )
+            const headers = originalRequest.headers as Record<string, unknown> | undefined
+            const authHeader = headers?.Authorization ?? headers?.authorization
+            const failedAccessToken =
+              typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+                ? authHeader.slice('Bearer '.length)
+                : null
+            const tokens = await refreshAuthTokens({ failedAccessToken })
 
-            const refreshData = refreshResponse.data as ApiResponse<{
-              access_token: string
-              refresh_token: string
-              expires_in: number
-            }>
-
-            if (refreshData.code === 0 && refreshData.data) {
-              const { access_token, refresh_token: newRefreshToken, expires_in } = refreshData.data
-
-              // Update tokens in localStorage (convert expires_in to timestamp)
-              localStorage.setItem('auth_token', access_token)
-              localStorage.setItem('refresh_token', newRefreshToken)
-              localStorage.setItem('token_expires_at', String(Date.now() + expires_in * 1000))
-
-              // Notify subscribers with new token
-              onTokenRefreshed(access_token)
-
-              // Retry the original request with new token
-              if (originalRequest.headers) {
-                originalRequest.headers.Authorization = `Bearer ${access_token}`
-              }
-
-              isRefreshing = false
-              return apiClient(originalRequest)
+            if (originalRequest.headers) {
+              originalRequest.headers.Authorization = `Bearer ${tokens.access_token}`
+            }
+            return apiClient(originalRequest)
+          } catch {
+            // A stale 401 must not clear a session that another tab replaced or logged out.
+            const sessionChanged =
+              localStorage.getItem('refresh_token') !== refreshToken ||
+              localStorage.getItem('auth_user') !== refreshSessionUser
+            if (sessionChanged) {
+              return Promise.reject({
+                status: 401,
+                code: 'AUTH_SESSION_CHANGED',
+                message: 'Authentication session changed while refreshing.'
+              })
             }
 
-            // Refresh response was not successful, fall through to clear auth
-            throw new Error('Token refresh failed')
-          } catch (refreshError) {
-            // Refresh failed - notify subscribers with empty token
-            onTokenRefreshed('')
-            isRefreshing = false
-
-            // Clear tokens and redirect to login
             localStorage.removeItem('auth_token')
             localStorage.removeItem('refresh_token')
             localStorage.removeItem('auth_user')

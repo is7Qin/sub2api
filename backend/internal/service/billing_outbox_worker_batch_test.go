@@ -449,6 +449,99 @@ func TestBillingOutboxApplyGroupsParallelismOneIsSerial(t *testing.T) {
 	require.Empty(t, repo.retried)
 }
 
+func TestBillingOutboxApplyGroupParallelismInjectionClamped(t *testing.T) {
+	// 注入的并行度超过上限时必须 clamp：40 个不同分片、注入 1000，并发峰值
+	// 必须恰好是上限（未 clamp 时 40 个事务全部并发、峰值 40）。上限防测试/
+	// 调参误注入超大值导致 goroutine 与 DB 事务同时爆炸。
+	records := make([]BillingOutboxRecord, 40)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), int64(i+1001)) // 40 个不同分片
+	}
+	repo := &billingOutboxRepoStub{records: records}
+
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	started := make(chan struct{}, 40)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: true}
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+	worker.applyGroupParallelism = 1000
+
+	finished := make(chan error, 1)
+	go func() { finished <- worker.processBatch(context.Background()) }()
+
+	// clamp 生效时最多同时阻塞上限个事务：等满上限个即可确认未超限
+	// （若上限被误调低，此处超时暴露）。
+	for i := 0; i < billingOutboxApplyGroupParallelismMax; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			releaseOnce.Do(func() { close(release) })
+			t.Fatalf("only %d/%d concurrent batch transactions observed: parallelism clamped below max?", i, billingOutboxApplyGroupParallelismMax)
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, <-finished)
+
+	mu.Lock()
+	peak := maxActive
+	mu.Unlock()
+	require.Equal(t, billingOutboxApplyGroupParallelismMax, peak, "parallelism injected above max must be clamped to the cap")
+	require.Empty(t, repo.acked)
+	require.Empty(t, repo.retried)
+}
+
+func TestBillingOutboxApplyShardLockReleasedOnPanic(t *testing.T) {
+	// 事务调用 panic 时，分片锁必须随 defer 栈展开释放：unlock 无 defer 保护
+	// 时锁永久泄漏，该分片后续轮次的批量事务永久卡死。恢复后能重新获取
+	// 同一分片锁即通过；锁泄漏时重获会无限阻塞直至超时。
+	record := batchValidRecord(1, 42) // userID 42 → 分片 42
+	items := []UsageBillingBatchItem{{
+		Command: record.Command.Billing,
+		Binding: UsageBillingOutboxBinding{OutboxID: record.ID},
+	}}
+	repo := &billingOutboxRepoStub{records: []BillingOutboxRecord{record}}
+	panicBilling := &batchUsageBillingRepoStub{batchFn: func(context.Context, []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		panic("simulated batch transaction panic")
+	}}
+	worker := NewBillingOutboxWorker(repo, panicBilling)
+	group := billingShardGroup{shard: 42, indexes: []int{0}}
+
+	require.Panics(t, func() {
+		_ = worker.applyBatchGroup(context.Background(), group, items, []BillingOutboxRecord{record}, panicBilling)
+	})
+
+	relocked := make(chan struct{})
+	go func() {
+		unlock := worker.lockUserShard(42)
+		unlock()
+		close(relocked)
+	}()
+	select {
+	case <-relocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shard lock leaked after batch transaction panic")
+	}
+}
+
 func TestBillingOutboxWorker_BatchFallbackPreservesPerRecordPath(t *testing.T) {
 	// 仓库不支持批量接口时，回退到逐条事务（原有并发行为不变）。
 	records := make([]BillingOutboxRecord, 8)

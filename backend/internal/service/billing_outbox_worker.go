@@ -35,6 +35,9 @@ const (
 	// 分片（userID % 256），组内单个事务天然保持用户级串行；组间无共享锁、
 	// 无嵌套获取，并发获取不同分片锁不可能死锁。测试可注入 1 退化为串行。
 	billingOutboxApplyGroupParallelism = 8
+	// 注入并行度的上限：测试/调参误注入超大值会同时开爆 goroutine 与 DB
+	// 事务（每个分片组一个事务），clamp 到 32 保证最坏情况资源可控。
+	billingOutboxApplyGroupParallelismMax = 32
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -219,13 +222,12 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 	defer applyCancel()
 	// 分片组并行：不同分片的批量事务并发执行。同一用户必在同一分片，组内
 	// 单个事务天然保持用户级串行；组间无共享锁、无嵌套获取，并发获取不同
-	// 分片锁不可能死锁。错误聚合保留第一错误语义（并发下由互斥保护）。
+	// 分片锁不可能死锁。注入值经 clampApplyGroupParallelism 收敛（<1 回退
+	// 默认 8，超上限截断 32），防误注入导致 goroutine/DB 事务爆炸。错误
+	// 聚合保留第一错误语义（并发下由互斥保护）。
 	var firstErr error
 	var errMu sync.Mutex
-	parallelism := w.applyGroupParallelism
-	if parallelism < 1 {
-		parallelism = billingOutboxApplyGroupParallelism
-	}
+	parallelism := clampApplyGroupParallelism(w.applyGroupParallelism)
 	sem := make(chan struct{}, parallelism)
 	var wg sync.WaitGroup
 	for _, group := range groupBatchItemsByShard(items) {
@@ -247,23 +249,35 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 	return firstErr
 }
 
-// applyBatchGroup 在单个分片事务内应用一组批量记录：分片锁只覆盖本事务的
-// 持锁区间（lockUserShard → ApplyBatchAndStageOutboxFinalizations → unlock），
-// 逐条失败经 savepoint 隔离（仓库内），outcome 处理与串行路径一致。返回
-// 组级错误（批量事务失败时非 nil；组内逐条失败只落库不返回）。
+// clampApplyGroupParallelism 将注入的组并行度收敛到 [1, 上限]：<1 回退
+// 默认 8，超过上限截断到 32。上限防测试/调参误注入超大值导致 goroutine
+// 与 DB 事务同时爆炸；32 已远超默认 8 的吞吐需求。
+func clampApplyGroupParallelism(v int) int {
+	if v < 1 {
+		v = billingOutboxApplyGroupParallelism
+	}
+	if v > billingOutboxApplyGroupParallelismMax {
+		v = billingOutboxApplyGroupParallelismMax
+	}
+	return v
+}
+
+// applyBatchGroup 在单个分片事务内应用一组批量记录：分片锁覆盖
+// lockUserShard 到函数返回（defer 释放，事务调用 panic 时随栈展开解锁，
+// 避免分片锁永久泄漏卡死该分片后续轮次）。outcome 处理在锁内执行，但不
+// 获取任何锁、无嵌套加锁死锁风险；逐条失败经 savepoint 隔离（仓库内），
+// outcome 处理与串行路径一致。返回组级错误（批量事务失败时非 nil；组内
+// 逐条失败只落库不返回）。
 func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billingShardGroup, items []UsageBillingBatchItem, records []BillingOutboxRecord, batchRepo UsageBillingBatchFinalizationRepository) error {
 	groupItems := make([]UsageBillingBatchItem, len(group.indexes))
 	for gi, idx := range group.indexes {
 		groupItems[gi] = items[idx]
 	}
-	var unlock func()
 	if group.shard >= 0 {
-		unlock = w.lockUserShard(uint64(group.shard))
+		unlock := w.lockUserShard(uint64(group.shard))
+		defer unlock()
 	}
 	outcomes, err := batchRepo.ApplyBatchAndStageOutboxFinalizations(ctx, groupItems)
-	if unlock != nil {
-		unlock()
-	}
 	if err == nil && len(outcomes) != len(groupItems) {
 		err = fmt.Errorf("batch billing apply returned %d outcomes for %d items", len(outcomes), len(groupItems))
 	}

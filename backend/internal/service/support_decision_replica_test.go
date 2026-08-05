@@ -486,12 +486,16 @@ func TestSupportDecisionReplicaStartDuringStopDoesNotCrossLifecycle(t *testing.T
 	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
 	h.store.setActive(1, nil)
 	require.NoError(t, h.replica.Start(context.Background()))
-	stopMarked := make(chan struct{}, 1)
-	h.replica.deps.afterStopMarked = func() { stopMarked <- struct{}{} }
+	stopEntered, releaseStop := make(chan struct{}), make(chan struct{})
+	h.replica.deps.afterStopMarked = func() {
+		close(stopEntered)
+		<-releaseStop
+	}
 	stopDone := make(chan struct{})
 	go func() { h.replica.Stop(); close(stopDone) }()
-	<-stopMarked
+	<-stopEntered
 	require.Error(t, h.replica.Start(context.Background()))
+	close(releaseStop)
 	<-stopDone
 }
 

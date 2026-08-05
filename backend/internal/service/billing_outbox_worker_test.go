@@ -581,6 +581,71 @@ func TestBillingOutboxWorker_RetriesFinalizationFailureWithoutAcknowledging(t *t
 	require.False(t, repo.finalizationRetried[0].terminal)
 }
 
+// TestBillingOutboxWorker_FinalizationPgErrorRetryableBelowMaxAttempts：finalization
+// 路径的 PG 42xxx/22xxx（部署可修复）受 maxAttempts 约束——attempts 未到
+// billingOutboxMaxAttempts 时保持 pending 重试（已扣费记录的后置效应必须保持
+// 可重放），不得在首次失败就 terminal。
+func TestBillingOutboxWorker_FinalizationPgErrorRetryableBelowMaxAttempts(t *testing.T) {
+	record := validBillingOutboxRecord(94)
+	record.Status = "finalizing"
+	record.Attempts = billingOutboxMaxAttempts - 1
+	record.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{finalizationRecords: []BillingOutboxRecord{record}}
+	postProcessor := &billingOutboxPostProcessorStub{err: pgError42P01()}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+
+	require.Empty(t, repo.finalizationAcked)
+	require.Len(t, repo.finalizationRetried, 1)
+	require.False(t, repo.finalizationRetried[0].terminal, "finalization PG error below max attempts must stay retryable")
+	require.False(t, repo.finalizationRetried[0].availableAt.IsZero(), "retryable finalization failure must be retried with backoff")
+}
+
+// TestBillingOutboxWorker_FinalizationPgErrorTerminalAtMaxAttempts：finalization 的
+// PG 42xxx/22xxx 在 attempts ≥ billingOutboxMaxAttempts 时 terminal，且 last_error
+// 带 [SQLSTATE 42P01] 前缀（对账与恢复定位可见根因码）。
+func TestBillingOutboxWorker_FinalizationPgErrorTerminalAtMaxAttempts(t *testing.T) {
+	record := validBillingOutboxRecord(95)
+	record.Status = "finalizing"
+	record.Attempts = billingOutboxMaxAttempts
+	record.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{finalizationRecords: []BillingOutboxRecord{record}}
+	postProcessor := &billingOutboxPostProcessorStub{err: pgError42P01()}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+
+	require.Empty(t, repo.finalizationAcked)
+	require.Len(t, repo.finalizationRetried, 1)
+	require.True(t, repo.finalizationRetried[0].terminal, "finalization PG error at max attempts must be terminal")
+	require.True(t, repo.finalizationRetried[0].availableAt.IsZero())
+	require.Contains(t, repo.finalizationRetried[0].lastError, "[SQLSTATE 42P01]", "terminal last_error must carry the SQLSTATE prefix")
+}
+
+// TestBillingOutboxWorker_FinalizationLegacyTerminalImmediateAtAnyAttempts：legacy
+// 立即 terminal 分类（infra 4xx + 哨兵，确定性客户端数据毒药）在 finalization
+// 保持立即 terminal（pre-existing 行为），不受 maxAttempts 约束。
+func TestBillingOutboxWorker_FinalizationLegacyTerminalImmediateAtAnyAttempts(t *testing.T) {
+	record := validBillingOutboxRecord(96)
+	record.Status = "finalizing"
+	record.Attempts = 0
+	record.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{finalizationRecords: []BillingOutboxRecord{record}}
+	postProcessor := &billingOutboxPostProcessorStub{err: ErrSubscriptionNotFound}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+
+	require.Empty(t, repo.finalizationAcked)
+	require.Len(t, repo.finalizationRetried, 1)
+	require.True(t, repo.finalizationRetried[0].terminal, "legacy immediate-terminal failures must stay terminal in finalization")
+	require.True(t, repo.finalizationRetried[0].availableAt.IsZero())
+}
+
 func TestBillingOutboxWorker_KeepsAppliedFinalizationRetryablePastAttemptLimit(t *testing.T) {
 	record := validBillingOutboxRecord(75)
 	record.Status = "finalizing"

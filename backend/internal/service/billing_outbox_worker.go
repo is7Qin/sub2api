@@ -79,7 +79,10 @@ type BillingOutboxHealth struct {
 	CircuitOpen       bool       `json:"circuit_open"`
 	CircuitError      string     `json:"circuit_error,omitempty"`
 	CircuitOpenedAt   *time.Time `json:"circuit_opened_at,omitempty"`
-	PermanentFailures uint64     `json:"permanent_failures"`
+	// PermanentFailures 是熔断累计永久错误数（单调不减的累计值，非连续计数）：
+	// 消费方应取相邻两次采样的差值（delta）判断新增永久错误，而非单次绝对值；
+	// 连续计数语义见 CircuitOpen。
+	PermanentFailures uint64 `json:"permanent_failures"`
 }
 
 // BillingOutboxPostProcessor replays non-transactional enforcement updates
@@ -456,7 +459,10 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		ackCancel()
 		if ackErr != nil {
 			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
-			w.observeApplyError(ackErr)
+			// Ack 失败不喂熔断：确认路径由 billingOutboxAckFailureBreakThreshold
+			// 与租约补领兜底（记录保留租约、过期重放）。永久分类落在 Ack UPDATE
+			// 上（42/22）实际不可能出现（Claim 刚在同一张表成功），喂给熔断只会
+			// 产生假信号、拖垮与确认路径无关的健康 apply。
 			failStreak++
 			if failStreak >= billingOutboxAckFailureBreakThreshold {
 				break
@@ -574,8 +580,9 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 		ackErr := w.repo.Ack(ackCtx, record.ID, w.workerID)
 		ackCancel()
 		if ackErr != nil {
+			// 与批量路径一致：Ack 失败不喂熔断（确认路径由租约补领兜底，
+			// 永久分类落在 Ack 上只会产生假信号）。
 			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
-			w.observeApplyError(ackErr)
 			return false
 		}
 		w.processed.Add(1)
@@ -618,10 +625,13 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 		ownershipLost = heartbeatLost
 		if err != nil {
 			w.recordFailure(fmt.Errorf("finalize billing outbox command %d: %w", record.ID, err))
-			// finalization 分类与 apply 一致（billingOutboxIsPermanentError），但
-			// 不受 maxAttempts 约束：已扣费记录的后置效应必须保持可重放，暂时性
-			// 失败永远 pending 重试，永久错误立即 terminal。
-			w.persistFinalizationFailure(repo, record, err, billingOutboxIsPermanentError(err), ownershipLost)
+			// finalization 的 terminal 决策与 apply 共用 billingOutboxFailureTerminal：
+			// 暂时性失败永远 pending 重试（已扣费记录的后置效应必须保持可重放）；
+			// PG 42xxx/22xxx（部署可修复）仅 attempts ≥ billingOutboxMaxAttempts 才
+			// terminal（落库带 [SQLSTATE xxxxx] 前缀）；legacy 立即 terminal 列表
+			// （infra 4xx + 哨兵，确定性客户端数据毒药）保持立即 terminal（pre-existing
+			// 行为，不受 maxAttempts 约束）。
+			w.persistFinalizationFailure(repo, record, err, billingOutboxFailureTerminal(record, err), ownershipLost)
 			return
 		}
 	}
@@ -690,7 +700,10 @@ func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinal
 		return
 	}
 	// Monetary effects already committed before this phase. A transient finalizer
-	// failure must remain replayable regardless of the ordinary Apply retry limit.
+	// failure must remain replayable regardless of the ordinary Apply retry limit;
+	// permanent PG 42/22 failures terminalize only at attempts ≥
+	// billingOutboxMaxAttempts (deploy-fixable), legacy 4xx/sentinel poison stays
+	// immediate-terminal (see billingOutboxFailureTerminal).
 	retryAt := time.Now().UTC().Add(billingOutboxRetryDelay(record.Attempts + 1))
 	if terminal {
 		retryAt = time.Time{}
@@ -712,9 +725,15 @@ func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinal
 // 剩余记录保留租约、租约过期后补领重放，避免逐条 2s 超时拖垮整轮；逐条
 // （并发）路径忽略返回值，行为不变。
 func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err error, terminal bool) bool {
-	// 所有 apply 路径的失败都经 persistFailure 落库：这里是熔断计数的唯一
-	// 汇聚点（永久错误 +1 计数，暂时性错误复位连续计数）。
-	w.observeApplyError(err)
+	// 熔断计数只喂"本轮确实会重试"的失败：立即 terminal 的记录（4xx/哨兵、
+	// attempts ≥ billingOutboxMaxAttempts 的 PG）永不再重试——计数它们保护不了
+	// 任何东西，反而会被正常的 enqueue→apply 竞态（如用户/账号已删除等 404 类
+	// 换行）连打 5 条误开熔断、拖垮所有健康 apply。terminal 决策在调用前已作出
+	// （含 attempts ≥ maxAttempts 的 PG 检查），这里直接复用：非 terminal 的
+	// 永久错误累加计数，暂时性错误由 observeApplyError 内部复位连续计数。
+	if !terminal {
+		w.observeApplyError(err)
+	}
 	// Retryable infrastructure failures remain recoverable indefinitely; the
 	// capped backoff limits poll delay without discarding durable work.
 	retryAt := time.Now().UTC().Add(billingOutboxRetryDelay(record.Attempts + 1))
@@ -745,7 +764,7 @@ type billingOutboxCircuit struct {
 	open           bool
 	openedAt       time.Time
 	errMessage     string
-	total          uint64 // 累计永久错误（Health.PermanentFailures，单调不减）
+	total          uint64 // 累计会重试的永久错误（立即 terminal 的不计；Health.PermanentFailures，单调不减）
 	streak         uint64 // 连续永久错误（成功/暂时性错误复位为 0）
 	probing        bool  // 冷却结束后的试探恢复轮进行中
 	probePermanent bool  // 试探轮内已观察到永久错误（首个即重启冷却窗口）
@@ -764,7 +783,9 @@ func (w *BillingOutboxWorker) circuitCooldownDuration() time.Duration {
 // 重启熔断；暂时性错误复位连续计数（"连续永久错误"语义：成功或暂时性
 // 错误都会打断连续性）。打开瞬间与试探轮首个永久错误都记 Error 级日志并
 // 刷新 openedAt/errMessage。幂等：重复观察同一错误只是多计数一次，无状态
-// 破坏；finalization 路径不调用本方法（熔断不作用于 finalization）。
+// 破坏。finalization 路径不调用本方法（熔断不作用于 finalization）。调用方
+// 只应传入会重试的失败：立即 terminal 的失败由 persistFailure 先行过滤，
+// 确认路径（Ack）失败不经过本方法。
 func (w *BillingOutboxWorker) observeApplyError(err error) {
 	if !billingOutboxIsPermanentError(err) {
 		w.circuit.resetStreak()
@@ -845,22 +866,27 @@ func (w *BillingOutboxWorker) endApplyRound() {
 	slog.Info("billing outbox apply circuit closed after probe round")
 }
 
-// billingOutboxFailureTerminal 是 apply 路径的 terminal 决策（finalization
-// 路径不经过本函数，不受 maxAttempts 限制）：仅永久错误可能 terminal——
-// 本次新增的 PG 42xxx/22xxx 永久分类受 maxAttempts 约束（attempts ≥
-// billingOutboxMaxAttempts 才 terminal，落库带 SQLSTATE 前缀）；既有
-// terminal 列表（infra 4xx + 哨兵/校验错误）保持立即 terminal（确定性
-// 毒药命令重试无意义）。暂时性错误（含 40001/40P01/55P03/57014/57P01-03/
-// 08xxx/context 超时）即使 attempts 已达上限也绝不 terminal。
+// billingOutboxFailureTerminal 是 apply 与 finalization 两条路径共用的 terminal
+// 决策：仅永久错误可能 terminal——
+//   1. PG 42xxx/22xxx（部署可修复，字段教训）：受 billingOutboxMaxAttempts
+//      约束——attempts ≥ maxAttempts 才 terminal，落库带 [SQLSTATE xxxxx] 前缀。
+//      finalization 路径同样受此约束：已扣费记录的后置效应必须保持可重放，
+//      PG 错误在 attempts 未到上限时保持 pending 重试（terminal→pending 手动
+//      重放会命中去重键直接 Ack，不会重放后置效应）。
+//   2. legacy 立即 terminal 列表（infra 4xx + 哨兵，确定性客户端数据毒药）：
+//      重试无意义，立即 terminal（pre-existing 行为，不受 maxAttempts 约束）。
+// 暂时性错误（含 40001/40P01/55P03/57014/57P01-03/08xxx/context 超时）即使
+// attempts 已达上限也绝不 terminal。PG 判定先于 legacy 立即 terminal：被 infra
+// 4xx 包装的 PgError 仍按 SQLSTATE 判定（与 billingOutboxIsPermanentError 的
+// 优先级一致）。
 func billingOutboxFailureTerminal(record BillingOutboxRecord, err error) bool {
-	if !billingOutboxIsPermanentError(err) {
-		return false
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr != nil {
+	if billingOutboxIsPermanentPgError(err) {
 		return record.Attempts >= billingOutboxMaxAttempts
 	}
-	return true
+	if billingOutboxIsImmediateTerminalError(err) {
+		return true
+	}
+	return false
 }
 
 // billingOutboxErrorMessageWithSQLState 为 terminal 落库的 PG 错误附加
@@ -877,18 +903,48 @@ func billingOutboxErrorMessageWithSQLState(err error, message string) string {
 	return message
 }
 
-// billingOutboxIsPermanentError 是 apply 与 finalization 两处共用的永久错误
-// 分类（幂等：同一错误在两处分类一致）。永久 = PG 42xxx/22xxx（前缀匹配
-// 全类）∪ 既有 terminal 列表（infra 4xx + 哨兵错误）；其余一律非永久。
-// 显式暂时性 PG 码——40001/40P01（及全部 40 类）、55P03、57014、57P01-03、
-// 08xxx（及全部 08 类）——与 42/22 前缀不相交，天然落入非永久，绝不 terminal。
+// billingOutboxIsPermanentError 是熔断计数与 terminal 分类的永久错误判定
+// （幂等：同一错误在两处分类一致）。永久 = PG 42xxx/22xxx（前缀匹配全类）∪
+// legacy 立即 terminal 列表（infra 4xx + 哨兵）；其余一律非永久。显式暂时性
+// PG 码——40001/40P01（及全部 40 类）、55P03、57014、57P01-03、08xxx（及
+// 全部 08 类）——与 42/22 前缀不相交，天然落入非永久，绝不 terminal。PG
+// 检查先于 4xx 检查：被 infra 4xx 包装的 PgError 仍按 SQLSTATE 判定（正确
+// 优先级）。
 func billingOutboxIsPermanentError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	if billingOutboxIsPermanentPgError(err) {
+		return true
+	}
+	return billingOutboxIsImmediateTerminalError(err)
+}
+
+// billingOutboxIsPermanentPgError 判定 PG 42xxx/22xxx（前缀匹配全类）：部署可
+// 修复的永久类 PG 错误，terminal 受 billingOutboxMaxAttempts 约束。显式暂时性
+// PG 码——40001/40P01（及全部 40 类）、55P03、57014、57P01-03、08xxx（及全部
+// 08 类）——与 42/22 前缀不相交，天然落入非永久，绝不 terminal。
+func billingOutboxIsPermanentPgError(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr != nil && len(pgErr.Code) >= 2 {
 		return strings.HasPrefix(pgErr.Code, "42") || strings.HasPrefix(pgErr.Code, "22")
+	}
+	return false
+}
+
+// billingOutboxIsImmediateTerminalError 是 legacy 立即 terminal 分类（pre-existing
+// terminal 列表语义）：infra 4xx + 哨兵错误——确定性客户端数据毒药，重试无
+// 意义，apply 与 finalization 两条路径都立即 terminal，不受 maxAttempts 约束。
+// PG 42xxx/22xxx 不在此列：部署可修复，terminal 受 billingOutboxMaxAttempts
+// 约束（见 billingOutboxFailureTerminal）。
+//
+// 注意（Minor）：当前 apply 路径的 4xx 生产者只有确定性 not-found 哨兵（与下方
+// 哨兵列表冗余）与本地后置处理，无上游调用。未来任何新增的 4xx 生产者（如新
+// 上游调用的 429）都会在 apply 与 finalization 两条路径立即 terminal——引入
+// 上游 4xx 生产者时需收窄此规则（如仅保留哨兵列表）。
+func billingOutboxIsImmediateTerminalError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
 	}
 	// Application errors with client-side status codes are deterministic poison
 	// commands; retry only infrastructure/server failures.

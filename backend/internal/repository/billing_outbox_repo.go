@@ -506,7 +506,12 @@ func (r *billingOutboxRepository) Ack(ctx context.Context, id int64, workerID st
 //       leased_by = NULL, attempts = 0
 //   WHERE status = 'terminal';
 // 保留期不得短于人工恢复窗口（Task F 复核 retention 与恢复窗口的关系）；
-// 重放由 usage_billing_dedup 去重键幂等兜底，不会重复计费。
+// 重放由 usage_billing_dedup 去重键幂等兜底，不会重复计费。注意：该重放只
+// 适用于 apply 路径 terminal 的行（重放重新 apply，去重幂等后转入
+// finalization）。finalization 阶段 terminal 的行（仅确定性毒药或 PG 错误达
+// maxAttempts 时产生，见 service.billingOutboxFailureTerminal）重置为 pending
+// 会命中已存在的去重键直接 Ack，不会重放已扣费记录的后置效应（缓存失效/
+// 通知），需人工处理。
 func (r *billingOutboxRepository) CleanupTerminal(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("billing outbox database is nil")

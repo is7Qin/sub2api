@@ -78,6 +78,58 @@ func TestBillingOutboxPgErrorIsPermanent(t *testing.T) {
 	require.False(t, billingOutboxIsPermanentError(ErrBillingOutboxClaimLost))
 }
 
+// TestBillingOutboxWorker_CircuitIgnoresImmediatelyTerminalFailures：立即 terminal
+// 的失败（4xx/哨兵，如 ErrUserNotFound——正常的 enqueue→apply 竞态换行）永不再
+// 重试，喂给熔断计数保护不了任何东西，反而会被连打 5 条误开熔断、拖垮全部健康
+// apply。熔断计数只统计"本轮确实会重试"的永久错误。
+func TestBillingOutboxWorker_CircuitIgnoresImmediatelyTerminalFailures(t *testing.T) {
+	repo := &billingOutboxRepoStub{records: fivePermanentApplyRecords()}
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Err = ErrUserNotFound
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+	worker.circuitCooldown = time.Hour
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Len(t, repo.retried, 5)
+	for _, retry := range repo.retried {
+		require.True(t, retry.terminal, "4xx/sentinel failures must stay immediately terminal")
+	}
+	health := worker.Health(context.Background())
+	require.False(t, health.CircuitOpen, "immediately-terminal churn must not open the circuit")
+	require.Zero(t, health.PermanentFailures, "immediately-terminal failures must not feed the permanent counter")
+}
+
+// TestBillingOutboxWorker_AckFailureDoesNotFeedCircuit：确认路径（去重 Ack）失败
+// 不喂熔断计数——即使错误本身带永久分类（如 PG 42P01 落在 Ack UPDATE 上），
+// Ack 失败由 billingOutboxAckFailureBreakThreshold 与租约补领兜底，永久分类在此
+// 只会产生假信号，拖垮与确认路径无关的健康 apply。
+func TestBillingOutboxWorker_AckFailureDoesNotFeedCircuit(t *testing.T) {
+	repo := &billingOutboxRepoStub{records: fivePermanentApplyRecords(), ackErr: pgError42P01()}
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: false} // 全部走去重 Ack 路径
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+	worker.circuitCooldown = time.Hour
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Len(t, repo.acked, billingOutboxAckFailureBreakThreshold, "ack failures must break after the consecutive threshold")
+	require.Empty(t, repo.retried)
+	health := worker.Health(context.Background())
+	require.False(t, health.CircuitOpen, "ack failures must not feed the circuit")
+	require.Zero(t, health.PermanentFailures)
+}
+
 // TestBillingOutboxWorker_CircuitOpensAfterConsecutivePermanentErrorsAndSkipsApplyClaims：
 // 连续 5 次永久错误 → CircuitOpen；熔断期间 apply Claim（pending 与过期租约分支）
 // 一律跳过，finalization Claim 照常。

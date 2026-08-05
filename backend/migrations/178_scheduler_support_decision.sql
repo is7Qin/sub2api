@@ -74,7 +74,6 @@ BEGIN
         FROM old_rows AS o FULL JOIN new_rows AS n USING (id)
         WHERE o.id IS NULL OR n.id IS NULL OR
               o.status IS DISTINCT FROM n.status OR
-              o.model_mapping IS DISTINCT FROM n.model_mapping OR
               o.restrict_models IS DISTINCT FROM n.restrict_models OR
               o.billing_model_source IS DISTINCT FROM n.billing_model_source
     ) AS affected;
@@ -124,11 +123,17 @@ SET search_path = pg_catalog, public
 AS $$
 BEGIN
     INSERT INTO public.scheduler_dirty_group_sources (group_id)
+    WITH changed AS MATERIALIZED (
+        SELECT o.group_id AS old_group_id, n.group_id AS new_group_id
+        FROM old_rows AS o JOIN new_rows AS n USING (id)
+        WHERE o.channel_id IS DISTINCT FROM n.channel_id OR
+              o.group_id IS DISTINCT FROM n.group_id
+    )
     SELECT group_id
     FROM (
-        SELECT group_id FROM old_rows
+        SELECT old_group_id AS group_id FROM changed
         UNION
-        SELECT group_id FROM new_rows
+        SELECT new_group_id AS group_id FROM changed
     ) AS affected
     ORDER BY group_id
     ON CONFLICT (group_id) DO UPDATE
@@ -202,15 +207,19 @@ AS $$
 DECLARE
     channel_ids bigint[];
 BEGIN
-    SELECT array_agg(DISTINCT affected.channel_id ORDER BY affected.channel_id)
-    INTO channel_ids
-    FROM (
-        SELECT COALESCE(n.channel_id, o.channel_id) AS channel_id
-        FROM old_rows AS o FULL JOIN new_rows AS n USING (id)
-        WHERE o.id IS NULL OR n.id IS NULL OR
-              o.channel_id IS DISTINCT FROM n.channel_id OR
+    WITH changed AS MATERIALIZED (
+        SELECT o.channel_id AS old_channel_id, n.channel_id AS new_channel_id
+        FROM old_rows AS o JOIN new_rows AS n USING (id)
+        WHERE o.channel_id IS DISTINCT FROM n.channel_id OR
               o.models IS DISTINCT FROM n.models OR
               o.platform IS DISTINCT FROM n.platform
+    )
+    SELECT array_agg(affected.channel_id ORDER BY affected.channel_id)
+    INTO channel_ids
+    FROM (
+        SELECT old_channel_id AS channel_id FROM changed
+        UNION
+        SELECT new_channel_id AS channel_id FROM changed
     ) AS affected;
 
     IF channel_ids IS NOT NULL THEN

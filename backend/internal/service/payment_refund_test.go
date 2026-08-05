@@ -118,6 +118,101 @@ func TestPrepareRefundRejectsLegacyGuessedProviderInstance(t *testing.T) {
 	require.Equal(t, "REFUND_DISABLED", infraerrors.Reason(err))
 }
 
+func TestPrepareRefundWithoutBalanceDeductionIgnoresInsufficientBalance(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("refund-no-deduction@example.com").
+		SetPasswordHash("hash").
+		SetUsername("refund-no-deduction-user").
+		Save(ctx)
+	require.NoError(t, err)
+
+	inst, err := client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeAlipay).
+		SetName("alipay-refund-no-deduction").
+		SetConfig("{}").
+		SetSupportedTypes("alipay").
+		SetEnabled(true).
+		SetRefundEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(100).
+		SetPayAmount(100).
+		SetFeeRate(0).
+		SetRechargeCode("REFUND-NO-DEDUCTION").
+		SetOutTradeNo("refund_no_deduction").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("trade-refund-no-deduction").
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusCompleted).
+		SetExpiresAt(time.Now().Add(time.Hour)).
+		SetPaidAt(time.Now()).
+		SetClientIP("test-client").
+		SetSrcHost("api.example.com").
+		SetProviderInstanceID(strconv.FormatInt(inst.ID, 10)).
+		SetProviderKey(payment.TypeAlipay).
+		Save(ctx)
+	require.NoError(t, err)
+
+	svc := &PaymentService{
+		entClient: client,
+		userRepo:  &mockUserRepo{getByIDUser: &User{Balance: 0}},
+	}
+	plan, result, err := svc.PrepareRefund(ctx, order.ID, order.Amount, "", false, false)
+
+	require.NoError(t, err)
+	require.Nil(t, result)
+	require.NotNil(t, plan)
+	require.Equal(t, payment.DeductionTypeNone, plan.DeductionType)
+	require.Zero(t, plan.BalanceToDeduct)
+}
+
+func TestPrepDeductBalanceRequiresForceWhenBalanceIsInsufficient(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		balance    float64
+		force      bool
+		wantDeduct float64
+		wantForce  bool
+	}{
+		{name: "insufficient balance", balance: 40, wantForce: true},
+		{name: "equal balance", balance: 100, wantDeduct: 100},
+		{name: "forced insufficient balance", balance: 40, force: true, wantDeduct: 40},
+		{name: "forced negative balance", balance: -25, force: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := &RefundPlan{RefundAmount: 100}
+			svc := &PaymentService{
+				userRepo: &mockUserRepo{getByIDUser: &User{Balance: tc.balance}},
+			}
+
+			result := svc.prepDeduct(context.Background(), &dbent.PaymentOrder{
+				UserID:    1,
+				OrderType: payment.OrderTypeBalance,
+			}, plan, tc.force)
+
+			if tc.wantForce {
+				require.NotNil(t, result)
+				require.False(t, result.Success)
+				require.True(t, result.RequireForce)
+				require.Equal(t, "user balance is insufficient for deduction, use force", result.Warning)
+				require.Zero(t, plan.BalanceToDeduct)
+				return
+			}
+			require.Nil(t, result)
+			require.Equal(t, payment.DeductionTypeBalance, plan.DeductionType)
+			require.Equal(t, tc.wantDeduct, plan.BalanceToDeduct)
+		})
+	}
+}
+
 func TestGwRefundRejectsAlipayMerchantIdentitySnapshotMismatch(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)

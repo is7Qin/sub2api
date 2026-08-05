@@ -161,8 +161,10 @@ ORDER BY c.id`)
 		if err := rows.Scan(&channel.ID, &channel.Status, &mappingJSON, &channel.RestrictModels, &channel.BillingModelSource, &groupIDsJSON, &pricingJSON); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(mappingJSON, &channel.ModelMapping); err != nil {
-			return nil, fmt.Errorf("decode channel %d model_mapping: %w", channel.ID, err)
+		if len(mappingJSON) > 0 {
+			if err := json.Unmarshal(mappingJSON, &channel.ModelMapping); err != nil {
+				return nil, fmt.Errorf("decode channel %d model_mapping: %w", channel.ID, err)
+			}
 		}
 		if err := json.Unmarshal(groupIDsJSON, &channel.GroupIDs); err != nil {
 			return nil, fmt.Errorf("decode channel %d group_ids: %w", channel.ID, err)

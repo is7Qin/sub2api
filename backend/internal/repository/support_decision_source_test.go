@@ -187,6 +187,23 @@ func TestSupportDecisionSourcePreservesModelSupportSemantics(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSupportDecisionSourcePreservesEmptyChannelMappingSemantics(t *testing.T) {
+	source, mock, _ := newSupportDecisionSourceTestDB(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
+	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("channels").WillReturnRows(sqlmock.NewRows([]string{"id", "status", "model_mapping", "restrict_models", "billing_model_source", "group_ids", "pricing_models"}).
+		AddRow(int64(5), service.StatusActive, nil, false, service.BillingModelSourceRequested, `[]`, `[]`))
+	mock.ExpectCommit()
+
+	snapshot, err := source.Load(context.Background())
+	require.NoError(t, err)
+	require.Len(t, snapshot.Channels, 1)
+	require.Empty(t, snapshot.Channels[0].ModelMapping)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestSupportDecisionSourceRollsBackOnPartialReadFailure(t *testing.T) {
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	mock.ExpectBegin()
@@ -197,6 +214,61 @@ func TestSupportDecisionSourceRollsBackOnPartialReadFailure(t *testing.T) {
 
 	snapshot, err := source.Load(context.Background())
 	require.ErrorContains(t, err, "load support decision groups")
+	require.Nil(t, snapshot)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSupportDecisionSourceRollsBackOnAccountReadFailure(t *testing.T) {
+	source, mock, _ := newSupportDecisionSourceTestDB(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("accounts").WillReturnError(errors.New("account read failed"))
+	mock.ExpectRollback()
+
+	snapshot, err := source.Load(context.Background())
+	require.ErrorContains(t, err, "load support decision accounts")
+	require.Nil(t, snapshot)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSupportDecisionSourceRollsBackOnMembershipReadFailure(t *testing.T) {
+	source, mock, _ := newSupportDecisionSourceTestDB(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
+	mock.ExpectQuery("memberships").WillReturnError(errors.New("membership read failed"))
+	mock.ExpectRollback()
+
+	snapshot, err := source.Load(context.Background())
+	require.ErrorContains(t, err, "load support decision memberships")
+	require.Nil(t, snapshot)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSupportDecisionSourceRollsBackOnChannelReadFailure(t *testing.T) {
+	source, mock, _ := newSupportDecisionSourceTestDB(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
+	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("channels").WillReturnError(errors.New("channel read failed"))
+	mock.ExpectRollback()
+
+	snapshot, err := source.Load(context.Background())
+	require.ErrorContains(t, err, "load support decision channels")
+	require.Nil(t, snapshot)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSupportDecisionSourceRollsBackOnCommitFailure(t *testing.T) {
+	source, mock, _ := newSupportDecisionSourceTestDB(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("accounts").WillReturnRows(supportDecisionAccountRows())
+	mock.ExpectQuery("memberships").WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
+	mock.ExpectQuery("groups").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "require_privacy_set", "models_list_config"}))
+	mock.ExpectQuery("channels").WillReturnRows(sqlmock.NewRows([]string{"id", "status", "model_mapping", "restrict_models", "billing_model_source", "group_ids", "pricing_models"}))
+	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
+
+	snapshot, err := source.Load(context.Background())
+	require.ErrorContains(t, err, "commit support decision snapshot")
 	require.Nil(t, snapshot)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

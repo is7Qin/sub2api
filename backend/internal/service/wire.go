@@ -616,6 +616,7 @@ var ProviderSet = wire.NewSet(
 	ProvideUserMessageQueueService,
 	NewUsageRecordWorkerPool,
 	ProvideSchedulerSnapshotService,
+	NewSupportDecisionPublisher,
 	NewIdentityService,
 	NewCRSSyncService,
 	ProvideUpdateService,

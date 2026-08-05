@@ -44,6 +44,11 @@ type supportDecisionWildcard struct {
 	Profile  supportDecisionProfile `json:"profile"`
 }
 
+type supportDecisionCatchAll struct {
+	TargetID uint32                 `json:"target_id"`
+	Profile  supportDecisionProfile `json:"profile"`
+}
+
 type supportDecisionScopeTable struct {
 	Key                 supportDecisionScopeKey              `json:"key"`
 	OpenAI              bool                                 `json:"openai"`
@@ -51,6 +56,7 @@ type supportDecisionScopeTable struct {
 	Exact               map[string]supportDecisionExactValue `json:"-"`
 	ExactWire           []supportDecisionExactEntry          `json:"exact,omitempty"`
 	Wildcard            []supportDecisionWildcard            `json:"wildcard,omitempty"`
+	CatchAll            *supportDecisionCatchAll             `json:"catch_all,omitempty"`
 	ChannelExact        []uint32                             `json:"channel_exact,omitempty"`
 	ChannelWildcard     []uint32                             `json:"channel_wildcard,omitempty"`
 	ChannelAllowed      supportDecisionProfile               `json:"channel_allowed,omitempty"`
@@ -227,6 +233,9 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 			return profileResult(rule.Profile, coordinate)
 		}
 	}
+	if scope.CatchAll != nil {
+		return profileResult(scope.CatchAll.Profile, coordinate)
+	}
 	if len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0 {
 		if supportDecisionChannelPatternMatches(t.Strings, scope, model) {
 			return profileResult(scope.ChannelAllowed, coordinate)
@@ -236,17 +245,79 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 }
 
 func supportDecisionChannelPatternMatches(stringsTable []string, scope *supportDecisionScopeTable, model string) bool {
+	alias := claudePricingRevisionAliasFoldASCII(model)
 	for _, stringID := range scope.ChannelExact {
-		if int(stringID) < len(stringsTable) && equalFoldASCII(model, stringsTable[stringID]) {
+		if int(stringID) < len(stringsTable) && (equalFoldASCII(model, stringsTable[stringID]) || aliasMatchesFoldASCII(model, alias, stringsTable[stringID], false)) {
 			return true
 		}
 	}
 	for _, stringID := range scope.ChannelWildcard {
-		if int(stringID) < len(stringsTable) && hasPrefixFoldASCII(model, stringsTable[stringID]) {
+		if int(stringID) < len(stringsTable) && (hasPrefixFoldASCII(model, stringsTable[stringID]) || aliasMatchesFoldASCII(model, alias, stringsTable[stringID], true)) {
 			return true
 		}
 	}
 	return false
+}
+
+func claudePricingRevisionAliasFoldASCII(model string) int {
+	if !hasPrefixFoldASCII(model, "claude-") {
+		return -1
+	}
+	separator := -1
+	for i := len(model) - 1; i >= 0; i-- {
+		if model[i] == '.' || model[i] == '-' {
+			separator = i
+			break
+		}
+	}
+	if separator <= len("claude-") || separator == len(model)-1 || model[separator-1] < '0' || model[separator-1] > '9' {
+		return -1
+	}
+	minor := model[separator+1:]
+	if len(minor) > 2 {
+		return -1
+	}
+	for i := range minor {
+		if minor[i] < '0' || minor[i] > '9' {
+			return -1
+		}
+	}
+	return separator
+}
+
+func aliasMatchesFoldASCII(model string, separator int, configured string, prefix bool) bool {
+	if separator < 0 {
+		return false
+	}
+	aliasLength := len(model)
+	if prefix {
+		if len(configured) > aliasLength {
+			return false
+		}
+	} else if len(configured) != aliasLength {
+		return false
+	}
+	for i := range configured {
+		actual := model[i]
+		if i == separator {
+			if actual == '.' {
+				actual = '-'
+			} else {
+				actual = '.'
+			}
+		}
+		expected := configured[i]
+		if actual >= 'A' && actual <= 'Z' {
+			actual += 'a' - 'A'
+		}
+		if expected >= 'A' && expected <= 'Z' {
+			expected += 'a' - 'A'
+		}
+		if actual != expected {
+			return false
+		}
+	}
+	return true
 }
 
 func equalFoldASCII(left, right string) bool {
@@ -329,15 +400,52 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 			}
 			seenPrefixes[rule.PrefixID] = struct{}{}
 		}
-		sort.SliceStable(scope.Wildcard, func(i, j int) bool {
+		if scope.CatchAll != nil && (int(scope.CatchAll.TargetID) >= len(t.Strings) || !validSupportDecisionProfile(scope.CatchAll.Profile, coordinateCount)) {
+			return false
+		}
+		if !validSupportDecisionChannelFacts(t.Strings, scope, coordinateCount) {
+			return false
+		}
+		if !sort.SliceIsSorted(scope.Wildcard, func(i, j int) bool {
 			left, right := t.Strings[scope.Wildcard[i].PrefixID], t.Strings[scope.Wildcard[j].PrefixID]
 			if len(left) != len(right) {
 				return len(left) > len(right)
 			}
 			return left < right
-		})
+		}) {
+			return false
+		}
 	}
 	t.verified = true
+	return true
+}
+
+func validSupportDecisionChannelFacts(stringsTable []string, scope *supportDecisionScopeTable, coordinateCount int) bool {
+	hasPatterns := len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0
+	if !hasPatterns {
+		return len(scope.ChannelAllowed.SupportBits) == 0 && len(scope.ChannelAllowed.EligibleBits) == 0
+	}
+	if !validSupportDecisionProfile(scope.ChannelAllowed, coordinateCount) {
+		return false
+	}
+	seen := make(map[uint32]struct{}, len(scope.ChannelExact)+len(scope.ChannelWildcard))
+	for _, ids := range [][]uint32{scope.ChannelExact, scope.ChannelWildcard} {
+		previous := ""
+		for _, id := range ids {
+			if int(id) >= len(stringsTable) {
+				return false
+			}
+			value := stringsTable[id]
+			if previous != "" && previous >= value {
+				return false
+			}
+			if _, exists := seen[id]; exists {
+				return false
+			}
+			seen[id] = struct{}{}
+			previous = value
+		}
+	}
 	return true
 }
 

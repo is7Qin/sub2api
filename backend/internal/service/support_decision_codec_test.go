@@ -107,6 +107,73 @@ func cloneSupportDecisionEnvelope(t *testing.T, input supportDecisionDocumentEnv
 	return cloned
 }
 
+func TestSupportDecisionCodecRejectsMalformedChannelFacts(t *testing.T) {
+	channel := SupportDecisionChannel{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformAnthropic,
+			Models:   []string{"allowed-exact", "allowed-*"},
+		}},
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformAnthropic,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"configured": "configured"},
+		},
+	}}, PlatformAnthropic, []string{"hot"})
+	snapshot.Channels = []SupportDecisionChannel{channel}
+	table := buildSupportDecisionTestTable(t, snapshot)
+	payload, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+	var base supportDecisionDocumentEnvelope
+	require.NoError(t, json.Unmarshal(payload, &base))
+
+	mutations := map[string]func(*supportDecisionScopeTable){
+		"invalid exact ordinal": func(scope *supportDecisionScopeTable) {
+			scope.ChannelExact[0] = uint32(len(base.Strings))
+		},
+		"duplicate exact entry": func(scope *supportDecisionScopeTable) {
+			scope.ChannelExact = append(scope.ChannelExact, scope.ChannelExact[0])
+		},
+		"unsorted channel entries": func(scope *supportDecisionScopeTable) {
+			scope.ChannelExact = append([]uint32{scope.ChannelWildcard[0]}, scope.ChannelExact...)
+		},
+		"missing channel profile": func(scope *supportDecisionScopeTable) {
+			scope.ChannelAllowed = supportDecisionProfile{}
+		},
+		"invalid channel profile": func(scope *supportDecisionScopeTable) {
+			scope.ChannelAllowed.SupportBits = scope.ChannelAllowed.SupportBits[:0]
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			document := cloneSupportDecisionEnvelope(t, base)
+			scope := supportDecisionGroupScope(t, &document)
+			mutate(scope)
+			invalid, marshalErr := json.Marshal(document)
+			require.NoError(t, marshalErr)
+			require.NotPanics(t, func() {
+				_, err = DecodeSupportDecisionDocument(invalid, table.Generation)
+			})
+			require.Error(t, err)
+		})
+	}
+}
+
+func supportDecisionGroupScope(t *testing.T, document *supportDecisionDocumentEnvelope) *supportDecisionScopeTable {
+	t.Helper()
+	for i := range document.Scopes {
+		if document.Scopes[i].Key.GroupID == 42 {
+			return &document.Scopes[i]
+		}
+	}
+	t.Fatal("fixture has no group scope")
+	return nil
+}
+
 func TestSupportDecisionCodecRoundTrip(t *testing.T) {
 	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{"known": "known"}}}}, PlatformAnthropic, []string{"hot"}))
 	payload, err := EncodeSupportDecisionDocument(table)

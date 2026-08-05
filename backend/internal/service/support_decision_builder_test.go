@@ -141,6 +141,51 @@ func TestSupportDecisionBuilderMatchesOpenAIMappedTargetFallbackSemantics(t *tes
 	}
 }
 
+func TestSupportDecisionBuilderPreservesPureMissWhenUnseenProbeWouldMatchMapping(t *testing.T) {
+	account := Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"__support_decision_*": "upstream"},
+		},
+	}
+	const requested = "gpt-99"
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{account}, PlatformAnthropic, []string{"hot"}))
+	legacy := legacyPureModelSupportMiss(legacyModelSupportMissInput{
+		Accounts:       []Account{account},
+		RequestedModel: requested,
+		Platform:       PlatformAnthropic,
+		ModelSupported: func(account *Account, model string, thinking bool) bool {
+			return supportDecisionGenericModelSupported(account, model, thinking)
+		},
+	})
+	require.True(t, legacy)
+	require.Equal(t, SupportDecisionPureMiss, table.Lookup(SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformAnthropic, GroupID: 42},
+		RequestedModel: requested,
+	}))
+}
+
+func TestSupportDecisionBuilderSupportsCatchAllMappingWithExactPrecedence(t *testing.T) {
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"*": "custom-upstream", "exact": "gpt-5.4"},
+		},
+	}
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{account}, PlatformOpenAI, []string{"hot"}))
+	for model, want := range map[string]SupportDecisionResult{
+		"exact":     SupportDecisionNotPureMiss,
+		"arbitrary": SupportDecisionPureMiss,
+	} {
+		require.Equalf(t, want, table.Lookup(SupportDecisionQuery{
+			Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+			RequestedModel: model,
+		}), "model %q", model)
+	}
+}
+
 func TestSupportDecisionBuilderMatchesLegacyUnseenChannelPolicy(t *testing.T) {
 	channel := SupportDecisionChannel{
 		Status:             StatusActive,
@@ -180,6 +225,46 @@ func TestSupportDecisionBuilderMatchesLegacyUnseenChannelPolicy(t *testing.T) {
 			RequestedModel: model,
 		})
 		require.Equalf(t, legacy, got == SupportDecisionPureMiss, "model %q", model)
+	}
+}
+
+func TestSupportDecisionBuilderMatchesClaudeRevisionAliasForChannelWildcard(t *testing.T) {
+	channel := SupportDecisionChannel{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformAnthropic,
+			Models:   []string{"CLAUDE-OPUS-4-*"},
+		}},
+	}
+	account := Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"configured": "configured"},
+		},
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{account}, PlatformAnthropic, []string{"hot"})
+	snapshot.Channels = []SupportDecisionChannel{channel}
+	table := buildSupportDecisionTestTable(t, snapshot)
+	for _, requested := range []string{"claude-opus-4.8", "CLAUDE-OPUS-4.8"} {
+		legacy := legacyPureModelSupportMiss(legacyModelSupportMissInput{
+			Accounts:       []Account{account},
+			RequestedModel: requested,
+			Platform:       PlatformAnthropic,
+			ModelSupported: func(account *Account, model string, thinking bool) bool {
+				return supportDecisionGenericModelSupported(account, model, thinking)
+			},
+			UpstreamRestricted: func(account *Account, model string) bool {
+				return !supportDecisionChannelAllowsModel(&channel, PlatformAnthropic, model)
+			},
+		})
+		require.Equalf(t, legacy, table.Lookup(SupportDecisionQuery{
+			Scope:          SupportDecisionScope{Platform: PlatformAnthropic, GroupID: 42},
+			RequestedModel: requested,
+		}) == SupportDecisionPureMiss, "model %q", requested)
 	}
 }
 
@@ -505,6 +590,17 @@ func TestSupportDecisionBuilderRejectsPerScopeFallbackAboveBudget(t *testing.T) 
 	require.ErrorContains(t, err, "fallback exceeds")
 }
 
+func TestSupportDecisionBuilderMeasuresSerializedPerScopeFallbackBudget(t *testing.T) {
+	under := supportDecisionSerializedFallbackSnapshot(1800, 48)
+	table, err := BuildSupportDecisionTable(under, SupportDecisionBuildOptions{Generation: 1})
+	require.NoError(t, err)
+	require.NotNil(t, table)
+
+	over := supportDecisionSerializedFallbackSnapshot(SupportDecisionExactLimit, 96)
+	_, err = BuildSupportDecisionTable(over, SupportDecisionBuildOptions{Generation: 1})
+	require.ErrorContains(t, err, "fallback exceeds")
+}
+
 func TestSupportDecisionBuilderPreservesHotOverflowInFallback(t *testing.T) {
 	models := makeHotModels(SupportDecisionHotModelLimit + 3)
 	snapshot := supportDecisionTestSnapshot([]Account{{
@@ -574,6 +670,20 @@ func TestSupportDecisionBuilderRejectsOverlongModelOrPrefix(t *testing.T) {
 		_, err := BuildSupportDecisionTable(snapshot, SupportDecisionBuildOptions{Generation: 1})
 		require.ErrorContains(t, err, "exceeds")
 	}
+}
+
+func supportDecisionSerializedFallbackSnapshot(exact, modelPadding int) *SupportDecisionConstructionSnapshot {
+	mapping := make(map[string]any, exact)
+	for i := 0; i < exact; i++ {
+		mapping[fmt.Sprintf("exact-%04d-%s", i, stringsOfLength(modelPadding))] = "target"
+	}
+	return supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": mapping,
+		},
+	}}, PlatformOpenAI, []string{"hot"})
 }
 
 func supportDecisionBoundarySnapshot(exact, wildcard int) *SupportDecisionConstructionSnapshot {

@@ -32,7 +32,16 @@ const (
 	billingOutboxAckRetryTimeout           = 2 * time.Second
 	billingOutboxFinalizationRenewInterval = 20 * time.Second
 	billingOutboxFinalizationDBTimeout     = 2 * time.Second
-	billingOutboxMaxAttempts               = 10
+	// finalization 阶段双层时限：整轮受 billingOutboxFinalizationBatchTimeout 总
+	// 时限约束，单条记录受 billingOutboxFinalizeRecordTimeout 独立时限约束
+	// （per-record ctx 派生自 batch ctx，实际到期时刻被整轮时限截断，60+30=90
+	// 的朴素相加不会发生）。时限到期走 persistFinalizationFailure 的 retry 路径
+	// （terminal=false）把记录释放回 finalization_pending 补领池；未启动的记录
+	// 保持租约，租约过期后由 ClaimFinalizationExpiredLeased 补领。90s 租约 >
+	// 60s 整轮最坏持租时长，heartbeat 续租（20s 间隔）语义不变。
+	billingOutboxFinalizeRecordTimeout    = 30 * time.Second
+	billingOutboxFinalizationBatchTimeout = 60 * time.Second
+	billingOutboxMaxAttempts              = 10
 	// 熔断阈值：连续永久错误达到该值打开熔断（成功或暂时性错误复位计数）。
 	// 阈值取 5 是"系统性故障"与"零星坏记录"的分界：单轮 500 条里零星几条
 	// 永久错误不足以开闸，连续 5 条（同一轮或跨轮）基本可判定系统级故障。
@@ -92,6 +101,8 @@ type BillingOutboxPostProcessor interface {
 }
 
 type BillingOutboxWorker struct {
+	// finalizeRecordTimeout / finalizationBatchTimeout 是 finalization 阶段的可
+	// 注入时限（测试注入小值加速断言；<=0 时回退各自默认常量）。
 	repo                           BillingOutboxRepository
 	billing                        UsageBillingRepository
 	postProcessor                  BillingOutboxPostProcessor
@@ -99,6 +110,8 @@ type BillingOutboxWorker struct {
 	finalizationLease              time.Duration
 	finalizationLeaseRenewInterval time.Duration
 	finalizationDBTimeout          time.Duration
+	finalizeRecordTimeout          time.Duration
+	finalizationBatchTimeout       time.Duration
 	ctx                            context.Context
 	cancel                         context.CancelFunc
 	wg                             sync.WaitGroup
@@ -127,7 +140,8 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 	worker := &BillingOutboxWorker{
 		repo: repo, billing: billing, postProcessor: processor, workerID: uuid.NewString(),
 		finalizationLease: billingOutboxLease, finalizationLeaseRenewInterval: billingOutboxFinalizationRenewInterval,
-		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, ctx: ctx, cancel: cancel,
+		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, finalizeRecordTimeout: billingOutboxFinalizeRecordTimeout,
+		finalizationBatchTimeout: billingOutboxFinalizationBatchTimeout, ctx: ctx, cancel: cancel,
 		applyGroupParallelism: billingOutboxApplyGroupParallelism,
 		pollInterval:          billingOutboxPollInterval,
 		circuitCooldown:       billingOutboxCircuitCoolDown,
@@ -525,20 +539,26 @@ func groupBatchItemsByShard(items []UsageBillingBatchItem) []billingShardGroup {
 }
 
 func (w *BillingOutboxWorker) processFinalizationBatch(ctx context.Context, records []BillingOutboxRecord, repo BillingOutboxFinalizationRepository) error {
+	// 整轮总时限：batch ctx 到期即停止启动新记录、等在场记录收敛后返回。
+	// 在场记录各自的 record 时限派生自 batch ctx，实际到期被整轮时限截断，
+	// wg.Wait 至多等到整轮时限；未启动的记录保持租约，租约过期后由
+	// ClaimFinalizationExpiredLeased 补领（与 apply 路径中断语义一致）。
+	batchCtx, cancel := context.WithTimeout(ctx, w.finalizationBatchTimeoutDuration())
+	defer cancel()
 	semaphore := make(chan struct{}, billingOutboxConcurrency)
 	var wg sync.WaitGroup
 	for i := range records {
 		select {
-		case <-ctx.Done():
+		case <-batchCtx.Done():
 			wg.Wait()
-			return ctx.Err()
+			return fmt.Errorf("billing outbox finalization batch: %w", batchCtx.Err())
 		case semaphore <- struct{}{}:
 		}
 		wg.Add(1)
 		go func(record BillingOutboxRecord) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			w.processFinalization(ctx, record, repo)
+			w.processFinalization(batchCtx, record, repo)
 		}(records[i])
 	}
 	wg.Wait()
@@ -601,7 +621,12 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 }
 
 func (w *BillingOutboxWorker) processFinalization(parent context.Context, record BillingOutboxRecord, repo BillingOutboxFinalizationRepository) {
-	finalizeCtx, cancelFinalize := context.WithCancel(parent)
+	// 单条记录独立时限：Finalize 阻塞至多 billingOutboxFinalizeRecordTimeout。
+	// 到期后 Finalize 实现随 ctx 取消返回（ctx 契约），错误走
+	// persistFinalizationFailure 的 retry 路径（terminal=false，非 PG 时限错误
+	// 永不 terminal）把记录释放回 finalization_pending。heartbeat 全程续租
+	// （30s < 90s 租约），到期时租约必然有效，释放不会误判 ownership lost。
+	finalizeCtx, cancelFinalize := context.WithTimeout(parent, w.finalizeRecordTimeoutDuration())
 	defer cancelFinalize()
 	ownershipLost := func() bool { return false }
 
@@ -624,14 +649,19 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 		stopHeartbeat()
 		ownershipLost = heartbeatLost
 		if err != nil {
-			w.recordFailure(fmt.Errorf("finalize billing outbox command %d: %w", record.ID, err))
+			// 带记录上下文的包装：recordFailure 日志与 last_error 落库都能定位
+			// 到记录（超时场景下裸 "context deadline exceeded" 无法区分来源）；
+			// %w 包装不改变 terminal 分类（errors.As/Is 透传）。
+			finalizeErr := fmt.Errorf("finalize billing outbox command %d: %w", record.ID, err)
+			w.recordFailure(finalizeErr)
 			// finalization 的 terminal 决策与 apply 共用 billingOutboxFailureTerminal：
 			// 暂时性失败永远 pending 重试（已扣费记录的后置效应必须保持可重放）；
 			// PG 42xxx/22xxx（部署可修复）仅 attempts ≥ billingOutboxMaxAttempts 才
 			// terminal（落库带 [SQLSTATE xxxxx] 前缀）；legacy 立即 terminal 列表
 			// （infra 4xx + 哨兵，确定性客户端数据毒药）保持立即 terminal（pre-existing
-			// 行为，不受 maxAttempts 约束）。
-			w.persistFinalizationFailure(repo, record, err, billingOutboxFailureTerminal(record, err), ownershipLost)
+			// 行为，不受 maxAttempts 约束）。时限错误（context.DeadlineExceeded）不在
+			// 任一永久分类内 → 永远 retry，与 Task D 的 42/22 尝试守卫一致。
+			w.persistFinalizationFailure(repo, record, finalizeErr, billingOutboxFailureTerminal(record, finalizeErr), ownershipLost)
 			return
 		}
 	}
@@ -777,6 +807,24 @@ func (w *BillingOutboxWorker) circuitCooldownDuration() time.Duration {
 		return billingOutboxCircuitCoolDown
 	}
 	return w.circuitCooldown
+}
+
+// finalizeRecordTimeoutDuration 返回单条 finalization 记录的独立时限；<=0
+// 回退默认 billingOutboxFinalizeRecordTimeout。
+func (w *BillingOutboxWorker) finalizeRecordTimeoutDuration() time.Duration {
+	if w.finalizeRecordTimeout <= 0 {
+		return billingOutboxFinalizeRecordTimeout
+	}
+	return w.finalizeRecordTimeout
+}
+
+// finalizationBatchTimeoutDuration 返回整轮 finalization 的总时限；<=0 回退
+// 默认 billingOutboxFinalizationBatchTimeout。
+func (w *BillingOutboxWorker) finalizationBatchTimeoutDuration() time.Duration {
+	if w.finalizationBatchTimeout <= 0 {
+		return billingOutboxFinalizationBatchTimeout
+	}
+	return w.finalizationBatchTimeout
 }
 
 // observeApplyError 在 apply 处理失败时调用：永久错误累加计数并可能打开/

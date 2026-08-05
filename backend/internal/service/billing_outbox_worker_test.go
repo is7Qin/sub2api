@@ -550,6 +550,120 @@ func TestBillingOutboxWorker_CancelsFinalizerAndDoesNotTransitionAfterRenewalFai
 	require.Empty(t, repo.finalizationRetried)
 }
 
+func TestBillingOutboxWorker_FinalizationBatchDeadlineBoundsBlockedFinalize(t *testing.T) {
+	// 整轮 finalization 总时限：Finalize 阻塞（实现尊重 ctx，直到取消才返回）
+	// 时，batch deadline 到期即结束本轮——在场记录经派生 ctx 取消后走 retry
+	// 释放回 finalization_pending，轮次绝不无限挂起。per-record 时限注入为大值，
+	// 保证唯一能结束本轮的是 batch deadline（无 batch 时限时本测试在 2s 超时
+	// 处失败——正是修复前的无限阻塞行为）。
+	records := make([]BillingOutboxRecord, billingOutboxConcurrency)
+	for i := range records {
+		records[i] = validBillingOutboxRecord(int64(i + 1))
+		records[i].Status = "finalizing"
+		records[i].ApplyResult = &UsageBillingApplyResult{Applied: true}
+	}
+	repo := &billingOutboxRepoStub{finalizationRecords: records}
+	postProcessor := billingOutboxPostProcessorFunc(func(ctx context.Context, _ *BillingOutboxCommand, _ *UsageBillingApplyResult) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+	worker.finalizeRecordTimeout = 10 * time.Second
+	worker.finalizationBatchTimeout = 100 * time.Millisecond
+
+	started := time.Now()
+	finished := make(chan error, 1)
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
+	select {
+	case err := <-finished:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("finalization batch did not return within the batch deadline")
+	}
+	require.Less(t, time.Since(started), time.Second,
+		"batch deadline must bound the round, not the per-record timeout")
+	require.Empty(t, repo.finalizationAcked)
+	require.Len(t, repo.finalizationRetried, len(records),
+		"records in flight at the deadline must be released to the retry pool")
+	for _, retry := range repo.finalizationRetried {
+		require.False(t, retry.terminal, "deadline interruption must stay retryable")
+	}
+}
+
+func TestBillingOutboxWorker_FinalizeRecordTimeoutReleasesRecordToRetryPool(t *testing.T) {
+	// 单条记录独立时限：Finalize 阻塞时 record deadline 到期即取消该记录，
+	// 错误走 persistFinalizationFailure 的 retry 路径（terminal=false、退避后移
+	// available_at），记录回到 finalization_pending 补领池，下一轮可再领重试。
+	record := validBillingOutboxRecord(77)
+	record.Status = "finalizing"
+	record.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{finalizationRecords: []BillingOutboxRecord{record}}
+	postProcessor := billingOutboxPostProcessorFunc(func(ctx context.Context, _ *BillingOutboxCommand, _ *UsageBillingApplyResult) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+	worker.finalizeRecordTimeout = 50 * time.Millisecond
+	worker.finalizationBatchTimeout = 5 * time.Second
+
+	before := time.Now().UTC()
+	finished := make(chan error, 1)
+	go func() { _, err := worker.processBatch(context.Background()); finished <- err }()
+	select {
+	case err := <-finished:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("per-record deadline did not bound the blocked finalizer")
+	}
+	require.Empty(t, repo.finalizationAcked)
+	require.Len(t, repo.finalizationRetried, 1)
+	require.False(t, repo.finalizationRetried[0].terminal, "timed-out finalization must not terminalize")
+	require.Greater(t, repo.finalizationRetried[0].availableAt, before,
+		"retry must carry backoff so the record returns to the claim pool later")
+	require.Contains(t, repo.finalizationRetried[0].lastError, "finalize billing outbox command")
+
+	// 记录已释放回补领池：下一轮再次 Claim 并重试 Finalize。
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Len(t, repo.finalizationRetried, 2, "timed-out record must be re-claimable and re-processed")
+}
+
+func TestBillingOutboxWorker_StopExitsPromptlyWhileFinalizationBlocked(t *testing.T) {
+	// Stop 时 Finalize 阻塞中必须及时退出：worker ctx 取消沿 batch/record 派生
+	// ctx 传播，阻塞中的 Finalize 返回后本轮结束、run 循环退出，Stop 不被卡死。
+	record := validBillingOutboxRecord(78)
+	record.Status = "finalizing"
+	record.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{finalizationRecords: []BillingOutboxRecord{record}}
+	started := make(chan struct{})
+	postProcessor := billingOutboxPostProcessorFunc(func(ctx context.Context, _ *BillingOutboxCommand, _ *UsageBillingApplyResult) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+	worker.finalizeRecordTimeout = 10 * time.Second // 仅 Stop 能取消阻塞中的 Finalize
+	worker.finalizationBatchTimeout = 20 * time.Second
+	worker.finalizationLease = 40 * time.Millisecond
+	worker.finalizationLeaseRenewInterval = 10 * time.Millisecond
+	worker.finalizationDBTimeout = 20 * time.Millisecond
+	worker.Start()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("finalizer did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { worker.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked while a finalizer was blocked")
+	}
+	require.False(t, worker.Health(context.Background()).Running)
+}
+
 type billingOutboxPostProcessorFunc func(context.Context, *BillingOutboxCommand, *UsageBillingApplyResult) error
 
 func (f billingOutboxPostProcessorFunc) Finalize(ctx context.Context, command *BillingOutboxCommand, result *UsageBillingApplyResult) error {
@@ -731,6 +845,10 @@ func TestBillingOutboxWorker_RetainsDeterministicStagedBillingFailureAsTerminal(
 
 func TestBillingOutboxLeaseOutlivesBoundedApplyAndFinalization(t *testing.T) {
 	require.Greater(t, billingOutboxLease, 2*billingOutboxApplyTimeout)
+	// finalization 整轮最坏持租时长 = batch 总时限（per-record 时限派生自 batch
+	// ctx、被其截断，60+30=90 的朴素相加不会发生）：90s 租约必须大于 60s。
+	require.Greater(t, billingOutboxLease, billingOutboxFinalizationBatchTimeout)
+	require.Greater(t, billingOutboxFinalizationBatchTimeout, billingOutboxFinalizeRecordTimeout)
 }
 
 func TestBillingOutboxWorker_ClaimsOnlyRunnableApplyBatch(t *testing.T) {

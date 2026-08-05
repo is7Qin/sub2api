@@ -716,3 +716,85 @@ func TestBillingOutboxWorker_BatchInvalidRecordRetryTailBreaks(t *testing.T) {
 	}
 	require.Empty(t, repo.acked)
 }
+
+// blockingAckRepoStub 让去重 Ack 阻塞在可释放通道上：测试控制慢速 Ack 的返回
+// 时机，用于断言 applyCtx 到期时 outcome 循环的 ctx-guard 在 Ack 在途中断言。
+type blockingAckRepoStub struct {
+	billingOutboxRepoStub
+	mu         sync.Mutex
+	block      chan struct{} // nil 时 Ack 立即返回
+	ackErr     error
+	ackStarted chan<- struct{}
+}
+
+func (r *blockingAckRepoStub) Ack(_ context.Context, id int64, workerID string) error {
+	if r.ackStarted != nil {
+		select {
+		case r.ackStarted <- struct{}{}:
+		default:
+		}
+	}
+	if r.block != nil {
+		<-r.block
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.acked = append(r.acked, id)
+	return r.ackErr
+}
+
+func TestBillingOutboxWorker_BatchApplyCtxExpiryBreaksOutcomeLoop(t *testing.T) {
+	// Task B fix-wave 的直接测试：applyCtx 到期必须中断 outcome 循环（ctx-guard
+	// break，区别于 Ack 连续失败阈值 break）。慢速 Ack 阻塞在途时取消 batch ctx
+	// （applyCtx 派生自它），首个 Ack 返回失败后循环必须 break，剩余记录保留
+	// 租约、未 Ack 未 Retry；恢复 Ack 后经过期租约补领重放（去重键幂等，重放
+	// 不重复计费）。
+	records := make([]BillingOutboxRecord, 30)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), 42)
+	}
+	ackStarted := make(chan struct{}, 30)
+	repo := &blockingAckRepoStub{
+		billingOutboxRepoStub: billingOutboxRepoStub{
+			records:  records,
+			claimSeq: [][]BillingOutboxRecord{records, nil}, // 轮 1 拉满，轮 2 pending 空拉
+		},
+		block:      make(chan struct{}),
+		ackErr:     errors.New("ack unavailable"),
+		ackStarted: ackStarted,
+	}
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: false} // 全部走去重 Ack 路径
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+
+	batchCtx, cancelBatch := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { _, err := worker.processBatch(batchCtx); finished <- err }()
+	select {
+	case <-ackStarted:
+	case <-time.After(time.Second):
+		t.Fatal("dedup ack did not start")
+	}
+	cancelBatch()     // applyCtx（派生自 batch ctx）即刻到期
+	close(repo.block) // 首个 Ack 返回后，outcome 循环必须因 ctx 到期 break
+	require.NoError(t, <-finished)
+	require.Len(t, repo.acked, 1,
+		"applyCtx expiry must break the outcome loop after the in-flight ack")
+
+	// 剩余记录保留租约、未离开队列：恢复 Ack 后经过期租约补领重放。
+	repo.mu.Lock()
+	repo.ackErr = nil
+	repo.block = nil
+	repo.expiredLeaseRecords = records[1:]
+	repo.mu.Unlock()
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Len(t, repo.acked, len(records),
+		"records left by the applyCtx break must drain via the expired-lease reclaim path")
+	require.Empty(t, repo.retried)
+}

@@ -30,7 +30,7 @@ func expectBillingApplyLock(mock sqlmock.Sqlmock, userID int64) {
 	if userID <= 0 {
 		return
 	}
-	shard := int64(uint64(userID) % billingApplyUserShardCount)
+	shard := int64(uint64(userID) % service.BillingApplyUserShardCount)
 	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1, \$2\)`).
 		WithArgs(int64(billingAdvisoryLockClass), shard).
 		WillReturnResult(sqlmock.NewResult(0, 0))

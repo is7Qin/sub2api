@@ -79,7 +79,7 @@ func TestUsageBillingRepositoryAdvisoryLock_SerializesSameUserAcrossSessions(t *
 		Type: service.AccountTypeAPIKey,
 	})
 
-	shard := int64(uint64(user.ID) % billingApplyUserShardCount)
+	shard := int64(uint64(user.ID) % service.BillingApplyUserShardCount)
 
 	// 出站记录：A 的第一条租约归属他人（staging 阶段失败 → savepoint 回滚），
 	// A 的第二条与 B 各自正常 staging。

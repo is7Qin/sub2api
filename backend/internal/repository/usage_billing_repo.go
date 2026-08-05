@@ -19,10 +19,9 @@ const (
 	// 与迁移锁（migrationsAdvisoryLockID，单参 bigint 形式）及调度锁
 	// （schedulerAdvisoryLockNamespace，0x53324150）分属不同命名空间，互不冲突。
 	billingAdvisoryLockClass int32 = 0x42494C4C
-	// billingApplyUserShardCount 与 service 包 worker 的分片常量保持一致：
-	// 同一 userID 必须映射同一分片（uint64(userID) % 1024），
-	// 跨实例 advisory 锁才能按用户串行。
-	billingApplyUserShardCount = 1024
+	// 用户分片数不复用本包常量：统一引用 service.BillingApplyUserShardCount
+	// （service 导出、唯一来源），保证 worker 分组与 repository 取锁的分片
+	// 推导编译期同源——若分片数漂移，跨实例同用户串行会静默退化为行锁级。
 )
 
 type usageBillingRepository struct {
@@ -147,14 +146,14 @@ func setBillingApplyLockTimeout(ctx context.Context, tx *sql.Tx) error {
 
 // acquireBillingApplyAdvisoryLock 在当前事务内获取用户分片级 advisory xact
 // 锁（pg_advisory_xact_lock，随事务提交/回滚自动释放，不随 savepoint 回滚
-// 释放）。同分片 = 同用户（uint64(userID) % billingApplyUserShardCount），
+// 释放）。同分片 = 同用户（uint64(userID) % service.BillingApplyUserShardCount），
 // 跨实例、跨 worker 由 DB 保证同一用户的 apply 事务串行；userID <= 0 的
 // 指令不触碰 users 余额行，免锁。
 func acquireBillingApplyAdvisoryLock(ctx context.Context, tx *sql.Tx, userID int64) error {
 	if userID <= 0 {
 		return nil
 	}
-	shard := int64(uint64(userID) % billingApplyUserShardCount)
+	shard := int64(uint64(userID) % service.BillingApplyUserShardCount)
 	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1, $2)", int64(billingAdvisoryLockClass), shard); err != nil {
 		return fmt.Errorf("acquire billing apply advisory lock (shard %d): %w", shard, err)
 	}
@@ -225,6 +224,11 @@ func (r *usageBillingRepository) ApplyBatchAndStageOutboxFinalizations(ctx conte
 	if err := setBillingApplyLockTimeout(ctx, tx); err != nil {
 		return nil, err
 	}
+	// 整批只取一把 advisory 锁，分片由首条正 userID 推导（billingApplyShardUserID）。
+	// 前提：调用方必须保证 items 同分片——当前唯一生产调用方是 worker 的
+	// groupBatchItemsByShard，恒传同分片组（同分片 = 同用户），任意代表 userID
+	// 取锁即覆盖整批用户。若未来传入跨分片 items，非代表分片的用户不再持有
+	// 自己的分片锁，跨实例同用户串行只部分保证（退化为行锁级并发）。
 	if err := acquireBillingApplyAdvisoryLock(ctx, tx, billingApplyShardUserID(items)); err != nil {
 		return nil, err
 	}

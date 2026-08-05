@@ -28,10 +28,12 @@ const (
 	billingOutboxFinalizationRenewInterval = 20 * time.Second
 	billingOutboxFinalizationDBTimeout     = 2 * time.Second
 	billingOutboxMaxAttempts               = 10
-	// 同一用户的扣费事务按分片在 DB 层跨实例串行：apply 事务在 repository
-	// 侧通过 pg_advisory_xact_lock(类 ID, uint64(userID) % 1024) 取锁（同分片
-	// = 同用户），本常量与 repository 侧常量保持同值，两处分片推导必须一致。
-	billingApplyUserShardCount = 1024
+	// BillingApplyUserShardCount 是 billing apply 用户分片数（advisory 锁分片
+	// 推导的模数）：同一用户的扣费事务按分片在 DB 层跨实例串行，apply 事务在
+	// repository 侧通过 pg_advisory_xact_lock(类 ID, uint64(userID) %
+	// BillingApplyUserShardCount) 取锁（同分片 = 同用户）。repository 包引用本
+	// 导出常量作为唯一来源，两处分片推导编译期同源，漂移不可能静默发生。
+	BillingApplyUserShardCount = 1024
 	// 分片组并行：不同用户分片的批量事务并发执行的上限。同一用户必在同一
 	// 分片（userID % 1024），组内单个事务天然保持用户级串行；组间无共享锁、
 	// 无嵌套获取，并发获取不同分片锁不可能死锁。测试可注入 1 退化为串行。
@@ -345,7 +347,7 @@ type billingShardGroup struct {
 
 // groupBatchItemsByShard 按用户分片分组，返回按分片升序的组序列；
 // userID<=0 的记录单独成组、免 advisory 锁。分片公式与 repository 侧
-// advisory 锁推导一致（uint64(userID) % billingApplyUserShardCount），
+// advisory 锁推导同源（uint64(userID) % BillingApplyUserShardCount），
 // 每组的批量事务在仓库内按组取一次锁。
 func groupBatchItemsByShard(items []UsageBillingBatchItem) []billingShardGroup {
 	if len(items) == 0 {
@@ -355,7 +357,7 @@ func groupBatchItemsByShard(items []UsageBillingBatchItem) []billingShardGroup {
 	for i := range items {
 		shard := -1
 		if userID := items[i].Command.UserID; userID > 0 {
-			shard = int(uint64(userID) % billingApplyUserShardCount)
+			shard = int(uint64(userID) % BillingApplyUserShardCount)
 		}
 		byShard[shard] = append(byShard[shard], i)
 	}

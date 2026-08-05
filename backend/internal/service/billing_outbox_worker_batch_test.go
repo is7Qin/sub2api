@@ -228,9 +228,11 @@ func TestBillingOutboxWorker_BatchInfraFailureRetriesOnlyFailingShard(t *testing
 	require.Empty(t, repo.acked)
 }
 
-func TestBillingOutboxWorker_BatchShardLockScopeIsPerShard(t *testing.T) {
-	// 轮 1 在分片 5 的事务内阻塞时，只涉及分片 200 的轮 2 必须能直接完成：
-	// 分片锁只在各自分片事务期间持有，而非整轮批量持有（修复前锁到整轮结束）。
+func TestBillingOutboxWorker_BatchAdvisoryLockScopeIsPerShardTransaction(t *testing.T) {
+	// 进程内分片锁已移除，同一用户跨轮并发改由 DB 层 advisory xact lock 串行
+	// （锁在事务内获取、随事务提交/回滚自动释放）。轮 1 在分片 5 的事务内阻塞
+	// 时，只涉及分片 200 的轮 2 必须能直接完成：advisory 锁只在各自分片事务
+	// 期间持有，而非整轮批量持有（修复前进程内分片锁持有到整轮结束）。
 	// 组并行后轮内分片处理顺序不再确定，按分片内容（outbox ID 1）定位轮 1
 	// 的阻塞事务，使断言与调度顺序无关。
 	round1 := []BillingOutboxRecord{batchValidRecord(1, 5), batchValidRecord(2, 200)}
@@ -242,7 +244,7 @@ func TestBillingOutboxWorker_BatchShardLockScopeIsPerShard(t *testing.T) {
 	var startedOnce, releaseOnce sync.Once
 	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
 		if len(items) > 0 && items[0].Binding.OutboxID == 1 {
-			// 轮 1 的分片 5 事务：持锁期间阻塞，验证该锁不拖住只涉及分片 200 的轮 2。
+			// 轮 1 的分片 5 事务：模拟持锁期间阻塞，验证该锁不拖住只涉及分片 200 的轮 2。
 			startedOnce.Do(func() { close(started) })
 			<-release
 		}
@@ -265,7 +267,7 @@ func TestBillingOutboxWorker_BatchShardLockScopeIsPerShard(t *testing.T) {
 		require.NoError(t, err, "round 2 (different shard) must not wait for round 1's in-flight transaction")
 	case <-time.After(2 * time.Second):
 		releaseOnce.Do(func() { close(release) })
-		t.Fatal("round 2 blocked behind round 1: shard lock held across the whole batch")
+		t.Fatal("round 2 blocked behind round 1: advisory lock held across the whole batch")
 	}
 	releaseOnce.Do(func() { close(release) })
 	require.NoError(t, <-round1Done)
@@ -536,7 +538,7 @@ func TestBillingOutboxGroupShardingUsesAdvisoryShardFormula(t *testing.T) {
 	require.Equal(t, 7, groups[1].shard, "uint64(userID) %% 1024 与 advisory 锁分片必须一致")
 	require.ElementsMatch(t, []int{2, 3}, groups[0].indexes)
 	require.ElementsMatch(t, []int{0, 1}, groups[1].indexes)
-	require.Equal(t, 1024, billingApplyUserShardCount, "worker 分片常量必须保持 1024（repository 侧同值）")
+	require.Equal(t, 1024, BillingApplyUserShardCount, "分片常量必须保持 1024（service 导出唯一来源，repository 同源引用）")
 }
 
 func TestBillingOutboxWorker_BatchFallbackPreservesPerRecordPath(t *testing.T) {

@@ -94,6 +94,21 @@ VALUES($1, 'active', false, 'upstream') RETURNING id`, fmt.Sprintf("support-move
 	requireSupportDecisionGroupDirty(t, tx, newGroupID)
 }
 
+func TestSchedulerSupportDecisionMembershipPrimaryKeyAndGroupChangeDirtiesOldAndNewScopes(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	channelID, oldGroupID := createSupportDecisionChannelScope(t, tx)
+	var membershipID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT id FROM channel_groups WHERE channel_id = $1 AND group_id = $2`, channelID, oldGroupID).Scan(&membershipID))
+	var newGroupID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES($1) RETURNING id`, fmt.Sprintf("support-pk-group-%d", time.Now().UnixNano())).Scan(&newGroupID))
+	clearSupportDecisionDirty(t, tx)
+
+	_, err := tx.ExecContext(ctx, `UPDATE channel_groups SET id = id + 1000000000, group_id = $1 WHERE id = $2`, newGroupID, membershipID)
+	require.NoError(t, err)
+	requireSupportDecisionGroupsDirty(t, tx, oldGroupID, newGroupID)
+}
+
 func TestSchedulerSupportDecisionPricingModelChangeDirtiesAffectedGroups(t *testing.T) {
 	ctx := context.Background()
 	tx := testTx(t)
@@ -178,6 +193,27 @@ VALUES($1, 'openai', '["gpt-old"]'::jsonb) RETURNING id`, oldChannelID).Scan(&pr
 	var globalCount int
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM scheduler_dirty_work WHERE kind = 3 AND entity_id = 0`).Scan(&globalCount))
 	require.Zero(t, globalCount)
+}
+
+func TestSchedulerSupportDecisionPricingPrimaryKeyAndChannelChangeDirtiesOldAndNewScopes(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	oldChannelID, oldGroupID := createSupportDecisionChannelScope(t, tx)
+	newChannelID, newGroupID := createSupportDecisionChannelScope(t, tx)
+	_, err := tx.ExecContext(ctx, `UPDATE channels SET restrict_models = true WHERE id IN ($1, $2)`, oldChannelID, newChannelID)
+	require.NoError(t, err)
+	var pricingID int64
+	require.NoError(t, tx.QueryRowContext(ctx, `
+INSERT INTO channel_model_pricing(channel_id, platform, models)
+VALUES($1, 'openai', '["gpt-old"]'::jsonb) RETURNING id`, oldChannelID).Scan(&pricingID))
+	clearSupportDecisionDirty(t, tx)
+
+	_, err = tx.ExecContext(ctx, `
+UPDATE channel_model_pricing
+SET id = id + 1000000000, channel_id = $1, models = '["gpt-new"]'::jsonb
+WHERE id = $2`, newChannelID, pricingID)
+	require.NoError(t, err)
+	requireSupportDecisionGroupsDirty(t, tx, oldGroupID, newGroupID)
 }
 
 func TestSchedulerSupportDecisionUnscopedChannelChangeRequestsGlobalRebuild(t *testing.T) {

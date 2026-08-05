@@ -125,8 +125,9 @@ BEGIN
     INSERT INTO public.scheduler_dirty_group_sources (group_id)
     WITH changed AS MATERIALIZED (
         SELECT o.group_id AS old_group_id, n.group_id AS new_group_id
-        FROM old_rows AS o JOIN new_rows AS n USING (id)
-        WHERE o.channel_id IS DISTINCT FROM n.channel_id OR
+        FROM old_rows AS o FULL JOIN new_rows AS n USING (id)
+        WHERE o.id IS NULL OR n.id IS NULL OR
+              o.channel_id IS DISTINCT FROM n.channel_id OR
               o.group_id IS DISTINCT FROM n.group_id
     )
     SELECT group_id
@@ -135,6 +136,7 @@ BEGIN
         UNION
         SELECT new_group_id AS group_id FROM changed
     ) AS affected
+    WHERE group_id IS NOT NULL
     ORDER BY group_id
     ON CONFLICT (group_id) DO UPDATE
     SET generation = public.scheduler_dirty_group_sources.generation + 1,
@@ -209,8 +211,9 @@ DECLARE
 BEGIN
     WITH changed AS MATERIALIZED (
         SELECT o.channel_id AS old_channel_id, n.channel_id AS new_channel_id
-        FROM old_rows AS o JOIN new_rows AS n USING (id)
-        WHERE o.channel_id IS DISTINCT FROM n.channel_id OR
+        FROM old_rows AS o FULL JOIN new_rows AS n USING (id)
+        WHERE o.id IS NULL OR n.id IS NULL OR
+              o.channel_id IS DISTINCT FROM n.channel_id OR
               o.models IS DISTINCT FROM n.models OR
               o.platform IS DISTINCT FROM n.platform
     )
@@ -220,7 +223,8 @@ BEGIN
         SELECT old_channel_id AS channel_id FROM changed
         UNION
         SELECT new_channel_id AS channel_id FROM changed
-    ) AS affected;
+    ) AS affected
+    WHERE channel_id IS NOT NULL;
 
     IF channel_ids IS NOT NULL THEN
         PERFORM public.scheduler_support_dirty_pricing_channels(channel_ids);

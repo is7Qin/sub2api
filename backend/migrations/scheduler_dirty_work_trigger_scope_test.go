@@ -155,7 +155,8 @@ func TestSchedulerSupportDecisionChannelUpdateDirtiesAffectedGroups(t *testing.T
 func TestSchedulerSupportDecisionChannelMembershipDeleteDirtiesOldGroup(t *testing.T) {
 	sql := readSchedulerSupportDecisionMigration(t)
 	require.Contains(t, sql, "create or replace function scheduler_support_channel_groups_dirty()")
-	require.Contains(t, sql, "from old_rows as o join new_rows as n using (id)")
+	require.Contains(t, sql, "from old_rows as o full join new_rows as n using (id)")
+	require.Contains(t, sql, "o.id is null or n.id is null")
 	require.Contains(t, sql, "o.channel_id is distinct from n.channel_id")
 	require.Contains(t, sql, "o.group_id is distinct from n.group_id")
 	require.Contains(t, sql, "select group_id from old_rows order by group_id")
@@ -166,6 +167,8 @@ func TestSchedulerSupportDecisionChannelMembershipDeleteDirtiesOldGroup(t *testi
 func TestSchedulerSupportDecisionPricingModelChangeDirtiesAffectedGroups(t *testing.T) {
 	sql := readSchedulerSupportDecisionMigration(t)
 	require.Contains(t, sql, "create or replace function scheduler_support_channel_pricing_dirty()")
+	require.Contains(t, sql, "from old_rows as o full join new_rows as n using (id)")
+	require.Contains(t, sql, "o.id is null or n.id is null")
 	for _, column := range []string{"channel_id", "models", "platform"} {
 		require.Contains(t, sql, "o."+column+" is distinct from n."+column)
 	}

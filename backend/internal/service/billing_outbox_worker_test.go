@@ -1168,7 +1168,9 @@ func TestBillingOutboxWorker_PerRecordTimeoutDoesNotCountAsRoundTimeout(t *testi
 
 func TestBillingOutboxWorker_TerminalGrowthAlertTriggersOnThresholdAndDedups(t *testing.T) {
 	// 告警触发与去重：terminal 绝对量超阈 → slog.Error + Health.TerminalAlert；
-	// 冷却期内持续条件不重复刷屏；条件回落清除告警状态；新一次越界重新触发。
+	// 冷却窗口内持续条件不重复刷屏；条件回落清除告警状态；窗口内回落后再次越界
+	// 不重新告警（重新告警的最小间隔 = 冷却时长，与中间状态无关），窗口结束后
+	// 新一次越界重新触发。
 	var logBuf bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -1199,9 +1201,59 @@ func TestBillingOutboxWorker_TerminalGrowthAlertTriggersOnThresholdAndDedups(t *
 
 	repo.stats = BillingOutboxStats{Terminal: 9}
 	worker.sampleTerminalGrowth(ctx, now.Add(3*time.Minute))
+	require.Equal(t, alertLogs, strings.Count(logBuf.String(), "billing outbox terminal growth"),
+		"re-crossing within the cooldown window after recovery must not re-alert (oscillation must not reset the window)")
+	require.Empty(t, worker.Health(ctx).TerminalAlert,
+		"alert state stays dormant until the cooldown window elapses")
+
+	repo.stats = BillingOutboxStats{Terminal: 9}
+	worker.sampleTerminalGrowth(ctx, now.Add(31*time.Minute))
 	require.Greater(t, strings.Count(logBuf.String(), "billing outbox terminal growth"), alertLogs,
-		"a new spike after recovery must re-alert")
+		"a new spike after the cooldown window elapses must re-alert")
 	require.NotEmpty(t, worker.Health(ctx).TerminalAlert)
+}
+
+func TestBillingOutboxWorker_TerminalGrowthAlertBoundedPerCooldownWindowOnOscillation(t *testing.T) {
+	// M1 回归：terminal 计数在阈值附近振荡（清理删除把堆叠拉回阈值下、churn 又
+	// 推回阈值上，如 499K↔501K）时，冷却窗口内无论中间是否回落都不重新告警——
+	// 每冷却窗口恰好 1 条日志（硬性 ≤1 条/窗口），而不是每次振荡（≈1 条/采样）
+	// 刷屏。注入 1 分钟冷却 + 纳秒采样间隔，3 个窗口 × 每窗口 10 轮振荡断言有界。
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	repo := &billingOutboxRepoStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 500_000
+	worker.terminalAlertCooldown = time.Minute
+	worker.terminalSampleInterval = time.Nanosecond
+
+	ctx := context.Background()
+	now := time.Now()
+	over, under := int64(501_000), int64(499_000)
+	const cycles, windows = 10, 3
+	for window := 0; window < windows; window++ {
+		// 每个冷却窗口（60s）只取首个越界采样做一次告警；随后 cycles 轮
+		// 越界→回落→越界振荡（每秒一轮）全部落在窗口内，不得新增日志。
+		base := now.Add(time.Duration(window)*61*time.Second + time.Second)
+		repo.stats = BillingOutboxStats{Terminal: over}
+		worker.sampleTerminalGrowth(ctx, base)
+		require.Equal(t, window+1, strings.Count(logBuf.String(), "billing outbox terminal growth"),
+			"the first over-threshold sample of each cooldown window must alert exactly once")
+		for i := 0; i < cycles; i++ {
+			repo.stats = BillingOutboxStats{Terminal: under}
+			worker.sampleTerminalGrowth(ctx, base.Add(time.Duration(i)*time.Second+500*time.Millisecond))
+			repo.stats = BillingOutboxStats{Terminal: over}
+			worker.sampleTerminalGrowth(ctx, base.Add(time.Duration(i)*time.Second+time.Second))
+		}
+		require.Equal(t, window+1, strings.Count(logBuf.String(), "billing outbox terminal growth"),
+			"oscillation across the threshold within a cooldown window must not add logs, even after recovery")
+	}
+	require.Equal(t, windows, strings.Count(logBuf.String(), "billing outbox terminal growth"),
+		"total alert logs must be bounded to exactly one per cooldown window")
+	require.Empty(t, worker.Health(ctx).TerminalAlert,
+		"alert state stays dormant within the window after recovery; it re-arms at the next window boundary")
 }
 
 func TestBillingOutboxWorker_TerminalGrowthAlertTriggersOnRate(t *testing.T) {
@@ -1248,6 +1300,36 @@ func TestBillingOutboxWorker_TerminalGrowthNoAlertWithinBudget(t *testing.T) {
 	repo.stats = BillingOutboxStats{Terminal: 500}
 	worker.sampleTerminalGrowth(ctx, now.Add(2*time.Minute)) // 清理删除：负 delta
 	require.Empty(t, worker.Health(ctx).TerminalAlert)
+}
+
+func TestBillingOutboxWorker_TerminalGrowthSampleErrorLogsWarning(t *testing.T) {
+	// M3 回归：采样 repo.Stats 失败不再静默——记 slog.Warn 暴露告警传感器故障
+	// （采样节奏默认 60s，天然限频 ≤1 条/分钟）；失败不更新基线（lastAt/lastCount），
+	// 恢复后首次成功采样仍按"首次采样"处理，不会用跨失败窗口的 delta 误报速率。
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	repo := &billingOutboxRepoStub{statsErr: errors.New("stats down")}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+	worker.terminalAlertThreshold = 1_000_000 // 抬高绝对量阈：只验证速率维度
+	worker.terminalGrowthRate = 5.0
+	worker.terminalSampleInterval = time.Nanosecond
+
+	ctx := context.Background()
+	now := time.Now()
+	worker.sampleTerminalGrowth(ctx, now)
+	require.Contains(t, logBuf.String(), "billing outbox terminal growth stats sampling failed")
+	require.Empty(t, worker.Health(ctx).TerminalAlert)
+
+	// 若失败误更新了基线（lastAt=now、lastCount=0），本样本会按
+	// 5000 行/60s ≈ 83 行/s 误报；不更新基线则只建立基线、不告警。
+	repo.statsErr = nil
+	repo.stats = BillingOutboxStats{Terminal: 5000}
+	worker.sampleTerminalGrowth(ctx, now.Add(time.Minute))
+	require.Empty(t, worker.Health(ctx).TerminalAlert,
+		"failed samples must not update the baseline (no rate misjudgment across the failure window)")
 }
 
 func TestBillingOutboxWorker_RunLoopSamplesTerminalGrowthAtCadence(t *testing.T) {

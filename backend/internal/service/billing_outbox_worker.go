@@ -79,15 +79,19 @@ const (
 	//     sentinel），预算 ≤ 0.1 行/s（摄入的 0.001%）；按 30 天保留窗口
 	//     （outbox_cleanup.terminal_retention_days 默认 30 天）稳态堆积（速率 ×
 	//     保留期）≈ 26 万行。billingOutboxTerminalAlertThreshold = 50 万 ≈ 2× 该
-	//     上限：健康累计不误报，超阈说明终态化率长期偏离预算或清理停摆。
+	//     上限：健康累计不误报，超阈说明终态化率长期偏离预算；纯清理停摆（清理
+	//     是独立服务 outbox_cleanup_service.go，有自身的失败日志）在健康 churn 下
+	//     需约 1 个月（26 万→50 万）才会推过本阈值，速率条件不触发——清理停摆应
+	//     以清理服务的失败日志/健康为准交叉核验（见 docs/billing-outbox-ops.md）。
 	//   - 增长速率阈值 5 行/s = 健康预算的 50×（摄入的 0.05%）：持续超阈说明
 	//     系统性误分类（如 schema 破坏导致全员 42P01 在 maxAttempts=10 后终态
 	//     化）。60s 采样一次越界需 ≥300 条新增 terminal 行，零星坏记录不可能
 	//     触发。5 行/s 持续约 28 小时才把堆积推过绝对量阈——速率告警先行，
 	//     绝对量阈兜底既有大堆积（含重启后遗留）。
-	//   - 去重：同一条件只在触发沿（条件从正常越界）记一次日志，持续条件在
-	//     billingOutboxTerminalAlertCooldown（30 分钟）内不重复刷屏，条件回落
-	//     自动解除并重新武装（见 evaluateTerminalGrowth）。
+	//   - 去重：告警在触发沿记一次日志，billingOutboxTerminalAlertCooldown
+	//     （30 分钟）冷却窗口内不重复刷屏——重新告警的最小间隔 = 冷却时长，与
+	//     中间状态无关：条件回落只清除 Health.TerminalAlert，不重置窗口，阈值
+	//     附近振荡不会把日志频率放大到采样节奏（见 evaluateTerminalGrowth）。
 	billingOutboxTerminalAlertThreshold = 500_000
 	billingOutboxTerminalGrowthRate     = 5.0 // 行/秒
 	billingOutboxTerminalSampleInterval = 60 * time.Second
@@ -179,7 +183,8 @@ type BillingOutboxWorker struct {
 // billingOutboxTerminalAlertState 是 terminal 增长告警的采样与去重状态：lastCount/
 // lastAt 是上次采样基线（增长速率 = delta/实际间隔），active 标记当前告警条件
 // 是否成立（成立时 Health.TerminalAlert 持续暴露），lastAlertAt 记录上次告警
-// 时刻（冷却期内持续条件不重复刷屏）。
+// 时刻（冷却窗口内不重复刷屏——重新告警的最小间隔 = 冷却时长，与中间状态无关，
+// 条件回落只清除 active/message、不重置 lastAlertAt，振荡不放大日志频率）。
 type billingOutboxTerminalAlertState struct {
 	mu          sync.Mutex
 	lastCount   int64
@@ -946,7 +951,9 @@ func (w *BillingOutboxWorker) terminalAlertCooldownDuration() time.Duration {
 // 一次时间比较，超过间隔才真正查询）采样 repo.Stats，把 terminal 计数交给
 // evaluateTerminalGrowth 评估。DB 额外负载 ≤1 次/分钟的已索引 Stats 查询
 // （与 Health 共用 repo.Stats，不新增查询形状）。repo.Stats 失败时跳过本次
-// 采样且不更新基线（避免用跨失败窗口的 delta 误判速率）。
+// 采样且不更新基线（避免用跨失败窗口的 delta 误判速率），并记一条 slog.Warn
+// 暴露告警传感器失败——采样节奏（默认 60s）天然把该 Warn 限频到 ≤1 条/分钟，
+// 不会刷屏。
 func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time.Time) {
 	state := &w.terminalAlert
 	state.mu.Lock()
@@ -960,6 +967,8 @@ func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time
 	}
 	stats, err := w.repo.Stats(ctx)
 	if err != nil {
+		slog.Warn("billing outbox terminal growth stats sampling failed",
+			"error", boundedBillingOutboxWorkerError(err))
 		return
 	}
 	w.evaluateTerminalGrowth(stats.Terminal, now)
@@ -969,9 +978,11 @@ func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time
 // billingOutboxTerminalAlertThreshold（既有堆积）或相对上次采样的增长速率超过
 // billingOutboxTerminalGrowthRate（delta/实际间隔，行/秒）时置位
 // Health.TerminalAlert 并记 slog.Error。首次采样无基线（增长速率不可得），但
-// 绝对量超阈立即告警——重启后遗留的大堆积同样要被看到。去重：同一条件只在
-// 触发沿（条件从正常越界）记一次日志，持续条件在冷却期内不重复刷屏（保留
-// 既有告警信息），条件回落自动解除并重新武装。清理删除产生负 delta，不会误报。
+// 绝对量超阈立即告警——重启后遗留的大堆积同样要被看到。去重：告警在触发沿记
+// 一次日志，冷却窗口（billingOutboxTerminalAlertCooldown，30 分钟）内无论中间
+// 是否回落（阈值附近振荡）都不重复——重新告警的最小间隔 = 冷却时长；条件回落
+// 只清除 active/message（Health.TerminalAlert 归空），不重置 lastAlertAt，窗口
+// 结束后仍越界重新确认。清理删除产生负 delta，不会误报。
 func (w *BillingOutboxWorker) evaluateTerminalGrowth(terminal int64, now time.Time) {
 	threshold := w.terminalAlertThresholdValue()
 	rateLimit := w.terminalGrowthRateValue()
@@ -994,8 +1005,12 @@ func (w *BillingOutboxWorker) evaluateTerminalGrowth(terminal int64, now time.Ti
 		state.message = ""
 		return
 	}
-	if state.active && !state.lastAlertAt.IsZero() && now.Sub(state.lastAlertAt) < w.terminalAlertCooldownDuration() {
-		return // 冷却期内持续条件不重复刷屏，保留既有告警信息
+	// 冷却窗口硬性去重：重新告警的最小间隔 = 冷却时长，与中间状态无关。窗口内
+	// 条件回落后（active=false）再次越界不重新告警——lastAlertAt 在回落时不被
+	// 重置，阈值附近振荡（如 499K↔501K）不会把日志频率放大到采样节奏（默认
+	// 60s 一次 ≈ 1440 条/天），而是硬性 ≤1 条/冷却窗口。
+	if !state.lastAlertAt.IsZero() && now.Sub(state.lastAlertAt) < w.terminalAlertCooldownDuration() {
+		return // 冷却窗口内不重复刷屏（保留既有告警信息，或回落后的清除状态）
 	}
 	state.active = true
 	state.lastAlertAt = now

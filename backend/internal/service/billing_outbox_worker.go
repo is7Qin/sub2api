@@ -142,14 +142,26 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("claim billing outbox finalizations: %w", err)
 		}
+		expiredFinalRecords, err := finalRepo.ClaimFinalizationExpiredLeased(ctx, w.workerID, billingOutboxConcurrency, w.finalizationLease)
+		if err != nil {
+			return fmt.Errorf("claim expired billing outbox finalizations: %w", err)
+		}
+		finalRecords = append(finalRecords, expiredFinalRecords...)
 		if err := w.processFinalizationBatch(ctx, finalRecords, finalRepo); err != nil {
 			return err
 		}
 	}
+	// pending 分支与过期租约分支分开 Claim（各自命中部分索引），合并后
+	// 一次 apply：两批记录共享同一 processApplyBatch，apply 语义不变。
 	records, err := w.repo.Claim(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
 	if err != nil {
 		return fmt.Errorf("claim billing outbox commands: %w", err)
 	}
+	expiredRecords, err := w.repo.ClaimExpiredLeased(ctx, w.workerID, billingOutboxConcurrency, billingOutboxLease)
+	if err != nil {
+		return fmt.Errorf("claim expired billing outbox commands: %w", err)
+	}
+	records = append(records, expiredRecords...)
 	if err := w.processApplyBatch(ctx, records); err != nil {
 		return err
 	}

@@ -17,19 +17,24 @@ type billingOutboxRepoStub struct {
 
 	records []BillingOutboxRecord
 	// claimSeq 非空时，每次 Claim 依次返回对应记录集（测试不同轮次的记录组成）。
-	claimSeq               [][]BillingOutboxRecord
-	finalizationRecords    []BillingOutboxRecord
-	claimLimit             int
-	finalizationClaimLimit int
-	finalizationClaimed    int
-	workerID               string
-	lease                  time.Duration
-	acked                  []int64
-	finalizationAcked      []int64
-	retried                []billingOutboxRetry
-	finalizationRetried    []billingOutboxRetry
-	stats                  BillingOutboxStats
-	statsErr               error
+	claimSeq                   [][]BillingOutboxRecord
+	claimLimit                 int
+	expiredLeaseRecords        []BillingOutboxRecord
+	expiredLeaseErr            error
+	expiredLeaseClaimLimit     int
+	finalizationRecords        []BillingOutboxRecord
+	finalizationExpiredRecords []BillingOutboxRecord
+	finalizationExpiredErr     error
+	finalizationClaimLimit     int
+	finalizationClaimed        int
+	workerID                   string
+	lease                      time.Duration
+	acked                      []int64
+	finalizationAcked          []int64
+	retried                    []billingOutboxRetry
+	finalizationRetried        []billingOutboxRetry
+	stats                      BillingOutboxStats
+	statsErr                   error
 }
 
 type billingOutboxRetry struct {
@@ -56,6 +61,27 @@ func (r *billingOutboxRepoStub) Claim(_ context.Context, workerID string, limit 
 		return append([]BillingOutboxRecord(nil), batch...), nil
 	}
 	return append([]BillingOutboxRecord(nil), r.records...), nil
+}
+
+func (r *billingOutboxRepoStub) ClaimExpiredLeased(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.expiredLeaseClaimLimit = limit
+	r.workerID = workerID
+	if r.expiredLeaseErr != nil {
+		return nil, r.expiredLeaseErr
+	}
+	return append([]BillingOutboxRecord(nil), r.expiredLeaseRecords...), nil
+}
+
+func (r *billingOutboxRepoStub) ClaimFinalizationExpiredLeased(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.workerID = workerID
+	if r.finalizationExpiredErr != nil {
+		return nil, r.finalizationExpiredErr
+	}
+	return append([]BillingOutboxRecord(nil), r.finalizationExpiredRecords...), nil
 }
 
 func (r *billingOutboxRepoStub) Ack(_ context.Context, id int64, workerID string) error {
@@ -619,6 +645,55 @@ func TestBillingOutboxWorker_ClaimsOnlyRunnableApplyBatch(t *testing.T) {
 	require.NoError(t, worker.processBatch(context.Background()))
 	require.Equal(t, billingOutboxConcurrency, repo.claimLimit)
 	require.NotEqual(t, billingOutboxBatchSize, repo.claimLimit)
+	require.Equal(t, billingOutboxConcurrency, repo.expiredLeaseClaimLimit)
+}
+
+func TestBillingOutboxWorker_MergesPendingAndExpiredLeaseClaimsIntoOneApplyBatch(t *testing.T) {
+	// 同一轮内 pending 分支与过期租约分支各 Claim 一批，合并后一次 apply：
+	// 两批记录都必须被消化，且共享同一个 processApplyBatch（保持既有语义）。
+	pending := []BillingOutboxRecord{batchValidRecord(1, 42), batchValidRecord(2, 42)}
+	expired := []BillingOutboxRecord{batchValidRecord(3, 42), batchValidRecord(4, 42)}
+	repo := &billingOutboxRepoStub{records: pending, expiredLeaseRecords: expired}
+	billing := &batchUsageBillingRepoStub{}
+	worker := NewBillingOutboxWorker(repo, billing)
+
+	require.NoError(t, worker.processBatch(context.Background()))
+
+	calls, items := billing.batchSnapshot()
+	require.Equal(t, 1, calls, "merged claims must share one per-shard batch transaction")
+	require.Len(t, items, 1)
+	require.Equal(t, []int64{1, 2, 3, 4}, outboxIDsOf(items[0]))
+	require.Empty(t, repo.acked)
+	require.Empty(t, repo.retried)
+}
+
+func TestBillingOutboxWorker_MergesFinalizationClaimsFromBothBranches(t *testing.T) {
+	first := validBillingOutboxRecord(80)
+	first.Status = "finalizing"
+	first.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	expired := validBillingOutboxRecord(81)
+	expired.Status = "finalizing"
+	expired.ApplyResult = &UsageBillingApplyResult{Applied: true}
+	repo := &billingOutboxRepoStub{
+		finalizationRecords:        []BillingOutboxRecord{first},
+		finalizationExpiredRecords: []BillingOutboxRecord{expired},
+	}
+	postProcessor := &billingOutboxPostProcessorStub{}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{}, postProcessor)
+
+	require.NoError(t, worker.processBatch(context.Background()))
+
+	require.Equal(t, 2, postProcessor.calls)
+	require.ElementsMatch(t, []int64{80, 81}, repo.finalizationAcked)
+}
+
+func TestBillingOutboxWorker_ReturnsErrorWhenExpiredLeaseClaimFails(t *testing.T) {
+	repo := &billingOutboxRepoStub{expiredLeaseErr: errors.New("database temporarily unavailable")}
+	worker := NewBillingOutboxWorker(repo, &usageBillingRepoStub{})
+
+	err := worker.processBatch(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expired")
 }
 
 func TestBillingOutboxWorker_ReportsHealth(t *testing.T) {

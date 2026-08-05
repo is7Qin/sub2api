@@ -123,7 +123,12 @@ type BillingOutboxStats struct {
 
 type BillingOutboxRepository interface {
 	Enqueue(ctx context.Context, command *BillingOutboxCommand) (*BillingOutboxRecord, error)
+	// Claim 认领到期可执行的 pending 命令；租约过期的 processing 记录由
+	// ClaimExpiredLeased 独立认领。两条语句必须分开：OR 双分支条件无法匹配
+	// 部分索引 idx_billing_attempt_outbox_claim (status, available_at, id)，
+	// 会迫使 planner 回退 pkey 全表扫描。
 	Claim(ctx context.Context, workerID string, limit int, lease time.Duration) ([]BillingOutboxRecord, error)
+	ClaimExpiredLeased(ctx context.Context, workerID string, limit int, lease time.Duration) ([]BillingOutboxRecord, error)
 	Retry(ctx context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error
 	Ack(ctx context.Context, id int64, workerID string) error
 	Stats(ctx context.Context) (BillingOutboxStats, error)
@@ -135,6 +140,7 @@ type BillingOutboxRepository interface {
 type BillingOutboxFinalizationRepository interface {
 	BillingOutboxRepository
 	ClaimFinalization(ctx context.Context, workerID string, limit int, lease time.Duration) ([]BillingOutboxRecord, error)
+	ClaimFinalizationExpiredLeased(ctx context.Context, workerID string, limit int, lease time.Duration) ([]BillingOutboxRecord, error)
 	RenewFinalizationLease(ctx context.Context, id int64, workerID string, lease time.Duration) error
 	RetryFinalization(ctx context.Context, id int64, workerID string, availableAt time.Time, lastError string, terminal bool) error
 	AckFinalization(ctx context.Context, id int64, workerID string) error

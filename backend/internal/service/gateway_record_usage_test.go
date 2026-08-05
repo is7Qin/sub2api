@@ -73,6 +73,9 @@ func (s *gatewayRecordUsageBillingOutboxStub) Enqueue(_ context.Context, command
 func (s *gatewayRecordUsageBillingOutboxStub) Claim(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
 	return nil, nil
 }
+func (s *gatewayRecordUsageBillingOutboxStub) ClaimExpiredLeased(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
 func (s *gatewayRecordUsageBillingOutboxStub) Retry(context.Context, int64, string, time.Time, string, bool) error {
 	return nil
 }

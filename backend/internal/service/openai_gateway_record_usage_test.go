@@ -43,6 +43,9 @@ func (s *openAIRecordUsageBillingOutboxStub) Enqueue(_ context.Context, command 
 func (s *openAIRecordUsageBillingOutboxStub) Claim(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
 	return nil, nil
 }
+func (s *openAIRecordUsageBillingOutboxStub) ClaimExpiredLeased(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
 func (s *openAIRecordUsageBillingOutboxStub) Retry(context.Context, int64, string, time.Time, string, bool) error {
 	return nil
 }

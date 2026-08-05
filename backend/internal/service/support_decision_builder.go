@@ -43,6 +43,7 @@ type supportDecisionTemporaryScope struct {
 	catchAll            *supportDecisionTemporaryRule
 	channelExact        []string
 	channelWildcard     []string
+	channelCatchAll     bool
 	channelAllowed      supportDecisionProfile
 	knownCodexSupport   []byte
 	knownBedrockSupport []byte
@@ -339,9 +340,12 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 			built.wildcard[prefix] = rule
 		}
 	}
-	built.channelExact, built.channelWildcard = supportDecisionChannelModelPatterns(scope)
+	built.channelExact, built.channelWildcard, built.channelCatchAll = supportDecisionChannelModelPatterns(scope)
 	wildcardCount := len(built.wildcard) + len(built.channelWildcard)
 	if built.catchAll != nil {
+		wildcardCount++
+	}
+	if built.channelCatchAll {
 		wildcardCount++
 	}
 	if wildcardCount > SupportDecisionWildcardLimit {
@@ -350,7 +354,7 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 	if len(built.exact)+len(built.channelExact) > SupportDecisionExactLimit {
 		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, len(built.exact)+len(built.channelExact), SupportDecisionExactLimit)
 	}
-	hasChannelPolicy := len(built.channelExact) > 0 || len(built.channelWildcard) > 0
+	hasChannelPolicy := built.channelCatchAll || len(built.channelExact) > 0 || len(built.channelWildcard) > 0
 	built.fallback = evaluateSupportDecisionWithoutModel(scope, coordinateCount, wsConfig, false, hasChannelPolicy)
 	if hasChannelPolicy {
 		built.channelAllowed = evaluateSupportDecisionWithoutModel(scope, coordinateCount, wsConfig, true, true)
@@ -385,11 +389,11 @@ func supportDecisionDefaultOAuthCodexSupport(scope *supportDecisionBuildScope, c
 	return nil
 }
 
-func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) ([]string, []string) {
+func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) (exactPatterns, wildcardPatterns []string, catchAll bool) {
 	if scope.channel == nil || scope.channel.Status != StatusActive ||
 		!scope.channel.RestrictModels ||
 		scope.channel.BillingModelSource != BillingModelSourceUpstream {
-		return nil, nil
+		return nil, nil, false
 	}
 	exact, wildcard := make(map[string]struct{}), make(map[string]struct{})
 	for _, pricing := range scope.channel.PricingModels {
@@ -401,16 +405,18 @@ func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) ([]st
 			if model == "" {
 				continue
 			}
-			target := exact
-			key := model
-			if strings.HasSuffix(model, "*") {
-				target = wildcard
-				key = strings.TrimSuffix(model, "*")
+			if model == "*" {
+				catchAll = true
+				continue
 			}
-			target[key] = struct{}{}
+			if strings.HasSuffix(model, "*") {
+				wildcard[strings.TrimSuffix(model, "*")] = struct{}{}
+				continue
+			}
+			exact[model] = struct{}{}
 		}
 	}
-	return sortedStringSet(exact), sortedStringSet(wildcard)
+	return sortedStringSet(exact), sortedStringSet(wildcard), catchAll
 }
 
 func sortedStringSet(values map[string]struct{}) []string {
@@ -749,7 +755,7 @@ func decodeOpenAICoordinate(coordinate int) SupportDecisionQuery {
 }
 
 func materializeSupportDecisionScope(scope supportDecisionTemporaryScope, ordinals map[string]uint32) supportDecisionScopeTable {
-	result := supportDecisionScopeTable{Key: scope.key, OpenAI: scope.openAI, ChannelAllowed: scope.channelAllowed, KnownCodexSupport: scope.knownCodexSupport, KnownBedrockSupport: scope.knownBedrockSupport, Default: scope.fallback, Exact: make(map[string]supportDecisionExactValue, len(scope.exact))}
+	result := supportDecisionScopeTable{Key: scope.key, OpenAI: scope.openAI, ChannelCatchAll: scope.channelCatchAll, ChannelAllowed: scope.channelAllowed, KnownCodexSupport: scope.knownCodexSupport, KnownBedrockSupport: scope.knownBedrockSupport, Default: scope.fallback, Exact: make(map[string]supportDecisionExactValue, len(scope.exact))}
 	for _, model := range scope.channelExact {
 		result.ChannelExact = append(result.ChannelExact, ordinals[model])
 	}
@@ -818,6 +824,7 @@ type supportDecisionFallbackSizeEnvelope struct {
 	CatchAll            *supportDecisionCatchAll    `json:"catch_all,omitempty"`
 	ChannelExact        []uint32                    `json:"channel_exact,omitempty"`
 	ChannelWildcard     []uint32                    `json:"channel_wildcard,omitempty"`
+	ChannelCatchAll     bool                        `json:"channel_catch_all,omitempty"`
 	ChannelAllowed      supportDecisionProfile      `json:"channel_allowed,omitempty"`
 	KnownCodexSupport   []byte                      `json:"known_codex_support,omitempty"`
 	KnownBedrockSupport []byte                      `json:"known_bedrock_support,omitempty"`
@@ -859,6 +866,7 @@ func supportDecisionSerializedFallbackSize(scope *supportDecisionScopeTable, glo
 		CatchAll:            scope.CatchAll,
 		ChannelExact:        scope.ChannelExact,
 		ChannelWildcard:     scope.ChannelWildcard,
+		ChannelCatchAll:     scope.ChannelCatchAll,
 		ChannelAllowed:      scope.ChannelAllowed,
 		KnownCodexSupport:   scope.KnownCodexSupport,
 		KnownBedrockSupport: scope.KnownBedrockSupport,
@@ -873,6 +881,9 @@ func supportDecisionSerializedFallbackSize(scope *supportDecisionScopeTable, glo
 func validateSupportDecisionScopeBudgets(scope *supportDecisionScopeTable, globalStrings []string) error {
 	wildcardCount := len(scope.Wildcard) + len(scope.ChannelWildcard)
 	if scope.CatchAll != nil {
+		wildcardCount++
+	}
+	if scope.ChannelCatchAll {
 		wildcardCount++
 	}
 	if wildcardCount > SupportDecisionWildcardLimit {

@@ -59,6 +59,7 @@ type supportDecisionScopeTable struct {
 	CatchAll            *supportDecisionCatchAll             `json:"catch_all,omitempty"`
 	ChannelExact        []uint32                             `json:"channel_exact,omitempty"`
 	ChannelWildcard     []uint32                             `json:"channel_wildcard,omitempty"`
+	ChannelCatchAll     bool                                 `json:"channel_catch_all,omitempty"`
 	ChannelAllowed      supportDecisionProfile               `json:"channel_allowed,omitempty"`
 	KnownCodexSupport   []byte                               `json:"known_codex_support,omitempty"`
 	KnownBedrockSupport []byte                               `json:"known_bedrock_support,omitempty"`
@@ -241,7 +242,7 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 	if scope.CatchAll != nil {
 		return profileResult(scope.CatchAll.Profile, coordinate)
 	}
-	if len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0 {
+	if scope.ChannelCatchAll || len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0 {
 		if supportDecisionChannelPatternMatches(t.runtimeStrings, scope, model) {
 			return profileResult(scope.ChannelAllowed, coordinate)
 		}
@@ -250,6 +251,9 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 }
 
 func supportDecisionChannelPatternMatches(stringsTable []string, scope *supportDecisionScopeTable, model string) bool {
+	if scope.ChannelCatchAll {
+		return true
+	}
 	alias := claudePricingRevisionAliasFoldASCII(model)
 	for _, stringID := range scope.ChannelExact {
 		if int(stringID) < len(stringsTable) && (equalFoldASCII(model, stringsTable[stringID]) || aliasMatchesFoldASCII(model, alias, stringsTable[stringID], false)) {
@@ -468,7 +472,7 @@ func cloneSupportDecisionProfile(profile supportDecisionProfile) supportDecision
 }
 
 func validSupportDecisionChannelFacts(stringsTable []string, scope *supportDecisionScopeTable, coordinateCount int) bool {
-	hasPatterns := len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0
+	hasPatterns := scope.ChannelCatchAll || len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0
 	if !hasPatterns {
 		return len(scope.ChannelAllowed.SupportBits) == 0 && len(scope.ChannelAllowed.EligibleBits) == 0
 	}

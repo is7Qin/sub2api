@@ -268,6 +268,56 @@ func TestSupportDecisionBuilderMatchesClaudeRevisionAliasForChannelWildcard(t *t
 	}
 }
 
+func TestSupportDecisionBuilderCountsChannelCatchAllAsWildcardRule(t *testing.T) {
+	accepted := supportDecisionCombinedRuleSnapshot(254, true, 0, 0, 0)
+	accepted.Channels = []SupportDecisionChannel{{
+		Status: StatusActive, GroupIDs: []int64{42}, RestrictModels: true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels:      []SupportDecisionPricingModels{{Platform: PlatformAnthropic, Models: []string{"*"}}},
+	}}
+	_, err := BuildSupportDecisionTable(accepted, SupportDecisionBuildOptions{Generation: 1})
+	require.NoError(t, err)
+
+	rejected := supportDecisionCombinedRuleSnapshot(254, true, 0, 0, 0)
+	rejected.Channels = []SupportDecisionChannel{{
+		Status: StatusActive, GroupIDs: []int64{42}, RestrictModels: true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels:      []SupportDecisionPricingModels{{Platform: PlatformAnthropic, Models: []string{"*", "extra-*"}}},
+	}}
+	_, err = BuildSupportDecisionTable(rejected, SupportDecisionBuildOptions{Generation: 1})
+	require.ErrorContains(t, err, "wildcard rules")
+}
+
+func TestSupportDecisionBuilderRoundTripsChannelCatchAll(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		platform string
+		account  Account
+	}{
+		{name: "generic", platform: PlatformAnthropic, account: Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"model_mapping": map[string]any{"configured": "configured"}}}},
+		{name: "openai", platform: PlatformOpenAI, account: Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"model_mapping": map[string]any{"configured": "configured"}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := SupportDecisionChannel{
+				Status:             StatusActive,
+				GroupIDs:           []int64{42},
+				RestrictModels:     true,
+				BillingModelSource: BillingModelSourceUpstream,
+				PricingModels:      []SupportDecisionPricingModels{{Platform: tt.platform, Models: []string{"*"}}},
+			}
+			snapshot := supportDecisionTestSnapshot([]Account{tt.account}, tt.platform, []string{"hot"})
+			snapshot.Channels = []SupportDecisionChannel{channel}
+			table := buildSupportDecisionTestTable(t, snapshot)
+			payload, err := EncodeSupportDecisionDocument(table)
+			require.NoError(t, err)
+			decoded, err := DecodeSupportDecisionDocument(payload, table.Generation)
+			require.NoError(t, err)
+			query := SupportDecisionQuery{Scope: SupportDecisionScope{Platform: tt.platform, GroupID: 42}, RequestedModel: "arbitrary-model"}
+			require.Equal(t, table.Lookup(query), decoded.Lookup(query))
+		})
+	}
+}
+
 func TestSupportDecisionBuilderMatchesLegacyCaseInsensitiveChannelPolicy(t *testing.T) {
 	channel := SupportDecisionChannel{
 		Status:             StatusActive,

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 )
 
@@ -47,7 +49,16 @@ func DecodeSupportDecisionDocument(payload []byte, expectedGeneration uint64) (*
 		return nil, fmt.Errorf("support decision document exceeds %d bytes", SupportDecisionMaxDocumentSize)
 	}
 	var document supportDecisionDocumentEnvelope
-	if err := json.Unmarshal(payload, &document); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode support decision document: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode support decision document: trailing JSON value")
+		}
 		return nil, fmt.Errorf("decode support decision document: %w", err)
 	}
 	if document.SchemaVersion != SupportDecisionSchemaVersion {
@@ -93,6 +104,10 @@ func DecodeSupportDecisionDocument(payload []byte, expectedGeneration uint64) (*
 			return nil, err
 		}
 	}
-	table.wirePayload = append([]byte(nil), payload...)
+	canonical, err := encodeSupportDecisionDocumentUnchecked(table)
+	if err != nil {
+		return nil, fmt.Errorf("encode canonical support decision document: %w", err)
+	}
+	table.wirePayload = canonical
 	return table, nil
 }

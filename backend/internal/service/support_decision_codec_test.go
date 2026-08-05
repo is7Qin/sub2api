@@ -145,6 +145,12 @@ func TestSupportDecisionCodecRejectsMalformedChannelFacts(t *testing.T) {
 		"missing channel profile": func(scope *supportDecisionScopeTable) {
 			scope.ChannelAllowed = supportDecisionProfile{}
 		},
+		"catch-all missing channel profile": func(scope *supportDecisionScopeTable) {
+			scope.ChannelExact = nil
+			scope.ChannelWildcard = nil
+			scope.ChannelCatchAll = true
+			scope.ChannelAllowed = supportDecisionProfile{}
+		},
 		"invalid channel profile": func(scope *supportDecisionScopeTable) {
 			scope.ChannelAllowed.SupportBits = scope.ChannelAllowed.SupportBits[:0]
 		},
@@ -210,6 +216,70 @@ func TestSupportDecisionCodecEnforcesCombinedFallbackRuleLimits(t *testing.T) {
 	_, err = DecodeSupportDecisionDocument(overWildcard, table.Generation)
 	require.ErrorContains(t, err, "wildcard rules")
 
+	var catchAllDocument supportDecisionDocumentEnvelope
+	require.NoError(t, json.Unmarshal(payload, &catchAllDocument))
+	supportDecisionGroupScope(t, &catchAllDocument).ChannelCatchAll = true
+	overCatchAll, err := json.Marshal(catchAllDocument)
+	require.NoError(t, err)
+	_, err = DecodeSupportDecisionDocument(overCatchAll, table.Generation)
+	require.ErrorContains(t, err, "wildcard rules")
+}
+
+func TestSupportDecisionCodecRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, []string{"hot"}))
+	payload, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(payload, &document))
+
+	tests := map[string][]byte{}
+	top := cloneJSONMap(t, document)
+	top["unexpected"] = true
+	tests["top level"] = mustMarshalJSON(t, top)
+	nested := cloneJSONMap(t, document)
+	nestedScopes := nested["scopes"].([]any)
+	nestedScopes[0].(map[string]any)["credential_hint"] = "redacted"
+	tests["nested"] = mustMarshalJSON(t, nested)
+	tests["trailing value"] = append(append([]byte(nil), payload...), []byte(` {}`)...)
+
+	for name, invalid := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := DecodeSupportDecisionDocument(invalid, table.Generation)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestSupportDecisionCodecCanonicalizesAcceptedInput(t *testing.T) {
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, []string{"hot"}))
+	canonical, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+	var document supportDecisionDocumentEnvelope
+	require.NoError(t, json.Unmarshal(canonical, &document))
+	noncanonical, err := json.MarshalIndent(map[string]any{
+		"scopes": document.Scopes, "strings": document.Strings,
+		"generation": document.Generation, "schema_version": document.SchemaVersion,
+	}, "", "  ")
+	require.NoError(t, err)
+	decoded, err := DecodeSupportDecisionDocument(noncanonical, table.Generation)
+	require.NoError(t, err)
+	reencoded, err := EncodeSupportDecisionDocument(decoded)
+	require.NoError(t, err)
+	require.Equal(t, canonical, reencoded)
+}
+
+func cloneJSONMap(t *testing.T, input map[string]any) map[string]any {
+	t.Helper()
+	var cloned map[string]any
+	require.NoError(t, json.Unmarshal(mustMarshalJSON(t, input), &cloned))
+	return cloned
+}
+
+func mustMarshalJSON(t *testing.T, input any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(input)
+	require.NoError(t, err)
+	return payload
 }
 
 func TestSupportDecisionCodecRoundTrip(t *testing.T) {

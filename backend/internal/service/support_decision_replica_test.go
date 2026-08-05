@@ -534,6 +534,35 @@ func TestSupportDecisionReplicaParentCancellationAllowsRestart(t *testing.T) {
 	h.replica.Stop()
 }
 
+func TestSupportDecisionReplicaStartRejectsCanceledRunBeforeTeardown(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	teardownReached, releaseTeardown := make(chan struct{}), make(chan struct{})
+	h.replica.deps.beforeFinish = func() {
+		close(teardownReached)
+		<-releaseTeardown
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, h.replica.Start(ctx))
+	oldDone := h.replica.lifecycleDone()
+	cancel()
+	<-teardownReached
+
+	require.Error(t, h.replica.Start(context.Background()))
+	close(releaseTeardown)
+	<-oldDone
+
+	h.store.mu.Lock()
+	h.store.subscription = newSupportDecisionReplicaFakeSubscription()
+	h.store.mu.Unlock()
+	h.ticker = newSupportDecisionReplicaFakeTicker()
+	h.replica.deps.newTicker = func(time.Duration) supportDecisionReplicaTicker { return h.ticker }
+	h.replica.deps.beforeFinish = nil
+	require.NoError(t, h.replica.Start(context.Background()))
+	h.replica.Stop()
+}
+
 func TestSupportDecisionAtomicReaderRetainsMonotonicVerificationTime(t *testing.T) {
 	start := time.Now()
 	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, []string{"hot"}))

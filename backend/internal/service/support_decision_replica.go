@@ -26,6 +26,7 @@ type supportDecisionReplicaDependencies struct {
 	afterRefresh    func(error)
 	afterHint       func()
 	afterStopMarked func()
+	beforeFinish    func()
 }
 
 type supportDecisionReplicaPhase uint8
@@ -46,6 +47,7 @@ type SupportDecisionReplica struct {
 
 	mu           sync.Mutex
 	phase        supportDecisionReplicaPhase
+	ctx          context.Context
 	cancel       context.CancelFunc
 	subscription SupportDecisionWakeupSubscription
 	done         chan struct{}
@@ -77,8 +79,12 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	r.mu.Lock()
 	switch r.phase {
 	case supportDecisionReplicaRunning:
+		if r.ctx != nil && r.ctx.Err() == nil {
+			r.mu.Unlock()
+			return nil
+		}
 		r.mu.Unlock()
-		return nil
+		return errors.New("support decision replica run is terminating")
 	case supportDecisionReplicaStarting:
 		r.mu.Unlock()
 		return errors.New("support decision replica start already in progress")
@@ -89,6 +95,7 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	r.phase = supportDecisionReplicaStarting
+	r.ctx = runCtx
 	r.cancel = cancel
 	r.done = done
 	r.mu.Unlock()
@@ -172,10 +179,14 @@ func (r *SupportDecisionReplica) run(ctx context.Context, subscription SupportDe
 }
 
 func (r *SupportDecisionReplica) finishLifecycle(done chan struct{}) {
+	if r.deps.beforeFinish != nil {
+		r.deps.beforeFinish()
+	}
 	r.mu.Lock()
 	if r.done == done {
 		close(done)
 		r.phase = supportDecisionReplicaIdle
+		r.ctx = nil
 		r.cancel = nil
 		r.subscription = nil
 		r.done = nil

@@ -529,7 +529,10 @@ func (s *AntigravityOAuthService) BuildRefreshAccountCredentials(account *Accoun
 	return newCredentials
 }
 
-// Stop 停止服务
-func (s *AntigravityOAuthService) Stop() {
-	s.sessionStore.Stop()
+// CleanupSessions removes expired Antigravity OAuth sessions for one runtime cycle.
+func (s *AntigravityOAuthService) CleanupSessions(ctx context.Context) error {
+	if s == nil || s.sessionStore == nil {
+		return nil
+	}
+	return s.sessionStore.CleanupExpired(ctx)
 }

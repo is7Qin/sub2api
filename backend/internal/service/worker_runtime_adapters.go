@@ -11,11 +11,13 @@ import (
 )
 
 const (
-	claudeOAuthSessionCleanupInterval   = 5 * time.Minute
-	claudeOAuthSessionCleanupTimeout    = 5 * time.Second
-	geminiOAuthSessionCleanupInterval   = 5 * time.Minute
-	geminiOAuthSessionCleanupTimeout    = 5 * time.Second
-	concurrencySlotCleanupWorkerTimeout = 6 * time.Second
+	claudeOAuthSessionCleanupInterval      = 5 * time.Minute
+	claudeOAuthSessionCleanupTimeout       = 5 * time.Second
+	geminiOAuthSessionCleanupInterval      = 5 * time.Minute
+	geminiOAuthSessionCleanupTimeout       = 5 * time.Second
+	antigravityOAuthSessionCleanupInterval = 5 * time.Minute
+	antigravityOAuthSessionCleanupTimeout  = 5 * time.Second
+	concurrencySlotCleanupWorkerTimeout    = 6 * time.Second
 )
 
 // NewClaudeOAuthSessionCleanupWorker adapts Claude OAuth session cleanup to the worker runtime.
@@ -55,6 +57,27 @@ func NewGeminiOAuthSessionCleanupWorker(svc *GeminiOAuthService) (*workerruntime
 		},
 		Interval:       geminiOAuthSessionCleanupInterval,
 		Timeout:        geminiOAuthSessionCleanupTimeout,
+		RunImmediately: false,
+		Run:            svc.CleanupSessions,
+	})
+}
+
+// NewAntigravityOAuthSessionCleanupWorker adapts Antigravity OAuth session cleanup to the worker runtime.
+func NewAntigravityOAuthSessionCleanupWorker(svc *AntigravityOAuthService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil || svc.sessionStore == nil {
+		return nil, fmt.Errorf("Antigravity OAuth service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "antigravity-oauth-session-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Removes expired Antigravity OAuth authorization sessions",
+			Tags:             []string{"oauth", "antigravity", "session-cleanup"},
+		},
+		Interval:       antigravityOAuthSessionCleanupInterval,
+		Timeout:        antigravityOAuthSessionCleanupTimeout,
 		RunImmediately: false,
 		Run:            svc.CleanupSessions,
 	})

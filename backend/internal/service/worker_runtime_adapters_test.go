@@ -269,6 +269,62 @@ func TestGeminiOAuthSessionCleanupLifecycleIsRuntimeOwned(t *testing.T) {
 	require.NotContains(t, string(content), "func (s *GeminiOAuthService) Stop")
 }
 
+func TestAntigravityOAuthSessionCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
+	svc := NewAntigravityOAuthService(nil)
+	worker, err := NewAntigravityOAuthSessionCleanupWorker(svc)
+
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "antigravity-oauth-session-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "auth", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Removes expired Antigravity OAuth authorization sessions", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"oauth", "antigravity", "session-cleanup"}, snapshot.Descriptor.Tags)
+	require.Equal(t, 5*time.Minute, antigravityOAuthSessionCleanupInterval)
+	require.Equal(t, 5*time.Second, antigravityOAuthSessionCleanupTimeout)
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestAntigravityOAuthSessionCleanupWorkerDefersFirstRunAndStops(t *testing.T) {
+	svc := NewAntigravityOAuthService(nil)
+	worker, err := NewAntigravityOAuthSessionCleanupWorker(svc)
+	require.NoError(t, err)
+	beforeStart := time.Now()
+	require.NoError(t, worker.Start(context.Background()))
+	var status workerruntime.PeriodicStatus
+	require.Eventually(t, func() bool {
+		status = worker.Snapshot().Status.(workerruntime.PeriodicStatus)
+		return !status.NextRunAt.IsZero()
+	}, time.Second, time.Millisecond)
+	observedAt := time.Now()
+	require.False(t, status.NextRunAt.Before(beforeStart.Add(5*time.Minute)))
+	require.False(t, status.NextRunAt.After(observedAt.Add(5*time.Minute)))
+	require.Zero(t, status.RunCount)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, worker.Stop(ctx))
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+}
+
+func TestAntigravityOAuthSessionCleanupWorkerRejectsMissingService(t *testing.T) {
+	worker, err := NewAntigravityOAuthSessionCleanupWorker(nil)
+	require.Nil(t, worker)
+	require.EqualError(t, err, "Antigravity OAuth service is required")
+
+	worker, err = NewAntigravityOAuthSessionCleanupWorker(&AntigravityOAuthService{})
+	require.Nil(t, worker)
+	require.EqualError(t, err, "Antigravity OAuth service is required")
+}
+
+func TestAntigravityOAuthSessionCleanupLifecycleIsRuntimeOwned(t *testing.T) {
+	content, err := os.ReadFile("antigravity_oauth_service.go")
+	require.NoError(t, err)
+	require.NotContains(t, string(content), "func (s *AntigravityOAuthService) Stop")
+}
+
 func TestConcurrencySlotCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
 	cache := &slotCleanupCache{}
 	svc := NewConcurrencyService(cache)

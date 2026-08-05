@@ -562,3 +562,92 @@ func TestBillingOutboxWorker_BatchFallbackPreservesPerRecordPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 8, billing.stageCalls)
 }
+
+func TestBillingOutboxWorker_BatchAckFailureTailBreaksAndLeavesRecordsForReclaim(t *testing.T) {
+	// Ack 路径系统性失败（如连接池/行锁阻塞逐条 2s 超时）时，outcome 循环必须
+	// 在连续 billingOutboxAckFailureBreakThreshold 条失败后 break，而不是把整轮
+	// 剩余记录逐条打完（批量 500+500 时最坏 1000 条 × 2s ≈ 33 分钟尾巴，远超
+	// 90s 租约并阻塞 Stop）。break 后剩余记录仍被租约持有：未转入 finalization、
+	// 未 Ack、未 Retry；租约过期后由 ClaimExpiredLeased 补领，重放 apply 再次
+	// 命中去重键后正常 Ack 收尾——usage_billing_dedup 去重键幂等，重放不重复计费。
+	records := make([]BillingOutboxRecord, 50)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), 42)
+	}
+	repo := &billingOutboxRepoStub{
+		records:  records,
+		claimSeq: [][]BillingOutboxRecord{records, nil}, // 轮 1 拉满，轮 2 pending 空拉
+		ackErr:   errors.New("ack unavailable"),
+	}
+	billing := &batchUsageBillingRepoStub{batchFn: func(_ context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		outcomes := make([]UsageBillingBatchOutcome, len(items))
+		for i := range outcomes {
+			outcomes[i].Result = &UsageBillingApplyResult{Applied: false} // 全部走去重 Ack 路径
+		}
+		return outcomes, nil
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	// Ack 调用次数有界：连续失败 break，而非 50 条全部逐条打完。
+	require.Len(t, repo.acked, billingOutboxAckFailureBreakThreshold,
+		"ack failures must break the outcome loop after the consecutive-failure threshold")
+	require.Empty(t, repo.retried)
+
+	// 租约补领语义：本轮未 Ack 的记录留在租约内（processing），等租约过期后
+	// 经 ClaimExpiredLeased 分支补领（pending 分支空拉不重复处理），重放再次
+	// 命中去重键后正常 Ack——去重幂等，重放不重复计费。
+	repo.mu.Lock()
+	repo.ackErr = nil
+	repo.expiredLeaseRecords = records[billingOutboxAckFailureBreakThreshold:]
+	repo.mu.Unlock()
+	_, err = worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Len(t, repo.acked, len(records),
+		"records left by the ack-failure break must drain via the expired-lease reclaim path")
+	require.Empty(t, repo.retried)
+}
+
+func TestBillingOutboxWorker_BatchRetryFailureTailBreaks(t *testing.T) {
+	// 批量事务整体失败后逐个落库重试：Retry 落库系统性失败时同样按连续阈值
+	// break（旧行为把整组 50 条逐条 2s 超时打完），剩余记录保留租约、过期补领。
+	records := make([]BillingOutboxRecord, 50)
+	for i := range records {
+		records[i] = batchValidRecord(int64(i+1), 42)
+	}
+	repo := &billingOutboxRepoStub{records: records, retryErr: errors.New("retry unavailable")}
+	billing := &batchUsageBillingRepoStub{batchFn: func(context.Context, []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error) {
+		return nil, errors.New("connection reset")
+	}}
+	worker := NewBillingOutboxWorker(repo, billing)
+
+	_, err := worker.processBatch(context.Background())
+	require.Error(t, err)
+	require.Len(t, repo.retried, billingOutboxAckFailureBreakThreshold,
+		"retry failures must break the per-shard retry loop after the consecutive-failure threshold")
+	require.Empty(t, repo.acked)
+}
+
+func TestBillingOutboxWorker_BatchInvalidRecordRetryTailBreaks(t *testing.T) {
+	// 校验失败记录逐个转 terminal 落库：Retry 连续失败按阈值中断，剩余校验
+	// 失败记录保留租约、过期后补领（校验确定性，补领重放仍落同一 terminal
+	// 错误），避免整轮 50 条逐条 2s 超时拖垮轮时长。
+	records := make([]BillingOutboxRecord, 50)
+	for i := range records {
+		records[i] = validBillingOutboxRecord(int64(i + 1))
+		records[i].Command.AttemptID = "" // 缺少 attempt_id → Validate 失败
+	}
+	repo := &billingOutboxRepoStub{records: records, retryErr: errors.New("retry unavailable")}
+	billing := &batchUsageBillingRepoStub{}
+	worker := NewBillingOutboxWorker(repo, billing)
+
+	_, err := worker.processBatch(context.Background())
+	require.NoError(t, err)
+	require.Len(t, repo.retried, billingOutboxAckFailureBreakThreshold,
+		"terminal retries must break after the consecutive-failure threshold")
+	for _, retry := range repo.retried {
+		require.True(t, retry.terminal)
+	}
+	require.Empty(t, repo.acked)
+}

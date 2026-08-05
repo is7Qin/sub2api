@@ -32,6 +32,12 @@ const (
 	billingOutboxFinalizationRenewInterval = 20 * time.Second
 	billingOutboxFinalizationDBTimeout     = 2 * time.Second
 	billingOutboxMaxAttempts               = 10
+	// 确认路径（去重 Ack / 失败落库 Retry）连续失败的 break 阈值：Ack/Retry 被
+	// 行锁、连接池等系统性阻塞（逐条 2s 超时）时，outcome 循环在第 5 条连续失败
+	// 后中断，剩余记录仍被租约持有、未离开队列，租约过期后由 ClaimExpiredLeased
+	// 补领重放（去重键幂等，重放安全）。无界时最坏尾巴 = 单轮 1000 条 × 2s ≈
+	// 33 分钟，远超 90s 租约并阻塞 Stop 退出；5 条 × 2s = 10s，远小于租约。
+	billingOutboxAckFailureBreakThreshold = 5
 	// BillingApplyUserShardCount 是 billing apply 用户分片数（advisory 锁分片
 	// 推导的模数）：同一用户的扣费事务按分片在 DB 层跨实例串行，apply 事务在
 	// repository 侧通过 pg_advisory_xact_lock(类 ID, uint64(userID) %
@@ -267,8 +273,21 @@ func (w *BillingOutboxWorker) processApplyBatchBatched(ctx context.Context, reco
 			Binding: UsageBillingOutboxBinding{OutboxID: records[i].ID, WorkerID: w.workerID},
 		})
 	}
+	// 校验失败记录逐个转 terminal 落库：Retry 落库连续失败时按阈值中断，剩余
+	// 记录保留租约、过期后补领（校验确定性，补领重放仍落同一 terminal 错误）。
+	failStreak := 0
 	for _, f := range invalid {
-		w.persistFailure(f.record, f.err, true)
+		if ctx.Err() != nil {
+			break
+		}
+		if !w.persistFailure(f.record, f.err, true) {
+			failStreak++
+			if failStreak >= billingOutboxAckFailureBreakThreshold {
+				break
+			}
+		} else {
+			failStreak = 0
+		}
 	}
 	handled := len(invalid)
 	if len(items) == 0 {
@@ -343,26 +362,56 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 	}
 	if err != nil {
 		// 本分片事务失败：只重试本分片记录；其余分片独立事务照常处理。
+		// Retry 落库连续失败按阈值中断，剩余记录保留租约、过期后补领。
+		failStreak := 0
 		for gi := range groupItems {
+			if ctx.Err() != nil {
+				break
+			}
 			idx := group.indexes[gi]
 			record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
 			w.recordFailure(err)
-			w.persistFailure(record, err, false)
+			if !w.persistFailure(record, err, false) {
+				failStreak++
+				if failStreak >= billingOutboxAckFailureBreakThreshold {
+					break
+				}
+			} else {
+				failStreak = 0
+			}
 		}
 		return len(groupItems), err
 	}
 	handled := 0
+	// failStreak 统计确认路径连续失败（去重 Ack、逐条失败 Retry 落库），任一
+	// 成功重置。连续达到 billingOutboxAckFailureBreakThreshold 说明确认路径
+	// 系统性降级：break 出循环，剩余记录仍被租约持有、未离开队列，租约过期后
+	// 由 ClaimExpiredLeased 补领重放（去重键幂等），避免整轮尾巴逐条 2s 超时
+	// （最坏 1000 条 ≈ 33 分钟）拖垮轮时长、阻塞 Stop；ctx（applyCtx）到期或
+	// Stop 取消时同样 break。
+	failStreak := 0
 	for gi, outcome := range outcomes {
+		if ctx.Err() != nil {
+			break
+		}
 		idx := group.indexes[gi]
 		record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
 		if outcome.Err != nil {
 			w.recordFailure(outcome.Err)
-			w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err))
+			if !w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err)) {
+				failStreak++
+				if failStreak >= billingOutboxAckFailureBreakThreshold {
+					break
+				}
+			} else {
+				failStreak = 0
+			}
 			handled++
 			continue
 		}
 		if outcome.Result == nil || outcome.Result.Applied {
 			// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
+			failStreak = 0
 			handled++
 			continue
 		}
@@ -372,8 +421,13 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		ackCancel()
 		if ackErr != nil {
 			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
+			failStreak++
+			if failStreak >= billingOutboxAckFailureBreakThreshold {
+				break
+			}
 			continue
 		}
+		failStreak = 0
 		w.processed.Add(1)
 		w.lastError.Store("")
 		handled++
@@ -606,7 +660,11 @@ func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinal
 	}
 }
 
-func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err error, terminal bool) {
+// persistFailure 把失败记录落库到 Retry 队列，返回 Retry 是否落库成功。批量
+// 路径的调用方按连续失败阈值（billingOutboxAckFailureBreakThreshold）中断，
+// 剩余记录保留租约、租约过期后补领重放，避免逐条 2s 超时拖垮整轮；逐条
+// （并发）路径忽略返回值，行为不变。
+func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err error, terminal bool) bool {
 	// Retryable infrastructure failures remain recoverable indefinitely; the
 	// capped backoff limits poll delay without discarding durable work.
 	retryAt := time.Now().UTC().Add(billingOutboxRetryDelay(record.Attempts + 1))
@@ -618,7 +676,9 @@ func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err err
 	retryCancel()
 	if retryErr != nil {
 		w.recordFailure(fmt.Errorf("release billing outbox command %d: %w", record.ID, retryErr))
+		return false
 	}
+	return true
 }
 
 func billingOutboxIsTerminalError(err error) bool {

@@ -22,6 +22,7 @@ type billingOutboxRepoStub struct {
 	expiredLeaseRecords        []BillingOutboxRecord
 	expiredLeaseErr            error
 	ackErr                     error
+	retryErr                   error
 	expiredLeaseClaimLimit     int
 	finalizationRecords        []BillingOutboxRecord
 	finalizationExpiredRecords []BillingOutboxRecord
@@ -106,7 +107,7 @@ func (r *billingOutboxRepoStub) Retry(_ context.Context, id int64, workerID stri
 	defer r.mu.Unlock()
 	r.retried = append(r.retried, billingOutboxRetry{id: id, workerID: workerID, availableAt: availableAt, lastError: lastError, terminal: terminal})
 	r.workerID = workerID
-	return nil
+	return r.retryErr
 }
 
 func (r *billingOutboxRepoStub) ClaimFinalization(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {

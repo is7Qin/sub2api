@@ -9,6 +9,12 @@ type SupportDecisionSource interface {
 	Load(ctx context.Context) (*SupportDecisionConstructionSnapshot, error)
 }
 
+// SupportDecisionGenerationRepository allocates publication versions for the
+// background publisher. Sequence gaps are expected when a publication aborts.
+type SupportDecisionGenerationRepository interface {
+	NextSupportDecisionGeneration(ctx context.Context) (uint64, error)
+}
+
 // SupportDecisionConstructionSnapshot may carry persistence identifiers while
 // a worker builds the identifier-free published decision document.
 type SupportDecisionConstructionSnapshot struct {

@@ -21,6 +21,21 @@ func NewSupportDecisionSource(db *sql.DB) service.SupportDecisionSource {
 	return &supportDecisionSource{db: db}
 }
 
+func NewSupportDecisionGenerationRepository(db *sql.DB) service.SupportDecisionGenerationRepository {
+	return &supportDecisionSource{db: db}
+}
+
+func (s *supportDecisionSource) NextSupportDecisionGeneration(ctx context.Context) (uint64, error) {
+	var generation int64
+	if err := s.db.QueryRowContext(ctx, `SELECT nextval('scheduler_support_publication_generation_seq')`).Scan(&generation); err != nil {
+		return 0, fmt.Errorf("allocate support decision generation: %w", err)
+	}
+	if generation <= 0 {
+		return 0, fmt.Errorf("allocate support decision generation: invalid value %d", generation)
+	}
+	return uint64(generation), nil
+}
+
 func (s *supportDecisionSource) Load(ctx context.Context) (*service.SupportDecisionConstructionSnapshot, error) {
 	beginTx := s.beginTx
 	if beginTx == nil {

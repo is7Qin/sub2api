@@ -14,6 +14,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -32,6 +33,13 @@ const (
 	billingOutboxFinalizationRenewInterval = 20 * time.Second
 	billingOutboxFinalizationDBTimeout     = 2 * time.Second
 	billingOutboxMaxAttempts               = 10
+	// 熔断阈值：连续永久错误达到该值打开熔断（成功或暂时性错误复位计数）。
+	// 阈值取 5 是"系统性故障"与"零星坏记录"的分界：单轮 500 条里零星几条
+	// 永久错误不足以开闸，连续 5 条（同一轮或跨轮）基本可判定系统级故障。
+	billingOutboxCircuitBreakThreshold = 5
+	// 熔断冷却：打开后至少等待该时长才放行一轮试探恢复（apply Claim），
+	// 试探仍永久错误则重新冷却。测试注入更小值加速恢复断言。
+	billingOutboxCircuitCoolDown = 5 * time.Minute
 	// 确认路径（去重 Ack / 失败落库 Retry）连续失败的 break 阈值：Ack/Retry 被
 	// 行锁、连接池等系统性阻塞（逐条 2s 超时）时，outcome 循环在第 5 条连续失败
 	// 后中断，剩余记录仍被租约持有、未离开队列，租约过期后由 ClaimExpiredLeased
@@ -66,6 +74,12 @@ type BillingOutboxHealth struct {
 	LastError   string        `json:"last_error,omitempty"`
 	StatsError  string        `json:"stats_error,omitempty"`
 	MaxAttempts int           `json:"max_attempts"`
+	// 熔断状态（worker 实例内内存态）：连续永久错误 ≥ billingOutboxCircuitBreakThreshold
+	// 时 CircuitOpen，apply Claim/处理被跳过直至冷却结束后的试探恢复成功。
+	CircuitOpen       bool       `json:"circuit_open"`
+	CircuitError      string     `json:"circuit_error,omitempty"`
+	CircuitOpenedAt   *time.Time `json:"circuit_opened_at,omitempty"`
+	PermanentFailures uint64     `json:"permanent_failures"`
 }
 
 // BillingOutboxPostProcessor replays non-transactional enforcement updates
@@ -95,6 +109,10 @@ type BillingOutboxWorker struct {
 	// pollInterval 是 run 循环非积压轮之间的等待间隔（测试注入更小值
 	// 加速节奏断言；<=0 时回退 billingOutboxPollInterval）。
 	pollInterval time.Duration
+	// 永久错误熔断状态机（worker 实例内内存态）与可注入冷却时长（测试注入
+	// 更小值加速恢复断言；<=0 时回退 billingOutboxCircuitCoolDown）。
+	circuit         billingOutboxCircuit
+	circuitCooldown time.Duration
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -109,6 +127,7 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, ctx: ctx, cancel: cancel,
 		applyGroupParallelism: billingOutboxApplyGroupParallelism,
 		pollInterval:          billingOutboxPollInterval,
+		circuitCooldown:       billingOutboxCircuitCoolDown,
 	}
 	worker.lastError.Store("")
 	return worker
@@ -185,20 +204,34 @@ func (w *BillingOutboxWorker) processBatch(ctx context.Context) (backlogged bool
 			return false, err
 		}
 	}
+	// 熔断门：熔断打开且处于冷却窗口内时，apply Claim（pending 与过期租约
+	// 分支）整体跳过——finalization 已在上方照常处理，已扣费记录的后置效应
+	// 不停摆。跳过时返回不积压，run 循环回落 poll 间隔；冷却结束后下一轮
+	// 自动成为试探恢复轮。
+	if !w.beginApplyRound() {
+		return false, nil
+	}
 	// pending 分支与过期租约分支分开 Claim（各自命中部分索引），合并后
 	// 一次 apply：两批记录共享同一 processApplyBatch，apply 语义不变。
 	// Claim 批量 = billingOutboxClaimBatchSize（500），与并发数解耦：积压
 	// 时单轮最多消化 500 条，配合 run 循环的背压连续拉消除固定 ticker 上限。
 	pendingRecords, err := w.repo.Claim(ctx, w.workerID, billingOutboxClaimBatchSize, billingOutboxLease)
 	if err != nil {
+		// Claim 自身的永久 PG 错误（如 42P01 表缺失）同样喂给熔断计数，
+		// 否则缺失表的场景会以 poll 间隔无限空转锤击。
+		w.observeApplyError(err)
+		w.endApplyRound()
 		return false, fmt.Errorf("claim billing outbox commands: %w", err)
 	}
 	expiredRecords, err := w.repo.ClaimExpiredLeased(ctx, w.workerID, billingOutboxClaimBatchSize, billingOutboxLease)
 	if err != nil {
+		w.observeApplyError(err)
+		w.endApplyRound()
 		return false, fmt.Errorf("claim expired billing outbox commands: %w", err)
 	}
 	records := append(pendingRecords, expiredRecords...)
 	handled, err := w.processApplyBatch(ctx, records)
+	w.endApplyRound()
 	if err != nil {
 		return false, err
 	}
@@ -372,7 +405,7 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 			idx := group.indexes[gi]
 			record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
 			w.recordFailure(err)
-			if !w.persistFailure(record, err, false) {
+			if !w.persistFailure(record, err, billingOutboxFailureTerminal(record, err)) {
 				failStreak++
 				if failStreak >= billingOutboxAckFailureBreakThreshold {
 					break
@@ -399,7 +432,7 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		record := records[itemRecordIndex(records, items[idx].Binding.OutboxID, idx)]
 		if outcome.Err != nil {
 			w.recordFailure(outcome.Err)
-			if !w.persistFailure(record, outcome.Err, billingOutboxIsTerminalError(outcome.Err)) {
+			if !w.persistFailure(record, outcome.Err, billingOutboxFailureTerminal(record, outcome.Err)) {
 				failStreak++
 				if failStreak >= billingOutboxAckFailureBreakThreshold {
 					break
@@ -413,6 +446,7 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		if outcome.Result == nil || outcome.Result.Applied {
 			// 已转入 finalization 阶段：后续 Claim 负责 post-effects。
 			failStreak = 0
+			w.observeApplySuccess()
 			handled++
 			continue
 		}
@@ -422,6 +456,7 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		ackCancel()
 		if ackErr != nil {
 			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
+			w.observeApplyError(ackErr)
 			failStreak++
 			if failStreak >= billingOutboxAckFailureBreakThreshold {
 				break
@@ -431,6 +466,7 @@ func (w *BillingOutboxWorker) applyBatchGroup(ctx context.Context, group billing
 		failStreak = 0
 		w.processed.Add(1)
 		w.lastError.Store("")
+		w.observeApplySuccess()
 		handled++
 	}
 	return handled, nil
@@ -521,7 +557,7 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 		result, err = staged.ApplyAndStageOutboxFinalization(applyCtx, &command.Billing, UsageBillingOutboxBinding{OutboxID: record.ID, WorkerID: w.workerID})
 		applyCancel()
 		if err != nil {
-			terminal := billingOutboxIsTerminalError(err)
+			terminal := billingOutboxFailureTerminal(record, err)
 			w.recordFailure(err)
 			w.persistFailure(record, err, terminal)
 			return true
@@ -529,6 +565,7 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 		if result == nil || result.Applied {
 			// Staging atomically records the Apply outcome and transfers ownership
 			// to the finalization phase. A later claim performs post-effects.
+			w.observeApplySuccess()
 			return true
 		}
 		// A pre-existing deduplication key means this row did not own unfinished
@@ -538,10 +575,12 @@ func (w *BillingOutboxWorker) processRecord(parent context.Context, record Billi
 		ackCancel()
 		if ackErr != nil {
 			w.recordFailure(fmt.Errorf("ack billing outbox command %d: %w", record.ID, ackErr))
+			w.observeApplyError(ackErr)
 			return false
 		}
 		w.processed.Add(1)
 		w.lastError.Store("")
+		w.observeApplySuccess()
 		return true
 	}
 	applyCancel()
@@ -579,7 +618,10 @@ func (w *BillingOutboxWorker) processFinalization(parent context.Context, record
 		ownershipLost = heartbeatLost
 		if err != nil {
 			w.recordFailure(fmt.Errorf("finalize billing outbox command %d: %w", record.ID, err))
-			w.persistFinalizationFailure(repo, record, err, billingOutboxIsTerminalError(err), ownershipLost)
+			// finalization 分类与 apply 一致（billingOutboxIsPermanentError），但
+			// 不受 maxAttempts 约束：已扣费记录的后置效应必须保持可重放，暂时性
+			// 失败永远 pending 重试，永久错误立即 terminal。
+			w.persistFinalizationFailure(repo, record, err, billingOutboxIsPermanentError(err), ownershipLost)
 			return
 		}
 	}
@@ -653,8 +695,12 @@ func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinal
 	if terminal {
 		retryAt = time.Time{}
 	}
+	message := boundedBillingOutboxWorkerError(err)
+	if terminal {
+		message = billingOutboxErrorMessageWithSQLState(err, message)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
-	retryErr := repo.RetryFinalization(ctx, record.ID, w.workerID, retryAt, boundedBillingOutboxWorkerError(err), terminal)
+	retryErr := repo.RetryFinalization(ctx, record.ID, w.workerID, retryAt, message, terminal)
 	cancel()
 	if retryErr != nil {
 		w.recordFailure(fmt.Errorf("release billing outbox finalization %d: %w", record.ID, retryErr))
@@ -666,14 +712,21 @@ func (w *BillingOutboxWorker) persistFinalizationFailure(repo BillingOutboxFinal
 // 剩余记录保留租约、租约过期后补领重放，避免逐条 2s 超时拖垮整轮；逐条
 // （并发）路径忽略返回值，行为不变。
 func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err error, terminal bool) bool {
+	// 所有 apply 路径的失败都经 persistFailure 落库：这里是熔断计数的唯一
+	// 汇聚点（永久错误 +1 计数，暂时性错误复位连续计数）。
+	w.observeApplyError(err)
 	// Retryable infrastructure failures remain recoverable indefinitely; the
 	// capped backoff limits poll delay without discarding durable work.
 	retryAt := time.Now().UTC().Add(billingOutboxRetryDelay(record.Attempts + 1))
 	if terminal {
 		retryAt = time.Time{}
 	}
+	message := boundedBillingOutboxWorkerError(err)
+	if terminal {
+		message = billingOutboxErrorMessageWithSQLState(err, message)
+	}
 	retryCtx, retryCancel := context.WithTimeout(context.Background(), billingOutboxAckRetryTimeout)
-	retryErr := w.repo.Retry(retryCtx, record.ID, w.workerID, retryAt, boundedBillingOutboxWorkerError(err), terminal)
+	retryErr := w.repo.Retry(retryCtx, record.ID, w.workerID, retryAt, message, terminal)
 	retryCancel()
 	if retryErr != nil {
 		w.recordFailure(fmt.Errorf("release billing outbox command %d: %w", record.ID, retryErr))
@@ -682,9 +735,160 @@ func (w *BillingOutboxWorker) persistFailure(record BillingOutboxRecord, err err
 	return true
 }
 
-func billingOutboxIsTerminalError(err error) bool {
+// billingOutboxCircuit 是 worker 实例内的永久错误熔断状态机（内存态，
+// 不跨实例共享）：连续永久错误 ≥ billingOutboxCircuitBreakThreshold 时
+// CircuitOpen，apply Claim/处理被跳过，冷却 billingOutboxCircuitCoolDown
+// 后放行一轮试探恢复（成功或无非永久错误 → 关闭；仍永久错误 → 重新冷却）。
+// 状态机只作用于 apply Claim 与 apply 处理；finalization Claim/处理不受影响。
+type billingOutboxCircuit struct {
+	mu             sync.Mutex
+	open           bool
+	openedAt       time.Time
+	errMessage     string
+	total          uint64 // 累计永久错误（Health.PermanentFailures，单调不减）
+	streak         uint64 // 连续永久错误（成功/暂时性错误复位为 0）
+	probing        bool  // 冷却结束后的试探恢复轮进行中
+	probePermanent bool  // 试探轮内已观察到永久错误（首个即重启冷却窗口）
+}
+
+// circuitCooldownDuration 返回可注入冷却时长；<=0（测试注入 0/负值或未注入）
+// 回退默认 billingOutboxCircuitCoolDown。
+func (w *BillingOutboxWorker) circuitCooldownDuration() time.Duration {
+	if w.circuitCooldown <= 0 {
+		return billingOutboxCircuitCoolDown
+	}
+	return w.circuitCooldown
+}
+
+// observeApplyError 在 apply 处理失败时调用：永久错误累加计数并可能打开/
+// 重启熔断；暂时性错误复位连续计数（"连续永久错误"语义：成功或暂时性
+// 错误都会打断连续性）。打开瞬间与试探轮首个永久错误都记 Error 级日志并
+// 刷新 openedAt/errMessage。幂等：重复观察同一错误只是多计数一次，无状态
+// 破坏；finalization 路径不调用本方法（熔断不作用于 finalization）。
+func (w *BillingOutboxWorker) observeApplyError(err error) {
+	if !billingOutboxIsPermanentError(err) {
+		w.circuit.resetStreak()
+		return
+	}
+	c := &w.circuit
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.total++
+	c.streak++
+	if c.probing && !c.probePermanent {
+		// 试探轮首个永久错误：重启冷却窗口（打开状态不变），试探轮的
+		// probePermanent 标记使 endApplyRound 不会关闭电路。
+		c.probePermanent = true
+		c.openedAt = time.Now()
+		c.errMessage = boundedBillingOutboxWorkerError(err)
+		slog.Error("billing outbox apply circuit probe failed, cooldown restarted",
+			"error", c.errMessage, "permanent_failures", c.total)
+	}
+	if !c.open && c.streak >= billingOutboxCircuitBreakThreshold {
+		c.open = true
+		c.openedAt = time.Now()
+		c.errMessage = boundedBillingOutboxWorkerError(err)
+		slog.Error("billing outbox apply circuit opened",
+			"consecutive_permanent_errors", c.streak, "error", c.errMessage)
+	}
+}
+
+// observeApplySuccess 在 apply 处理成功时调用：复位连续永久错误计数。
+func (w *BillingOutboxWorker) observeApplySuccess() {
+	w.circuit.resetStreak()
+}
+
+func (c *billingOutboxCircuit) resetStreak() {
+	c.mu.Lock()
+	c.streak = 0
+	c.mu.Unlock()
+}
+
+// beginApplyRound 在 apply Claim 前调用：返回 false 表示熔断生效（打开且
+// 处于冷却窗口内），调用方必须跳过整个 apply Claim；返回 true 时若熔断
+// 已打开但冷却已结束，本轮即为试探恢复轮（probing 标记由 endApplyRound
+// 消费）。finalization 阶段不经过本方法，始终照常。
+func (w *BillingOutboxWorker) beginApplyRound() bool {
+	c := &w.circuit
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.open {
+		c.probing = false
+		return true
+	}
+	if time.Since(c.openedAt) < w.circuitCooldownDuration() {
+		return false
+	}
+	c.probing = true
+	c.probePermanent = false
+	return true
+}
+
+// endApplyRound 在 apply 阶段结束（含 Claim 失败路径）后调用：试探轮
+// 未观察到任何永久错误 → 关闭熔断并复位连续计数；试探轮有永久错误 →
+// 保持打开（冷却已在 observeApplyError 中重启）。非试探轮为 no-op。
+func (w *BillingOutboxWorker) endApplyRound() {
+	c := &w.circuit
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.probing {
+		return
+	}
+	c.probing = false
+	if c.probePermanent {
+		return
+	}
+	c.open = false
+	c.openedAt = time.Time{}
+	c.errMessage = ""
+	c.streak = 0
+	slog.Info("billing outbox apply circuit closed after probe round")
+}
+
+// billingOutboxFailureTerminal 是 apply 路径的 terminal 决策（finalization
+// 路径不经过本函数，不受 maxAttempts 限制）：仅永久错误可能 terminal——
+// 本次新增的 PG 42xxx/22xxx 永久分类受 maxAttempts 约束（attempts ≥
+// billingOutboxMaxAttempts 才 terminal，落库带 SQLSTATE 前缀）；既有
+// terminal 列表（infra 4xx + 哨兵/校验错误）保持立即 terminal（确定性
+// 毒药命令重试无意义）。暂时性错误（含 40001/40P01/55P03/57014/57P01-03/
+// 08xxx/context 超时）即使 attempts 已达上限也绝不 terminal。
+func billingOutboxFailureTerminal(record BillingOutboxRecord, err error) bool {
+	if !billingOutboxIsPermanentError(err) {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr != nil {
+		return record.Attempts >= billingOutboxMaxAttempts
+	}
+	return true
+}
+
+// billingOutboxErrorMessageWithSQLState 为 terminal 落库的 PG 错误附加
+// SQLSTATE 前缀（[SQLSTATE 42P01] ...），对账与恢复定位可直接看到根因码；
+// 结果仍受 last_error 上限（BillingOutboxLastErrorLimit）约束。
+func billingOutboxErrorMessageWithSQLState(err error, message string) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr != nil && pgErr.Code != "" {
+		message = fmt.Sprintf("[SQLSTATE %s] %s", pgErr.Code, message)
+		if len(message) > BillingOutboxLastErrorLimit {
+			message = message[:BillingOutboxLastErrorLimit]
+		}
+	}
+	return message
+}
+
+// billingOutboxIsPermanentError 是 apply 与 finalization 两处共用的永久错误
+// 分类（幂等：同一错误在两处分类一致）。永久 = PG 42xxx/22xxx（前缀匹配
+// 全类）∪ 既有 terminal 列表（infra 4xx + 哨兵错误）；其余一律非永久。
+// 显式暂时性 PG 码——40001/40P01（及全部 40 类）、55P03、57014、57P01-03、
+// 08xxx（及全部 08 类）——与 42/22 前缀不相交，天然落入非永久，绝不 terminal。
+func billingOutboxIsPermanentError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr != nil && len(pgErr.Code) >= 2 {
+		return strings.HasPrefix(pgErr.Code, "42") || strings.HasPrefix(pgErr.Code, "22")
 	}
 	// Application errors with client-side status codes are deterministic poison
 	// commands; retry only infrastructure/server failures.
@@ -762,6 +966,15 @@ func (w *BillingOutboxWorker) Health(ctx context.Context) BillingOutboxHealth {
 	if value := w.lastError.Load(); value != nil {
 		health.LastError, _ = value.(string)
 	}
+	w.circuit.mu.Lock()
+	health.PermanentFailures = w.circuit.total
+	health.CircuitError = w.circuit.errMessage
+	if w.circuit.open {
+		health.CircuitOpen = true
+		openedAt := w.circuit.openedAt
+		health.CircuitOpenedAt = &openedAt
+	}
+	w.circuit.mu.Unlock()
 	if w.repo == nil {
 		return health
 	}

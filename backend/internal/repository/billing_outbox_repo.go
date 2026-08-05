@@ -498,6 +498,15 @@ func (r *billingOutboxRepository) Ack(ctx context.Context, id int64, workerID st
 // 走 (updated_at, id) retention 索引（migration 171），小批次避免长事务。
 // 已终态行不再参与 claim/重放，删除仅影响 enqueue 幂等检查（重新入队会
 // 插入新行，由 usage_billing_dedup 的 apply 幂等兜底，不会重复计费）。
+//
+// 运维恢复窗口：误判 terminal（或需要重放某条 terminal 记录）时，可在
+// 保留期（CleanupTerminal 的 cutoff）内手动重置回 pending 重试——
+//   UPDATE billing_attempt_outbox
+//   SET status = 'pending', available_at = NOW(), lease_until = NULL,
+//       leased_by = NULL, attempts = 0
+//   WHERE status = 'terminal';
+// 保留期不得短于人工恢复窗口（Task F 复核 retention 与恢复窗口的关系）；
+// 重放由 usage_billing_dedup 去重键幂等兜底，不会重复计费。
 func (r *billingOutboxRepository) CleanupTerminal(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("billing outbox database is nil")

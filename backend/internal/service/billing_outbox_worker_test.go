@@ -21,6 +21,7 @@ type billingOutboxRepoStub struct {
 	claimLimit                 int
 	expiredLeaseRecords        []BillingOutboxRecord
 	expiredLeaseErr            error
+	claimErr                   error
 	ackErr                     error
 	retryErr                   error
 	expiredLeaseClaimLimit     int
@@ -39,6 +40,11 @@ type billingOutboxRepoStub struct {
 	statsErr                   error
 	// claims 非 nil 时每次 Claim 发送一个时间戳（run 循环轮次节奏断言）。
 	claims chan time.Time
+	// claim 调用计数（熔断跳过 apply Claim 的断言）。
+	applyClaimCalls             int
+	expiredLeaseClaimCalls      int
+	finalizationClaimCalls      int
+	finalizationExpiredClaimCnt int
 }
 
 type billingOutboxRetry struct {
@@ -56,9 +62,13 @@ func (r *billingOutboxRepoStub) Enqueue(context.Context, *BillingOutboxCommand) 
 func (r *billingOutboxRepoStub) Claim(_ context.Context, workerID string, limit int, lease time.Duration) ([]BillingOutboxRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.applyClaimCalls++
 	r.claimLimit = limit
 	r.workerID = workerID
 	r.lease = lease
+	if r.claimErr != nil {
+		return nil, r.claimErr
+	}
 	if len(r.claimSeq) > 0 {
 		batch := r.claimSeq[0]
 		r.claimSeq = r.claimSeq[1:]
@@ -76,6 +86,7 @@ func (r *billingOutboxRepoStub) Claim(_ context.Context, workerID string, limit 
 func (r *billingOutboxRepoStub) ClaimExpiredLeased(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.expiredLeaseClaimCalls++
 	r.expiredLeaseClaimLimit = limit
 	r.workerID = workerID
 	if r.expiredLeaseErr != nil {
@@ -87,6 +98,7 @@ func (r *billingOutboxRepoStub) ClaimExpiredLeased(_ context.Context, workerID s
 func (r *billingOutboxRepoStub) ClaimFinalizationExpiredLeased(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.finalizationExpiredClaimCnt++
 	r.workerID = workerID
 	if r.finalizationExpiredErr != nil {
 		return nil, r.finalizationExpiredErr
@@ -113,6 +125,7 @@ func (r *billingOutboxRepoStub) Retry(_ context.Context, id int64, workerID stri
 func (r *billingOutboxRepoStub) ClaimFinalization(_ context.Context, workerID string, limit int, _ time.Duration) ([]BillingOutboxRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.finalizationClaimCalls++
 	r.workerID = workerID
 	r.finalizationClaimLimit = limit
 	claimed := r.finalizationRecords

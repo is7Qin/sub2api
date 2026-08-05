@@ -91,6 +91,30 @@ func TestSupportDecisionHotLookupDoesNotDecodeDocument(t *testing.T) {
 	require.Equal(t, SupportDecisionNotPureMiss, table.Lookup(SupportDecisionQuery{Scope: SupportDecisionScope{Platform: PlatformAnthropic, GroupID: 42}, RequestedModel: "hot"}))
 }
 
+func TestSupportDecisionAtomicReaderInstallFreezesMutableInput(t *testing.T) {
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, []string{"hot"}))
+	query := SupportDecisionQuery{Scope: SupportDecisionScope{Platform: PlatformAnthropic, GroupID: 42}, RequestedModel: "hot"}
+	want := table.Lookup(query)
+	before, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+
+	reader := NewSupportDecisionAtomicReader(time.Minute)
+	now := time.Unix(100, 0)
+	reader.now = func() time.Time { return now }
+	require.True(t, reader.Install(table, now))
+
+	table.Strings[0] = "mutated"
+	table.Scopes[table.scopeIndex[supportDecisionScopeKey{Platform: PlatformAnthropic, GroupID: 42}]].Hot[0].Profile = supportDecisionProfile{}
+	require.Equal(t, want, table.Lookup(query))
+	require.Equal(t, want, reader.Lookup(query))
+	installed, err := EncodeSupportDecisionDocument(reader.table.Load())
+	require.NoError(t, err)
+	require.Equal(t, before, installed)
+	encoded, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+	require.Equal(t, before, encoded)
+}
+
 func TestSupportDecisionLookupRejectsUnavailableStaleInvalidAndOverlongState(t *testing.T) {
 	query := SupportDecisionQuery{Scope: SupportDecisionScope{Platform: PlatformAnthropic, GroupID: 42}, RequestedModel: "hot"}
 	var missing *SupportDecisionTable

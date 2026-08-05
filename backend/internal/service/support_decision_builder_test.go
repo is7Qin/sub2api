@@ -601,6 +601,26 @@ func TestSupportDecisionBuilderMeasuresSerializedPerScopeFallbackBudget(t *testi
 	require.ErrorContains(t, err, "fallback exceeds")
 }
 
+func TestSupportDecisionBuilderEnforcesCombinedWildcardBoundary(t *testing.T) {
+	accepted := supportDecisionCombinedRuleSnapshot(254, true, 1, 0, 0)
+	_, err := BuildSupportDecisionTable(accepted, SupportDecisionBuildOptions{Generation: 1})
+	require.NoError(t, err)
+
+	rejected := supportDecisionCombinedRuleSnapshot(254, true, 2, 0, 0)
+	_, err = BuildSupportDecisionTable(rejected, SupportDecisionBuildOptions{Generation: 1})
+	require.ErrorContains(t, err, "wildcard rules")
+}
+
+func TestSupportDecisionBuilderEnforcesCombinedExactBoundary(t *testing.T) {
+	accepted := supportDecisionCombinedRuleSnapshot(0, false, 0, SupportDecisionExactLimit-1, 1)
+	_, err := BuildSupportDecisionTable(accepted, SupportDecisionBuildOptions{Generation: 1})
+	require.NoError(t, err)
+
+	rejected := supportDecisionCombinedRuleSnapshot(0, false, 0, SupportDecisionExactLimit, 1)
+	_, err = BuildSupportDecisionTable(rejected, SupportDecisionBuildOptions{Generation: 1})
+	require.ErrorContains(t, err, "exact keys")
+}
+
 func TestSupportDecisionBuilderPreservesHotOverflowInFallback(t *testing.T) {
 	models := makeHotModels(SupportDecisionHotModelLimit + 3)
 	snapshot := supportDecisionTestSnapshot([]Account{{
@@ -684,6 +704,37 @@ func supportDecisionSerializedFallbackSnapshot(exact, modelPadding int) *Support
 			"model_mapping": mapping,
 		},
 	}}, PlatformOpenAI, []string{"hot"})
+}
+
+func supportDecisionCombinedRuleSnapshot(wildcard int, catchAll bool, channelWildcard, exact, channelExact int) *SupportDecisionConstructionSnapshot {
+	mapping := make(map[string]any, wildcard+exact+1)
+	for i := 0; i < wildcard; i++ {
+		mapping[fmt.Sprintf("wild-%04d-*", i)] = "target"
+	}
+	if catchAll {
+		mapping["*"] = "target"
+	}
+	for i := 0; i < exact; i++ {
+		mapping[fmt.Sprintf("exact-%04d", i)] = "target"
+	}
+	pricing := make([]string, 0, channelWildcard+channelExact)
+	for i := 0; i < channelWildcard; i++ {
+		pricing = append(pricing, fmt.Sprintf("channel-wild-%04d-*", i))
+	}
+	for i := 0; i < channelExact; i++ {
+		pricing = append(pricing, fmt.Sprintf("channel-exact-%04d", i))
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"model_mapping": mapping}}}, PlatformAnthropic, []string{"hot"})
+	if len(pricing) > 0 {
+		snapshot.Channels = []SupportDecisionChannel{{
+			Status:             StatusActive,
+			GroupIDs:           []int64{42},
+			RestrictModels:     true,
+			BillingModelSource: BillingModelSourceUpstream,
+			PricingModels:      []SupportDecisionPricingModels{{Platform: PlatformAnthropic, Models: pricing}},
+		}}
+	}
+	return snapshot
 }
 
 func supportDecisionBoundarySnapshot(exact, wildcard int) *SupportDecisionConstructionSnapshot {

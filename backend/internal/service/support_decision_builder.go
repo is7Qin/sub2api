@@ -108,12 +108,8 @@ func BuildSupportDecisionTable(snapshot *SupportDecisionConstructionSnapshot, op
 	}
 	for i := range temporary {
 		scope := materializeSupportDecisionScope(temporary[i], ordinals)
-		fallbackBytes, err := supportDecisionSerializedFallbackSize(&scope, interned)
-		if err != nil {
+		if err := validateSupportDecisionScopeBudgets(&scope, interned); err != nil {
 			return nil, err
-		}
-		if fallbackBytes > SupportDecisionFallbackDataLimit {
-			return nil, fmt.Errorf("scope %+v fallback exceeds %d bytes", scope.Key, SupportDecisionFallbackDataLimit)
 		}
 		table.Scopes = append(table.Scopes, scope)
 	}
@@ -141,6 +137,7 @@ func BuildSupportDecisionTable(snapshot *SupportDecisionConstructionSnapshot, op
 		return nil, fmt.Errorf("support decision document exceeds %d bytes", SupportDecisionMaxDocumentSize)
 	}
 	table.TypicalSizeExceeded = len(payload) > SupportDecisionTypicalDocumentSize
+	table.wirePayload = append([]byte(nil), payload...)
 	return table, nil
 }
 
@@ -343,6 +340,16 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 		}
 	}
 	built.channelExact, built.channelWildcard = supportDecisionChannelModelPatterns(scope)
+	wildcardCount := len(built.wildcard) + len(built.channelWildcard)
+	if built.catchAll != nil {
+		wildcardCount++
+	}
+	if wildcardCount > SupportDecisionWildcardLimit {
+		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d wildcard rules; limit is %d", scope.key, wildcardCount, SupportDecisionWildcardLimit)
+	}
+	if len(built.exact)+len(built.channelExact) > SupportDecisionExactLimit {
+		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, len(built.exact)+len(built.channelExact), SupportDecisionExactLimit)
+	}
 	hasChannelPolicy := len(built.channelExact) > 0 || len(built.channelWildcard) > 0
 	built.fallback = evaluateSupportDecisionWithoutModel(scope, coordinateCount, wsConfig, false, hasChannelPolicy)
 	if hasChannelPolicy {
@@ -861,6 +868,28 @@ func supportDecisionSerializedFallbackSize(scope *supportDecisionScopeTable, glo
 		return 0, fmt.Errorf("encode scope fallback size: %w", err)
 	}
 	return len(payload), nil
+}
+
+func validateSupportDecisionScopeBudgets(scope *supportDecisionScopeTable, globalStrings []string) error {
+	wildcardCount := len(scope.Wildcard) + len(scope.ChannelWildcard)
+	if scope.CatchAll != nil {
+		wildcardCount++
+	}
+	if wildcardCount > SupportDecisionWildcardLimit {
+		return fmt.Errorf("scope %+v has %d wildcard rules; limit is %d", scope.Key, wildcardCount, SupportDecisionWildcardLimit)
+	}
+	exactCount := len(scope.ExactWire) + len(scope.ChannelExact)
+	if exactCount > SupportDecisionExactLimit {
+		return fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.Key, exactCount, SupportDecisionExactLimit)
+	}
+	fallbackBytes, err := supportDecisionSerializedFallbackSize(scope, globalStrings)
+	if err != nil {
+		return err
+	}
+	if fallbackBytes > SupportDecisionFallbackDataLimit {
+		return fmt.Errorf("scope %+v fallback exceeds %d bytes", scope.Key, SupportDecisionFallbackDataLimit)
+	}
+	return nil
 }
 
 func profilesSize(values map[string]supportDecisionProfile) int {

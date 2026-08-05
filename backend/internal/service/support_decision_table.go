@@ -86,6 +86,11 @@ type SupportDecisionTable struct {
 
 	TypicalSizeExceeded bool `json:"-"`
 	verified            bool
+	wirePayload         []byte
+	schemaVersion       uint16
+	generation          uint64
+	runtimeStrings      []string
+	runtimeScopes       []supportDecisionScopeTable
 	scopeIndex          map[supportDecisionScopeKey]int
 }
 
@@ -188,7 +193,7 @@ func setBit(bits []byte, coordinate int) {
 }
 
 func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisionResult {
-	if t == nil || !t.verified || t.SchemaVersion != SupportDecisionSchemaVersion {
+	if t == nil || !t.verified || t.schemaVersion != SupportDecisionSchemaVersion {
 		return SupportDecisionUnknown
 	}
 	model := strings.TrimSpace(query.RequestedModel)
@@ -199,7 +204,7 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 	if !ok {
 		return SupportDecisionUnknown
 	}
-	scope := &t.Scopes[index]
+	scope := &t.runtimeScopes[index]
 	coordinate := genericSupportDecisionCoordinate(query.RequiresPrivacy, query.ThinkingEnabled)
 	if scope.OpenAI {
 		var valid bool
@@ -211,7 +216,7 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 
 	for i := range scope.Hot {
 		hot := &scope.Hot[i]
-		if int(hot.StringID) < len(t.Strings) && t.Strings[hot.StringID] == model {
+		if int(hot.StringID) < len(t.runtimeStrings) && t.runtimeStrings[hot.StringID] == model {
 			return profileResult(hot.Profile, coordinate)
 		}
 	}
@@ -229,7 +234,7 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 	}
 	for i := range scope.Wildcard {
 		rule := &scope.Wildcard[i]
-		if int(rule.PrefixID) < len(t.Strings) && strings.HasPrefix(model, t.Strings[rule.PrefixID]) {
+		if int(rule.PrefixID) < len(t.runtimeStrings) && strings.HasPrefix(model, t.runtimeStrings[rule.PrefixID]) {
 			return profileResult(rule.Profile, coordinate)
 		}
 	}
@@ -237,7 +242,7 @@ func (t *SupportDecisionTable) Lookup(query SupportDecisionQuery) SupportDecisio
 		return profileResult(scope.CatchAll.Profile, coordinate)
 	}
 	if len(scope.ChannelExact) > 0 || len(scope.ChannelWildcard) > 0 {
-		if supportDecisionChannelPatternMatches(t.Strings, scope, model) {
+		if supportDecisionChannelPatternMatches(t.runtimeStrings, scope, model) {
 			return profileResult(scope.ChannelAllowed, coordinate)
 		}
 	}
@@ -347,9 +352,13 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 	if t == nil || t.SchemaVersion != SupportDecisionSchemaVersion || t.Generation == 0 {
 		return false
 	}
-	t.scopeIndex = make(map[supportDecisionScopeKey]int, len(t.Scopes))
-	for i := range t.Scopes {
-		scope := &t.Scopes[i]
+	t.schemaVersion = t.SchemaVersion
+	t.generation = t.Generation
+	t.runtimeStrings = append([]string(nil), t.Strings...)
+	t.runtimeScopes = cloneSupportDecisionScopes(t.Scopes)
+	t.scopeIndex = make(map[supportDecisionScopeKey]int, len(t.runtimeScopes))
+	for i := range t.runtimeScopes {
+		scope := &t.runtimeScopes[i]
 		coordinateCount := supportDecisionGenericCoordinateCount
 		if scope.OpenAI {
 			if scope.Key.Platform != PlatformOpenAI {
@@ -359,7 +368,7 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 		} else if scope.Key.Platform == PlatformOpenAI {
 			return false
 		}
-		if scope.Key.Platform == "" || len(scope.Hot) > SupportDecisionHotModelLimit || len(scope.ExactWire) > SupportDecisionExactLimit || len(scope.Wildcard) > SupportDecisionWildcardLimit ||
+		if scope.Key.Platform == "" || len(scope.Hot) > SupportDecisionHotModelLimit ||
 			!validSupportDecisionProfile(scope.Default, coordinateCount) || !validSupportDecisionOptionalBits(scope.KnownCodexSupport, coordinateCount, len(scope.KnownCodexSupport) > 0) ||
 			!validSupportDecisionOptionalBits(scope.KnownBedrockSupport, coordinateCount, len(scope.KnownBedrockSupport) > 0) ||
 			(len(scope.KnownBedrockSupport) > 0 && scope.Key.Platform != PlatformAnthropic) {
@@ -371,7 +380,7 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 		t.scopeIndex[scope.Key] = i
 		var previousHot uint32
 		for j, hot := range scope.Hot {
-			if int(hot.StringID) >= len(t.Strings) || !validSupportDecisionProfile(hot.Profile, coordinateCount) || (j > 0 && previousHot >= hot.StringID) {
+			if int(hot.StringID) >= len(t.runtimeStrings) || !validSupportDecisionProfile(hot.Profile, coordinateCount) || (j > 0 && previousHot >= hot.StringID) {
 				return false
 			}
 			previousHot = hot.StringID
@@ -379,11 +388,11 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 		scope.Exact = make(map[string]supportDecisionExactValue, len(scope.ExactWire))
 		var previousExact uint32
 		for j, entry := range scope.ExactWire {
-			if int(entry.StringID) >= len(t.Strings) || int(entry.TargetID) >= len(t.Strings) || !validSupportDecisionProfile(entry.Profile, coordinateCount) || (j > 0 && previousExact >= entry.StringID) {
+			if int(entry.StringID) >= len(t.runtimeStrings) || int(entry.TargetID) >= len(t.runtimeStrings) || !validSupportDecisionProfile(entry.Profile, coordinateCount) || (j > 0 && previousExact >= entry.StringID) {
 				return false
 			}
 			previousExact = entry.StringID
-			model := t.Strings[entry.StringID]
+			model := t.runtimeStrings[entry.StringID]
 			if _, exists := scope.Exact[model]; exists {
 				return false
 			}
@@ -392,7 +401,7 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 		seenPrefixes := make(map[uint32]struct{}, len(scope.Wildcard))
 		for j := range scope.Wildcard {
 			rule := &scope.Wildcard[j]
-			if int(rule.PrefixID) >= len(t.Strings) || int(rule.TargetID) >= len(t.Strings) || !validSupportDecisionProfile(rule.Profile, coordinateCount) {
+			if int(rule.PrefixID) >= len(t.runtimeStrings) || int(rule.TargetID) >= len(t.runtimeStrings) || !validSupportDecisionProfile(rule.Profile, coordinateCount) {
 				return false
 			}
 			if _, exists := seenPrefixes[rule.PrefixID]; exists {
@@ -400,14 +409,14 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 			}
 			seenPrefixes[rule.PrefixID] = struct{}{}
 		}
-		if scope.CatchAll != nil && (int(scope.CatchAll.TargetID) >= len(t.Strings) || !validSupportDecisionProfile(scope.CatchAll.Profile, coordinateCount)) {
+		if scope.CatchAll != nil && (int(scope.CatchAll.TargetID) >= len(t.runtimeStrings) || !validSupportDecisionProfile(scope.CatchAll.Profile, coordinateCount)) {
 			return false
 		}
-		if !validSupportDecisionChannelFacts(t.Strings, scope, coordinateCount) {
+		if !validSupportDecisionChannelFacts(t.runtimeStrings, scope, coordinateCount) {
 			return false
 		}
 		if !sort.SliceIsSorted(scope.Wildcard, func(i, j int) bool {
-			left, right := t.Strings[scope.Wildcard[i].PrefixID], t.Strings[scope.Wildcard[j].PrefixID]
+			left, right := t.runtimeStrings[scope.Wildcard[i].PrefixID], t.runtimeStrings[scope.Wildcard[j].PrefixID]
 			if len(left) != len(right) {
 				return len(left) > len(right)
 			}
@@ -418,6 +427,44 @@ func (t *SupportDecisionTable) prepareIndexes() bool {
 	}
 	t.verified = true
 	return true
+}
+
+func cloneSupportDecisionScopes(scopes []supportDecisionScopeTable) []supportDecisionScopeTable {
+	cloned := make([]supportDecisionScopeTable, len(scopes))
+	for i := range scopes {
+		cloned[i] = scopes[i]
+		cloned[i].Hot = append([]supportDecisionHotModel(nil), scopes[i].Hot...)
+		cloned[i].ExactWire = append([]supportDecisionExactEntry(nil), scopes[i].ExactWire...)
+		cloned[i].Wildcard = append([]supportDecisionWildcard(nil), scopes[i].Wildcard...)
+		cloned[i].ChannelExact = append([]uint32(nil), scopes[i].ChannelExact...)
+		cloned[i].ChannelWildcard = append([]uint32(nil), scopes[i].ChannelWildcard...)
+		cloned[i].KnownCodexSupport = append([]byte(nil), scopes[i].KnownCodexSupport...)
+		cloned[i].KnownBedrockSupport = append([]byte(nil), scopes[i].KnownBedrockSupport...)
+		cloned[i].ChannelAllowed = cloneSupportDecisionProfile(scopes[i].ChannelAllowed)
+		cloned[i].Default = cloneSupportDecisionProfile(scopes[i].Default)
+		if scopes[i].CatchAll != nil {
+			catchAll := *scopes[i].CatchAll
+			catchAll.Profile = cloneSupportDecisionProfile(catchAll.Profile)
+			cloned[i].CatchAll = &catchAll
+		}
+		for j := range cloned[i].Hot {
+			cloned[i].Hot[j].Profile = cloneSupportDecisionProfile(cloned[i].Hot[j].Profile)
+		}
+		for j := range cloned[i].ExactWire {
+			cloned[i].ExactWire[j].Profile = cloneSupportDecisionProfile(cloned[i].ExactWire[j].Profile)
+		}
+		for j := range cloned[i].Wildcard {
+			cloned[i].Wildcard[j].Profile = cloneSupportDecisionProfile(cloned[i].Wildcard[j].Profile)
+		}
+	}
+	return cloned
+}
+
+func cloneSupportDecisionProfile(profile supportDecisionProfile) supportDecisionProfile {
+	return supportDecisionProfile{
+		SupportBits:  append([]byte(nil), profile.SupportBits...),
+		EligibleBits: append([]byte(nil), profile.EligibleBits...),
+	}
 }
 
 func validSupportDecisionChannelFacts(stringsTable []string, scope *supportDecisionScopeTable, coordinateCount int) bool {
@@ -492,9 +539,25 @@ func (r *SupportDecisionAtomicReader) Install(table *SupportDecisionTable, verif
 	if r == nil || table == nil || !table.verified {
 		return false
 	}
-	r.table.Store(table)
+	frozen, ok := table.frozenCopy()
+	if !ok {
+		return false
+	}
+	r.table.Store(frozen)
 	r.verifiedUnixNS.Store(verifiedAt.UnixNano())
 	return true
+}
+
+func (t *SupportDecisionTable) frozenCopy() (*SupportDecisionTable, bool) {
+	payload, err := EncodeSupportDecisionDocument(t)
+	if err != nil {
+		return nil, false
+	}
+	frozen, err := DecodeSupportDecisionDocument(payload, t.generation)
+	if err != nil {
+		return nil, false
+	}
+	return frozen, true
 }
 
 func (r *SupportDecisionAtomicReader) Verify(verifiedAt time.Time) {

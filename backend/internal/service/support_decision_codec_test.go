@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -172,6 +173,43 @@ func supportDecisionGroupScope(t *testing.T, document *supportDecisionDocumentEn
 	}
 	t.Fatal("fixture has no group scope")
 	return nil
+}
+
+func TestSupportDecisionCodecRejectsScopeFallbackAboveSerializedLimit(t *testing.T) {
+	table := buildSupportDecisionTestTable(t, supportDecisionSerializedFallbackSnapshot(1800, 48))
+	payload, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+	var document supportDecisionDocumentEnvelope
+	require.NoError(t, json.Unmarshal(payload, &document))
+	scope := supportDecisionGroupScope(t, &document)
+	template := scope.ExactWire[0]
+	for len(scope.ExactWire) < SupportDecisionExactLimit {
+		value := fmt.Sprintf("zz-over-%04d-%s", len(scope.ExactWire), stringsOfLength(96))
+		document.Strings = append(document.Strings, value)
+		template.StringID = uint32(len(document.Strings) - 1)
+		scope.ExactWire = append(scope.ExactWire, template)
+	}
+	oversized, err := json.Marshal(document)
+	require.NoError(t, err)
+	require.Less(t, len(oversized), SupportDecisionMaxDocumentSize)
+	_, err = DecodeSupportDecisionDocument(oversized, table.Generation)
+	require.ErrorContains(t, err, "fallback exceeds")
+}
+
+func TestSupportDecisionCodecEnforcesCombinedFallbackRuleLimits(t *testing.T) {
+	table := buildSupportDecisionTestTable(t, supportDecisionCombinedRuleSnapshot(254, true, 1, 0, 0))
+	payload, err := EncodeSupportDecisionDocument(table)
+	require.NoError(t, err)
+	var document supportDecisionDocumentEnvelope
+	require.NoError(t, json.Unmarshal(payload, &document))
+	scope := supportDecisionGroupScope(t, &document)
+	document.Strings = append(document.Strings, "zz-channel-extra-")
+	scope.ChannelWildcard = append(scope.ChannelWildcard, uint32(len(document.Strings)-1))
+	overWildcard, err := json.Marshal(document)
+	require.NoError(t, err)
+	_, err = DecodeSupportDecisionDocument(overWildcard, table.Generation)
+	require.ErrorContains(t, err, "wildcard rules")
+
 }
 
 func TestSupportDecisionCodecRoundTrip(t *testing.T) {

@@ -17,6 +17,9 @@ func EncodeSupportDecisionDocument(table *SupportDecisionTable) ([]byte, error) 
 	if table == nil || !table.verified {
 		return nil, fmt.Errorf("support decision table is not verified")
 	}
+	if len(table.wirePayload) > 0 {
+		return append([]byte(nil), table.wirePayload...), nil
+	}
 	payload, err := encodeSupportDecisionDocumentUnchecked(table)
 	if err != nil {
 		return nil, err
@@ -85,5 +88,11 @@ func DecodeSupportDecisionDocument(payload []byte, expectedGeneration uint64) (*
 	if !table.prepareIndexes() {
 		return nil, fmt.Errorf("invalid support decision document")
 	}
+	for i := range table.Scopes {
+		if err := validateSupportDecisionScopeBudgets(&table.Scopes[i], table.Strings); err != nil {
+			return nil, err
+		}
+	}
+	table.wirePayload = append([]byte(nil), payload...)
 	return table, nil
 }

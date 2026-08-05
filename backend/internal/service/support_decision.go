@@ -1,6 +1,33 @@
 package service
 
-import "context"
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+var (
+	ErrSupportDecisionActiveGenerationNotFound = errors.New("support decision active generation not found")
+	ErrSupportDecisionDocumentNotFound         = errors.New("support decision document not found")
+)
+
+// SupportDecisionWakeupSubscription delivers best-effort publication hints.
+// The replica must still poll ActiveGeneration for correctness.
+type SupportDecisionWakeupSubscription interface {
+	Receive(ctx context.Context) (uint64, error)
+	Close() error
+}
+
+// SupportDecisionPublicationStore is the Redis-backed publication/control
+// plane. Request-path classification must only use the process-local reader.
+type SupportDecisionPublicationStore interface {
+	PutDocument(ctx context.Context, generation uint64, payload []byte, ttl time.Duration) error
+	Activate(ctx context.Context, generation uint64) (activated bool, err error)
+	ActiveGeneration(ctx context.Context) (uint64, error)
+	GetDocument(ctx context.Context, generation uint64) ([]byte, error)
+	PublishWakeup(ctx context.Context, generation uint64) error
+	SubscribeWakeups(ctx context.Context) (SupportDecisionWakeupSubscription, error)
+}
 
 // SupportDecisionSource is the worker-only authoritative input for decision
 // table construction. It intentionally remains separate from request-path

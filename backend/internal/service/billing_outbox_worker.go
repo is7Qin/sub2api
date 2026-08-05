@@ -71,7 +71,9 @@ const (
 	billingOutboxApplyGroupParallelismMax = 128
 	// terminal 增长告警：run 循环按 billingOutboxTerminalSampleInterval（默认 60s）
 	// 节奏采样 repo.Stats（与轮次节奏解耦，DB 额外负载 ≤1 次/分钟的已索引 Stats
-	// 查询，与 Health 共用 repo.Stats 不新增查询形状），terminal 行绝对量超阈或
+	// 查询，与 Health 共用 repo.Stats 不新增查询形状；失败路径的重试与 Warn 由
+	// 独立冷却限频到同样节奏——持续失败不放大查询负载或日志，见 sampleTerminalGrowth），
+	// terminal 行绝对量超阈或
 	// 相对上次采样的增长速率（delta/实际间隔，行/秒）超阈时触发 slog.Error 告警
 	// 并暴露到 Health.TerminalAlert（评估在 run 循环内完成，Health 只读快照——
 	// ops 面板轮询不会触发告警路径）。阈值推演（10K/s 摄入基准）：
@@ -95,7 +97,11 @@ const (
 	billingOutboxTerminalAlertThreshold = 500_000
 	billingOutboxTerminalGrowthRate     = 5.0 // 行/秒
 	billingOutboxTerminalSampleInterval = 60 * time.Second
-	billingOutboxTerminalAlertCooldown  = 30 * time.Minute
+	// repo.Stats 失败（告警传感器故障）的 Warn/重试冷却：持续失败下不随 run 轮次
+	// 节奏（积压热循环 ~100 轮/秒）刷屏或放大查询负载，而是按本窗口硬性 ≤1 次
+	// 重试 + ≤1 条 Warn/60s（与采样间隔解耦的独立限频，见 sampleTerminalGrowth）。
+	billingOutboxTerminalStatsWarnCooldown = time.Minute
+	billingOutboxTerminalAlertCooldown     = 30 * time.Minute
 )
 
 // BillingOutboxHealth reports durable backlog and in-process replay state.
@@ -173,11 +179,12 @@ type BillingOutboxWorker struct {
 	roundTimeouts    atomic.Uint64
 	// terminal 增长告警采样参数（测试注入更小值/阈值加速断言；<=0 时回退各自
 	// 常量，见 terminalSampleIntervalDuration 等访问器）与采样/去重状态。
-	terminalSampleInterval time.Duration
-	terminalAlertThreshold int64
-	terminalGrowthRate     float64
-	terminalAlertCooldown  time.Duration
-	terminalAlert          billingOutboxTerminalAlertState
+	terminalSampleInterval    time.Duration
+	terminalAlertThreshold    int64
+	terminalGrowthRate        float64
+	terminalAlertCooldown     time.Duration
+	terminalStatsWarnCooldown time.Duration
+	terminalAlert             billingOutboxTerminalAlertState
 }
 
 // billingOutboxTerminalAlertState 是 terminal 增长告警的采样与去重状态：lastCount/
@@ -185,13 +192,17 @@ type BillingOutboxWorker struct {
 // 是否成立（成立时 Health.TerminalAlert 持续暴露），lastAlertAt 记录上次告警
 // 时刻（冷却窗口内不重复刷屏——重新告警的最小间隔 = 冷却时长，与中间状态无关，
 // 条件回落只清除 active/message、不重置 lastAlertAt，振荡不放大日志频率）。
+// lastStatsWarnAt 记录上次失败采样 Warn 的时刻（失败冷却：窗口内不重试
+// repo.Stats 也不重复 Warn；与 lastAt 基线解耦——失败绝不更新基线，成功路径
+// 也不重置该时间戳，见 sampleTerminalGrowth）。
 type billingOutboxTerminalAlertState struct {
-	mu          sync.Mutex
-	lastCount   int64
-	lastAt      time.Time
-	lastAlertAt time.Time
-	active      bool
-	message     string
+	mu              sync.Mutex
+	lastCount       int64
+	lastAt          time.Time
+	lastAlertAt     time.Time
+	lastStatsWarnAt time.Time
+	active          bool
+	message         string
 }
 
 func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRepository, postProcessor ...BillingOutboxPostProcessor) *BillingOutboxWorker {
@@ -205,13 +216,14 @@ func NewBillingOutboxWorker(repo BillingOutboxRepository, billing UsageBillingRe
 		finalizationLease: billingOutboxLease, finalizationLeaseRenewInterval: billingOutboxFinalizationRenewInterval,
 		finalizationDBTimeout: billingOutboxFinalizationDBTimeout, finalizeRecordTimeout: billingOutboxFinalizeRecordTimeout,
 		finalizationBatchTimeout: billingOutboxFinalizationBatchTimeout, ctx: ctx, cancel: cancel,
-		applyGroupParallelism:  billingOutboxApplyGroupParallelism,
-		pollInterval:           billingOutboxPollInterval,
-		circuitCooldown:        billingOutboxCircuitCoolDown,
-		terminalSampleInterval: billingOutboxTerminalSampleInterval,
-		terminalAlertThreshold: billingOutboxTerminalAlertThreshold,
-		terminalGrowthRate:     billingOutboxTerminalGrowthRate,
-		terminalAlertCooldown:  billingOutboxTerminalAlertCooldown,
+		applyGroupParallelism:     billingOutboxApplyGroupParallelism,
+		pollInterval:              billingOutboxPollInterval,
+		circuitCooldown:           billingOutboxCircuitCoolDown,
+		terminalSampleInterval:    billingOutboxTerminalSampleInterval,
+		terminalAlertThreshold:    billingOutboxTerminalAlertThreshold,
+		terminalGrowthRate:        billingOutboxTerminalGrowthRate,
+		terminalAlertCooldown:     billingOutboxTerminalAlertCooldown,
+		terminalStatsWarnCooldown: billingOutboxTerminalStatsWarnCooldown,
 	}
 	worker.lastError.Store("")
 	return worker
@@ -946,18 +958,33 @@ func (w *BillingOutboxWorker) terminalAlertCooldownDuration() time.Duration {
 	return w.terminalAlertCooldown
 }
 
+// terminalStatsWarnCooldownDuration 返回失败采样 Warn/重试的冷却时长；<=0
+// 回退默认 billingOutboxTerminalStatsWarnCooldown。
+func (w *BillingOutboxWorker) terminalStatsWarnCooldownDuration() time.Duration {
+	if w.terminalStatsWarnCooldown <= 0 {
+		return billingOutboxTerminalStatsWarnCooldown
+	}
+	return w.terminalStatsWarnCooldown
+}
+
 // sampleTerminalGrowth 是 run 循环的慢节奏告警检查点：按
 // billingOutboxTerminalSampleInterval（默认 60s，与轮次节奏解耦——每轮只做
 // 一次时间比较，超过间隔才真正查询）采样 repo.Stats，把 terminal 计数交给
 // evaluateTerminalGrowth 评估。DB 额外负载 ≤1 次/分钟的已索引 Stats 查询
 // （与 Health 共用 repo.Stats，不新增查询形状）。repo.Stats 失败时跳过本次
 // 采样且不更新基线（避免用跨失败窗口的 delta 误判速率），并记一条 slog.Warn
-// 暴露告警传感器失败——采样节奏（默认 60s）天然把该 Warn 限频到 ≤1 条/分钟，
-// 不会刷屏。
+// 暴露告警传感器故障。Warn 用独立冷却限频（skip-call 形态）：失败后
+// billingOutboxTerminalStatsWarnCooldown（默认 60s）窗口内既不重试 repo.Stats
+// 也不重复 Warn——持续失败下 Warn 与失败重试都硬性 ≤1 次/60s，与 run 轮次
+// 节奏（积压热循环 ~100 轮/秒）无关，不会刷屏，也不在 DB 可能故障时放大查询
+// 负载。冷却锚定在 lastStatsWarnAt（仅失败记 Warn 时更新；成功路径不重置它，
+// 恢复后再次失败的 Warn 仍需越过窗口）。lastAt/lastCount 在失败时绝不更新：
+// 恢复后的首次成功采样仍按"首次采样"建立基线，跨失败窗口的 delta 不误报速率。
 func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time.Time) {
 	state := &w.terminalAlert
 	state.mu.Lock()
 	lastAt := state.lastAt
+	lastStatsWarnAt := state.lastStatsWarnAt
 	state.mu.Unlock()
 	if !lastAt.IsZero() && now.Sub(lastAt) < w.terminalSampleIntervalDuration() {
 		return
@@ -965,8 +992,19 @@ func (w *BillingOutboxWorker) sampleTerminalGrowth(ctx context.Context, now time
 	if w.repo == nil {
 		return
 	}
+	// 失败冷却窗口：距上次失败 Warn 不足 cooldown 时不重试（跳过 Stats 查询与
+	// Warn）；窗口结束后才重试一次，失败则再记 Warn 并重新锚定窗口。首个失败
+	// （lastStatsWarnAt 为零）立即记 Warn，不等待。
+	if !lastStatsWarnAt.IsZero() && now.Sub(lastStatsWarnAt) < w.terminalStatsWarnCooldownDuration() {
+		return
+	}
 	stats, err := w.repo.Stats(ctx)
 	if err != nil {
+		// 记 Warn 并锚定失败冷却窗口。lastAt/lastCount 保持不动：恢复后首次
+		// 成功采样仍按"首次采样"建立基线，跨失败窗口的 delta 不会误报速率。
+		state.mu.Lock()
+		state.lastStatsWarnAt = now
+		state.mu.Unlock()
 		slog.Warn("billing outbox terminal growth stats sampling failed",
 			"error", boundedBillingOutboxWorkerError(err))
 		return

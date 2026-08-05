@@ -449,6 +449,50 @@ func TestSupportDecisionBuilderNormalizesAntigravityWildcardModelsPrefix(t *test
 	}))
 }
 
+func TestSupportDecisionBuilderValidatesSynthesizedAntigravityWildcardAlias(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		prefixLength int
+		valid        bool
+	}{
+		{name: "alias boundary", prefixLength: SupportDecisionMaxModelBytes - len("models/"), valid: true},
+		{name: "alias over limit", prefixLength: SupportDecisionMaxModelBytes - len("models/") + 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := stringsOfLength(tt.prefixLength)
+			account := Account{
+				Platform: PlatformAntigravity,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{prefix + "*": "target"},
+				},
+			}
+			snapshot := supportDecisionTestSnapshot([]Account{account}, PlatformAntigravity, []string{"hot"})
+			table, err := BuildSupportDecisionTable(snapshot, SupportDecisionBuildOptions{Generation: 1})
+			if !tt.valid {
+				require.ErrorContains(t, err, "exceeds")
+				return
+			}
+			require.NoError(t, err)
+			payload, err := EncodeSupportDecisionDocument(table)
+			require.NoError(t, err)
+			decoded, err := DecodeSupportDecisionDocument(payload, table.Generation)
+			require.NoError(t, err)
+			query := SupportDecisionQuery{
+				Scope:          SupportDecisionScope{Platform: PlatformAntigravity, GroupID: 42},
+				RequestedModel: "models/" + prefix + "model",
+			}
+			require.Equal(t, table.Lookup(query), decoded.Lookup(query))
+		})
+	}
+}
+
+func TestSupportDecisionBuilderRejectsInvalidCentralInternValues(t *testing.T) {
+	for _, value := range []string{"", stringsOfLength(SupportDecisionMaxModelBytes + 1)} {
+		err := validateSupportDecisionInternSet(map[string]struct{}{value: {}})
+		require.Error(t, err)
+	}
+}
+
 func TestSupportDecisionBuilderIncludesMixedAntigravityInPlatformScopes(t *testing.T) {
 	account := Account{
 		ID:       1,

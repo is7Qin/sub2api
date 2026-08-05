@@ -91,6 +91,9 @@ func BuildSupportDecisionTable(snapshot *SupportDecisionConstructionSnapshot, op
 		temporary = append(temporary, built)
 	}
 
+	if err := validateSupportDecisionInternSet(internSet); err != nil {
+		return nil, err
+	}
 	interned := make([]string, 0, len(internSet))
 	for value := range internSet {
 		interned = append(interned, value)
@@ -258,7 +261,11 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 					}
 					wildcardSet[prefix] = struct{}{}
 					if account.Platform == PlatformAntigravity {
-						wildcardSet["models/"+prefix] = struct{}{}
+						alias := "models/" + prefix
+						if err := validateSupportDecisionModel(alias); err != nil {
+							return supportDecisionTemporaryScope{}, fmt.Errorf("invalid Antigravity wildcard alias: %w", err)
+						}
+						wildcardSet[alias] = struct{}{}
 					}
 				} else {
 					wildcardSet[prefix] = struct{}{}
@@ -473,6 +480,10 @@ func supportDecisionNormalizedAliases(scope *supportDecisionBuildScope) []string
 		}
 		if account.Platform == PlatformAntigravity {
 			for model := range mapping {
+				// Wildcard aliases are materialized as prefixes above, without the marker.
+				if strings.HasSuffix(model, "*") {
+					continue
+				}
 				aliases["models/"+model] = struct{}{}
 			}
 		}
@@ -826,6 +837,15 @@ func validateSupportDecisionModel(model string) error {
 	}
 	if len(model) > SupportDecisionMaxModelBytes {
 		return fmt.Errorf("support decision model exceeds %d bytes", SupportDecisionMaxModelBytes)
+	}
+	return nil
+}
+
+func validateSupportDecisionInternSet(values map[string]struct{}) error {
+	for value := range values {
+		if err := validateSupportDecisionModel(value); err != nil {
+			return fmt.Errorf("invalid support decision interned string: %w", err)
+		}
 	}
 	return nil
 }

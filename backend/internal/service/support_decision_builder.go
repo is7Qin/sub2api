@@ -340,7 +340,13 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 			built.wildcard[prefix] = rule
 		}
 	}
-	built.channelExact, built.channelWildcard, built.channelCatchAll = supportDecisionChannelModelPatterns(scope)
+	channelExact, channelWildcard, channelCatchAll, err := supportDecisionChannelModelPatterns(scope)
+	if err != nil {
+		return supportDecisionTemporaryScope{}, err
+	}
+	built.channelExact = channelExact
+	built.channelWildcard = channelWildcard
+	built.channelCatchAll = channelCatchAll
 	wildcardCount := len(built.wildcard) + len(built.channelWildcard)
 	if built.catchAll != nil {
 		wildcardCount++
@@ -389,11 +395,11 @@ func supportDecisionDefaultOAuthCodexSupport(scope *supportDecisionBuildScope, c
 	return nil
 }
 
-func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) (exactPatterns, wildcardPatterns []string, catchAll bool) {
+func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) (exactPatterns, wildcardPatterns []string, catchAll bool, err error) {
 	if scope.channel == nil || scope.channel.Status != StatusActive ||
 		!scope.channel.RestrictModels ||
 		scope.channel.BillingModelSource != BillingModelSourceUpstream {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	exact, wildcard := make(map[string]struct{}), make(map[string]struct{})
 	for _, pricing := range scope.channel.PricingModels {
@@ -410,13 +416,20 @@ func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) (exac
 				continue
 			}
 			if strings.HasSuffix(model, "*") {
-				wildcard[strings.TrimSuffix(model, "*")] = struct{}{}
+				prefix := strings.TrimSuffix(model, "*")
+				if err := validateSupportDecisionModel(prefix); err != nil {
+					return nil, nil, false, fmt.Errorf("invalid channel wildcard prefix: %w", err)
+				}
+				wildcard[prefix] = struct{}{}
 				continue
+			}
+			if err := validateSupportDecisionModel(model); err != nil {
+				return nil, nil, false, fmt.Errorf("invalid channel exact model: %w", err)
 			}
 			exact[model] = struct{}{}
 		}
 	}
-	return sortedStringSet(exact), sortedStringSet(wildcard), catchAll
+	return sortedStringSet(exact), sortedStringSet(wildcard), catchAll, nil
 }
 
 func sortedStringSet(values map[string]struct{}) []string {

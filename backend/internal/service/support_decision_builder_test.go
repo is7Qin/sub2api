@@ -288,6 +288,50 @@ func TestSupportDecisionBuilderCountsChannelCatchAllAsWildcardRule(t *testing.T)
 	require.ErrorContains(t, err, "wildcard rules")
 }
 
+func TestSupportDecisionBuilderValidatesChannelPricingModelLength(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		model string
+		valid bool
+	}{
+		{name: "exact boundary", model: stringsOfLength(SupportDecisionMaxModelBytes), valid: true},
+		{name: "exact over limit", model: stringsOfLength(SupportDecisionMaxModelBytes + 1)},
+		{name: "wildcard boundary", model: stringsOfLength(SupportDecisionMaxModelBytes) + "*", valid: true},
+		{name: "wildcard over limit", model: stringsOfLength(SupportDecisionMaxModelBytes+1) + "*"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := supportDecisionTestSnapshot([]Account{{
+				Platform: PlatformAnthropic,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"configured": "configured"},
+				},
+			}}, PlatformAnthropic, []string{"hot"})
+			snapshot.Channels = []SupportDecisionChannel{{
+				Status:             StatusActive,
+				GroupIDs:           []int64{42},
+				RestrictModels:     true,
+				BillingModelSource: BillingModelSourceUpstream,
+				PricingModels: []SupportDecisionPricingModels{{
+					Platform: PlatformAnthropic,
+					Models:   []string{tt.model},
+				}},
+			}}
+
+			table, err := BuildSupportDecisionTable(snapshot, SupportDecisionBuildOptions{Generation: 1})
+			if !tt.valid {
+				require.ErrorContains(t, err, "exceeds")
+				return
+			}
+			require.NoError(t, err)
+			payload, err := EncodeSupportDecisionDocument(table)
+			require.NoError(t, err)
+			_, err = DecodeSupportDecisionDocument(payload, table.Generation)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestSupportDecisionBuilderRoundTripsChannelCatchAll(t *testing.T) {
 	for _, tt := range []struct {
 		name     string

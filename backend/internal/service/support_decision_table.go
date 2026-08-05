@@ -528,8 +528,8 @@ func validSupportDecisionTailBits(bits []byte, coordinateCount int) bool {
 }
 
 type supportDecisionReaderState struct {
-	table          *SupportDecisionTable
-	verifiedUnixNS int64
+	table      *SupportDecisionTable
+	verifiedAt time.Time
 }
 
 // SupportDecisionAtomicReader owns one atomic snapshot containing the verified
@@ -552,7 +552,7 @@ func (r *SupportDecisionAtomicReader) Install(table *SupportDecisionTable, verif
 	if !ok {
 		return false
 	}
-	r.state.Store(&supportDecisionReaderState{table: frozen, verifiedUnixNS: verifiedAt.UnixNano()})
+	r.state.Store(&supportDecisionReaderState{table: frozen, verifiedAt: verifiedAt})
 	return true
 }
 
@@ -565,7 +565,7 @@ func (r *SupportDecisionAtomicReader) installNewer(table *SupportDecisionTable, 
 		if current != nil && current.table.generation >= table.generation {
 			return false
 		}
-		next := &supportDecisionReaderState{table: table, verifiedUnixNS: verifiedAt.UnixNano()}
+		next := &supportDecisionReaderState{table: table, verifiedAt: verifiedAt}
 		if r.state.CompareAndSwap(current, next) {
 			return true
 		}
@@ -593,7 +593,7 @@ func (r *SupportDecisionAtomicReader) Verify(verifiedAt time.Time) {
 		if current == nil {
 			return
 		}
-		next := &supportDecisionReaderState{table: current.table, verifiedUnixNS: verifiedAt.UnixNano()}
+		next := &supportDecisionReaderState{table: current.table, verifiedAt: verifiedAt}
 		if r.state.CompareAndSwap(current, next) {
 			return
 		}
@@ -609,7 +609,7 @@ func (r *SupportDecisionAtomicReader) verifyGeneration(generation uint64, verifi
 		if current == nil || current.table.generation != generation {
 			return false
 		}
-		next := &supportDecisionReaderState{table: current.table, verifiedUnixNS: verifiedAt.UnixNano()}
+		next := &supportDecisionReaderState{table: current.table, verifiedAt: verifiedAt}
 		if r.state.CompareAndSwap(current, next) {
 			return true
 		}
@@ -635,7 +635,7 @@ func (r *SupportDecisionAtomicReader) verifiedAt() time.Time {
 	if state == nil {
 		return time.Time{}
 	}
-	return time.Unix(0, state.verifiedUnixNS)
+	return state.verifiedAt
 }
 
 func (r *SupportDecisionAtomicReader) Lookup(query SupportDecisionQuery) SupportDecisionResult {
@@ -651,7 +651,7 @@ func (r *SupportDecisionAtomicReader) Lookup(query SupportDecisionQuery) Support
 		if r.now != nil {
 			now = r.now
 		}
-		if now().Sub(time.Unix(0, state.verifiedUnixNS)) > r.maxStale {
+		if now().Sub(state.verifiedAt) > r.maxStale {
 			return SupportDecisionUnknown
 		}
 	}

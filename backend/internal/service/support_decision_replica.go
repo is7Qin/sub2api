@@ -15,19 +15,27 @@ type supportDecisionReplicaTicker interface {
 	Stop()
 }
 
-type supportDecisionTimeTicker struct {
-	ticker *time.Ticker
-}
+type supportDecisionTimeTicker struct{ ticker *time.Ticker }
 
 func (t supportDecisionTimeTicker) Chan() <-chan time.Time { return t.ticker.C }
 func (t supportDecisionTimeTicker) Stop()                  { t.ticker.Stop() }
 
 type supportDecisionReplicaDependencies struct {
-	now          func() time.Time
-	newTicker    func(time.Duration) supportDecisionReplicaTicker
-	afterRefresh func(error)
-	afterHint    func()
+	now             func() time.Time
+	newTicker       func(time.Duration) supportDecisionReplicaTicker
+	afterRefresh    func(error)
+	afterHint       func()
+	afterStopMarked func()
 }
+
+type supportDecisionReplicaPhase uint8
+
+const (
+	supportDecisionReplicaIdle supportDecisionReplicaPhase = iota
+	supportDecisionReplicaStarting
+	supportDecisionReplicaRunning
+	supportDecisionReplicaStopping
+)
 
 // SupportDecisionReplica verifies Redis publication state in the background and
 // replaces the process-local immutable table as one atomic operation.
@@ -37,11 +45,10 @@ type SupportDecisionReplica struct {
 	deps   supportDecisionReplicaDependencies
 
 	mu           sync.Mutex
+	phase        supportDecisionReplicaPhase
 	cancel       context.CancelFunc
 	subscription SupportDecisionWakeupSubscription
 	done         chan struct{}
-	started      bool
-	starting     bool
 }
 
 func NewSupportDecisionReplica(store SupportDecisionPublicationStore, reader *SupportDecisionAtomicReader) *SupportDecisionReplica {
@@ -57,54 +64,70 @@ func newSupportDecisionReplica(store SupportDecisionPublicationStore, reader *Su
 	return &SupportDecisionReplica{store: store, reader: reader, deps: deps}
 }
 
-// Start subscribes before the initial authoritative poll so no publication
-// between those operations can be missed before periodic polling begins.
+// Start publishes cancellation and completion state before any blocking store
+// call, then reports success only after the initial verified load.
 func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	if r == nil || r.store == nil || r.reader == nil {
 		return errors.New("support decision replica dependencies are incomplete")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	r.mu.Lock()
-	if r.started {
+	switch r.phase {
+	case supportDecisionReplicaRunning:
 		r.mu.Unlock()
 		return nil
-	}
-	if r.starting {
+	case supportDecisionReplicaStarting:
 		r.mu.Unlock()
 		return errors.New("support decision replica start already in progress")
+	case supportDecisionReplicaStopping:
+		r.mu.Unlock()
+		return errors.New("support decision replica stop in progress")
 	}
-	r.starting = true
-	r.mu.Unlock()
-	startupSucceeded := false
-	defer func() {
-		if !startupSucceeded {
-			r.mu.Lock()
-			r.starting = false
-			r.mu.Unlock()
-		}
-	}()
-
 	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	r.phase = supportDecisionReplicaStarting
+	r.cancel = cancel
+	r.done = done
+	r.mu.Unlock()
+
 	subscription, err := r.store.SubscribeWakeups(runCtx)
 	if err != nil {
 		cancel()
+		r.finishLifecycle(done)
 		return fmt.Errorf("subscribe to support decision wakeups: %w", err)
 	}
+
+	r.mu.Lock()
+	if r.done != done || r.phase != supportDecisionReplicaStarting || runCtx.Err() != nil {
+		r.mu.Unlock()
+		cancel()
+		_ = subscription.Close()
+		r.finishLifecycle(done)
+		return context.Canceled
+	}
+	r.subscription = subscription
+	r.mu.Unlock()
+
 	if err := r.refresh(runCtx); err != nil {
 		cancel()
 		_ = subscription.Close()
+		r.finishLifecycle(done)
 		return fmt.Errorf("load active support decision generation: %w", err)
 	}
 
 	r.mu.Lock()
-	r.cancel = cancel
-	r.subscription = subscription
-	r.done = make(chan struct{})
-	r.started = true
-	r.starting = false
-	done := r.done
+	if r.done != done || r.phase != supportDecisionReplicaStarting || runCtx.Err() != nil {
+		r.mu.Unlock()
+		cancel()
+		_ = subscription.Close()
+		r.finishLifecycle(done)
+		return context.Canceled
+	}
+	r.phase = supportDecisionReplicaRunning
 	r.mu.Unlock()
-	startupSucceeded = true
 
 	go r.run(runCtx, subscription, done)
 	return nil
@@ -115,7 +138,7 @@ func (r *SupportDecisionReplica) run(ctx context.Context, subscription SupportDe
 	defer func() {
 		_ = subscription.Close()
 		<-receiverDone
-		close(done)
+		r.finishLifecycle(done)
 	}()
 	ticker := r.deps.newTicker(supportDecisionReplicaPollInterval)
 	defer ticker.Stop()
@@ -146,6 +169,29 @@ func (r *SupportDecisionReplica) run(ctx context.Context, subscription SupportDe
 			}
 		}
 	}
+}
+
+func (r *SupportDecisionReplica) finishLifecycle(done chan struct{}) {
+	r.mu.Lock()
+	if r.done == done {
+		close(done)
+		r.phase = supportDecisionReplicaIdle
+		r.cancel = nil
+		r.subscription = nil
+		r.done = nil
+	}
+	r.mu.Unlock()
+}
+
+func (r *SupportDecisionReplica) lifecycleDone() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done != nil {
+		return r.done
+	}
+	done := make(chan struct{})
+	close(done)
+	return done
 }
 
 func (r *SupportDecisionReplica) refreshInBackground(ctx context.Context) {
@@ -205,29 +251,26 @@ func (r *SupportDecisionReplica) refresh(ctx context.Context) error {
 	return nil
 }
 
-// Stop promptly cancels polling and subscription receive and is idempotent.
+// Stop cancels and waits for either startup or running work and is idempotent.
 func (r *SupportDecisionReplica) Stop() {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	if !r.started {
+	if r.phase == supportDecisionReplicaIdle {
 		r.mu.Unlock()
 		return
 	}
+	r.phase = supportDecisionReplicaStopping
 	cancel, subscription, done := r.cancel, r.subscription, r.done
 	r.mu.Unlock()
+	if r.deps.afterStopMarked != nil {
+		r.deps.afterStopMarked()
+	}
 
 	cancel()
-	_ = subscription.Close()
-	<-done
-
-	r.mu.Lock()
-	if r.done == done {
-		r.started = false
-		r.cancel = nil
-		r.subscription = nil
-		r.done = nil
+	if subscription != nil {
+		_ = subscription.Close()
 	}
-	r.mu.Unlock()
+	<-done
 }

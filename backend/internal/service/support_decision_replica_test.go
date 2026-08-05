@@ -13,15 +13,18 @@ import (
 )
 
 type supportDecisionReplicaFakeStore struct {
-	mu            sync.Mutex
-	active        uint64
-	activeErr     error
-	documents     map[uint64][]byte
-	documentErr   error
-	activeCalls   int
-	documentCalls int
-	activeCalled  chan struct{}
-	subscription  *supportDecisionReplicaFakeSubscription
+	mu               sync.Mutex
+	active           uint64
+	activeErr        error
+	documents        map[uint64][]byte
+	documentErr      error
+	activeCalls      int
+	documentCalls    int
+	activeCalled     chan struct{}
+	subscription     *supportDecisionReplicaFakeSubscription
+	subscribeStarted chan struct{}
+	subscribeRelease <-chan struct{}
+	subscribeCalls   int
 }
 
 func newSupportDecisionReplicaFakeStore() *supportDecisionReplicaFakeStore {
@@ -41,7 +44,24 @@ func (s *supportDecisionReplicaFakeStore) Activate(context.Context, uint64) (boo
 func (s *supportDecisionReplicaFakeStore) PublishWakeup(context.Context, uint64) error {
 	panic("unexpected publisher call")
 }
-func (s *supportDecisionReplicaFakeStore) SubscribeWakeups(context.Context) (SupportDecisionWakeupSubscription, error) {
+func (s *supportDecisionReplicaFakeStore) SubscribeWakeups(ctx context.Context) (SupportDecisionWakeupSubscription, error) {
+	s.mu.Lock()
+	s.subscribeCalls++
+	started, release := s.subscribeStarted, s.subscribeRelease
+	s.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-release:
+		}
+	}
 	return s.subscription, nil
 }
 func (s *supportDecisionReplicaFakeStore) ActiveGeneration(context.Context) (uint64, error) {
@@ -439,4 +459,98 @@ func TestSupportDecisionReplicaFailedVerificationPreservesTimestamp(t *testing.T
 	h.store.setActive(0, errors.New("redis unavailable"))
 	h.tickAndWait(t)
 	require.Equal(t, verifiedAt, h.reader.verifiedAt())
+}
+
+func TestSupportDecisionReplicaStopDuringStartCancelsAndWaits(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	h.store.subscribeStarted, h.store.subscribeRelease = started, release
+	startResult := make(chan error, 1)
+	go func() { startResult <- h.replica.Start(context.Background()) }()
+	<-started
+	stopDone := make(chan struct{})
+	go func() { h.replica.Stop(); close(stopDone) }()
+	require.ErrorIs(t, <-startResult, context.Canceled)
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not wait for startup cancellation")
+	}
+	close(release)
+}
+
+func TestSupportDecisionReplicaStartDuringStopDoesNotCrossLifecycle(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	require.NoError(t, h.replica.Start(context.Background()))
+	stopMarked := make(chan struct{}, 1)
+	h.replica.deps.afterStopMarked = func() { stopMarked <- struct{}{} }
+	stopDone := make(chan struct{})
+	go func() { h.replica.Stop(); close(stopDone) }()
+	<-stopMarked
+	require.Error(t, h.replica.Start(context.Background()))
+	<-stopDone
+}
+
+func TestSupportDecisionReplicaDuplicateConcurrentStartUsesSingleStartup(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	h.store.subscribeStarted, h.store.subscribeRelease = started, release
+	first := make(chan error, 1)
+	go func() { first <- h.replica.Start(context.Background()) }()
+	<-started
+	require.Error(t, h.replica.Start(context.Background()))
+	close(release)
+	require.NoError(t, <-first)
+	h.replica.Stop()
+	h.store.mu.Lock()
+	require.Equal(t, 1, h.store.subscribeCalls)
+	h.store.mu.Unlock()
+}
+
+func TestSupportDecisionReplicaParentCancellationAllowsRestart(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, h.replica.Start(ctx))
+	cancel()
+	select {
+	case <-h.replica.lifecycleDone():
+	case <-time.After(time.Second):
+		t.Fatal("replica did not terminate after parent cancellation")
+	}
+	h.store.mu.Lock()
+	h.store.subscription = newSupportDecisionReplicaFakeSubscription()
+	h.store.mu.Unlock()
+	h.ticker = newSupportDecisionReplicaFakeTicker()
+	h.replica.deps.newTicker = func(time.Duration) supportDecisionReplicaTicker { return h.ticker }
+	require.NoError(t, h.replica.Start(context.Background()))
+	h.replica.Stop()
+}
+
+func TestSupportDecisionAtomicReaderRetainsMonotonicVerificationTime(t *testing.T) {
+	start := time.Now()
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, []string{"hot"}))
+	reader := NewSupportDecisionAtomicReader(30 * time.Second)
+	reader.now = func() time.Time { return start.Add(30*time.Second + time.Nanosecond) }
+	require.True(t, reader.Install(table, start))
+	require.Equal(t, start, reader.verifiedAt())
+	// == compares the hidden monotonic reading too; Equal alone compares instants.
+	require.True(t, reader.state.Load().verifiedAt == start)
+}
+
+func TestSupportDecisionAtomicReaderLookupRemainsAllocationFree(t *testing.T) {
+	table := buildSupportDecisionTestTable(t, supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, []string{"hot"}))
+	reader := NewSupportDecisionAtomicReader(30 * time.Second)
+	now := time.Now()
+	reader.now = func() time.Time { return now }
+	require.True(t, reader.Install(table, now))
+	query := SupportDecisionQuery{Scope: SupportDecisionScope{Platform: PlatformAnthropic, GroupID: 42}, RequestedModel: "hot"}
+	require.Zero(t, testing.AllocsPerRun(1000, func() { _ = reader.Lookup(query) }))
 }

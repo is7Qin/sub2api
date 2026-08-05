@@ -8,7 +8,8 @@ type legacyModelSupportMissInput struct {
 	Platform             string
 	AllowMixedScheduling bool
 	RequirePrivacy       bool
-	ModelSupported       func(account *Account, requestedModel string) bool
+	ThinkingEnabled      bool
+	ModelSupported       func(account *Account, requestedModel string, thinkingEnabled bool) bool
 	UpstreamRestricted   func(account *Account, requestedModel string) bool
 }
 
@@ -20,7 +21,7 @@ func legacyPureModelSupportMiss(input legacyModelSupportMissInput) bool {
 			continue
 		}
 		// Model support deliberately precedes all later eligibility predicates.
-		if input.ModelSupported(account, input.RequestedModel) {
+		if input.ModelSupported(account, input.RequestedModel, input.ThinkingEnabled) {
 			return false
 		}
 		if legacyPrivacyRequirementBlocks(account, input.RequirePrivacy) {

@@ -2005,14 +2005,24 @@ func (s *GatewayService) isPureModelSupportMiss(
 	}
 
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	thinkingEnabled, _ := ThinkingEnabledFromContext(ctx)
 	return legacyPureModelSupportMiss(legacyModelSupportMissInput{
 		Accounts:             accounts,
 		RequestedModel:       requestedModel,
 		Platform:             platform,
 		AllowMixedScheduling: allowMixedScheduling,
 		RequirePrivacy:       schedGroup != nil && schedGroup.RequirePrivacySet,
-		ModelSupported: func(account *Account, model string) bool {
-			return s.isModelSupportedByAccountWithContext(ctx, account, model)
+		ThinkingEnabled:      thinkingEnabled,
+		ModelSupported: func(account *Account, model string, thinking bool) bool {
+			if account.Platform != PlatformAntigravity {
+				return s.isModelSupportedByAccount(account, model)
+			}
+			mapped := mapAntigravityModel(account, model)
+			if mapped == "" {
+				return false
+			}
+			finalModel := applyThinkingModelSuffix(mapped, thinking)
+			return finalModel == mapped || account.IsModelSupported(finalModel)
 		},
 		UpstreamRestricted: func(account *Account, model string) bool {
 			return needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, model)

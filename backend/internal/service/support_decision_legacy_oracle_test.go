@@ -72,7 +72,7 @@ func TestLegacyPureModelSupportMissSemanticMatrix(t *testing.T) {
 				Platform:             tt.platform,
 				AllowMixedScheduling: tt.allowMixed,
 				RequirePrivacy:       tt.requirePrivacy,
-				ModelSupported: func(account *Account, model string) bool {
+				ModelSupported: func(account *Account, model string, _ bool) bool {
 					return account.IsModelSupported(model)
 				},
 				UpstreamRestricted: tt.channelRestricted,
@@ -123,6 +123,49 @@ func TestLegacyPureModelSupportMissSemanticMatrix(t *testing.T) {
 		require.Equal(t, []string{PlatformAnthropic, PlatformAntigravity}, gotPlatforms)
 		require.True(t, gotIncludeGrouped)
 	})
+}
+
+func TestLegacyPureModelSupportMissAntigravityThinkingCoordinate(t *testing.T) {
+	const model = "claude-sonnet-4-5"
+	account := Account{
+		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{model: model},
+		},
+		Extra: map[string]any{"mixed_scheduling": true},
+	}
+	modelSupported := func(account *Account, requestedModel string, thinkingEnabled bool) bool {
+		mapped := mapAntigravityModel(account, requestedModel)
+		if mapped == "" {
+			return false
+		}
+		finalModel := applyThinkingModelSuffix(mapped, thinkingEnabled)
+		return finalModel == mapped || account.IsModelSupported(finalModel)
+	}
+
+	for _, tc := range []struct {
+		name            string
+		thinkingEnabled bool
+		want            bool
+	}{
+		{name: "thinking disabled supports base mapping", want: false},
+		{name: "thinking enabled requires suffixed mapping", thinkingEnabled: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := legacyPureModelSupportMiss(legacyModelSupportMissInput{
+				Accounts:             []Account{account},
+				RequestedModel:       model,
+				Platform:             PlatformAnthropic,
+				AllowMixedScheduling: true,
+				ThinkingEnabled:      tc.thinkingEnabled,
+				ModelSupported:       modelSupported,
+			})
+			require.Equal(t, tc.want, got)
+		})
+	}
+
+	query := SupportDecisionQuery{ThinkingEnabled: true}
+	require.True(t, query.ThinkingEnabled)
 }
 
 func TestLegacyPureOpenAIModelSupportMissSemanticMatrix(t *testing.T) {
@@ -342,7 +385,7 @@ func TestLegacyPureModelSupportMissSupportingAccountWins(t *testing.T) {
 				Platform:             PlatformAnthropic,
 				AllowMixedScheduling: tt.account.Platform == PlatformAntigravity,
 				RequirePrivacy:       tt.requirePrivacy,
-				ModelSupported: func(account *Account, model string) bool {
+				ModelSupported: func(account *Account, model string, _ bool) bool {
 					return account.IsModelSupported(model)
 				},
 				UpstreamRestricted: tt.upstreamRestricted,

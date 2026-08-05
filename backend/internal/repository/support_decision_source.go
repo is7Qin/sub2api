@@ -52,7 +52,7 @@ func (s *supportDecisionSource) Load(ctx context.Context) (*service.SupportDecis
 }
 
 func supportDecisionAccountSelectList(alias string) string {
-	cols := []string{alias + ".id", alias + ".platform", alias + ".type"}
+	cols := []string{alias + ".id", alias + ".platform", alias + ".type", alias + ".concurrency"}
 	cols = appendProjectedJSONColumns(cols, alias, "credentials", supportDecisionCredentialsSubKeys)
 	cols = appendProjectedJSONColumns(cols, alias, "extra", supportDecisionExtraSubKeys)
 	return strings.Join(cols, ", ")
@@ -74,8 +74,8 @@ ORDER BY a.id`, supportDecisionAccountSelectList("a"))
 	for rows.Next() {
 		var account service.Account
 		values := make([]sql.NullString, subKeyCount)
-		dest := make([]any, 0, 3+subKeyCount)
-		dest = append(dest, &account.ID, &account.Platform, &account.Type)
+		dest := make([]any, 0, 4+subKeyCount)
+		dest = append(dest, &account.ID, &account.Platform, &account.Type, &account.Concurrency)
 		for i := range values {
 			dest = append(dest, &values[i])
 		}

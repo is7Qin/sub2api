@@ -58,15 +58,17 @@ const (
 // SupportDecisionScope identifies persistent account membership. GroupID zero
 // denotes the ungrouped/default scope.
 type SupportDecisionScope struct {
-	Platform       string
-	GroupID        int64
-	IncludeGrouped bool
+	Platform             string
+	GroupID              int64
+	IncludeGrouped       bool
+	AllowMixedScheduling bool
 }
 
 type SupportDecisionQuery struct {
 	Scope              SupportDecisionScope
 	RequestedModel     string
 	RequiresPrivacy    bool
+	ThinkingEnabled    bool
 	EndpointCapability OpenAIEndpointCapability
 	ImageCapability    OpenAIImagesCapability
 	RequireCompact     bool

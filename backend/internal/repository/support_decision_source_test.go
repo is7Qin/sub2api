@@ -49,7 +49,7 @@ func newSupportDecisionSourceTestDB(t *testing.T) (*supportDecisionSource, sqlmo
 }
 
 func supportDecisionAccountRows() *sqlmock.Rows {
-	columns := []string{"id", "platform", "type"}
+	columns := []string{"id", "platform", "type", "concurrency"}
 	columns = append(columns, supportDecisionCredentialsSubKeys...)
 	columns = append(columns, supportDecisionExtraSubKeys...)
 	return sqlmock.NewRows(columns)
@@ -57,7 +57,7 @@ func supportDecisionAccountRows() *sqlmock.Rows {
 
 func addSupportDecisionAccountRow(rows *sqlmock.Rows) *sqlmock.Rows {
 	return rows.AddRow(
-		int64(7), service.PlatformOpenAI, service.AccountTypeOAuth,
+		int64(7), service.PlatformOpenAI, service.AccountTypeOAuth, 3,
 		`{"gpt-5.4-high":"gpt-5.4-high"}`, nil, `["chat_completions"]`, nil, nil,
 		`"training_off"`, nil, nil, `"auto"`, nil, nil, `"managed_session"`, nil, nil, nil, nil,
 	)
@@ -90,7 +90,7 @@ func TestSupportDecisionSourceUsesProjectedAccountColumns(t *testing.T) {
 		require.NotEqual(t, "a.extra", item)
 	}
 	for _, forbidden := range []string{
-		"concurrency", "expires_at", "last_used_at", "rate_limited_at",
+		"expires_at", "last_used_at", "rate_limited_at",
 		"rate_limit_reset_at", "overload_until", "temp_unschedulable_until",
 	} {
 		require.NotContains(t, selectClause, forbidden)
@@ -98,6 +98,7 @@ func TestSupportDecisionSourceUsesProjectedAccountColumns(t *testing.T) {
 	require.Contains(t, selectClause, "a.id")
 	require.Contains(t, selectClause, "a.platform")
 	require.Contains(t, selectClause, "a.type")
+	require.Contains(t, selectClause, "a.concurrency")
 }
 
 func TestSupportDecisionSourceSelectsOnlyWhitelistedCredentialSubkeys(t *testing.T) {
@@ -108,6 +109,7 @@ func TestSupportDecisionSourceSelectsOnlyWhitelistedCredentialSubkeys(t *testing
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 	require.Len(t, snapshot.Accounts, 1)
+	require.Equal(t, 3, snapshot.Accounts[0].Concurrency)
 	require.ElementsMatch(t, []string{"model_mapping", "openai_capabilities"}, mapKeys(snapshot.Accounts[0].Credentials))
 
 	selectClause, _, ok := strings.Cut(capture.all()[0], " FROM ")
@@ -189,7 +191,8 @@ func TestSupportDecisionSourceIgnoresTransientSchedulerState(t *testing.T) {
 	require.Contains(t, query, "a.deleted_at IS NULL")
 	require.Contains(t, query, "a.status = $1")
 	require.Contains(t, query, "a.schedulable = TRUE")
-	for _, transient := range []string{"expires_at", "last_used_at", "rate_limit", "overload", "temp_unschedulable", "concurrency"} {
+	require.Contains(t, query, "a.concurrency")
+	for _, transient := range []string{"expires_at", "last_used_at", "rate_limited_at", "rate_limit_reset_at", "overload", "temp_unschedulable", "concurrency_usage"} {
 		require.NotContains(t, query, transient)
 	}
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -199,7 +202,7 @@ func TestSupportDecisionSourcePreservesModelSupportSemantics(t *testing.T) {
 	source, mock, _ := newSupportDecisionSourceTestDB(t)
 	rows := supportDecisionAccountRows()
 	addSupportDecisionAccountRow(rows)
-	rows.AddRow(int64(8), service.PlatformOpenAI, service.AccountTypeAPIKey,
+	rows.AddRow(int64(8), service.PlatformOpenAI, service.AccountTypeAPIKey, 0,
 		nil, nil, nil, nil, nil,
 		nil, true, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)

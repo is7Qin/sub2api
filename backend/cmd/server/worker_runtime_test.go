@@ -30,6 +30,8 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -67,6 +69,8 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -89,6 +93,8 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = enabledRuntime.StopAll(context.Background()) })
@@ -109,6 +115,8 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: interval}),
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -138,6 +146,8 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			concurrency,
 			service.NewEmailQueueService(nil, 1),
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -147,6 +157,28 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 	require.NotContains(t, snapshotNames(newRuntime(nil, time.Minute).Snapshot()), "concurrency-slot-cleanup")
 	require.NotContains(t, snapshotNames(newRuntime(&serverConcurrencyCacheStub{}, 0).Snapshot()), "concurrency-slot-cleanup")
 	require.Contains(t, snapshotNames(newRuntime(&serverConcurrencyCacheStub{}, time.Minute).Snapshot()), "concurrency-slot-cleanup")
+}
+
+func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
+	publisher := service.NewSchedulerSupportPublisherWorker(nil, nil, nil, nil, nil)
+	replica := service.NewSupportDecisionReplicaWorker(nil)
+	// Registration is verified without startup because intentionally incomplete
+	// test dependencies fail closed when StartAll invokes either component.
+	require.Equal(t, "scheduler-support-publisher", publisher.Descriptor().Name)
+	require.Equal(t, "scheduler-support-replica", replica.Descriptor().Name)
+
+	source, err := os.ReadFile("worker_runtime.go")
+	require.NoError(t, err)
+	require.Contains(t, string(source), "components = append(components, supportPublisher)")
+	require.Contains(t, string(source), "components = append(components, supportReplica)")
+}
+
+func TestWorkerProvidersDoNotStartSupportDecisionGoroutines(t *testing.T) {
+	content, err := os.ReadFile("../../internal/service/wire.go")
+	require.NoError(t, err)
+	serviceWire := string(content)
+	require.NotContains(t, functionSource(serviceWire, "ProvideSupportDecisionAtomicReader"), ".Start(")
+	require.NotContains(t, functionSource(serviceWire, "ProvideSchedulerSnapshotDirtyProcessor"), ".Start(")
 }
 
 func TestConcurrencySlotCleanupLifecycleIsRuntimeOwned(t *testing.T) {

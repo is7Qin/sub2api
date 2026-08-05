@@ -1,0 +1,452 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
+)
+
+const (
+	schedulerSupportPublisherDebounce    = 100 * time.Millisecond
+	schedulerSupportPublisherCoalesceCap = time.Second
+)
+
+type supportDecisionBatchPublisher interface {
+	Publish(context.Context) (uint64, error)
+}
+
+type schedulerSupportPublisherTimer interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type schedulerSupportPublisherClock interface {
+	Now() time.Time
+	NewTimer(time.Duration) schedulerSupportPublisherTimer
+}
+
+type schedulerSupportPublisherTimeClock struct{}
+type schedulerSupportPublisherTimeTimer struct{ timer *time.Timer }
+
+func (schedulerSupportPublisherTimeClock) Now() time.Time { return time.Now() }
+func (schedulerSupportPublisherTimeClock) NewTimer(d time.Duration) schedulerSupportPublisherTimer {
+	return schedulerSupportPublisherTimeTimer{timer: time.NewTimer(d)}
+}
+func (t schedulerSupportPublisherTimeTimer) Chan() <-chan time.Time { return t.timer.C }
+func (t schedulerSupportPublisherTimeTimer) Stop()                  { t.timer.Stop() }
+
+// immediateSchedulerSupportPublisherClock is used by focused tests that do not
+// exercise timing; production always uses schedulerSupportPublisherTimeClock.
+type immediateSchedulerSupportPublisherClock struct{}
+type immediateSchedulerSupportPublisherTimer struct{ ch chan time.Time }
+
+func (immediateSchedulerSupportPublisherClock) Now() time.Time { return time.Now() }
+func (immediateSchedulerSupportPublisherClock) NewTimer(time.Duration) schedulerSupportPublisherTimer {
+	ch := make(chan time.Time, 1)
+	ch <- time.Now()
+	return immediateSchedulerSupportPublisherTimer{ch: ch}
+}
+func (t immediateSchedulerSupportPublisherTimer) Chan() <-chan time.Time { return t.ch }
+func (immediateSchedulerSupportPublisherTimer) Stop()                    {}
+
+// SchedulerSupportPublisherWorker owns scheduler dirty work and the activation
+// barrier for one PostgreSQL ownership term.
+type SchedulerSupportPublisherWorker struct {
+	dirty        SchedulerDirtyWorkRepository
+	ownership    SchedulerOwnershipRepository
+	processor    SchedulerSnapshotDirtyProcessor
+	publisher    supportDecisionBatchPublisher
+	pollInterval time.Duration
+	clock        schedulerSupportPublisherClock
+	descriptor   workerruntime.Descriptor
+
+	mu        sync.Mutex
+	lifecycle workerruntime.LifecycleSnapshot
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+}
+
+func NewSchedulerSupportPublisherWorker(dirty SchedulerDirtyWorkRepository, ownership SchedulerOwnershipRepository, processor SchedulerSnapshotDirtyProcessor, publisher *SupportDecisionPublisher, cfg *config.Config) *SchedulerSupportPublisherWorker {
+	poll := time.Second
+	if cfg != nil && cfg.Gateway.Scheduling.OutboxPollIntervalSeconds > 0 {
+		poll = time.Duration(cfg.Gateway.Scheduling.OutboxPollIntervalSeconds) * time.Second
+	}
+	return newSchedulerSupportPublisherWorker(dirty, ownership, processor, publisher, poll, schedulerSupportPublisherTimeClock{})
+}
+
+func newSchedulerSupportPublisherWorker(dirty SchedulerDirtyWorkRepository, ownership SchedulerOwnershipRepository, processor SchedulerSnapshotDirtyProcessor, publisher supportDecisionBatchPublisher, poll time.Duration, clock schedulerSupportPublisherClock) *SchedulerSupportPublisherWorker {
+	if poll <= 0 {
+		poll = time.Second
+	}
+	if clock == nil {
+		clock = schedulerSupportPublisherTimeClock{}
+	}
+	return &SchedulerSupportPublisherWorker{dirty: dirty, ownership: ownership, processor: processor, publisher: publisher, pollInterval: poll, clock: clock,
+		descriptor: workerruntime.Descriptor{Name: "scheduler-support-publisher", Kind: workerruntime.KindPeriodic, Group: "scheduler", CoordinationMode: workerruntime.CoordinationSingletonRun, Description: "Publishes scheduler snapshots and support decisions behind one activation barrier", Tags: []string{"scheduler", "support-decision", "dirty-work"}},
+		lifecycle:  workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}}
+}
+
+func (w *SchedulerSupportPublisherWorker) Descriptor() workerruntime.Descriptor {
+	if w == nil {
+		return workerruntime.Descriptor{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.descriptor
+}
+func (w *SchedulerSupportPublisherWorker) Snapshot() workerruntime.Snapshot {
+	if w == nil {
+		return workerruntime.Snapshot{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return workerruntime.Snapshot{Descriptor: w.descriptor, Lifecycle: w.lifecycle, Status: workerruntime.PeriodicStatus{StillRunning: w.lifecycle.State == workerruntime.LifecycleRunning || w.lifecycle.State == workerruntime.LifecycleStopping}}
+}
+
+func (w *SchedulerSupportPublisherWorker) Start(ctx context.Context) error {
+	if w == nil || w.dirty == nil || w.ownership == nil || w.processor == nil || w.publisher == nil {
+		return errors.New("scheduler support publisher dependencies are incomplete")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	if w.ctx != nil && w.ctx.Err() == nil {
+		w.mu.Unlock()
+		return nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	w.ctx, w.cancel, w.done = runCtx, cancel, done
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+
+	go w.run(runCtx, done)
+	return nil
+}
+
+func (w *SchedulerSupportPublisherWorker) Stop(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	cancel, done := w.cancel, w.done
+	if done == nil {
+		w.mu.Unlock()
+		return nil
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	cancel()
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *SchedulerSupportPublisherWorker) run(ctx context.Context, done chan struct{}) {
+	defer func() {
+		w.mu.Lock()
+		if w.done == done {
+			w.ctx = nil
+			w.cancel = nil
+			w.done = nil
+			w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+		}
+		w.mu.Unlock()
+		close(done)
+	}()
+	for ctx.Err() == nil {
+		owner, acquired, err := w.ownership.TryAcquire(ctx)
+		if err != nil && ctx.Err() == nil {
+			logger.LegacyPrintf("service.scheduler_support_publisher", "[Scheduler] ownership acquisition failed: %v", err)
+		}
+		if acquired && owner != nil {
+			w.runOwnershipTerm(ctx, owner)
+			// Ownership Context is canceled by lease loss as well as Close. Closing the
+			// session-backed owner is still mandatory and occurs exactly once per term.
+			if err := owner.Close(); err != nil && ctx.Err() == nil {
+				logger.LegacyPrintf("service.scheduler_support_publisher", "[Scheduler] ownership release failed: %v", err)
+			}
+		}
+		if !w.wait(ctx, w.pollInterval) {
+			return
+		}
+	}
+}
+
+func (w *SchedulerSupportPublisherWorker) runOwnershipTerm(parent context.Context, owner SchedulerOwnership) {
+	ctx, cancel := context.WithCancel(owner.Context())
+	stop := context.AfterFunc(parent, cancel)
+	defer func() { stop(); cancel() }()
+	for ctx.Err() == nil {
+		if err := w.processAvailable(ctx, owner); err != nil && ctx.Err() == nil {
+			logger.LegacyPrintf("service.scheduler_support_publisher", "[Scheduler] support batch failed: %v", err)
+		}
+		if !w.wait(ctx, w.pollInterval) {
+			return
+		}
+	}
+}
+
+func (w *SchedulerSupportPublisherWorker) wait(ctx context.Context, d time.Duration) bool {
+	t := w.clock.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.Chan():
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (w *SchedulerSupportPublisherWorker) processAvailable(ctx context.Context, owner SchedulerOwnership) error {
+	_, err := w.processAvailableBatch(ctx, owner)
+	return err
+}
+
+func (w *SchedulerSupportPublisherWorker) processAvailableBatch(ctx context.Context, owner SchedulerOwnership) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	for range dirtyWorkBatchSize {
+		n, err := w.dirty.Promote(ctx, owner, dirtyWorkBatchSize)
+		if err != nil {
+			return false, fmt.Errorf("promote scheduler dirty sources: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	work, err := w.dirty.List(ctx, dirtyWorkBatchSize)
+	if err != nil {
+		return false, fmt.Errorf("list scheduler dirty work: %w", err)
+	}
+	if len(work) == 0 {
+		return false, nil
+	}
+	coalesced, err := w.coalesce(ctx, work)
+	if err != nil {
+		return true, err
+	}
+	if err := ctx.Err(); err != nil {
+		return true, err
+	}
+	results := w.processor.ApplyDirtyWorkBatch(ctx, coalesced)
+	if err := ctx.Err(); err != nil {
+		return true, err
+	}
+	if len(results) != len(coalesced) {
+		return true, w.failBatch(ctx, owner, coalesced, errors.New("snapshot processor returned invalid result count"))
+	}
+	for i, item := range coalesced {
+		result := results[i]
+		if result.Work.Kind != item.Kind || result.Work.EntityID != item.EntityID || result.Work.Generation != item.Generation {
+			return true, w.failBatch(ctx, owner, coalesced, errors.New("snapshot processor changed dirty work identity"))
+		}
+	}
+	generation, publishErr := w.publisher.Publish(ctx)
+	if publishErr != nil || generation == 0 {
+		if publishErr == nil {
+			publishErr = ErrSupportDecisionNotPublished
+		}
+		if failureErr := w.failBatch(ctx, owner, coalesced, publishErr); failureErr != nil && !errors.Is(failureErr, publishErr) {
+			return true, errors.Join(publishErr, failureErr)
+		}
+		return true, publishErr
+	}
+	for i, item := range coalesced {
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
+		result := results[i]
+		if result.Err != nil {
+			if _, err := w.dirty.RecordFailure(ctx, owner, item, result.Err); err != nil {
+				return true, err
+			}
+			continue
+		}
+		if _, err := w.dirty.Acknowledge(ctx, owner, item); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
+func (w *SchedulerSupportPublisherWorker) failBatch(ctx context.Context, owner SchedulerOwnership, work []SchedulerDirtyWork, failure error) error {
+	for _, item := range work {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := w.dirty.RecordFailure(ctx, owner, item, failure); err != nil {
+			return err
+		}
+	}
+	return failure
+}
+
+func (w *SchedulerSupportPublisherWorker) coalesce(ctx context.Context, initial []SchedulerDirtyWork) ([]SchedulerDirtyWork, error) {
+	first := w.clock.Now()
+	deadline := first.Add(schedulerSupportPublisherCoalesceCap)
+	items := dedupeSchedulerDirtyWork(initial)
+	for {
+		remaining := deadline.Sub(w.clock.Now())
+		if remaining <= 0 {
+			return items, nil
+		}
+		wait := schedulerSupportPublisherDebounce
+		if remaining < wait {
+			wait = remaining
+		}
+		if !w.wait(ctx, wait) {
+			return nil, ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		more, err := w.dirty.List(ctx, dirtyWorkBatchSize)
+		if err != nil {
+			return nil, err
+		}
+		items = mergeSchedulerDirtyWork(items, more)
+		// A short batch proves the currently visible canonical set is drained. Full
+		// batches may hide more rows, so keep coalescing until the hard cap.
+		if len(more) < dirtyWorkBatchSize {
+			return items, nil
+		}
+	}
+}
+
+type schedulerDirtyWorkKey struct {
+	kind     int16
+	entityID int64
+}
+
+func dedupeSchedulerDirtyWork(work []SchedulerDirtyWork) []SchedulerDirtyWork {
+	return mergeSchedulerDirtyWork(nil, work)
+}
+
+// SupportDecisionReplicaWorker adapts the per-process replica to workerruntime.
+type SupportDecisionReplicaWorker struct {
+	replica    *SupportDecisionReplica
+	descriptor workerruntime.Descriptor
+	mu         sync.Mutex
+	lifecycle  workerruntime.LifecycleSnapshot
+}
+
+func NewSupportDecisionReplicaWorker(replica *SupportDecisionReplica) *SupportDecisionReplicaWorker {
+	return &SupportDecisionReplicaWorker{
+		replica: replica,
+		descriptor: workerruntime.Descriptor{
+			Name:             "scheduler-support-replica",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "scheduler",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Maintains the process-local verified scheduler support table",
+			Tags:             []string{"scheduler", "support-decision", "replica"},
+		},
+		lifecycle: workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()},
+	}
+}
+
+func (w *SupportDecisionReplicaWorker) Descriptor() workerruntime.Descriptor {
+	if w == nil {
+		return workerruntime.Descriptor{}
+	}
+	return w.descriptor
+}
+
+func (w *SupportDecisionReplicaWorker) Snapshot() workerruntime.Snapshot {
+	if w == nil {
+		return workerruntime.Snapshot{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return workerruntime.Snapshot{Descriptor: w.descriptor, Lifecycle: w.lifecycle, Status: workerruntime.PeriodicStatus{StillRunning: w.lifecycle.State == workerruntime.LifecycleRunning || w.lifecycle.State == workerruntime.LifecycleStopping}}
+}
+
+func (w *SupportDecisionReplicaWorker) Start(ctx context.Context) error {
+	if w == nil || w.replica == nil {
+		return errors.New("support decision replica is required")
+	}
+	w.mu.Lock()
+	if w.lifecycle.State == workerruntime.LifecycleRunning {
+		w.mu.Unlock()
+		return nil
+	}
+	if w.lifecycle.State == workerruntime.LifecycleStarting || w.lifecycle.State == workerruntime.LifecycleStopping {
+		w.mu.Unlock()
+		return errors.New("support decision replica lifecycle transition in progress")
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	if err := w.replica.Start(ctx); err != nil {
+		w.mu.Lock()
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleFailed, UpdatedAt: time.Now(), LastError: err.Error()}
+		w.mu.Unlock()
+		return err
+	}
+	w.mu.Lock()
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *SupportDecisionReplicaWorker) Stop(ctx context.Context) error {
+	if w == nil || w.replica == nil {
+		return nil
+	}
+	w.mu.Lock()
+	if w.lifecycle.State == workerruntime.LifecycleStopped {
+		w.mu.Unlock()
+		return nil
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+	w.mu.Unlock()
+	// Replica.Stop is itself idempotent and waits for its single native lifecycle.
+	done := make(chan struct{})
+	go func() { w.replica.Stop(); close(done) }()
+	select {
+	case <-done:
+		w.mu.Lock()
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+		w.mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func mergeSchedulerDirtyWork(base, more []SchedulerDirtyWork) []SchedulerDirtyWork {
+	out := append([]SchedulerDirtyWork(nil), base...)
+	index := make(map[schedulerDirtyWorkKey]int, len(out))
+	for i, item := range out {
+		index[schedulerDirtyWorkKey{item.Kind, item.EntityID}] = i
+	}
+	for _, item := range more {
+		key := schedulerDirtyWorkKey{item.Kind, item.EntityID}
+		if i, ok := index[key]; ok {
+			if item.Generation >= out[i].Generation {
+				out[i] = item
+			}
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, item)
+	}
+	return out
+}

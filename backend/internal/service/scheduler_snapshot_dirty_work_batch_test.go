@@ -92,16 +92,18 @@ func TestSchedulerSnapshotDirtyWorkRefreshesAccountsInOneBatch(t *testing.T) {
 		accountRepo:   repo,
 		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
-
-	svc.consumeDirtyWork(owner, time.Hour)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), workRepo.work)
 
 	// 3 个脏账号只做一次批量 DB 读取和一次批量缓存写入。
 	require.Equal(t, 1, repo.getByIDsCalls)
 	require.Equal(t, 1, cache.setAccountsCalls)
 	require.Len(t, cache.setAccounts, 3)
-	require.Equal(t, workRepo.work, workRepo.acknowledged)
+	require.Len(t, results, len(workRepo.work))
+	for i := range results {
+		require.Equal(t, workRepo.work[i], results[i].Work)
+		require.NoError(t, results[i].Err)
+	}
+	require.Empty(t, workRepo.acknowledged)
 	require.Empty(t, workRepo.failures)
 }
 
@@ -127,17 +129,19 @@ func TestSchedulerSnapshotDirtyWorkBatchDeletesMissingAccountOnly(t *testing.T) 
 		accountRepo:   repo,
 		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
-
-	svc.consumeDirtyWork(owner, time.Hour)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), workRepo.work)
 
 	require.Equal(t, 1, repo.getByIDsCalls)
 	// 缺失账号只走 DeleteAccount，不进入批量写入。
 	require.Equal(t, []int64{3}, cache.deletedAccount)
 	require.Equal(t, 1, cache.setAccountsCalls)
 	require.Len(t, cache.setAccounts, 2)
-	require.Equal(t, workRepo.work, workRepo.acknowledged)
+	require.Len(t, results, len(workRepo.work))
+	for i := range results {
+		require.Equal(t, workRepo.work[i], results[i].Work)
+		require.NoError(t, results[i].Err)
+	}
+	require.Empty(t, workRepo.acknowledged)
 	require.Empty(t, workRepo.failures)
 }
 
@@ -162,13 +166,15 @@ func TestSchedulerSnapshotDirtyWorkBatchFailureRecordsAllWithoutAck(t *testing.T
 		accountRepo:   repo,
 		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
-
-	svc.consumeDirtyWork(owner, time.Hour)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), workRepo.work)
 
 	require.Equal(t, 1, repo.getByIDsCalls)
-	require.Equal(t, workRepo.work, workRepo.failures)
+	require.Len(t, results, len(workRepo.work))
+	for i := range results {
+		require.Equal(t, workRepo.work[i], results[i].Work)
+		require.Error(t, results[i].Err)
+	}
+	require.Empty(t, workRepo.failures)
 	require.Empty(t, workRepo.acknowledged)
 }
 
@@ -188,13 +194,13 @@ func TestSchedulerSnapshotDirtyWorkBatchReadFailureIsolatesPerAccount(t *testing
 		accountRepo:   repo,
 		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), workRepo.work)
 
-	svc.consumeDirtyWork(owner, time.Hour)
-
-	// 批量读取失败：两个账号项各记一次失败、都不确认，下一轮重试。
-	require.Len(t, workRepo.failures, 2)
+	// 批量读取失败逐项映射错误，但 processor 不拥有 repository failure/ack。
+	require.Len(t, results, 2)
+	require.Error(t, results[0].Err)
+	require.Error(t, results[1].Err)
+	require.Empty(t, workRepo.failures)
 	require.Empty(t, workRepo.acknowledged)
 }
 
@@ -220,14 +226,14 @@ func TestSchedulerSnapshotDirtyWorkBatchFallsBackToPerAccountWrites(t *testing.T
 		accountRepo:   repo,
 		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
-
-	svc.consumeDirtyWork(owner, time.Hour)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), workRepo.work)
 
 	require.Equal(t, 1, repo.getByIDsCalls)
 	require.Len(t, cache.setAccounts, 2)
-	require.Equal(t, workRepo.work, workRepo.acknowledged)
+	require.Len(t, results, 2)
+	require.NoError(t, results[0].Err)
+	require.NoError(t, results[1].Err)
+	require.Empty(t, workRepo.acknowledged)
 	require.Empty(t, workRepo.failures)
 }
 

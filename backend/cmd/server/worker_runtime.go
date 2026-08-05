@@ -22,6 +22,8 @@ func provideWorkerRuntime(
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
+	supportPublisher *service.SchedulerSupportPublisherWorker,
+	supportReplica *service.SupportDecisionReplicaWorker,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -68,6 +70,12 @@ func provideWorkerRuntime(
 		outboxCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
+	}
+	if supportPublisher != nil {
+		components = append(components, supportPublisher)
+	}
+	if supportReplica != nil {
+		components = append(components, supportReplica)
 	}
 	if pricingRemoteSyncWorker != nil {
 		components = append(components, pricingRemoteSyncWorker)

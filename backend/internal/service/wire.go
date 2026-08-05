@@ -240,6 +240,17 @@ func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, 
 	return NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
 }
 
+const supportDecisionReplicaMaxStale = 30 * time.Second
+
+func ProvideSupportDecisionAtomicReader() *SupportDecisionAtomicReader {
+	return NewSupportDecisionAtomicReader(supportDecisionReplicaMaxStale)
+}
+
+// ProvideSchedulerSnapshotDirtyProcessor exposes snapshot effects without dirty ownership.
+func ProvideSchedulerSnapshotDirtyProcessor(svc *SchedulerSnapshotService) SchedulerSnapshotDirtyProcessor {
+	return svc
+}
+
 // ProvideSchedulerSnapshotService creates and starts SchedulerSnapshotService.
 func ProvideSchedulerSnapshotService(
 	cache SchedulerCache,
@@ -616,7 +627,12 @@ var ProviderSet = wire.NewSet(
 	ProvideUserMessageQueueService,
 	NewUsageRecordWorkerPool,
 	ProvideSchedulerSnapshotService,
+	ProvideSchedulerSnapshotDirtyProcessor,
+	ProvideSupportDecisionAtomicReader,
 	NewSupportDecisionPublisher,
+	NewSchedulerSupportPublisherWorker,
+	NewSupportDecisionReplica,
+	NewSupportDecisionReplicaWorker,
 	NewIdentityService,
 	NewCRSSyncService,
 	ProvideUpdateService,

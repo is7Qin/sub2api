@@ -143,16 +143,14 @@ func TestSchedulerSnapshotDirtyWorkPromotesUntilDrainedAndAcknowledges(t *testin
 		accountRepo:   &dirtyWorkTestAccountRepo{account: account},
 		workerCtx:     context.Background(),
 	}
-	// 预关闭 Lost 通道让单轮 poll 完整执行后立即返回，避免 workerCtx 取消
-	// 与 poll 中段检查竞态导致的不确定性。
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), repo.work)
 
-	svc.consumeDirtyWork(owner, time.Hour)
-
-	require.Equal(t, 3, repo.promoteCalls)
-	require.Equal(t, repo.work, repo.acknowledged)
+	require.Zero(t, repo.promoteCalls)
+	require.Empty(t, repo.acknowledged)
 	require.Empty(t, repo.failures)
+	require.Len(t, results, 1)
+	require.Equal(t, repo.work[0], results[0].Work)
+	require.NoError(t, results[0].Err)
 	require.Equal(t, []*Account{account}, cache.setAccounts)
 }
 
@@ -169,12 +167,11 @@ func TestSchedulerSnapshotDirtyWorkRecordsFailureWithoutAcknowledging(t *testing
 		accountRepo:   &dirtyWorkTestAccountRepo{account: account},
 		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
-	close(owner.lost)
+	results := svc.ApplyDirtyWorkBatch(context.Background(), repo.work)
 
-	svc.consumeDirtyWork(owner, time.Hour)
-
-	require.Equal(t, repo.work, repo.failures)
+	require.Len(t, results, 1)
+	require.Error(t, results[0].Err)
+	require.Empty(t, repo.failures)
 	require.Empty(t, repo.acknowledged)
 }
 
@@ -236,24 +233,14 @@ func TestSchedulerSnapshotDirtyWorkListFailuresRequestLatchedRebuild(t *testing.
 			OutboxLagRebuildFailures: 2,
 		}}},
 	}
-	owner := newDirtyWorkTestOwnership()
-
 	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
+	svc.recordDirtyListFailure(context.Background())
 	require.Zero(t, repo.fullRebuildRequests)
 
-	workerCtx, workerCancel = context.WithCancel(context.Background())
-	svc.workerCtx = workerCtx
-	svc.workerCancel = workerCancel
-	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
+	svc.recordDirtyListFailure(context.Background())
 	require.Equal(t, 1, repo.fullRebuildRequests)
 
-	workerCtx, workerCancel = context.WithCancel(context.Background())
-	svc.workerCtx = workerCtx
-	svc.workerCancel = workerCancel
-	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
+	svc.recordDirtyListFailure(context.Background())
 	require.Equal(t, 1, repo.fullRebuildRequests)
 
 	// A successful list proves recovery and rearms the next outage.

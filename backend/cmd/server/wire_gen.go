@@ -225,7 +225,16 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	tokenRefreshService := service.ProvideTokenRefreshService(accountRepository, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, compositeTokenCacheInvalidator, schedulerCache, configConfig, tempUnschedCache, privacyClientFactory, proxyRepository, oAuthRefreshAPI, openAIGatewayService)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
-	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, userMessageQueueService, concurrencyService, emailQueueService)
+	schedulerSnapshotDirtyProcessor := service.ProvideSchedulerSnapshotDirtyProcessor(schedulerSnapshotService)
+	supportDecisionGenerationRepository := repository.NewSupportDecisionGenerationRepository(db)
+	supportDecisionSource := repository.NewSupportDecisionSource(db)
+	supportDecisionPublicationStore := repository.NewSupportDecisionPublicationStore(redisClient)
+	supportDecisionPublisher := service.NewSupportDecisionPublisher(supportDecisionGenerationRepository, supportDecisionSource, supportDecisionPublicationStore, configConfig)
+	schedulerSupportPublisherWorker := service.NewSchedulerSupportPublisherWorker(schedulerDirtyWorkRepository, schedulerOwnershipRepository, schedulerSnapshotDirtyProcessor, supportDecisionPublisher, configConfig)
+	supportDecisionAtomicReader := service.ProvideSupportDecisionAtomicReader()
+	supportDecisionReplica := service.NewSupportDecisionReplica(supportDecisionPublicationStore, supportDecisionAtomicReader)
+	supportDecisionReplicaWorker := service.NewSupportDecisionReplicaWorker(supportDecisionReplica)
+	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, userMessageQueueService, concurrencyService, emailQueueService, schedulerSupportPublisherWorker, supportDecisionReplicaWorker)
 	if err != nil {
 		return nil, err
 	}

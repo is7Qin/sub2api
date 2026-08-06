@@ -41,9 +41,10 @@ const lagClass = computed(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-    <div class="mb-3 flex items-center justify-between">
-      <h3 class="text-sm font-bold text-gray-900 dark:text-white">{{ t('admin.ops.billingOutbox.title') }}</h3>
+  <!-- 外壳与顶行同族卡片（Concurrency/SwitchRate）一致：glass 底色 + rounded-3xl p-6 -->
+  <div class="flex h-full flex-col rounded-3xl bg-[var(--glass-bg-content)] p-6 border border-gray-200/70 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.15)] dark:border-white/10">
+    <div class="mb-4 flex shrink-0 items-center justify-between">
+      <h3 class="flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">{{ t('admin.ops.billingOutbox.title') }}</h3>
       <span v-if="loading" class="billing-card-loading h-4 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></span>
     </div>
 

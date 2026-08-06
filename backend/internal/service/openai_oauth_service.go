@@ -486,9 +486,33 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	return creds
 }
 
-// Stop stops the session store cleanup goroutine
-func (s *OpenAIOAuthService) Stop() {
-	s.sessionStore.Stop()
+// CleanupSessions removes expired pending sessions from the request-serving store.
+func (s *OpenAIOAuthService) CleanupSessions(ctx context.Context) error {
+	if s == nil || s.sessionStore == nil {
+		return nil
+	}
+	return s.sessionStore.CleanupExpiredSessions(ctx)
+}
+
+// hasRedisSetFailureCleanup reports whether the request-serving store has marker cleanup work.
+func (s *OpenAIOAuthService) hasRedisSetFailureCleanup() bool {
+	if s == nil || s.sessionStore == nil {
+		return false
+	}
+	_, ok := s.sessionStore.(openAIOAuthRedisSetFailureCleaner)
+	return ok
+}
+
+// CleanupRedisSetFailures removes expired process-local Redis write-failure markers.
+func (s *OpenAIOAuthService) CleanupRedisSetFailures(ctx context.Context) error {
+	if s == nil || s.sessionStore == nil {
+		return nil
+	}
+	cleaner, ok := s.sessionStore.(openAIOAuthRedisSetFailureCleaner)
+	if !ok {
+		return nil
+	}
+	return cleaner.CleanupExpiredRedisSetFailures(ctx)
 }
 
 func normalizeOpenAIOAuthPlatform(platform string) string {

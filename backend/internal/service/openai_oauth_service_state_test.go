@@ -43,7 +43,6 @@ func (s *openaiOAuthClientStateStub) RefreshTokenWithOptions(ctx context.Context
 func TestOpenAIOAuthService_ExchangeCode_StateRequired(t *testing.T) {
 	client := &openaiOAuthClientStateStub{}
 	svc := NewOpenAIOAuthService(nil, client)
-	defer svc.Stop()
 
 	svc.sessionStore.Set(context.Background(), "sid", &openAIOAuthPendingSession{OAuthSession: openai.OAuthSession{
 		State:        "expected-state",
@@ -64,7 +63,6 @@ func TestOpenAIOAuthService_ExchangeCode_StateRequired(t *testing.T) {
 func TestOpenAIOAuthService_ExchangeCode_StateMismatch(t *testing.T) {
 	client := &openaiOAuthClientStateStub{}
 	svc := NewOpenAIOAuthService(nil, client)
-	defer svc.Stop()
 
 	svc.sessionStore.Set(context.Background(), "sid", &openAIOAuthPendingSession{OAuthSession: openai.OAuthSession{
 		State:        "expected-state",
@@ -86,7 +84,6 @@ func TestOpenAIOAuthService_ExchangeCode_StateMismatch(t *testing.T) {
 func TestOpenAIOAuthService_ExchangeCode_StateMatch(t *testing.T) {
 	client := &openaiOAuthClientStateStub{}
 	svc := NewOpenAIOAuthService(nil, client)
-	defer svc.Stop()
 	pendingFingerprint, _ := NormalizeOpenAICodexFingerprint(OpenAICodexFingerprint{
 		SchemaVersion:  openAICodexFingerprintSchemaV1,
 		InstallationID: "550e8400-e29b-41d4-a716-446655440000",

@@ -17,8 +17,55 @@ const (
 	geminiOAuthSessionCleanupTimeout       = 5 * time.Second
 	antigravityOAuthSessionCleanupInterval = 5 * time.Minute
 	antigravityOAuthSessionCleanupTimeout  = 5 * time.Second
+	openAIOAuthCleanupInterval             = 5 * time.Minute
+	openAIOAuthCleanupTimeout              = 5 * time.Second
 	concurrencySlotCleanupWorkerTimeout    = 6 * time.Second
 )
+
+// NewOpenAIOAuthSessionCleanupWorker adapts pending-session cleanup to the worker runtime.
+func NewOpenAIOAuthSessionCleanupWorker(svc *OpenAIOAuthService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil || svc.sessionStore == nil {
+		return nil, fmt.Errorf("OpenAI OAuth service is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "openai-oauth-session-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Removes expired OpenAI OAuth authorization sessions",
+			Tags:             []string{"oauth", "openai", "session-cleanup"},
+		},
+		Interval:       openAIOAuthCleanupInterval,
+		Timeout:        openAIOAuthCleanupTimeout,
+		RunImmediately: false,
+		Run:            svc.CleanupSessions,
+	})
+}
+
+// NewOpenAIOAuthRedisSetFailureCleanupWorker adapts optional Redis fallback-marker cleanup.
+func NewOpenAIOAuthRedisSetFailureCleanupWorker(svc *OpenAIOAuthService) (*workerruntime.PeriodicJob, error) {
+	if svc == nil || svc.sessionStore == nil {
+		return nil, fmt.Errorf("OpenAI OAuth service is required")
+	}
+	if !svc.hasRedisSetFailureCleanup() {
+		return nil, nil
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "openai-oauth-redis-set-failure-cleanup",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Removes expired OpenAI OAuth Redis write-failure fallback markers",
+			Tags:             []string{"oauth", "openai", "redis-fallback-cleanup"},
+		},
+		Interval:       openAIOAuthCleanupInterval,
+		Timeout:        openAIOAuthCleanupTimeout,
+		RunImmediately: false,
+		Run:            svc.CleanupRedisSetFailures,
+	})
+}
 
 // NewClaudeOAuthSessionCleanupWorker adapts Claude OAuth session cleanup to the worker runtime.
 func NewClaudeOAuthSessionCleanupWorker(svc *OAuthService) (*workerruntime.PeriodicJob, error) {

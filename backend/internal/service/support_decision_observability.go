@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -172,6 +173,7 @@ const (
 )
 
 type supportDecisionReplicaMetrics struct {
+	mu                                      sync.Mutex
 	sequence                                atomic.Uint64
 	polls, wakeups, installs, verifications atomic.Uint64
 	subscriptionFailures                    atomic.Uint64
@@ -183,6 +185,23 @@ type supportDecisionReplicaMetrics struct {
 	documentBytes                           atomic.Uint64
 	decodeDurationNanos                     atomic.Int64
 	installDurationNanos                    atomic.Int64
+}
+
+func (m *supportDecisionReplicaMetrics) completed(started, completed time.Time, outcome workerruntime.Outcome, mutate func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sequence.Add(1)
+	if mutate != nil {
+		mutate()
+	}
+	m.lastCompletedUnixNano.Store(completed.UnixNano())
+	m.lastDurationNanos.Store(int64(completed.Sub(started)))
+	if outcome == workerruntime.OutcomeSuccess {
+		m.lastOutcome.Store(1)
+	} else {
+		m.lastOutcome.Store(2)
+	}
+	m.sequence.Add(1)
 }
 
 type SupportDecisionReplicaSnapshot struct {

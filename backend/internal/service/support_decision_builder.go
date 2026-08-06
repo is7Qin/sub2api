@@ -36,6 +36,10 @@ type supportDecisionTemporaryRule struct {
 	profile supportDecisionProfile
 }
 
+// Test-only seam used to prove shadow verification is independent of builder
+// profile production. Production leaves it nil.
+var supportDecisionBuilderProfileDefectForTest func(*supportDecisionProfile)
+
 type supportDecisionTemporaryScope struct {
 	key                 supportDecisionScopeKey
 	sourceAccountCount  int
@@ -170,9 +174,6 @@ func BuildSupportDecisionTableContext(ctx context.Context, snapshot *SupportDeci
 	if !table.prepareIndexes() {
 		return nil, fmt.Errorf("built support decision table is invalid")
 	}
-	// Retain only aggregate build profiles until publication shadow verification.
-	// Encoded documents and replica tables never carry these worker-only facts.
-	table.shadowScopes = temporary
 	payload, err := encodeSupportDecisionDocumentUnchecked(table)
 	if err != nil {
 		return nil, err
@@ -404,6 +405,7 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 		if err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
+		supportDecisionApplyBuilderProfileDefectForTest(&profile)
 		built.hot[model] = profile
 	}
 	aliases, err := supportDecisionNormalizedAliasesContext(ctx, scope)
@@ -434,6 +436,7 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 		if err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
+		supportDecisionApplyBuilderProfileDefectForTest(&profile)
 		built.exact[model] = supportDecisionTemporaryRule{target: target, profile: profile}
 	}
 	for prefix := range wildcardSet {
@@ -450,6 +453,7 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 		if err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
+		supportDecisionApplyBuilderProfileDefectForTest(&profile)
 		rule := supportDecisionTemporaryRule{target: target, profile: profile}
 		if prefix == "" {
 			built.catchAll = &rule
@@ -512,6 +516,12 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v hot decisions exceed %d bytes", scope.key, SupportDecisionHotDataLimit)
 	}
 	return built, nil
+}
+
+func supportDecisionApplyBuilderProfileDefectForTest(profile *supportDecisionProfile) {
+	if supportDecisionBuilderProfileDefectForTest != nil {
+		supportDecisionBuilderProfileDefectForTest(profile)
+	}
 }
 
 func supportDecisionDefaultOAuthCodexSupport(scope *supportDecisionBuildScope, coordinateCount int) []byte {

@@ -105,13 +105,14 @@ func (s *supportDecisionReplicaFakeStore) counts() (int, int) {
 }
 
 type supportDecisionReplicaFakeSubscription struct {
-	hints     chan uint64
-	closed    chan struct{}
-	closeOnce sync.Once
+	hints      chan uint64
+	receiveErr chan error
+	closed     chan struct{}
+	closeOnce  sync.Once
 }
 
 func newSupportDecisionReplicaFakeSubscription() *supportDecisionReplicaFakeSubscription {
-	return &supportDecisionReplicaFakeSubscription{hints: make(chan uint64, 16), closed: make(chan struct{})}
+	return &supportDecisionReplicaFakeSubscription{hints: make(chan uint64, 16), receiveErr: make(chan error, 1), closed: make(chan struct{})}
 }
 func (s *supportDecisionReplicaFakeSubscription) Receive(ctx context.Context) (uint64, error) {
 	select {
@@ -119,6 +120,8 @@ func (s *supportDecisionReplicaFakeSubscription) Receive(ctx context.Context) (u
 		return 0, ctx.Err()
 	case <-s.closed:
 		return 0, errors.New("closed")
+	case err := <-s.receiveErr:
+		return 0, err
 	case generation := <-s.hints:
 		return generation, nil
 	}
@@ -348,6 +351,70 @@ func TestSupportDecisionReplicaRecoversAfterRedisReturns(t *testing.T) {
 	h.store.setActive(1, nil)
 	h.tickAndWait(t)
 	require.Equal(t, SupportDecisionNotPureMiss, h.reader.Lookup(h.query))
+}
+
+func TestSupportDecisionReplicaEstablishedReceiveFailureRecordsAndKeepsPolling(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.addDocument(t, 2, nil)
+	h.store.setActive(1, nil)
+	h.start(t)
+	h.store.subscription.receiveErr <- errors.New("credential=secret")
+	require.Eventually(t, func() bool {
+		s := h.replica.Snapshot()
+		return s.SubscriptionFailures == 1 && s.LastOutcome == "error"
+	}, time.Second, time.Millisecond)
+
+	h.store.setActive(2, nil)
+	h.tickAndWait(t)
+	require.Equal(t, uint64(2), h.reader.generation())
+	snapshot := h.replica.Snapshot()
+	require.Equal(t, uint64(1), snapshot.SubscriptionFailures)
+	require.Equal(t, "success", string(snapshot.LastOutcome))
+}
+
+func TestSupportDecisionReplicaCancellationReceiveCloseIsNotFailure(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	require.NoError(t, h.replica.Start(context.Background()))
+	h.replica.Stop()
+	require.Zero(t, h.replica.Snapshot().SubscriptionFailures)
+}
+
+func TestSupportDecisionReplicaCompletionMetricsAreOneTransaction(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	require.NoError(t, h.replica.refresh(context.Background()))
+	first := h.replica.Snapshot()
+	require.Equal(t, uint64(1), first.Polls)
+	require.Equal(t, uint64(1), first.SuccessfulInstalls)
+
+	h.now = h.now.Add(time.Second)
+	h.store.setActive(0, errors.New("unavailable"))
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				s := h.replica.Snapshot()
+				if s.Polls == 2 {
+					require.Equal(t, uint64(1), s.ActiveGenerationFailures)
+					require.Equal(t, "error", string(s.LastOutcome))
+					require.Equal(t, h.now, s.LastCompletedAt)
+				}
+			}
+		}
+	}()
+	require.Error(t, h.replica.refresh(context.Background()))
+	close(stop)
+	wg.Wait()
 }
 
 func TestSupportDecisionReplicaStopCancelsPollAndSubscription(t *testing.T) {

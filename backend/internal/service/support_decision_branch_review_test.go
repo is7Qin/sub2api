@@ -14,7 +14,6 @@ func TestSupportDecisionShadowDetectsDefaultCorruption(t *testing.T) {
 	options := SupportDecisionBuildOptions{Generation: 21}
 	table := buildSupportDecisionTestTable(t, snapshot, options)
 	broken := cloneSupportDecisionTableForReview(t, table)
-	broken.shadowScopes = table.shadowScopes
 	profile := &supportDecisionScopeForReview(t, broken, PlatformAnthropic, 42).Default
 	for i := range profile.SupportBits {
 		profile.SupportBits[i] = 0xff
@@ -33,7 +32,6 @@ func TestSupportDecisionShadowDetectsChannelBranches(t *testing.T) {
 	options := SupportDecisionBuildOptions{Generation: 22}
 	table := buildSupportDecisionTestTable(t, snapshot, options)
 	broken := cloneSupportDecisionTableForReview(t, table)
-	broken.shadowScopes = table.shadowScopes
 	profile := &supportDecisionScopeForReview(t, broken, PlatformAnthropic, 42).ChannelAllowed
 	profile.SupportBits[0] ^= 1
 	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, broken)

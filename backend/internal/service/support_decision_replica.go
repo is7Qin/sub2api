@@ -106,12 +106,9 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	subscription, err := r.store.SubscribeWakeups(runCtx)
 	if err != nil {
 		completed := r.deps.now()
-		r.metrics.sequence.Add(1)
-		r.metrics.subscriptionFailures.Add(1)
-		r.metrics.lastCompletedUnixNano.Store(completed.UnixNano())
-		r.metrics.lastDurationNanos.Store(int64(completed.Sub(subscriptionStarted)))
-		r.metrics.lastOutcome.Store(2)
-		r.metrics.sequence.Add(1)
+		r.metrics.completed(subscriptionStarted, completed, workerruntime.OutcomeError, func() {
+			r.metrics.subscriptionFailures.Add(1)
+		})
 		cancel()
 		r.finishLifecycle(done)
 		if errors.Is(err, context.Canceled) {
@@ -243,6 +240,12 @@ func (r *SupportDecisionReplica) receiveWakeups(ctx context.Context, subscriptio
 	for {
 		generation, err := subscription.Receive(ctx)
 		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				completed := r.deps.now()
+				r.metrics.completed(completed, completed, workerruntime.OutcomeError, func() {
+					r.metrics.subscriptionFailures.Add(1)
+				})
+			}
 			return
 		}
 		select {
@@ -255,28 +258,30 @@ func (r *SupportDecisionReplica) receiveWakeups(ctx context.Context, subscriptio
 
 func (r *SupportDecisionReplica) refresh(ctx context.Context) (resultErr error) {
 	started := r.deps.now()
-	r.metrics.sequence.Add(1)
-	r.metrics.polls.Add(1)
-	r.metrics.sequence.Add(1)
+	var completedMutations []func()
 	defer func() {
 		completed := r.deps.now()
-		r.metrics.sequence.Add(1)
-		r.metrics.lastCompletedUnixNano.Store(completed.UnixNano())
-		r.metrics.lastDurationNanos.Store(int64(completed.Sub(started)))
-		if resultErr == nil {
-			r.metrics.lastOutcome.Store(1)
-		} else {
-			r.metrics.lastOutcome.Store(2)
+		outcome := workerruntime.OutcomeSuccess
+		if resultErr != nil {
+			outcome = workerruntime.OutcomeError
 		}
-		r.metrics.sequence.Add(1)
+		r.metrics.completed(started, completed, outcome, func() {
+			r.metrics.polls.Add(1)
+			for _, mutate := range completedMutations {
+				mutate()
+			}
+		})
 	}()
+	failure := func(stage SupportDecisionReplicaStage, class SupportDecisionErrorClass) {
+		completedMutations = append(completedMutations, func() { r.metrics.failures[stage][class].Add(1) })
+	}
 	if err := ctx.Err(); err != nil {
-		r.metrics.failures[SupportDecisionReplicaStageActive][supportDecisionErrorClass(err)].Add(1)
+		failure(SupportDecisionReplicaStageActive, supportDecisionErrorClass(err))
 		return err
 	}
 	generation, err := r.store.ActiveGeneration(ctx)
 	if err != nil || generation == 0 {
-		r.metrics.failures[SupportDecisionReplicaStageActive][supportDecisionErrorClass(err)].Add(1)
+		failure(SupportDecisionReplicaStageActive, supportDecisionErrorClass(err))
 		if errors.Is(err, context.Canceled) {
 			return context.Canceled
 		}
@@ -288,26 +293,26 @@ func (r *SupportDecisionReplica) refresh(ctx context.Context) (resultErr error) 
 		}
 		return errors.New("support decision replica stage=active class=operation")
 	}
-	r.metrics.activeGeneration.Store(generation)
+	completedMutations = append(completedMutations, func() { r.metrics.activeGeneration.Store(generation) })
 
 	localGeneration := r.reader.generation()
 	if generation < localGeneration {
-		r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
+		failure(SupportDecisionReplicaStageInstall, SupportDecisionErrorOperation)
 		return errors.New("support decision replica stage=install class=operation")
 	}
 	verifiedAt := r.deps.now()
 	if generation == localGeneration {
 		if !r.reader.verifyGeneration(generation, verifiedAt) {
-			r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
+			failure(SupportDecisionReplicaStageInstall, SupportDecisionErrorOperation)
 			return errors.New("support decision replica stage=install class=operation")
 		}
-		r.metrics.verifications.Add(1)
+		completedMutations = append(completedMutations, func() { r.metrics.verifications.Add(1) })
 		return nil
 	}
 
 	payload, err := r.store.GetDocument(ctx, generation)
 	if err != nil {
-		r.metrics.failures[SupportDecisionReplicaStageFetch][supportDecisionErrorClass(err)].Add(1)
+		failure(SupportDecisionReplicaStageFetch, supportDecisionErrorClass(err))
 		if errors.Is(err, context.Canceled) {
 			return context.Canceled
 		}
@@ -316,22 +321,25 @@ func (r *SupportDecisionReplica) refresh(ctx context.Context) (resultErr error) 
 		}
 		return errors.New("support decision replica stage=fetch class=operation")
 	}
-	r.metrics.documentBytes.Store(uint64(len(payload)))
+	documentBytes := uint64(len(payload))
+	completedMutations = append(completedMutations, func() { r.metrics.documentBytes.Store(documentBytes) })
 	decodeStarted := r.deps.now()
 	table, err := DecodeSupportDecisionDocument(payload, generation)
-	r.metrics.decodeDurationNanos.Store(int64(r.deps.now().Sub(decodeStarted)))
+	decodeDuration := int64(r.deps.now().Sub(decodeStarted))
+	completedMutations = append(completedMutations, func() { r.metrics.decodeDurationNanos.Store(decodeDuration) })
 	if err != nil {
-		r.metrics.failures[SupportDecisionReplicaStageDecode][supportDecisionErrorClass(err)].Add(1)
+		failure(SupportDecisionReplicaStageDecode, supportDecisionErrorClass(err))
 		return errors.New("support decision replica stage=decode class=operation")
 	}
 	installStarted := r.deps.now()
 	installed := r.reader.installNewer(table, verifiedAt)
-	r.metrics.installDurationNanos.Store(int64(r.deps.now().Sub(installStarted)))
+	installDuration := int64(r.deps.now().Sub(installStarted))
+	completedMutations = append(completedMutations, func() { r.metrics.installDurationNanos.Store(installDuration) })
 	if !installed {
-		r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
+		failure(SupportDecisionReplicaStageInstall, SupportDecisionErrorOperation)
 		return errors.New("support decision replica stage=install class=operation")
 	}
-	r.metrics.installs.Add(1)
+	completedMutations = append(completedMutations, func() { r.metrics.installs.Add(1) })
 	return nil
 }
 

@@ -23,7 +23,6 @@ func TestSupportDecisionShadowExercisesReachableOverlappingWildcardParent(t *tes
 	options := SupportDecisionBuildOptions{Generation: 1}
 	table := buildSupportDecisionTestTable(t, snapshot, options)
 	broken := cloneSupportDecisionTableForReview(t, table)
-	broken.shadowScopes = table.shadowScopes
 	scope := supportDecisionScopeForReview(t, broken, PlatformAnthropic, 42)
 	for i := range scope.Wildcard {
 		if broken.runtimeStrings[scope.Wildcard[i].PrefixID] == "parent-" {
@@ -64,7 +63,6 @@ func TestSupportDecisionShadowDetectsPublishedBranchCorruption(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			broken := cloneSupportDecisionTableForReview(t, table)
-			broken.shadowScopes = table.shadowScopes
 			tt.breakTable(broken)
 			_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, broken)
 			require.ErrorIs(t, err, ErrSupportDecisionShadowMismatch)
@@ -81,7 +79,6 @@ func TestSupportDecisionShadowDetectsChannelCaseAndRevisionAliases(t *testing.T)
 			options := SupportDecisionBuildOptions{Generation: 23}
 			table := buildSupportDecisionTestTable(t, snapshot, options)
 			broken := cloneSupportDecisionTableForReview(t, table)
-			broken.shadowScopes = table.shadowScopes
 			profile := &supportDecisionScopeForReview(t, broken, PlatformAnthropic, 42).ChannelAllowed
 			profile.EligibleBits[0] ^= 1
 			_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, broken)
@@ -102,7 +99,6 @@ func TestSupportDecisionShadowDetectsAntigravityAliasesAcrossScopesAndCoordinate
 	} {
 		t.Run(fmt.Sprintf("%+v", key), func(t *testing.T) {
 			broken := cloneSupportDecisionTableForReview(t, table)
-			broken.shadowScopes = table.shadowScopes
 			index, ok := broken.scopeIndex[key]
 			require.True(t, ok)
 			scope := &broken.runtimeScopes[index]
@@ -147,7 +143,6 @@ func TestSupportDecisionShadowDetectsNormalizedFamilyCorruption(t *testing.T) {
 			options := SupportDecisionBuildOptions{Generation: 3}
 			table := buildSupportDecisionTestTable(t, tt.snapshot, options)
 			broken := cloneSupportDecisionTableForReview(t, table)
-			broken.shadowScopes = table.shadowScopes
 			scope := supportDecisionScopeForReview(t, broken, tt.platform, 42)
 			tt.corrupt(scope)
 			_, err := VerifySupportDecisionShadow(context.Background(), tt.snapshot, options, broken)
@@ -156,12 +151,75 @@ func TestSupportDecisionShadowDetectsNormalizedFamilyCorruption(t *testing.T) {
 	}
 }
 
+func TestSupportDecisionShadowUsesSuppliedSnapshot(t *testing.T) {
+	builtFrom := supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic}}, PlatformAnthropic, nil)
+	options := SupportDecisionBuildOptions{Generation: 25}
+	table := buildSupportDecisionTestTable(t, builtFrom, options)
+	changed := supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{"other": "other"}}}}, PlatformAnthropic, nil)
+
+	_, err := VerifySupportDecisionShadow(context.Background(), changed, options, table)
+	require.ErrorIs(t, err, ErrSupportDecisionShadowMismatch)
+}
+
+func TestSupportDecisionShadowIndependentFromBuilderProfileSeam(t *testing.T) {
+	snapshot := supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{"requested": "requested"}}}}, PlatformAnthropic, nil)
+	options := SupportDecisionBuildOptions{Generation: 26}
+	previous := supportDecisionBuilderProfileDefectForTest
+	supportDecisionBuilderProfileDefectForTest = func(profile *supportDecisionProfile) {
+		profile.SupportBits[0] &^= 1
+		profile.EligibleBits[0] |= 1
+	}
+	t.Cleanup(func() { supportDecisionBuilderProfileDefectForTest = previous })
+
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.ErrorIs(t, err, ErrSupportDecisionShadowMismatch)
+}
+
+func TestSupportDecisionPublisherShadowMismatchSkipsRedis(t *testing.T) {
+	snapshot := supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{"configured-hot-model": "configured-hot-model"}}}}, PlatformAnthropic, nil)
+	store := &supportDecisionPublisherStoreStub{}
+	publisher := newSupportDecisionPublisherTestSubject(
+		&supportDecisionPublisherGenerationStub{generations: []uint64{27}},
+		&supportDecisionPublisherSourceStub{snapshots: []*SupportDecisionConstructionSnapshot{snapshot}},
+		store,
+	)
+	publisher.shadow = func(context.Context, *SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions, *SupportDecisionTable) (uint64, error) {
+		return 1, ErrSupportDecisionShadowMismatch
+	}
+
+	_, err := publisher.Publish(context.Background())
+	require.ErrorIs(t, err, ErrSupportDecisionShadowMismatch)
+	require.Zero(t, store.putCalls)
+	require.Zero(t, store.activates)
+	require.Zero(t, store.wakeups)
+}
+
+func TestSupportDecisionWildcardWitnessUsesMaxLengthPrefix(t *testing.T) {
+	prefix := strings.Repeat("w", SupportDecisionMaxModelBytes)
+	stringsTable := []string{prefix}
+	scope := &supportDecisionScopeTable{Wildcard: []supportDecisionWildcard{{PrefixID: 0}}}
+
+	witness, reachable, valid := supportDecisionShadowPrefixWitness(stringsTable, scope, 0)
+	require.True(t, valid)
+	require.True(t, reachable)
+	require.Equal(t, prefix, witness)
+}
+
+func TestSupportDecisionChannelWildcardWitnessUsesMaxLengthPrefix(t *testing.T) {
+	prefix := strings.Repeat("c", SupportDecisionMaxModelBytes)
+	scope := &supportDecisionScopeTable{ChannelWildcard: []uint32{0}}
+	witnesses, valid := supportDecisionShadowModels([]string{prefix}, scope)
+	require.True(t, valid)
+	require.Contains(t, witnesses, supportDecisionShadowWitness{model: prefix, branch: supportDecisionShadowChannel})
+}
+
 func TestSupportDecisionShadowLegacyOracleWorkIsAggregated(t *testing.T) {
 	mapping := make(map[string]any, 64)
 	for i := 0; i < 64; i++ {
 		mapping[fmt.Sprintf("model-%03d", i)] = "target"
 	}
-	accounts := make([]Account, 1000)
+	accounts := make([]Account, 100)
 	for i := range accounts {
 		accounts[i] = Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"model_mapping": mapping}}
 	}
@@ -182,7 +240,7 @@ func TestSupportDecisionWildcardComplementWitnessIsDeterministicAndExhaustive(t 
 	first, reachable, valid := supportDecisionShadowPrefixWitness(stringsTable, scope, 0)
 	require.True(t, valid)
 	require.True(t, reachable)
-	require.Equal(t, "p\x02", first)
+	require.Equal(t, "p", first)
 	for range 20 {
 		got, ok, valid := supportDecisionShadowPrefixWitness(stringsTable, scope, 0)
 		require.True(t, valid)
@@ -331,31 +389,24 @@ func supportDecisionScopeForReview(t *testing.T, table *SupportDecisionTable, pl
 
 func BenchmarkSupportDecisionShadowRepresentative(b *testing.B) {
 	const modelCount = 4096
-	snapshot := supportDecisionTestSnapshot([]Account{{Platform: PlatformOpenAI, Type: AccountTypeOAuth}}, PlatformOpenAI, nil)
+	snapshot := supportDecisionTestSnapshot([]Account{{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{"openai_passthrough": true}}}, PlatformOpenAI, nil)
 	options := SupportDecisionBuildOptions{Generation: 5, OpenAIWS: config.GatewayOpenAIWSConfig{}}
 	table := buildSupportDecisionTestTable(b, snapshot, options)
 	key := supportDecisionScopeKey{Platform: PlatformOpenAI, GroupID: 42}
 	index := table.scopeIndex[key]
 	runtimeScope := &table.runtimeScopes[index]
-	var aggregate *supportDecisionTemporaryScope
-	for i := range table.shadowScopes {
-		if table.shadowScopes[i].key == key {
-			aggregate = &table.shadowScopes[i]
-			break
-		}
-	}
-	require.NotNil(b, aggregate)
 	byteCount := (supportDecisionOpenAICoordinateCount + 7) / 8
 	for i := 0; i < modelCount; i++ {
 		model := fmt.Sprintf("model-%04d", i)
-		table.runtimeStrings = append(table.runtimeStrings, model, "target")
-		modelID, targetID := uint32(len(table.runtimeStrings)-2), uint32(len(table.runtimeStrings)-1)
+		table.runtimeStrings = append(table.runtimeStrings, model)
+		modelID, targetID := uint32(len(table.runtimeStrings)-1), uint32(0)
 		profile := supportDecisionProfile{SupportBits: make([]byte, byteCount), EligibleBits: make([]byte, byteCount)}
+		for coordinate := 0; coordinate < supportDecisionOpenAICoordinateCount; coordinate++ {
+			setBit(profile.SupportBits, coordinate)
+		}
 		runtimeScope.ExactWire = append(runtimeScope.ExactWire, supportDecisionExactEntry{StringID: modelID, TargetID: targetID, Profile: profile})
 		runtimeScope.Exact[model] = supportDecisionExactValue{TargetID: targetID, Profile: profile}
-		aggregate.exact[model] = supportDecisionTemporaryRule{target: "target", profile: profile}
 	}
-	aggregate.sourceAccountCount = 30000
 	var operations uint64
 	ctx := context.WithValue(context.Background(), supportDecisionShadowOperationCounterKey{}, &operations)
 	checks, err := VerifySupportDecisionShadow(ctx, snapshot, options, table)

@@ -19,9 +19,9 @@ func supportDecisionCountShadowOperation(ctx context.Context) {
 	}
 }
 
-// VerifySupportDecisionShadow compares every finite published branch profile and
-// coordinate against aggregate facts retained by the build. Account work is paid
-// once while constructing those facts, rather than for every shadow coordinate.
+// VerifySupportDecisionShadow compares every finite published branch against an
+// independently derived legacy oracle. Source accounts are frozen and indexed
+// once per scope; no builder-produced profile is used as an expected result.
 func VerifySupportDecisionShadow(ctx context.Context, snapshot *SupportDecisionConstructionSnapshot, options SupportDecisionBuildOptions, table *SupportDecisionTable) (uint64, error) {
 	if ctx == nil {
 		return 0, context.Canceled
@@ -29,16 +29,26 @@ func VerifySupportDecisionShadow(ctx context.Context, snapshot *SupportDecisionC
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if snapshot == nil || table == nil || !table.verified || table.Generation != options.Generation || len(table.shadowScopes) != len(table.runtimeScopes) {
+	if snapshot == nil || table == nil || !table.verified || table.Generation != options.Generation {
 		return 0, ErrSupportDecisionShadowMismatch
 	}
-	aggregates := make(map[supportDecisionScopeKey]*supportDecisionTemporaryScope, len(table.shadowScopes))
-	for i := range table.shadowScopes {
-		aggregate := &table.shadowScopes[i]
-		if _, exists := aggregates[aggregate.key]; exists {
+	scopes, err := collectSupportDecisionScopesContext(ctx, snapshot, options.HotModels)
+	if err != nil {
+		return 0, err
+	}
+	oracles := make(map[supportDecisionScopeKey]*supportDecisionLegacyScopeOracle, len(scopes))
+	for i := range scopes {
+		oracle, err := newSupportDecisionLegacyScopeOracle(ctx, &scopes[i], options.OpenAIWS)
+		if err != nil {
+			return 0, err
+		}
+		if _, exists := oracles[scopes[i].key]; exists {
 			return 0, ErrSupportDecisionShadowMismatch
 		}
-		aggregates[aggregate.key] = aggregate
+		oracles[scopes[i].key] = oracle
+	}
+	if len(oracles) != len(table.runtimeScopes) {
+		return 0, ErrSupportDecisionShadowMismatch
 	}
 	var checks uint64
 	for i := range table.runtimeScopes {
@@ -46,12 +56,9 @@ func VerifySupportDecisionShadow(ctx context.Context, snapshot *SupportDecisionC
 			return checks, err
 		}
 		runtimeScope := &table.runtimeScopes[i]
-		aggregate := aggregates[runtimeScope.Key]
-		if aggregate == nil {
+		oracle := oracles[runtimeScope.Key]
+		if oracle == nil || oracle.openAI != runtimeScope.OpenAI {
 			return checks, ErrSupportDecisionShadowMismatch
-		}
-		for range aggregate.sourceAccountCount {
-			supportDecisionCountShadowOperation(ctx)
 		}
 		models, ok := supportDecisionShadowModels(table.runtimeStrings, runtimeScope)
 		if !ok {
@@ -62,9 +69,9 @@ func VerifySupportDecisionShadow(ctx context.Context, snapshot *SupportDecisionC
 			coordinateCount = supportDecisionOpenAICoordinateCount
 		}
 		for _, witness := range models {
-			profile, ok := supportDecisionShadowAggregateProfile(aggregate, witness)
-			if !ok {
-				return checks, ErrSupportDecisionShadowMismatch
+			expected, err := oracle.profile(ctx, witness.model, coordinateCount)
+			if err != nil {
+				return checks, err
 			}
 			for coordinate := 0; coordinate < coordinateCount; coordinate++ {
 				if err := ctx.Err(); err != nil {
@@ -72,7 +79,7 @@ func VerifySupportDecisionShadow(ctx context.Context, snapshot *SupportDecisionC
 				}
 				query := supportDecisionShadowQuery(runtimeScope.Key, witness.model, coordinate, runtimeScope.OpenAI)
 				checks++
-				if table.Lookup(query) != profileResult(profile, coordinate) {
+				if table.Lookup(query) != profileResult(expected, coordinate) {
 					return checks, ErrSupportDecisionShadowMismatch
 				}
 			}
@@ -196,7 +203,10 @@ func supportDecisionShadowModels(stringsTable []string, scope *supportDecisionSc
 		}
 		prefix := stringsTable[id]
 		for _, alias := range supportDecisionChannelAliases(prefix) {
-			candidate := alias + "shadow-probe"
+			candidate := alias
+			if branch, _ := supportDecisionShadowBranchForModel(stringsTable, scope, candidate); branch != supportDecisionShadowChannel && len(alias) < SupportDecisionMaxModelBytes {
+				candidate = alias + "\x00"
+			}
 			if branch, _ := supportDecisionShadowBranchForModel(stringsTable, scope, candidate); branch == supportDecisionShadowChannel {
 				add(candidate, "", supportDecisionShadowChannel)
 			}
@@ -363,7 +373,7 @@ func supportDecisionShadowPrefixWitness(stringsTable []string, scope *supportDec
 			root.insert(strings.TrimPrefix(other, prefix))
 		}
 	}
-	witness, reachable := supportDecisionShadowComplement(root, prefix, len(prefix)+1, func(model string) bool {
+	witness, reachable := supportDecisionShadowComplement(root, prefix, len(prefix), func(model string) bool {
 		return supportDecisionShadowPointBlockedWithStrings(stringsTable, scope, model)
 	})
 	if !reachable {
@@ -402,7 +412,10 @@ func supportDecisionFallbackWitness(stringsTable []string, scope *supportDecisio
 				return "", false, false
 			}
 			for _, alias := range supportDecisionChannelAliases(stringsTable[id]) {
-				candidate := alias + "shadow-probe"
+				candidate := alias
+				if branch, _ := supportDecisionShadowBranchForModel(stringsTable, scope, candidate); branch != wanted && len(alias) < SupportDecisionMaxModelBytes {
+					candidate = alias + "\x00"
+				}
 				if branch, _ := supportDecisionShadowBranchForModel(stringsTable, scope, candidate); branch == wanted {
 					return candidate, true, true
 				}

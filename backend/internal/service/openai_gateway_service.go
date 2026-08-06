@@ -8938,11 +8938,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}()
 
 	if billingErr != nil {
-		if s.billingOutboxRepo != nil {
-			// Preserve the immutable usage audit record when durable enqueue is
-			// unavailable; direct Apply failures retain their all-or-nothing path.
-			writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.openai_gateway")
-		}
+		// Billing did not settle, but the immutable usage audit must remain available
+		// for reconciliation. Zero ActualCost so it cannot be mistaken for a charge.
+		usageLog.ActualCost = 0
+		writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.openai_gateway")
 		return billingErr
 	}
 	if !usageLogPersisted {

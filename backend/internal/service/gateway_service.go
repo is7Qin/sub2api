@@ -10109,12 +10109,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}, s.billingDeps(), s.usageBillingRepo, s.billingOutboxRepo)
 
 	if billingErr != nil {
-		if s.billingOutboxRepo != nil {
-			// A failed durable enqueue has not transactionally persisted the usage
-			// audit record, so retain it independently while surfacing the delivery
-			// error. Direct Apply failures retain their existing all-or-nothing path.
-			writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.gateway")
-		}
+		// Billing did not settle, but the immutable usage audit must remain available
+		// for reconciliation. Zero ActualCost so it cannot be mistaken for a charge.
+		usageLog.ActualCost = 0
+		writeUsageLogBestEffort(ctx, s.usageRecordWorkerPool, s.usageLogRepo, usageLog, "service.gateway")
 		return billingErr
 	}
 	if !usageLogPersisted {

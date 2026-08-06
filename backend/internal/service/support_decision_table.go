@@ -538,6 +538,10 @@ type SupportDecisionAtomicReader struct {
 	state    atomic.Pointer[supportDecisionReaderState]
 	maxStale time.Duration
 	now      func() time.Time
+	lookups  atomic.Uint64
+	unknown  atomic.Uint64
+	notPure  atomic.Uint64
+	pure     atomic.Uint64
 }
 
 func NewSupportDecisionAtomicReader(maxStale time.Duration) *SupportDecisionAtomicReader {
@@ -642,8 +646,10 @@ func (r *SupportDecisionAtomicReader) Lookup(query SupportDecisionQuery) Support
 	if r == nil {
 		return SupportDecisionUnknown
 	}
+	r.lookups.Add(1)
 	state := r.state.Load()
 	if state == nil {
+		r.unknown.Add(1)
 		return SupportDecisionUnknown
 	}
 	if r.maxStale > 0 {
@@ -652,8 +658,41 @@ func (r *SupportDecisionAtomicReader) Lookup(query SupportDecisionQuery) Support
 			now = r.now
 		}
 		if now().Sub(state.verifiedAt) > r.maxStale {
+			r.unknown.Add(1)
 			return SupportDecisionUnknown
 		}
 	}
-	return state.table.Lookup(query)
+	result := state.table.Lookup(query)
+	switch result {
+	case SupportDecisionPureMiss:
+		r.pure.Add(1)
+	case SupportDecisionNotPureMiss:
+		r.notPure.Add(1)
+	default:
+		r.unknown.Add(1)
+	}
+	return result
+}
+
+func (r *SupportDecisionAtomicReader) Snapshot() SupportDecisionLookupSnapshot {
+	if r == nil {
+		return SupportDecisionLookupSnapshot{Unknown: true}
+	}
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	snapshotAt := now()
+	s := SupportDecisionLookupSnapshot{TotalLookups: r.lookups.Load(), UnknownLookups: r.unknown.Load(), NotPureMissLookups: r.notPure.Load(), PureMissLookups: r.pure.Load(), SnapshotAt: snapshotAt}
+	state := r.state.Load()
+	if state == nil {
+		s.Unknown = true
+		return s
+	}
+	s.Generation, s.LastVerifiedAt = state.table.generation, state.verifiedAt
+	s.DocumentBytes = uint64(len(state.table.wirePayload))
+	s.VerificationAge = snapshotAt.Sub(state.verifiedAt)
+	s.Stale = r.maxStale > 0 && s.VerificationAge > r.maxStale
+	s.Unknown = s.Stale
+	return s
 }

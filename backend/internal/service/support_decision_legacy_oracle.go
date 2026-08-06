@@ -1,5 +1,7 @@
 package service
 
+import "context"
+
 // legacyModelSupportMissInput contains only in-memory facts consumed by the
 // generic classifier after its request guards and persistent-scope load.
 type legacyModelSupportMissInput struct {
@@ -14,15 +16,23 @@ type legacyModelSupportMissInput struct {
 }
 
 func legacyPureModelSupportMiss(input legacyModelSupportMissInput) bool {
+	result, _ := legacyPureModelSupportMissContext(context.Background(), input)
+	return result
+}
+
+func legacyPureModelSupportMissContext(ctx context.Context, input legacyModelSupportMissInput) (bool, error) {
 	otherwiseEligible := 0
 	for i := range input.Accounts {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		account := &input.Accounts[i]
 		if !legacyAccountAllowedForPlatform(account, input.Platform, input.AllowMixedScheduling) {
 			continue
 		}
 		// Model support deliberately precedes all later eligibility predicates.
 		if input.ModelSupported(account, input.RequestedModel, input.ThinkingEnabled) {
-			return false
+			return false, nil
 		}
 		if legacyPrivacyRequirementBlocks(account, input.RequirePrivacy) {
 			continue
@@ -32,7 +42,7 @@ func legacyPureModelSupportMiss(input legacyModelSupportMissInput) bool {
 		}
 		otherwiseEligible++
 	}
-	return otherwiseEligible > 0
+	return otherwiseEligible > 0, nil
 }
 
 func legacyPrivacyRequirementBlocks(account *Account, requiresPrivacy bool) bool {
@@ -70,15 +80,23 @@ type legacyOpenAIModelSupportMissInput struct {
 }
 
 func legacyPureOpenAIModelSupportMiss(input legacyOpenAIModelSupportMissInput) bool {
+	result, _ := legacyPureOpenAIModelSupportMissContext(context.Background(), input)
+	return result
+}
+
+func legacyPureOpenAIModelSupportMissContext(ctx context.Context, input legacyOpenAIModelSupportMissInput) (bool, error) {
 	otherwiseEligible := 0
 	for i := range input.Accounts {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		account := &input.Accounts[i]
 		if !account.IsOpenAI() {
 			continue
 		}
 		// Model support deliberately precedes all later eligibility predicates.
 		if account.IsModelSupported(input.RequestedModel) {
-			return false
+			return false, nil
 		}
 		if legacyPrivacyRequirementBlocks(account, input.RequirePrivacy) {
 			continue
@@ -100,5 +118,5 @@ func legacyPureOpenAIModelSupportMiss(input legacyOpenAIModelSupportMissInput) b
 		}
 		otherwiseEligible++
 	}
-	return otherwiseEligible > 0
+	return otherwiseEligible > 0, nil
 }

@@ -25,6 +25,9 @@ type SupportDecisionPublisher struct {
 	build        func(*SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions) (*SupportDecisionTable, error)
 	buildContext func(context.Context, *SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions) (*SupportDecisionTable, error)
 	encode       func(*SupportDecisionTable) ([]byte, error)
+	shadow       func(context.Context, *SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions, *SupportDecisionTable) (uint64, error)
+	now          func() time.Time
+	metrics      supportDecisionPublisherMetrics
 }
 
 // NewSupportDecisionPublisher constructs the worker-only publisher without
@@ -49,6 +52,8 @@ func NewSupportDecisionPublisher(
 		build:        BuildSupportDecisionTable,
 		buildContext: BuildSupportDecisionTableContext,
 		encode:       EncodeSupportDecisionDocument,
+		shadow:       VerifySupportDecisionShadow,
+		now:          time.Now,
 	}
 }
 
@@ -56,7 +61,7 @@ func NewSupportDecisionPublisher(
 // generation. A nonzero generation is returned only after activation is
 // confirmed; wakeup delivery remains best effort.
 func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) {
-	if p == nil || p.generation == nil || p.source == nil || p.store == nil || (p.build == nil && p.buildContext == nil) || p.encode == nil {
+	if p == nil || p.generation == nil || p.source == nil || p.store == nil || (p.build == nil && p.buildContext == nil) || p.encode == nil || p.shadow == nil {
 		return 0, errors.New("support decision publisher dependencies are incomplete")
 	}
 	if ctx == nil {
@@ -65,67 +70,125 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	p.metrics.attempts.Add(1)
+	p.metrics.active.Store(true)
+	defer p.metrics.active.Store(false)
 
 	generation, err := p.generation.NextSupportDecisionGeneration(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("allocate support decision generation: %w", err)
+	if err != nil || generation == 0 {
+		return 0, p.fail(SupportDecisionPublisherStageGeneration, err, "allocate support decision generation")
 	}
-	if generation == 0 {
-		return 0, errors.New("allocate support decision generation: invalid zero generation")
-	}
-
 	snapshot, err := p.source.Load(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("load support decision source: %w", err)
+		return 0, p.fail(SupportDecisionPublisherStageSource, err, "load support decision source")
 	}
 	options := p.options
 	options.Generation = generation
+	now := p.now
+	if now == nil {
+		now = time.Now
+	}
+	buildStarted := now()
 	var table *SupportDecisionTable
 	if p.buildContext != nil && (p.build == nil || reflect.ValueOf(p.build).Pointer() == reflect.ValueOf(BuildSupportDecisionTable).Pointer()) {
 		table, err = p.buildContext(ctx, snapshot, options)
 	} else {
 		table, err = p.build(snapshot, options)
 	}
-	if err != nil {
-		return 0, fmt.Errorf("build support decision document: %w", err)
+	p.metrics.buildDurationNanos.Store(int64(now().Sub(buildStarted)))
+	if err != nil || table == nil || !table.verified || table.Generation != generation {
+		return 0, p.fail(SupportDecisionPublisherStageBuild, err, "build support decision document")
 	}
-	if table == nil || !table.verified || table.Generation != generation {
-		return 0, errors.New("build support decision document: invalid verified generation")
+	shadowStarted := now()
+	checks, err := p.shadow(ctx, snapshot, options, table)
+	p.metrics.shadowDurationNanos.Store(int64(now().Sub(shadowStarted)))
+	p.metrics.shadowChecks.Store(checks)
+	if err != nil {
+		return 0, p.fail(SupportDecisionPublisherStageShadow, err, "verify support decision shadow")
 	}
 	payload, err := p.encode(table)
-	if err != nil {
-		return 0, fmt.Errorf("encode support decision document: %w", err)
-	}
-	if len(payload) == 0 {
-		return 0, errors.New("encode support decision document: empty payload")
+	if err != nil || len(payload) == 0 {
+		return 0, p.fail(SupportDecisionPublisherStageEncode, err, "encode support decision document")
 	}
 	if len(payload) > SupportDecisionMaxDocumentSize {
+		p.metrics.failures[SupportDecisionPublisherStageEncode][SupportDecisionErrorOperation].Add(1)
 		return 0, fmt.Errorf("encode support decision document: payload exceeds %d bytes", SupportDecisionMaxDocumentSize)
 	}
 	if _, err := DecodeSupportDecisionDocument(payload, generation); err != nil {
-		return 0, fmt.Errorf("verify encoded support decision document: %w", err)
+		return 0, p.fail(SupportDecisionPublisherStageVerify, err, "verify encoded support decision document")
 	}
 
 	// Ownership can be lost while loading or building; fence every Redis side effect.
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return 0, p.fail(SupportDecisionPublisherStagePut, err, "put support decision document")
 	}
 	if err := p.store.PutDocument(ctx, generation, payload, p.ttl); err != nil {
-		return 0, fmt.Errorf("put support decision document: %w", err)
+		return 0, p.fail(SupportDecisionPublisherStagePut, err, "put support decision document")
 	}
 	// Leave a successfully written TTL document in place if this ownership term ended.
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return 0, p.fail(SupportDecisionPublisherStageActivate, err, "activate support decision document")
 	}
 	activated, err := p.store.Activate(ctx, generation)
 	if err != nil {
-		return 0, fmt.Errorf("activate support decision document: %w", err)
+		return 0, p.fail(SupportDecisionPublisherStageActivate, err, "activate support decision document")
 	}
 	if !activated {
-		return 0, fmt.Errorf("activate support decision generation %d: %w", generation, ErrSupportDecisionNotPublished)
+		p.metrics.failures[SupportDecisionPublisherStageActivate][SupportDecisionErrorOperation].Add(1)
+		return 0, fmt.Errorf("activate support decision document: %w", ErrSupportDecisionNotPublished)
 	}
 
+	var exact, wildcard, hot uint64
+	for i := range table.Scopes {
+		exact += uint64(len(table.Scopes[i].ExactWire))
+		wildcard += uint64(len(table.Scopes[i].Wildcard))
+		hot += uint64(len(table.Scopes[i].Hot))
+	}
+	p.metrics.documentBytes.Store(uint64(len(payload)))
+	p.metrics.scopeCount.Store(uint64(len(table.Scopes)))
+	p.metrics.exactCount.Store(exact)
+	p.metrics.wildcardCount.Store(wildcard)
+	p.metrics.hotCount.Store(hot)
+	p.metrics.lastGeneration.Store(generation)
+	p.metrics.lastSuccessUnixNano.Store(now().UnixNano())
+	p.metrics.successes.Add(1)
 	// Pub/Sub only accelerates replica polling and cannot change confirmed success.
 	_ = p.store.PublishWakeup(ctx, generation)
 	return generation, nil
+}
+
+func (p *SupportDecisionPublisher) fail(stage SupportDecisionPublisherStage, err error, operation string) error {
+	class := supportDecisionErrorClass(err)
+	if stage == SupportDecisionPublisherStageShadow && err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		class = SupportDecisionErrorMismatch
+	}
+	p.metrics.failures[stage][class].Add(1)
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	if class == SupportDecisionErrorMismatch {
+		return fmt.Errorf("%s: stage=shadow class=mismatch: %w", operation, ErrSupportDecisionShadowMismatch)
+	}
+	return fmt.Errorf("%s: stage=%s class=%s", operation, stage, class)
+}
+
+func supportDecisionErrorClass(err error) SupportDecisionErrorClass {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return SupportDecisionErrorCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return SupportDecisionErrorDeadline
+	default:
+		return SupportDecisionErrorOperation
+	}
+}
+
+func (p *SupportDecisionPublisher) Snapshot() SupportDecisionPublisherSnapshot {
+	if p == nil {
+		return SupportDecisionPublisherSnapshot{}
+	}
+	return p.metrics.snapshot()
 }

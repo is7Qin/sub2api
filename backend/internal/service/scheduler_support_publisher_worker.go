@@ -123,8 +123,24 @@ func (w *SchedulerSupportPublisherWorker) Snapshot() workerruntime.Snapshot {
 		return workerruntime.Snapshot{}
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	return workerruntime.Snapshot{Descriptor: w.descriptor, Lifecycle: w.lifecycle, Status: workerruntime.PeriodicStatus{StillRunning: w.lifecycle.State == workerruntime.LifecycleRunning || w.lifecycle.State == workerruntime.LifecycleStopping}}
+	descriptor, lifecycle := w.descriptor, w.lifecycle
+	w.mu.Unlock()
+	status := workerruntime.PeriodicStatus{StillRunning: lifecycle.State == workerruntime.LifecycleRunning || lifecycle.State == workerruntime.LifecycleStopping}
+	if publisher, ok := w.publisher.(interface {
+		Snapshot() SupportDecisionPublisherSnapshot
+	}); ok {
+		published := publisher.Snapshot()
+		status.RunCount, status.SuccessCount = published.Attempts, published.SuccessfulActivations
+		status.ErrorCount = published.Attempts - published.SuccessfulActivations
+		status.LastRunAt, status.LastDuration, status.StillRunning = published.LastSuccessfulAt, published.BuildDuration, status.StillRunning || published.Active
+		if published.SuccessfulActivations > 0 {
+			status.LastOutcome = workerruntime.OutcomeSuccess
+		}
+		if status.ErrorCount > 0 {
+			status.LastOutcome = workerruntime.OutcomeError
+		}
+	}
+	return workerruntime.Snapshot{Descriptor: descriptor, Lifecycle: lifecycle, Status: status}
 }
 
 func (w *SchedulerSupportPublisherWorker) Start(ctx context.Context) error {
@@ -533,8 +549,28 @@ func (w *SupportDecisionReplicaWorker) Snapshot() workerruntime.Snapshot {
 		return workerruntime.Snapshot{}
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	return workerruntime.Snapshot{Descriptor: w.descriptor, Lifecycle: w.lifecycle, Status: workerruntime.PeriodicStatus{StillRunning: w.lifecycle.State == workerruntime.LifecycleRunning || w.lifecycle.State == workerruntime.LifecycleStopping}}
+	descriptor, lifecycle := w.descriptor, w.lifecycle
+	w.mu.Unlock()
+	status := workerruntime.PeriodicStatus{StillRunning: lifecycle.State == workerruntime.LifecycleRunning || lifecycle.State == workerruntime.LifecycleStopping}
+	if w.replica != nil {
+		replica := w.replica.Snapshot()
+		status.RunCount = replica.Polls
+		status.SuccessCount = replica.SuccessfulInstalls + replica.VerificationRefreshes
+		for _, classes := range replica.Failures {
+			for _, count := range classes {
+				status.ErrorCount += count
+			}
+		}
+		status.LastRunAt = replica.LastVerifiedAt
+		status.LastDuration = replica.DecodeDuration + replica.InstallDuration
+		if status.SuccessCount > 0 {
+			status.LastOutcome = workerruntime.OutcomeSuccess
+		}
+		if status.ErrorCount > 0 {
+			status.LastOutcome = workerruntime.OutcomeError
+		}
+	}
+	return workerruntime.Snapshot{Descriptor: descriptor, Lifecycle: lifecycle, Status: status}
 }
 
 func (w *SupportDecisionReplicaWorker) Start(ctx context.Context) error {

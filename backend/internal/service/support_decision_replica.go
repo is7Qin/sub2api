@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -51,6 +50,7 @@ type SupportDecisionReplica struct {
 	cancel       context.CancelFunc
 	subscription SupportDecisionWakeupSubscription
 	done         chan struct{}
+	metrics      supportDecisionReplicaMetrics
 }
 
 func NewSupportDecisionReplica(store SupportDecisionPublicationStore, reader *SupportDecisionAtomicReader) *SupportDecisionReplica {
@@ -104,7 +104,13 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	if err != nil {
 		cancel()
 		r.finishLifecycle(done)
-		return fmt.Errorf("subscribe to support decision wakeups: %w", err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return errors.New("subscribe to support decision wakeups: class=operation")
 	}
 
 	r.mu.Lock()
@@ -122,7 +128,16 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 		cancel()
 		_ = subscription.Close()
 		r.finishLifecycle(done)
-		return fmt.Errorf("load active support decision generation: %w", err)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		if errors.Is(err, ErrSupportDecisionActiveGenerationNotFound) {
+			return ErrSupportDecisionActiveGenerationNotFound
+		}
+		return errors.New("load active support decision generation: class=operation")
 	}
 
 	r.mu.Lock()
@@ -167,6 +182,7 @@ func (r *SupportDecisionReplica) run(ctx context.Context, subscription SupportDe
 				wakeups = nil
 				continue
 			}
+			r.metrics.wakeups.Add(1)
 			// Hints only accelerate an authoritative active-generation poll.
 			if hint > r.reader.generation() {
 				r.refreshInBackground(ctx)
@@ -228,38 +244,87 @@ func (r *SupportDecisionReplica) receiveWakeups(ctx context.Context, subscriptio
 }
 
 func (r *SupportDecisionReplica) refresh(ctx context.Context) error {
-	generation, err := r.store.ActiveGeneration(ctx)
-	if err != nil {
+	r.metrics.polls.Add(1)
+	if err := ctx.Err(); err != nil {
+		r.metrics.failures[SupportDecisionReplicaStageActive][supportDecisionErrorClass(err)].Add(1)
 		return err
 	}
-	if generation == 0 {
-		return ErrSupportDecisionActiveGenerationNotFound
+	generation, err := r.store.ActiveGeneration(ctx)
+	if err != nil || generation == 0 {
+		r.metrics.failures[SupportDecisionReplicaStageActive][supportDecisionErrorClass(err)].Add(1)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		if errors.Is(err, ErrSupportDecisionActiveGenerationNotFound) || generation == 0 {
+			return ErrSupportDecisionActiveGenerationNotFound
+		}
+		return errors.New("support decision replica stage=active class=operation")
 	}
+	r.metrics.activeGeneration.Store(generation)
 
 	localGeneration := r.reader.generation()
 	if generation < localGeneration {
-		return fmt.Errorf("active support decision generation %d is older than local generation %d", generation, localGeneration)
+		r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
+		return errors.New("support decision replica stage=install class=operation")
 	}
 	verifiedAt := r.deps.now()
 	if generation == localGeneration {
 		if !r.reader.verifyGeneration(generation, verifiedAt) {
-			return errors.New("support decision generation changed during verification")
+			r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
+			return errors.New("support decision replica stage=install class=operation")
 		}
+		r.metrics.verifications.Add(1)
 		return nil
 	}
 
 	payload, err := r.store.GetDocument(ctx, generation)
 	if err != nil {
-		return fmt.Errorf("get support decision generation %d: %w", generation, err)
+		r.metrics.failures[SupportDecisionReplicaStageFetch][supportDecisionErrorClass(err)].Add(1)
+		return errors.New("support decision replica stage=fetch class=operation")
 	}
+	r.metrics.documentBytes.Store(uint64(len(payload)))
+	started := r.deps.now()
 	table, err := DecodeSupportDecisionDocument(payload, generation)
+	r.metrics.decodeDurationNanos.Store(int64(r.deps.now().Sub(started)))
 	if err != nil {
-		return fmt.Errorf("decode support decision generation %d: %w", generation, err)
+		r.metrics.failures[SupportDecisionReplicaStageDecode][supportDecisionErrorClass(err)].Add(1)
+		return errors.New("support decision replica stage=decode class=operation")
 	}
-	if !r.reader.installNewer(table, verifiedAt) {
-		return fmt.Errorf("support decision generation %d was superseded before installation", generation)
+	started = r.deps.now()
+	installed := r.reader.installNewer(table, verifiedAt)
+	r.metrics.installDurationNanos.Store(int64(r.deps.now().Sub(started)))
+	if !installed {
+		r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
+		return errors.New("support decision replica stage=install class=operation")
 	}
+	r.metrics.installs.Add(1)
 	return nil
+}
+
+func (r *SupportDecisionReplica) Snapshot() SupportDecisionReplicaSnapshot {
+	if r == nil {
+		return SupportDecisionReplicaSnapshot{Unknown: true}
+	}
+	reader := r.reader.Snapshot()
+	s := SupportDecisionReplicaSnapshot{
+		Polls: r.metrics.polls.Load(), Wakeups: r.metrics.wakeups.Load(), SuccessfulInstalls: r.metrics.installs.Load(),
+		VerificationRefreshes: r.metrics.verifications.Load(), ActiveGeneration: r.metrics.activeGeneration.Load(),
+		InstalledGeneration: reader.Generation, DocumentBytes: r.metrics.documentBytes.Load(), LastVerifiedAt: reader.LastVerifiedAt,
+		VerificationAge: reader.VerificationAge, Stale: reader.Stale, Unknown: reader.Unknown,
+		DecodeDuration: time.Duration(r.metrics.decodeDurationNanos.Load()), InstallDuration: time.Duration(r.metrics.installDurationNanos.Load()),
+	}
+	for stage := range s.Failures {
+		for class := range s.Failures[stage] {
+			s.Failures[stage][class] = r.metrics.failures[stage][class].Load()
+			if stage == int(SupportDecisionReplicaStageActive) {
+				s.ActiveGenerationFailures += s.Failures[stage][class]
+			}
+		}
+	}
+	return s
 }
 
 // Stop cancels and waits for either startup or running work and is idempotent.

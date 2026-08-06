@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 )
 
 // SupportDecisionErrorClass is deliberately finite so failures cannot create
@@ -69,19 +71,24 @@ func (s SupportDecisionPublisherStage) String() string {
 }
 
 type supportDecisionPublisherMetrics struct {
-	attempts, successes atomic.Uint64
-	failures            [supportDecisionPublisherStageCount][supportDecisionErrorClassCount]atomic.Uint64
-	active              atomic.Bool
-	lastGeneration      atomic.Uint64
-	lastSuccessUnixNano atomic.Int64
-	buildDurationNanos  atomic.Int64
-	documentBytes       atomic.Uint64
-	scopeCount          atomic.Uint64
-	exactCount          atomic.Uint64
-	wildcardCount       atomic.Uint64
-	hotCount            atomic.Uint64
-	shadowDurationNanos atomic.Int64
-	shadowChecks        atomic.Uint64
+	sequence               atomic.Uint64
+	attempts, successes    atomic.Uint64
+	failures               [supportDecisionPublisherStageCount][supportDecisionErrorClassCount]atomic.Uint64
+	active                 atomic.Bool
+	lastGeneration         atomic.Uint64
+	lastSuccessUnixNano    atomic.Int64
+	attemptStartedUnixNano atomic.Int64
+	lastCompletedUnixNano  atomic.Int64
+	lastDurationNanos      atomic.Int64
+	lastOutcome            atomic.Uint32
+	buildDurationNanos     atomic.Int64
+	documentBytes          atomic.Uint64
+	scopeCount             atomic.Uint64
+	exactCount             atomic.Uint64
+	wildcardCount          atomic.Uint64
+	hotCount               atomic.Uint64
+	shadowDurationNanos    atomic.Int64
+	shadowChecks           atomic.Uint64
 }
 
 type SupportDecisionPublisherSnapshot struct {
@@ -91,6 +98,9 @@ type SupportDecisionPublisherSnapshot struct {
 	Active                   bool
 	LastSuccessfulGeneration uint64
 	LastSuccessfulAt         time.Time
+	LastCompletedAt          time.Time
+	LastDuration             time.Duration
+	LastOutcome              workerruntime.Outcome
 	BuildDuration            time.Duration
 	DocumentBytes            uint64
 	ScopeCount               uint64
@@ -117,22 +127,38 @@ func (m *supportDecisionPublisherMetrics) snapshot() SupportDecisionPublisherSna
 	if m == nil {
 		return SupportDecisionPublisherSnapshot{}
 	}
-	s := SupportDecisionPublisherSnapshot{
-		Attempts: m.attempts.Load(), SuccessfulActivations: m.successes.Load(), Active: m.active.Load(),
-		LastSuccessfulGeneration: m.lastGeneration.Load(), BuildDuration: time.Duration(m.buildDurationNanos.Load()),
-		DocumentBytes: m.documentBytes.Load(), ScopeCount: m.scopeCount.Load(), ExactEntryCount: m.exactCount.Load(),
-		WildcardEntryCount: m.wildcardCount.Load(), HotEntryCount: m.hotCount.Load(),
-		ShadowDuration: time.Duration(m.shadowDurationNanos.Load()), ShadowChecks: m.shadowChecks.Load(),
-	}
-	if unixNano := m.lastSuccessUnixNano.Load(); unixNano != 0 {
-		s.LastSuccessfulAt = time.Unix(0, unixNano)
-	}
-	for stage := range s.Failures {
-		for class := range s.Failures[stage] {
-			s.Failures[stage][class] = m.failures[stage][class].Load()
+	for {
+		before := m.sequence.Load()
+		if before&1 != 0 {
+			continue
+		}
+		s := SupportDecisionPublisherSnapshot{
+			Attempts: m.attempts.Load(), SuccessfulActivations: m.successes.Load(), Active: m.active.Load(),
+			LastSuccessfulGeneration: m.lastGeneration.Load(), BuildDuration: time.Duration(m.buildDurationNanos.Load()),
+			LastDuration: time.Duration(m.lastDurationNanos.Load()), DocumentBytes: m.documentBytes.Load(), ScopeCount: m.scopeCount.Load(), ExactEntryCount: m.exactCount.Load(),
+			WildcardEntryCount: m.wildcardCount.Load(), HotEntryCount: m.hotCount.Load(), ShadowDuration: time.Duration(m.shadowDurationNanos.Load()), ShadowChecks: m.shadowChecks.Load(),
+		}
+		if unixNano := m.lastSuccessUnixNano.Load(); unixNano != 0 {
+			s.LastSuccessfulAt = time.Unix(0, unixNano)
+		}
+		if unixNano := m.lastCompletedUnixNano.Load(); unixNano != 0 {
+			s.LastCompletedAt = time.Unix(0, unixNano)
+		}
+		switch m.lastOutcome.Load() {
+		case 1:
+			s.LastOutcome = workerruntime.OutcomeSuccess
+		case 2:
+			s.LastOutcome = workerruntime.OutcomeError
+		}
+		for stage := range s.Failures {
+			for class := range s.Failures[stage] {
+				s.Failures[stage][class] = m.failures[stage][class].Load()
+			}
+		}
+		if m.sequence.Load() == before {
+			return s
 		}
 	}
-	return s
 }
 
 type SupportDecisionReplicaStage uint8
@@ -146,7 +172,12 @@ const (
 )
 
 type supportDecisionReplicaMetrics struct {
+	sequence                                atomic.Uint64
 	polls, wakeups, installs, verifications atomic.Uint64
+	subscriptionFailures                    atomic.Uint64
+	lastCompletedUnixNano                   atomic.Int64
+	lastDurationNanos                       atomic.Int64
+	lastOutcome                             atomic.Uint32
 	failures                                [supportDecisionReplicaStageCount][supportDecisionErrorClassCount]atomic.Uint64
 	activeGeneration                        atomic.Uint64
 	documentBytes                           atomic.Uint64
@@ -158,8 +189,10 @@ type SupportDecisionReplicaSnapshot struct {
 	Polls, Wakeups, SuccessfulInstalls, VerificationRefreshes uint64
 	Failures                                                  [supportDecisionReplicaStageCount][supportDecisionErrorClassCount]uint64
 	ActiveGeneration, InstalledGeneration, DocumentBytes      uint64
-	ActiveGenerationFailures                                  uint64
-	LastVerifiedAt                                            time.Time
+	ActiveGenerationFailures, SubscriptionFailures            uint64
+	LastVerifiedAt, LastCompletedAt                           time.Time
+	LastDuration                                              time.Duration
+	LastOutcome                                               workerruntime.Outcome
 	VerificationAge                                           time.Duration
 	Stale, Unknown                                            bool
 	DecodeDuration, InstallDuration                           time.Duration

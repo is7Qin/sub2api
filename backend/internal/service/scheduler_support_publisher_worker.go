@@ -131,14 +131,11 @@ func (w *SchedulerSupportPublisherWorker) Snapshot() workerruntime.Snapshot {
 	}); ok {
 		published := publisher.Snapshot()
 		status.RunCount, status.SuccessCount = published.Attempts, published.SuccessfulActivations
-		status.ErrorCount = published.Attempts - published.SuccessfulActivations
-		status.LastRunAt, status.LastDuration, status.StillRunning = published.LastSuccessfulAt, published.BuildDuration, status.StillRunning || published.Active
-		if published.SuccessfulActivations > 0 {
-			status.LastOutcome = workerruntime.OutcomeSuccess
+		if published.Attempts >= published.SuccessfulActivations {
+			status.ErrorCount = published.Attempts - published.SuccessfulActivations
 		}
-		if status.ErrorCount > 0 {
-			status.LastOutcome = workerruntime.OutcomeError
-		}
+		status.LastRunAt, status.LastDuration, status.LastOutcome = published.LastCompletedAt, published.LastDuration, published.LastOutcome
+		status.StillRunning = status.StillRunning || published.Active
 	}
 	return workerruntime.Snapshot{Descriptor: descriptor, Lifecycle: lifecycle, Status: status}
 }
@@ -561,14 +558,8 @@ func (w *SupportDecisionReplicaWorker) Snapshot() workerruntime.Snapshot {
 				status.ErrorCount += count
 			}
 		}
-		status.LastRunAt = replica.LastVerifiedAt
-		status.LastDuration = replica.DecodeDuration + replica.InstallDuration
-		if status.SuccessCount > 0 {
-			status.LastOutcome = workerruntime.OutcomeSuccess
-		}
-		if status.ErrorCount > 0 {
-			status.LastOutcome = workerruntime.OutcomeError
-		}
+		status.ErrorCount += replica.SubscriptionFailures
+		status.LastRunAt, status.LastDuration, status.LastOutcome = replica.LastCompletedAt, replica.LastDuration, replica.LastOutcome
 	}
 	return workerruntime.Snapshot{Descriptor: descriptor, Lifecycle: lifecycle, Status: status}
 }

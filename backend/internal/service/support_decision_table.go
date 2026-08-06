@@ -93,6 +93,7 @@ type SupportDecisionTable struct {
 	runtimeStrings      []string
 	runtimeScopes       []supportDecisionScopeTable
 	scopeIndex          map[supportDecisionScopeKey]int
+	shadowScopes        []supportDecisionTemporaryScope
 }
 
 func genericSupportDecisionCoordinate(requiresPrivacy, thinkingEnabled bool) int {

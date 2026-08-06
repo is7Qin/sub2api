@@ -98,6 +98,7 @@ func TestSupportDecisionShadowMatchesRepresentedRulesAndCoordinates(t *testing.T
 
 	broken := *table
 	broken.runtimeScopes = cloneSupportDecisionScopes(table.runtimeScopes)
+	broken.shadowScopes = table.shadowScopes
 	broken.runtimeScopes[0].Default.EligibleBits[0] ^= 1
 	_, err = VerifySupportDecisionShadow(context.Background(), snapshot, options, &broken)
 	require.ErrorIs(t, err, ErrSupportDecisionShadowMismatch)

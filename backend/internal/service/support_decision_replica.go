@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 )
 
 const supportDecisionReplicaPollInterval = time.Second
@@ -100,8 +102,16 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	r.done = done
 	r.mu.Unlock()
 
+	subscriptionStarted := r.deps.now()
 	subscription, err := r.store.SubscribeWakeups(runCtx)
 	if err != nil {
+		completed := r.deps.now()
+		r.metrics.sequence.Add(1)
+		r.metrics.subscriptionFailures.Add(1)
+		r.metrics.lastCompletedUnixNano.Store(completed.UnixNano())
+		r.metrics.lastDurationNanos.Store(int64(completed.Sub(subscriptionStarted)))
+		r.metrics.lastOutcome.Store(2)
+		r.metrics.sequence.Add(1)
 		cancel()
 		r.finishLifecycle(done)
 		if errors.Is(err, context.Canceled) {
@@ -243,8 +253,23 @@ func (r *SupportDecisionReplica) receiveWakeups(ctx context.Context, subscriptio
 	}
 }
 
-func (r *SupportDecisionReplica) refresh(ctx context.Context) error {
+func (r *SupportDecisionReplica) refresh(ctx context.Context) (resultErr error) {
+	started := r.deps.now()
+	r.metrics.sequence.Add(1)
 	r.metrics.polls.Add(1)
+	r.metrics.sequence.Add(1)
+	defer func() {
+		completed := r.deps.now()
+		r.metrics.sequence.Add(1)
+		r.metrics.lastCompletedUnixNano.Store(completed.UnixNano())
+		r.metrics.lastDurationNanos.Store(int64(completed.Sub(started)))
+		if resultErr == nil {
+			r.metrics.lastOutcome.Store(1)
+		} else {
+			r.metrics.lastOutcome.Store(2)
+		}
+		r.metrics.sequence.Add(1)
+	}()
 	if err := ctx.Err(); err != nil {
 		r.metrics.failures[SupportDecisionReplicaStageActive][supportDecisionErrorClass(err)].Add(1)
 		return err
@@ -283,19 +308,25 @@ func (r *SupportDecisionReplica) refresh(ctx context.Context) error {
 	payload, err := r.store.GetDocument(ctx, generation)
 	if err != nil {
 		r.metrics.failures[SupportDecisionReplicaStageFetch][supportDecisionErrorClass(err)].Add(1)
+		if errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
 		return errors.New("support decision replica stage=fetch class=operation")
 	}
 	r.metrics.documentBytes.Store(uint64(len(payload)))
-	started := r.deps.now()
+	decodeStarted := r.deps.now()
 	table, err := DecodeSupportDecisionDocument(payload, generation)
-	r.metrics.decodeDurationNanos.Store(int64(r.deps.now().Sub(started)))
+	r.metrics.decodeDurationNanos.Store(int64(r.deps.now().Sub(decodeStarted)))
 	if err != nil {
 		r.metrics.failures[SupportDecisionReplicaStageDecode][supportDecisionErrorClass(err)].Add(1)
 		return errors.New("support decision replica stage=decode class=operation")
 	}
-	started = r.deps.now()
+	installStarted := r.deps.now()
 	installed := r.reader.installNewer(table, verifiedAt)
-	r.metrics.installDurationNanos.Store(int64(r.deps.now().Sub(started)))
+	r.metrics.installDurationNanos.Store(int64(r.deps.now().Sub(installStarted)))
 	if !installed {
 		r.metrics.failures[SupportDecisionReplicaStageInstall][SupportDecisionErrorOperation].Add(1)
 		return errors.New("support decision replica stage=install class=operation")
@@ -308,23 +339,40 @@ func (r *SupportDecisionReplica) Snapshot() SupportDecisionReplicaSnapshot {
 	if r == nil {
 		return SupportDecisionReplicaSnapshot{Unknown: true}
 	}
-	reader := r.reader.Snapshot()
-	s := SupportDecisionReplicaSnapshot{
-		Polls: r.metrics.polls.Load(), Wakeups: r.metrics.wakeups.Load(), SuccessfulInstalls: r.metrics.installs.Load(),
-		VerificationRefreshes: r.metrics.verifications.Load(), ActiveGeneration: r.metrics.activeGeneration.Load(),
-		InstalledGeneration: reader.Generation, DocumentBytes: r.metrics.documentBytes.Load(), LastVerifiedAt: reader.LastVerifiedAt,
-		VerificationAge: reader.VerificationAge, Stale: reader.Stale, Unknown: reader.Unknown,
-		DecodeDuration: time.Duration(r.metrics.decodeDurationNanos.Load()), InstallDuration: time.Duration(r.metrics.installDurationNanos.Load()),
-	}
-	for stage := range s.Failures {
-		for class := range s.Failures[stage] {
-			s.Failures[stage][class] = r.metrics.failures[stage][class].Load()
-			if stage == int(SupportDecisionReplicaStageActive) {
-				s.ActiveGenerationFailures += s.Failures[stage][class]
+	for {
+		before := r.metrics.sequence.Load()
+		if before&1 != 0 {
+			continue
+		}
+		reader := r.reader.Snapshot()
+		s := SupportDecisionReplicaSnapshot{
+			Polls: r.metrics.polls.Load(), Wakeups: r.metrics.wakeups.Load(), SuccessfulInstalls: r.metrics.installs.Load(), SubscriptionFailures: r.metrics.subscriptionFailures.Load(),
+			VerificationRefreshes: r.metrics.verifications.Load(), ActiveGeneration: r.metrics.activeGeneration.Load(),
+			InstalledGeneration: reader.Generation, DocumentBytes: r.metrics.documentBytes.Load(), LastVerifiedAt: reader.LastVerifiedAt,
+			VerificationAge: reader.VerificationAge, Stale: reader.Stale, Unknown: reader.Unknown,
+			DecodeDuration: time.Duration(r.metrics.decodeDurationNanos.Load()), InstallDuration: time.Duration(r.metrics.installDurationNanos.Load()), LastDuration: time.Duration(r.metrics.lastDurationNanos.Load()),
+		}
+		if unixNano := r.metrics.lastCompletedUnixNano.Load(); unixNano != 0 {
+			s.LastCompletedAt = time.Unix(0, unixNano)
+		}
+		switch r.metrics.lastOutcome.Load() {
+		case 1:
+			s.LastOutcome = workerruntime.OutcomeSuccess
+		case 2:
+			s.LastOutcome = workerruntime.OutcomeError
+		}
+		for stage := range s.Failures {
+			for class := range s.Failures[stage] {
+				s.Failures[stage][class] = r.metrics.failures[stage][class].Load()
+				if stage == int(SupportDecisionReplicaStageActive) {
+					s.ActiveGenerationFailures += s.Failures[stage][class]
+				}
 			}
 		}
+		if r.metrics.sequence.Load() == before {
+			return s
+		}
 	}
-	return s
 }
 
 // Stop cancels and waits for either startup or running work and is idempotent.

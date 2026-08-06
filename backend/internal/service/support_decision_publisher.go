@@ -70,9 +70,21 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	now := p.now
+	if now == nil {
+		now = time.Now
+	}
+	started := now()
+	p.metrics.sequence.Add(1)
 	p.metrics.attempts.Add(1)
+	p.metrics.attemptStartedUnixNano.Store(started.UnixNano())
 	p.metrics.active.Store(true)
-	defer p.metrics.active.Store(false)
+	p.metrics.sequence.Add(1)
+	defer func() {
+		p.metrics.sequence.Add(1)
+		p.metrics.active.Store(false)
+		p.metrics.sequence.Add(1)
+	}()
 
 	generation, err := p.generation.NextSupportDecisionGeneration(ctx)
 	if err != nil || generation == 0 {
@@ -84,10 +96,6 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 	}
 	options := p.options
 	options.Generation = generation
-	now := p.now
-	if now == nil {
-		now = time.Now
-	}
 	buildStarted := now()
 	var table *SupportDecisionTable
 	if p.buildContext != nil && (p.build == nil || reflect.ValueOf(p.build).Pointer() == reflect.ValueOf(BuildSupportDecisionTable).Pointer()) {
@@ -111,7 +119,7 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 		return 0, p.fail(SupportDecisionPublisherStageEncode, err, "encode support decision document")
 	}
 	if len(payload) > SupportDecisionMaxDocumentSize {
-		p.metrics.failures[SupportDecisionPublisherStageEncode][SupportDecisionErrorOperation].Add(1)
+		_ = p.fail(SupportDecisionPublisherStageEncode, errors.New("oversized"), "encode support decision document")
 		return 0, fmt.Errorf("encode support decision document: payload exceeds %d bytes", SupportDecisionMaxDocumentSize)
 	}
 	if _, err := DecodeSupportDecisionDocument(payload, generation); err != nil {
@@ -134,8 +142,7 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 		return 0, p.fail(SupportDecisionPublisherStageActivate, err, "activate support decision document")
 	}
 	if !activated {
-		p.metrics.failures[SupportDecisionPublisherStageActivate][SupportDecisionErrorOperation].Add(1)
-		return 0, fmt.Errorf("activate support decision document: %w", ErrSupportDecisionNotPublished)
+		return 0, p.fail(SupportDecisionPublisherStageActivate, ErrSupportDecisionNotPublished, "activate support decision document")
 	}
 
 	var exact, wildcard, hot uint64
@@ -144,14 +151,20 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 		wildcard += uint64(len(table.Scopes[i].Wildcard))
 		hot += uint64(len(table.Scopes[i].Hot))
 	}
+	p.metrics.sequence.Add(1)
 	p.metrics.documentBytes.Store(uint64(len(payload)))
 	p.metrics.scopeCount.Store(uint64(len(table.Scopes)))
 	p.metrics.exactCount.Store(exact)
 	p.metrics.wildcardCount.Store(wildcard)
 	p.metrics.hotCount.Store(hot)
 	p.metrics.lastGeneration.Store(generation)
-	p.metrics.lastSuccessUnixNano.Store(now().UnixNano())
+	completed := now()
+	p.metrics.lastSuccessUnixNano.Store(completed.UnixNano())
+	p.metrics.lastCompletedUnixNano.Store(completed.UnixNano())
+	p.metrics.lastDurationNanos.Store(int64(completed.Sub(started)))
+	p.metrics.lastOutcome.Store(1)
 	p.metrics.successes.Add(1)
+	p.metrics.sequence.Add(1)
 	// Pub/Sub only accelerates replica polling and cannot change confirmed success.
 	_ = p.store.PublishWakeup(ctx, generation)
 	return generation, nil
@@ -162,7 +175,16 @@ func (p *SupportDecisionPublisher) fail(stage SupportDecisionPublisherStage, err
 	if stage == SupportDecisionPublisherStageShadow && err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		class = SupportDecisionErrorMismatch
 	}
+	p.metrics.sequence.Add(1)
 	p.metrics.failures[stage][class].Add(1)
+	completed := time.Now()
+	if p.now != nil {
+		completed = p.now()
+	}
+	p.metrics.lastCompletedUnixNano.Store(completed.UnixNano())
+	p.metrics.lastDurationNanos.Store(completed.UnixNano() - p.metrics.attemptStartedUnixNano.Load())
+	p.metrics.lastOutcome.Store(2)
+	p.metrics.sequence.Add(1)
 	if errors.Is(err, context.Canceled) {
 		return context.Canceled
 	}
@@ -171,6 +193,9 @@ func (p *SupportDecisionPublisher) fail(stage SupportDecisionPublisherStage, err
 	}
 	if class == SupportDecisionErrorMismatch {
 		return fmt.Errorf("%s: stage=shadow class=mismatch: %w", operation, ErrSupportDecisionShadowMismatch)
+	}
+	if errors.Is(err, ErrSupportDecisionNotPublished) {
+		return fmt.Errorf("%s: stage=%s class=%s: %w", operation, stage, class, ErrSupportDecisionNotPublished)
 	}
 	return fmt.Errorf("%s: stage=%s class=%s", operation, stage, class)
 }

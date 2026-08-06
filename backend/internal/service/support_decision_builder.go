@@ -38,6 +38,7 @@ type supportDecisionTemporaryRule struct {
 
 type supportDecisionTemporaryScope struct {
 	key                 supportDecisionScopeKey
+	sourceAccountCount  int
 	openAI              bool
 	hot                 map[string]supportDecisionProfile
 	exact               map[string]supportDecisionTemporaryRule
@@ -169,6 +170,9 @@ func BuildSupportDecisionTableContext(ctx context.Context, snapshot *SupportDeci
 	if !table.prepareIndexes() {
 		return nil, fmt.Errorf("built support decision table is invalid")
 	}
+	// Retain only aggregate build profiles until publication shadow verification.
+	// Encoded documents and replica tables never carry these worker-only facts.
+	table.shadowScopes = temporary
 	payload, err := encodeSupportDecisionDocumentUnchecked(table)
 	if err != nil {
 		return nil, err
@@ -382,11 +386,12 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 	}
 
 	built := supportDecisionTemporaryScope{
-		key:      scope.key,
-		openAI:   openAI,
-		hot:      make(map[string]supportDecisionProfile, len(scope.hot)),
-		exact:    make(map[string]supportDecisionTemporaryRule, len(exactSet)),
-		wildcard: make(map[string]supportDecisionTemporaryRule, len(wildcardSet)),
+		key:                scope.key,
+		sourceAccountCount: len(scope.accounts),
+		openAI:             openAI,
+		hot:                make(map[string]supportDecisionProfile, len(scope.hot)),
+		exact:              make(map[string]supportDecisionTemporaryRule, len(exactSet)),
+		wildcard:           make(map[string]supportDecisionTemporaryRule, len(wildcardSet)),
 	}
 	for _, model := range scope.hot {
 		if err := ctx.Err(); err != nil {

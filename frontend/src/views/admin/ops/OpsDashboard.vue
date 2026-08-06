@@ -40,13 +40,10 @@
         @exit-fullscreen="exitFullscreen"
       />
 
-      <!-- Row: Concurrency + Billing + SwitchRate + Throughput (span 2) = 5 columns -->
-      <div v-if="opsEnabled && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6 lg:grid-cols-5">
+      <!-- Row: Concurrency + SwitchRate + Throughput（billing 卡片独立瘦行，见下） -->
+      <div v-if="opsEnabled && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6 lg:grid-cols-4">
         <div class="lg:col-span-1 min-h-[360px]">
           <OpsConcurrencyCard :platform-filter="platform" :group-id-filter="groupId" :refresh-token="dashboardRefreshToken" />
-        </div>
-        <div class="lg:col-span-1 min-h-[360px]">
-          <OpsBillingOutboxCard :health="billingHealth" :loading="loading" />
         </div>
         <div class="lg:col-span-1 h-[360px]">
           <OpsSwitchRateTrendChart
@@ -69,6 +66,11 @@
             @open-details="handleOpenRequestDetails"
           />
         </div>
+      </div>
+
+      <!-- Row: Billing Outbox Worker 状态（独立全宽瘦行，不与图表挤列宽） -->
+      <div v-if="opsEnabled && !(loading && !hasLoadedOnce)">
+        <OpsBillingOutboxCard :health="billingHealth" :loading="loading" />
       </div>
 
       <!-- Row: Visual Analysis (baseline 3-up grid) -->

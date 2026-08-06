@@ -41,15 +41,15 @@ const lagClass = computed(() => {
 </script>
 
 <template>
-  <!-- 外壳与顶行同族卡片（Concurrency/SwitchRate）一致：glass 底色 + rounded-3xl p-6 -->
-  <div class="flex h-full flex-col rounded-3xl bg-[var(--glass-bg-content)] p-6 border border-gray-200/70 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.15)] dark:border-white/10">
-    <div class="mb-4 flex shrink-0 items-center justify-between">
+  <!-- 独立瘦行形态（不与顶行图表挤列宽）：glass 底色 + 横排；明细折叠展开占整行 -->
+  <div class="flex flex-col gap-3 rounded-2xl border border-gray-200/70 bg-[var(--glass-bg-content)] p-4 shadow-sm dark:border-white/10 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
+    <div class="flex shrink-0 items-center gap-2">
       <h3 class="flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">{{ t('admin.ops.billingOutbox.title') }}</h3>
       <span v-if="loading" class="billing-card-loading h-4 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></span>
     </div>
 
     <template v-if="!loading && health">
-      <div class="flex flex-wrap gap-2 text-xs">
+      <div class="flex flex-wrap items-center gap-2 text-xs">
         <span
           :class="health.running ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'"
           class="rounded-md px-2 py-1 font-medium"
@@ -67,29 +67,29 @@ const lagClass = computed(() => {
         </span>
       </div>
 
-      <div class="mt-3 grid grid-cols-3 gap-2 text-center">
-        <div>
-          <div class="text-lg font-bold text-gray-900 dark:text-white">{{ formatNumber(backlog) }}</div>
+      <div class="flex flex-wrap items-center gap-4 text-center">
+        <div class="metric-backlog">
+          <div class="text-lg font-bold leading-tight text-gray-900 dark:text-white">{{ formatNumber(backlog) }}</div>
           <div class="text-[10px] text-gray-500 dark:text-gray-400">{{ t('admin.ops.billingOutbox.backlog') }}</div>
         </div>
-        <div>
-          <div class="lag-value text-lg font-bold" :class="lagClass">{{ formatLag(health.oldest_lag) }}</div>
+        <div class="metric-lag">
+          <div class="lag-value text-lg font-bold leading-tight" :class="lagClass">{{ formatLag(health.oldest_lag) }}</div>
           <div class="text-[10px] text-gray-500 dark:text-gray-400">{{ t('admin.ops.billingOutbox.lag') }}</div>
         </div>
-        <div>
-          <div class="text-lg font-bold" :class="health.terminal_alert ? 'text-orange-600' : 'text-gray-900 dark:text-white'">{{ formatNumber(health.terminal) }}</div>
+        <div class="metric-terminal">
+          <div class="text-lg font-bold leading-tight" :class="health.terminal_alert ? 'text-orange-600' : 'text-gray-900 dark:text-white'">{{ formatNumber(health.terminal) }}</div>
           <div class="text-[10px] text-gray-500 dark:text-gray-400">{{ t('admin.ops.billingOutbox.terminal') }}</div>
         </div>
       </div>
 
-      <div v-if="health.terminal_alert" class="terminal-alert mt-2 rounded-md bg-orange-50 px-2 py-1 text-[11px] text-orange-600 dark:bg-orange-900/20 dark:text-orange-300">
+      <div v-if="health.terminal_alert" class="terminal-alert rounded-md bg-orange-50 px-2 py-1 text-[11px] text-orange-600 dark:bg-orange-900/20 dark:text-orange-300">
         {{ health.terminal_alert }}
       </div>
 
-      <button class="billing-details-toggle mt-3 text-[11px] font-medium text-blue-600 dark:text-blue-400" @click="showDetails = !showDetails">
+      <button class="billing-details-toggle shrink-0 text-[11px] font-medium text-blue-600 dark:text-blue-400" @click="showDetails = !showDetails">
         {{ showDetails ? t('admin.ops.billingOutbox.details.hide') : t('admin.ops.billingOutbox.details.show') }}
       </button>
-      <div v-if="showDetails" class="mt-2 space-y-1 border-t border-gray-100 pt-2 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+      <div v-if="showDetails" class="w-full space-y-1 border-t border-gray-200/70 pt-2 text-[11px] text-gray-500 dark:border-white/10 dark:text-gray-400 lg:order-last">
         <div class="text-[10px] text-gray-400">{{ t('admin.ops.billingOutbox.instanceView') }}</div>
         <div>{{ t('admin.ops.billingOutbox.details.processed') }}: {{ formatNumber(health.processed) }}</div>
         <div>{{ t('admin.ops.billingOutbox.details.failures') }}: {{ formatNumber(health.failures) }}</div>
@@ -103,7 +103,7 @@ const lagClass = computed(() => {
       </div>
     </template>
 
-    <div v-else-if="!loading" class="flex flex-1 items-center justify-center text-xs text-gray-500 dark:text-gray-400">
+    <div v-else-if="!loading" class="text-xs text-gray-500 dark:text-gray-400">
       {{ t('admin.ops.billingOutbox.error') }}
     </div>
   </div>

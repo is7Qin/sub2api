@@ -27,9 +27,9 @@ const baseHealth: OpsBillingOutboxHealth = {
 const mountCard = (health: OpsBillingOutboxHealth | null, loading = false) =>
   mount(OpsBillingOutboxCard, { props: { health, loading } })
 
-// 第三个 grid 单元 = terminal 计数列，其内的 .text-lg 即计数 div（标签为 text-[10px]）
+// .metric-terminal 容器内的 .text-lg 即 terminal 计数 div（标签为 text-[10px]）
 const terminalCount = (wrapper: ReturnType<typeof mountCard>) =>
-  wrapper.findAll('.grid-cols-3 > div')[2].find('.text-lg')
+  wrapper.find('.metric-terminal .text-lg')
 
 describe('OpsBillingOutboxCard', () => {
   it('renders running status and backlog numbers', () => {

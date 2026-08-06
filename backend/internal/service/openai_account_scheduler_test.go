@@ -452,6 +452,117 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_CompatibilityMissUsesExactLocalDecision(t *testing.T) {
+	tests := []struct {
+		name          string
+		account       Account
+		transport     OpenAIUpstreamTransport
+		image         OpenAIImagesCapability
+		decision      SupportDecisionResult
+		wantPureMiss  bool
+		wantTransport OpenAIUpstreamTransport
+		wantImage     OpenAIImagesCapability
+	}{
+		{
+			name: "websocket transport pure miss",
+			account: Account{
+				ID: 36022, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Status: StatusActive, Schedulable: true, Concurrency: 1,
+			},
+			transport:     OpenAIUpstreamTransportResponsesWebsocketV2,
+			decision:      SupportDecisionPureMiss,
+			wantPureMiss:  true,
+			wantTransport: OpenAIUpstreamTransportResponsesWebsocketV2,
+		},
+		{
+			name: "websocket transport unknown",
+			account: Account{
+				ID: 36023, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Status: StatusActive, Schedulable: true, Concurrency: 1,
+			},
+			transport:     OpenAIUpstreamTransportResponsesWebsocketV2,
+			decision:      SupportDecisionUnknown,
+			wantTransport: OpenAIUpstreamTransportResponsesWebsocketV2,
+		},
+		{
+			name: "image capability pure miss",
+			account: Account{
+				ID: 36024, Platform: PlatformOpenAI, Type: AccountTypeSetupToken,
+				Status: StatusActive, Schedulable: true, Concurrency: 1,
+			},
+			transport:     OpenAIUpstreamTransportHTTPSSE,
+			image:         OpenAIImagesCapabilityNative,
+			decision:      SupportDecisionPureMiss,
+			wantPureMiss:  true,
+			wantTransport: OpenAIUpstreamTransportHTTPSSE,
+			wantImage:     OpenAIImagesCapabilityNative,
+		},
+		{
+			name: "image capability unknown",
+			account: Account{
+				ID: 36025, Platform: PlatformOpenAI, Type: AccountTypeSetupToken,
+				Status: StatusActive, Schedulable: true, Concurrency: 1,
+			},
+			transport:     OpenAIUpstreamTransportHTTPSSE,
+			image:         OpenAIImagesCapabilityNative,
+			decision:      SupportDecisionUnknown,
+			wantTransport: OpenAIUpstreamTransportHTTPSSE,
+			wantImage:     OpenAIImagesCapabilityNative,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetOpenAIAdvancedSchedulerSettingCacheForTest()
+			reader := &recordingSupportDecisionReader{result: tt.decision}
+			repo := schedulerModelAvailabilityOpenAIAccountRepo{
+				schedulerTestOpenAIAccountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{tt.account}},
+				listModelAvailabilityCandidates: func(context.Context, *int64, []string, bool) ([]Account, error) {
+					panic("classification must not scan the repository")
+				},
+			}
+			cfg := newSchedulerTestOpenAIWSV2Config()
+			cfg.Gateway.Scheduling.LoadBatchEnabled = false
+			svc := &OpenAIGatewayService{
+				accountRepo:           repo,
+				cache:                 &schedulerTestGatewayCache{},
+				cfg:                   cfg,
+				rateLimitService:      newOpenAIAdvancedSchedulerRateLimitService("false"),
+				concurrencyService:    NewConcurrencyService(schedulerTestConcurrencyCache{}),
+				supportDecisionReader: reader,
+			}
+
+			selection, _, err := svc.SelectAccountWithSchedulerForCapabilities(
+				WithPublicModelSupportMiss404(context.Background()),
+				nil,
+				"",
+				"",
+				" gpt-legacy-coordinate-miss ",
+				nil,
+				tt.transport,
+				OpenAIEndpointCapabilityChatCompletions,
+				tt.image,
+				false,
+			)
+
+			require.Nil(t, selection)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			if tt.wantPureMiss {
+				require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			} else {
+				require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			}
+			require.Equal(t, []SupportDecisionQuery{{
+				Scope:              SupportDecisionScope{Platform: PlatformOpenAI},
+				RequestedModel:     "gpt-legacy-coordinate-miss",
+				EndpointCapability: OpenAIEndpointCapabilityChatCompletions,
+				ImageCapability:    tt.wantImage,
+				Transport:          tt.wantTransport,
+			}}, reader.queries)
+		})
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

@@ -1906,7 +1906,7 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, sessionHash, requestedModel, excludedIDs, false, 0, "")
+	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, sessionHash, requestedModel, excludedIDs, excludedIDs, false, 0, "", "", OpenAIUpstreamTransportAny)
 }
 
 // noAvailableOpenAISelectionError builds the standard "no account available" error
@@ -2375,7 +2375,7 @@ func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedMode
 	return upstreamModel
 }
 
-func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability) (*Account, error) {
+func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, selectionExcludedIDs map[int64]struct{}, requestExcludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport) (*Account, error) {
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -2385,7 +2385,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 1. 尝试粘性会话命中
 	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability); account != nil {
+	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, selectionExcludedIDs, requireCompact, stickyAccountID, requiredCapability); account != nil {
 		return account, nil
 	}
 
@@ -2398,11 +2398,11 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
-	selected, compactBlocked := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability)
+	selected, compactBlocked := s.selectBestAccount(ctx, groupID, accounts, requestedModel, selectionExcludedIDs, requireCompact, requiredCapability)
 
 	if selected == nil {
 		trustedGroup := trustedOpenAISchedulingGroupFromContext(ctx, groupID)
-		return nil, noAvailableOpenAISelectionErrorForAccounts(ctx, s, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, trustedGroup, compactBlocked)
+		return nil, noAvailableOpenAISelectionErrorForAccounts(ctx, s, groupID, accounts, requestedModel, requestExcludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport, trustedGroup, compactBlocked)
 	}
 
 	hydrated, err := s.hydrateSelectedAccount(ctx, selected)
@@ -2620,10 +2620,10 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
-	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, sessionHash, requestedModel, excludedIDs, false, "")
+	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, sessionHash, requestedModel, excludedIDs, excludedIDs, false, "", "", OpenAIUpstreamTransportAny)
 }
 
-func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability) (*AccountSelectionResult, error) {
+func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, selectionExcludedIDs map[int64]struct{}, requestExcludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport) (*AccountSelectionResult, error) {
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -2640,7 +2640,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability)
+		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, selectionExcludedIDs, requestExcludedIDs, requireCompact, stickyAccountID, requiredCapability, requiredImageCapability, requiredTransport)
 		if err != nil {
 			return nil, err
 		}
@@ -2677,7 +2677,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		// Classification may only consume request-authenticated group context; do not
 		// resolve a group from the snapshot/DB solely to choose a public error.
 		trustedGroup := trustedOpenAISchedulingGroupFromContext(ctx, groupID)
-		if isPureOpenAIModelSupportMiss(ctx, s, groupID, nil, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, trustedGroup) {
+		if isPureOpenAIModelSupportMiss(ctx, s, groupID, nil, requestedModel, requestExcludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport, trustedGroup) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		return nil, noAvailableOpenAISelectionError(requestedModel, false)
@@ -2686,10 +2686,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	// Non-empty selection still needs the broader resolver for privacy gating.
 	schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
 	isExcluded := func(accountID int64) bool {
-		if excludedIDs == nil {
+		if selectionExcludedIDs == nil {
 			return false
 		}
-		_, excluded := excludedIDs[accountID]
+		_, excluded := selectionExcludedIDs[accountID]
 		return excluded
 	}
 
@@ -2775,7 +2775,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	if len(candidates) == 0 {
-		if isPureOpenAIModelSupportMiss(ctx, s, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, schedGroup) {
+		if isPureOpenAIModelSupportMiss(ctx, s, groupID, accounts, requestedModel, requestExcludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport, schedGroup) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		return nil, noAvailableOpenAISelectionCapacityError(requestedModel)

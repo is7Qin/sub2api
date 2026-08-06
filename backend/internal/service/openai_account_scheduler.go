@@ -1365,9 +1365,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 			effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 			for {
-				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability)
+				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, excludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport)
 				if err != nil {
-					if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) {
+					if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrModelNotSupportedByAccounts) {
 						return nil, decision, noAvailableOpenAISelectionCapacityError(requestedModel)
 					}
 					return nil, decision, err
@@ -1393,9 +1393,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 
 		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 		for {
-			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability)
+			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, excludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport)
 			if err != nil {
-				if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) {
+				if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrModelNotSupportedByAccounts) {
 					return nil, decision, noAvailableOpenAISelectionCapacityError(requestedModel)
 				}
 				return nil, decision, err

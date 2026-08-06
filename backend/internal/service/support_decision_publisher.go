@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -16,13 +17,14 @@ var ErrSupportDecisionNotPublished = errors.New("support decision generation was
 // SupportDecisionPublisher performs one synchronous publication attempt. Its
 // caller owns scheduling, retries, and the lifetime of the ownership context.
 type SupportDecisionPublisher struct {
-	generation SupportDecisionGenerationRepository
-	source     SupportDecisionSource
-	store      SupportDecisionPublicationStore
-	options    SupportDecisionBuildOptions
-	ttl        time.Duration
-	build      func(*SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions) (*SupportDecisionTable, error)
-	encode     func(*SupportDecisionTable) ([]byte, error)
+	generation   SupportDecisionGenerationRepository
+	source       SupportDecisionSource
+	store        SupportDecisionPublicationStore
+	options      SupportDecisionBuildOptions
+	ttl          time.Duration
+	build        func(*SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions) (*SupportDecisionTable, error)
+	buildContext func(context.Context, *SupportDecisionConstructionSnapshot, SupportDecisionBuildOptions) (*SupportDecisionTable, error)
+	encode       func(*SupportDecisionTable) ([]byte, error)
 }
 
 // NewSupportDecisionPublisher constructs the worker-only publisher without
@@ -39,13 +41,14 @@ func NewSupportDecisionPublisher(
 		options.OpenAIWS = cfg.Gateway.OpenAIWS
 	}
 	return &SupportDecisionPublisher{
-		generation: generation,
-		source:     source,
-		store:      store,
-		options:    options,
-		ttl:        supportDecisionPublicationDocumentTTL,
-		build:      BuildSupportDecisionTable,
-		encode:     EncodeSupportDecisionDocument,
+		generation:   generation,
+		source:       source,
+		store:        store,
+		options:      options,
+		ttl:          supportDecisionPublicationDocumentTTL,
+		build:        BuildSupportDecisionTable,
+		buildContext: BuildSupportDecisionTableContext,
+		encode:       EncodeSupportDecisionDocument,
 	}
 }
 
@@ -53,7 +56,7 @@ func NewSupportDecisionPublisher(
 // generation. A nonzero generation is returned only after activation is
 // confirmed; wakeup delivery remains best effort.
 func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) {
-	if p == nil || p.generation == nil || p.source == nil || p.store == nil || p.build == nil || p.encode == nil {
+	if p == nil || p.generation == nil || p.source == nil || p.store == nil || (p.build == nil && p.buildContext == nil) || p.encode == nil {
 		return 0, errors.New("support decision publisher dependencies are incomplete")
 	}
 	if ctx == nil {
@@ -77,7 +80,12 @@ func (p *SupportDecisionPublisher) Publish(ctx context.Context) (uint64, error) 
 	}
 	options := p.options
 	options.Generation = generation
-	table, err := p.build(snapshot, options)
+	var table *SupportDecisionTable
+	if p.buildContext != nil && (p.build == nil || reflect.ValueOf(p.build).Pointer() == reflect.ValueOf(BuildSupportDecisionTable).Pointer()) {
+		table, err = p.buildContext(ctx, snapshot, options)
+	} else {
+		table, err = p.build(snapshot, options)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("build support decision document: %w", err)
 	}

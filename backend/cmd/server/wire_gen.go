@@ -230,7 +230,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	supportDecisionSource := repository.NewSupportDecisionSource(db)
 	supportDecisionPublicationStore := repository.NewSupportDecisionPublicationStore(redisClient)
 	supportDecisionPublisher := service.NewSupportDecisionPublisher(supportDecisionGenerationRepository, supportDecisionSource, supportDecisionPublicationStore, configConfig)
-	schedulerSupportPublisherWorker := service.NewSchedulerSupportPublisherWorker(schedulerDirtyWorkRepository, schedulerOwnershipRepository, schedulerSnapshotDirtyProcessor, supportDecisionPublisher, configConfig)
+	schedulerSupportPublisherWorker := service.NewSchedulerSupportPublisherWorker(schedulerDirtyWorkRepository, schedulerOwnershipRepository, schedulerSnapshotDirtyProcessor, supportDecisionPublisher, supportDecisionPublicationStore, configConfig)
 	supportDecisionAtomicReader := service.ProvideSupportDecisionAtomicReader()
 	supportDecisionReplica := service.NewSupportDecisionReplica(supportDecisionPublicationStore, supportDecisionAtomicReader)
 	supportDecisionReplicaWorker := service.NewSupportDecisionReplicaWorker(supportDecisionReplica)

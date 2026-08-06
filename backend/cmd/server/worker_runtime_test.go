@@ -160,7 +160,7 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 }
 
 func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
-	publisher := service.NewSchedulerSupportPublisherWorker(nil, nil, nil, nil, nil)
+	publisher := service.NewSchedulerSupportPublisherWorker(nil, nil, nil, nil, nil, nil)
 	replica := service.NewSupportDecisionReplicaWorker(nil)
 	// Registration is verified without startup because intentionally incomplete
 	// test dependencies fail closed when StartAll invokes either component.

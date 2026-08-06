@@ -204,6 +204,20 @@ func TestSchedulerSnapshotDirtyWorkBatchReadFailureIsolatesPerAccount(t *testing
 	require.Empty(t, workRepo.acknowledged)
 }
 
+func TestSchedulerSnapshotDirtyWorkBatchDuplicateAccountsShareOutcome(t *testing.T) {
+	cache := &dirtyWorkBatchTestCache{setAccountsErr: errors.New("cache write failed")}
+	repo := &dirtyWorkBatchTestAccountRepo{accounts: map[int64]*Account{1: {ID: 1, Name: "a"}}}
+	work := []SchedulerDirtyWork{
+		{Kind: SchedulerDirtyWorkAccount, EntityID: 1, Generation: 1},
+		{Kind: SchedulerDirtyWorkAccount, EntityID: 1, Generation: 2},
+	}
+	svc := &SchedulerSnapshotService{cache: cache, accountRepo: repo, workerCtx: context.Background()}
+	results := svc.ApplyDirtyWorkBatch(context.Background(), work)
+	require.Len(t, results, 2)
+	require.Error(t, results[0].Err)
+	require.ErrorIs(t, results[1].Err, results[0].Err)
+}
+
 func TestSchedulerSnapshotDirtyWorkBatchFallsBackToPerAccountWrites(t *testing.T) {
 	// 缓存未实现 schedulerAccountBatchWriter 时，逐账号 SetAccount 仍全部生效。
 	cache := &dirtyWorkTestCache{}

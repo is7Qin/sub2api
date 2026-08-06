@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -51,19 +53,32 @@ type supportDecisionTemporaryScope struct {
 }
 
 func BuildSupportDecisionTable(snapshot *SupportDecisionConstructionSnapshot, options SupportDecisionBuildOptions) (*SupportDecisionTable, error) {
+	return BuildSupportDecisionTableContext(context.Background(), snapshot, options)
+}
+
+func BuildSupportDecisionTableContext(ctx context.Context, snapshot *SupportDecisionConstructionSnapshot, options SupportDecisionBuildOptions) (*SupportDecisionTable, error) {
+	if ctx == nil {
+		return nil, errors.New("support decision build context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if snapshot == nil {
 		return nil, fmt.Errorf("support decision snapshot is nil")
 	}
 	if options.Generation == 0 {
 		return nil, fmt.Errorf("support decision generation must be positive")
 	}
-	scopes, err := collectSupportDecisionScopes(snapshot, options.HotModels)
+	scopes, err := collectSupportDecisionScopesContext(ctx, snapshot, options.HotModels)
 	if err != nil {
 		return nil, err
 	}
 	temporary := make([]supportDecisionTemporaryScope, 0, len(scopes))
 	internSet := make(map[string]struct{})
 	for i := range scopes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		built, err := buildSupportDecisionScope(&scopes[i], options.OpenAIWS)
 		if err != nil {
 			return nil, err
@@ -111,6 +126,9 @@ func BuildSupportDecisionTable(snapshot *SupportDecisionConstructionSnapshot, op
 		Scopes:        make([]supportDecisionScopeTable, 0, len(temporary)),
 	}
 	for i := range temporary {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		scope := materializeSupportDecisionScope(temporary[i], ordinals)
 		if err := validateSupportDecisionScopeBudgets(&scope, interned); err != nil {
 			return nil, err
@@ -146,14 +164,27 @@ func BuildSupportDecisionTable(snapshot *SupportDecisionConstructionSnapshot, op
 }
 
 func collectSupportDecisionScopes(snapshot *SupportDecisionConstructionSnapshot, configured config.SupportDecisionHotModelsConfig) ([]supportDecisionBuildScope, error) {
+	return collectSupportDecisionScopesContext(context.Background(), snapshot, configured)
+}
+
+func collectSupportDecisionScopesContext(ctx context.Context, snapshot *SupportDecisionConstructionSnapshot, configured config.SupportDecisionHotModelsConfig) ([]supportDecisionBuildScope, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	accountsByID := make(map[int64]*Account, len(snapshot.Accounts))
 	for i := range snapshot.Accounts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		account := &snapshot.Accounts[i]
 		accountsByID[account.ID] = account
 	}
 	membersByGroup := make(map[int64][]*Account)
 	grouped := make(map[int64]struct{})
 	for _, membership := range snapshot.Memberships {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		account := accountsByID[membership.AccountID]
 		if account == nil {
 			continue
@@ -163,6 +194,9 @@ func collectSupportDecisionScopes(snapshot *SupportDecisionConstructionSnapshot,
 	}
 	channelsByGroup := make(map[int64]*SupportDecisionChannel)
 	for i := range snapshot.Channels {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		channel := &snapshot.Channels[i]
 		if channel.Status != StatusActive {
 			continue
@@ -174,6 +208,9 @@ func collectSupportDecisionScopes(snapshot *SupportDecisionConstructionSnapshot,
 
 	var scopes []supportDecisionBuildScope
 	for i := range snapshot.Groups {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		group := &snapshot.Groups[i]
 		accounts := membersByGroup[group.ID]
 		scopes = append(scopes, newSupportDecisionBuildScope(

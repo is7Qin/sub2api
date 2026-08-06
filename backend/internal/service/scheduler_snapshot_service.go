@@ -543,7 +543,7 @@ type SchedulerSnapshotDirtyProcessor interface {
 func (s *SchedulerSnapshotService) ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult {
 	results := make([]SchedulerDirtyWorkResult, len(work))
 	accountWork := make([]SchedulerDirtyWork, 0, len(work))
-	accountIndexes := make([]int, 0, len(work))
+	accountIndexes := make(map[int64][]int, len(work))
 	for i, item := range work {
 		results[i].Work = item
 		if err := ctx.Err(); err != nil {
@@ -553,8 +553,10 @@ func (s *SchedulerSnapshotService) ApplyDirtyWorkBatch(ctx context.Context, work
 			break
 		}
 		if item.Kind == SchedulerDirtyWorkAccount {
-			accountWork = append(accountWork, item)
-			accountIndexes = append(accountIndexes, i)
+			if _, seen := accountIndexes[item.EntityID]; !seen {
+				accountWork = append(accountWork, item)
+			}
+			accountIndexes[item.EntityID] = append(accountIndexes[item.EntityID], i)
 			continue
 		}
 		results[i].Err = s.handleDirtyWork(ctx, item)
@@ -567,8 +569,10 @@ func (s *SchedulerSnapshotService) ApplyDirtyWorkBatch(ctx context.Context, work
 		accountIDs[i] = accountWork[i].EntityID
 	}
 	accountResults := s.refreshDirtyAccounts(ctx, accountIDs)
-	for i, resultIndex := range accountIndexes {
-		results[resultIndex].Err = accountResults[i]
+	for i, item := range accountWork {
+		for _, resultIndex := range accountIndexes[item.EntityID] {
+			results[resultIndex].Err = accountResults[i]
+		}
 	}
 	return results
 }
@@ -635,18 +639,18 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 		return results
 	}
 
-	// 去重并保留首次出现顺序；重复项与节流跳过项都直接视为成功。
+	// 去重并保留首次出现顺序；同一账号的所有输入共享实际刷新结果。
 	uniqueIDs := make([]int64, 0, len(ids))
-	indexByID := make(map[int64]int, len(ids))
+	indexesByID := make(map[int64][]int, len(ids))
 	now := time.Now()
 	for i, id := range ids {
 		if id <= 0 {
 			continue
 		}
-		if _, dup := indexByID[id]; dup {
+		indexesByID[id] = append(indexesByID[id], i)
+		if len(indexesByID[id]) > 1 {
 			continue
 		}
-		indexByID[id] = i
 		if s.dirtyRefreshThrottle != nil && !s.dirtyRefreshThrottle.Allow(id, now) {
 			continue
 		}
@@ -656,10 +660,15 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 		return results
 	}
 
+	setResult := func(id int64, err error) {
+		for _, index := range indexesByID[id] {
+			results[index] = err
+		}
+	}
 	accounts, err := s.accountRepo.GetByIDs(ctx, uniqueIDs)
 	if err != nil {
 		for _, id := range uniqueIDs {
-			results[indexByID[id]] = err
+			setResult(id, err)
 		}
 		return results
 	}
@@ -674,7 +683,7 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 		if account == nil || account.ID <= 0 {
 			continue
 		}
-		if _, ok := indexByID[account.ID]; !ok {
+		if _, ok := indexesByID[account.ID]; !ok {
 			continue
 		}
 		foundByID[account.ID] = *account
@@ -691,21 +700,20 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 	} else {
 		for _, account := range found {
 			if err := s.cache.SetAccount(ctx, &account); err != nil {
-				results[indexByID[account.ID]] = err
+				setResult(account.ID, err)
 			}
 		}
 	}
 
 	for _, id := range uniqueIDs {
-		index := indexByID[id]
 		if _, exists := foundByID[id]; !exists {
 			if err := s.cache.DeleteAccount(ctx, id); err != nil {
-				results[index] = err
+				setResult(id, err)
 			}
 			continue
 		}
 		if batchWrite {
-			results[index] = batchErr
+			setResult(id, batchErr)
 		}
 	}
 	return results

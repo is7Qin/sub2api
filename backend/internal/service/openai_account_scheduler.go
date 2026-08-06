@@ -1334,7 +1334,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
+	selectionCtx := ctx
+	if requiredCapability == OpenAIImagesCapabilityNative {
+		// Native failure is non-terminal because this API immediately retries with basic.
+		// Only the final effective capability may consume the request's classifier lookup.
+		selectionCtx = context.WithValue(ctx, publicModelSupportMiss404ContextKey{}, false)
+	}
+	selection, decision, err := s.selectAccountWithScheduler(selectionCtx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}

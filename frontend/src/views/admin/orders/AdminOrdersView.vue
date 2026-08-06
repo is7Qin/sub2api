@@ -107,7 +107,7 @@
       </div>
     </BaseDialog>
 
-    <AdminRefundDialog :show="showRefundDialog" :order="selectedOrder" :submitting="refundSubmitting" @confirm="handleRefund" @cancel="showRefundDialog = false" />
+    <AdminRefundDialog :show="showRefundDialog" :order="selectedOrder" :submitting="refundSubmitting" :require-force="refundRequireForce" :warning="refundWarning" @confirm="handleRefund" @cancel="closeRefundDialog" />
   </AppLayout>
 </template>
 
@@ -150,6 +150,8 @@ const selectedOrder = ref<PaymentOrder | null>(null)
 const showDetailDialog = ref(false)
 const showRefundDialog = ref(false)
 const refundSubmitting = ref(false)
+const refundRequireForce = ref(false)
+const refundWarning = ref('')
 const orderAuditLogs = ref<AuditLog[]>([])
 
 const localeCode = computed(() => {
@@ -243,14 +245,38 @@ async function handleRetryOrder(order: PaymentOrder) {
   catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
 }
 
-function openRefundDialog(order: PaymentOrder) { selectedOrder.value = order; showRefundDialog.value = true }
+function openRefundDialog(order: PaymentOrder) {
+  selectedOrder.value = order
+  refundRequireForce.value = false
+  refundWarning.value = ''
+  showRefundDialog.value = true
+}
+
+function closeRefundDialog() {
+  showRefundDialog.value = false
+  refundRequireForce.value = false
+  refundWarning.value = ''
+}
 
 async function handleRefund(data: { amount: number; reason: string; deduct_balance: boolean; force: boolean }) {
   if (!selectedOrder.value) return
   refundSubmitting.value = true
   try {
-    await adminPaymentAPI.refundOrder(selectedOrder.value.id, { amount: data.amount, reason: data.reason, deduct_balance: data.deduct_balance, force: data.force })
-    appStore.showSuccess(t('payment.admin.refundSuccess')); showRefundDialog.value = false; loadOrders()
+    const response = await adminPaymentAPI.refundOrder(selectedOrder.value.id, { amount: data.amount, reason: data.reason, deduct_balance: data.deduct_balance, force: data.force })
+    if (response.data.require_force) {
+      // A failed preparation may require explicit approval for a partial balance
+      // deduction; preserve the entered refund and surface that choice in-place.
+      refundRequireForce.value = true
+      refundWarning.value = response.data.warning || ''
+      return
+    }
+    if (!response.data.success) {
+      appStore.showError(response.data.warning || t('common.error'))
+      return
+    }
+    appStore.showSuccess(t('payment.admin.refundSuccess'))
+    closeRefundDialog()
+    loadOrders()
   } catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
   finally { refundSubmitting.value = false }
 }

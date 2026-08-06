@@ -21,6 +21,7 @@ func provideWorkerRuntime(
 	tokenRefresh *service.TokenRefreshService,
 	oauth *service.OAuthService,
 	geminiOAuth *service.GeminiOAuthService,
+	antigravityOAuth *service.AntigravityOAuthService,
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
@@ -61,6 +62,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	antigravityOAuthSessionCleanupWorker, err := service.NewAntigravityOAuthSessionCleanupWorker(antigravityOAuth)
+	if err != nil {
+		return nil, err
+	}
 	userMessageQueueCleanupWorker, err := service.NewUserMessageQueueCleanupWorker(userMessageQueue)
 	if err != nil {
 		return nil, err
@@ -78,6 +83,7 @@ func provideWorkerRuntime(
 		outboxCleanupWorker,
 		claudeOAuthSessionCleanupWorker,
 		geminiOAuthSessionCleanupWorker,
+		antigravityOAuthSessionCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
 	}

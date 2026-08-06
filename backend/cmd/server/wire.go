@@ -87,7 +87,6 @@ func provideCleanup(
 	subscriptionService *service.SubscriptionService,
 	openAIOAuthStartupConfigValidation *service.OpenAIOAuthStartupConfigValidation,
 	openaiOAuth *service.OpenAIOAuthService,
-	antigravityOAuth *service.AntigravityOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
@@ -180,10 +179,6 @@ func provideCleanup(
 			}},
 			{"OpenAIOAuthService", func() error {
 				openaiOAuth.Stop()
-				return nil
-			}},
-			{"AntigravityOAuthService", func() error {
-				antigravityOAuth.Stop()
 				return nil
 			}},
 			{"OpenAIWSPool", func() error {

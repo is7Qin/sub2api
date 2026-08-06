@@ -1,6 +1,6 @@
 # Worker Runtime Inventory
 
-This inventory records all process-local background activity through Issue #9 Phase 8.
+This inventory records all process-local background activity through Issue #9 Phase 9.
 `managed` means the component is registered in `workerruntime.Runtime` and appears in
 `GET /api/v1/admin/ops/workers/status`; `unmanaged` components retain their existing
 startup and shutdown behavior until a later phase. The status endpoint intentionally
@@ -34,7 +34,7 @@ reports no process identifier, credentials, payloads, stack traces, or raw upstr
 | OpenAI WebSocket pool ping and cleanup | No | lazily by `OpenAIGatewayService.getOpenAIWSConnPool` on the first eligible WebSocket flow | ping and idle-connection cleanup ticker goroutines | lazily-created `OpenAIGatewayService` pool; server cleanup calls `CloseOpenAIWSPool` | `Close` closes the stop channel and waits for both worker goroutines via `WaitGroup` before closing idle connections | per-instance pool; account-pool mutexes coordinate connection state | `SnapshotOpenAIWSPerformanceMetrics` pool/transport metrics | Later migration |
 | Claude OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 7 |
 | Gemini OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 8 |
-| Antigravity OAuth session cleanup | No | `service.NewAntigravityOAuthService` constructs `antigravity.NewSessionStore` during server wiring | 5-minute ticker goroutine | `AntigravityOAuthService`; server cleanup calls `AntigravityOAuthService.Stop` | `SessionStore.Stop` closes its stop channel; no join/`WaitGroup` guarantee | per-instance in-memory session map protected by an RW mutex | None | Later migration |
+| Antigravity OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 9 |
 
 ## Process-local status contract
 

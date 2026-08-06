@@ -3,9 +3,33 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAntigravityOAuthService_CleanupSessionsDelegatesAndPropagatesCancellation(t *testing.T) {
+	svc := NewAntigravityOAuthService(nil)
+	session := &antigravity.OAuthSession{CreatedAt: time.Now().Add(-antigravity.SessionTTL - time.Second)}
+	svc.sessionStore.Set("expired", session)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	require.ErrorIs(t, svc.CleanupSessions(ctx), context.Canceled)
+	require.NoError(t, svc.CleanupSessions(context.Background()))
+	// Get hides expired entries, so refresh the retained pointer to prove cleanup
+	// physically removed it from the same store used by request handling.
+	session.CreatedAt = time.Now()
+	_, ok := svc.sessionStore.Get("expired")
+	require.False(t, ok)
+}
+
+func TestAntigravityOAuthService_CleanupSessionsIsNilSafe(t *testing.T) {
+	var svc *AntigravityOAuthService
+	require.NoError(t, svc.CleanupSessions(context.Background()))
+	require.NoError(t, (&AntigravityOAuthService{}).CleanupSessions(context.Background()))
+}
 
 func TestResolveDefaultTierID(t *testing.T) {
 	t.Parallel()

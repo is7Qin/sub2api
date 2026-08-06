@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
@@ -179,6 +181,107 @@ func TestUsageRecordWorkerPoolWorkerStopReturnsSuccessAfterCompletionWithExpired
 	defer cancel()
 	require.NoError(t, worker.Stop(ctx))
 	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+}
+
+// periodicJobDuration reads a concrete PeriodicJob duration only in tests. The runtime
+// intentionally exposes no public spec accessor, so bounded reflection verifies the
+// constructed adapter rather than merely checking the shared source constant.
+func periodicJobDuration(t *testing.T, worker *workerruntime.PeriodicJob, fieldName string) time.Duration {
+	t.Helper()
+	field := reflect.ValueOf(worker).Elem().FieldByName(fieldName)
+	require.True(t, field.IsValid(), "PeriodicJob field %q not found", fieldName)
+	require.True(t, field.CanAddr(), "PeriodicJob field %q is not addressable", fieldName)
+	return time.Duration(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
+}
+
+func TestOpenAIOAuthSessionCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
+	worker, err := NewOpenAIOAuthSessionCleanupWorker(NewOpenAIOAuthService(nil, nil))
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "openai-oauth-session-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "auth", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Removes expired OpenAI OAuth authorization sessions", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"oauth", "openai", "session-cleanup"}, snapshot.Descriptor.Tags)
+	require.Equal(t, 5*time.Minute, periodicJobDuration(t, worker, "interval"))
+	require.Equal(t, 5*time.Second, periodicJobDuration(t, worker, "timeout"))
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestOpenAIOAuthRedisSetFailureCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {
+	svc := newOpenAIOAuthServiceWithSessionStore(nil, nil, &openAIOAuthRedisSessionStore{memory: newOpenAIOAuthMemorySessionStore()})
+	worker, err := NewOpenAIOAuthRedisSetFailureCleanupWorker(svc)
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	snapshot := worker.Snapshot()
+	require.Equal(t, "openai-oauth-redis-set-failure-cleanup", snapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.KindPeriodic, snapshot.Descriptor.Kind)
+	require.Equal(t, "auth", snapshot.Descriptor.Group)
+	require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+	require.Equal(t, "Removes expired OpenAI OAuth Redis write-failure fallback markers", snapshot.Descriptor.Description)
+	require.Equal(t, []string{"oauth", "openai", "redis-fallback-cleanup"}, snapshot.Descriptor.Tags)
+	require.Equal(t, 5*time.Minute, periodicJobDuration(t, worker, "interval"))
+	require.Equal(t, 5*time.Second, periodicJobDuration(t, worker, "timeout"))
+	require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
+}
+
+func TestOpenAIOAuthCleanupWorkersRejectMissingServiceOrStore(t *testing.T) {
+	for _, factory := range []func(*OpenAIOAuthService) (*workerruntime.PeriodicJob, error){
+		NewOpenAIOAuthSessionCleanupWorker,
+		NewOpenAIOAuthRedisSetFailureCleanupWorker,
+	} {
+		worker, err := factory(nil)
+		require.Nil(t, worker)
+		require.EqualError(t, err, "OpenAI OAuth service is required")
+		worker, err = factory(&OpenAIOAuthService{})
+		require.Nil(t, worker)
+		require.EqualError(t, err, "OpenAI OAuth service is required")
+	}
+}
+
+func TestOpenAIOAuthRedisSetFailureCleanupWorkerIsOmittedForMemoryStore(t *testing.T) {
+	worker, err := NewOpenAIOAuthRedisSetFailureCleanupWorker(NewOpenAIOAuthService(nil, nil))
+	require.NoError(t, err)
+	require.Nil(t, worker)
+}
+
+func TestOpenAIOAuthCleanupWorkersDeferFirstRunAndStop(t *testing.T) {
+	redisService := newOpenAIOAuthServiceWithSessionStore(nil, nil, &openAIOAuthRedisSessionStore{memory: newOpenAIOAuthMemorySessionStore()})
+	workers := []*workerruntime.PeriodicJob{}
+	sessionWorker, err := NewOpenAIOAuthSessionCleanupWorker(redisService)
+	require.NoError(t, err)
+	workers = append(workers, sessionWorker)
+	markerWorker, err := NewOpenAIOAuthRedisSetFailureCleanupWorker(redisService)
+	require.NoError(t, err)
+	workers = append(workers, markerWorker)
+
+	for _, worker := range workers {
+		beforeStart := time.Now()
+		require.NoError(t, worker.Start(context.Background()))
+		var status workerruntime.PeriodicStatus
+		require.Eventually(t, func() bool {
+			status = worker.Snapshot().Status.(workerruntime.PeriodicStatus)
+			return !status.NextRunAt.IsZero()
+		}, time.Second, time.Millisecond)
+		observedAt := time.Now()
+		require.False(t, status.NextRunAt.Before(beforeStart.Add(5*time.Minute)))
+		require.False(t, status.NextRunAt.After(observedAt.Add(5*time.Minute)))
+		require.Zero(t, status.RunCount)
+		require.NoError(t, worker.Stop(context.Background()))
+		require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+	}
+}
+
+func TestOpenAIOAuthCleanupLifecycleIsRuntimeOwned(t *testing.T) {
+	serviceSource, err := os.ReadFile("openai_oauth_service.go")
+	require.NoError(t, err)
+	require.NotContains(t, string(serviceSource), "func (s *OpenAIOAuthService) Stop")
+	storeSource, err := os.ReadFile("openai_oauth_session_store.go")
+	require.NoError(t, err)
+	require.NotContains(t, string(storeSource), "time.NewTicker")
+	require.NotContains(t, string(storeSource), "stopCh")
 }
 
 func TestClaudeOAuthSessionCleanupWorkerUsesRuntimePeriodicSpec(t *testing.T) {

@@ -19,7 +19,11 @@ type openAIOAuthSessionStore interface {
 	Set(ctx context.Context, sessionID string, session *openAIOAuthPendingSession) error
 	Get(ctx context.Context, sessionID string) (*openAIOAuthPendingSession, bool)
 	Delete(ctx context.Context, sessionID string)
-	Stop()
+	CleanupExpiredSessions(ctx context.Context) error
+}
+
+type openAIOAuthRedisSetFailureCleaner interface {
+	CleanupExpiredRedisSetFailures(ctx context.Context) error
 }
 
 type openAIOAuthPendingSession struct {
@@ -30,17 +34,10 @@ type openAIOAuthPendingSession struct {
 type openAIOAuthMemorySessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*openAIOAuthPendingSession
-	stopOnce sync.Once
-	stopCh   chan struct{}
 }
 
 func newOpenAIOAuthMemorySessionStore() *openAIOAuthMemorySessionStore {
-	store := &openAIOAuthMemorySessionStore{
-		sessions: make(map[string]*openAIOAuthPendingSession),
-		stopCh:   make(chan struct{}),
-	}
-	go store.cleanup()
-	return store
+	return &openAIOAuthMemorySessionStore{sessions: make(map[string]*openAIOAuthPendingSession)}
 }
 
 func (s *openAIOAuthMemorySessionStore) Set(_ context.Context, sessionID string, session *openAIOAuthPendingSession) error {
@@ -75,36 +72,29 @@ func (s *openAIOAuthMemorySessionStore) Delete(_ context.Context, sessionID stri
 	delete(s.sessions, sessionID)
 }
 
-func (s *openAIOAuthMemorySessionStore) Stop() {
+func (s *openAIOAuthMemorySessionStore) CleanupExpiredSessions(ctx context.Context) error {
+	return s.cleanupExpiredSessionsAt(ctx, time.Now())
+}
+
+func (s *openAIOAuthMemorySessionStore) cleanupExpiredSessionsAt(ctx context.Context, now time.Time) error {
 	if s == nil {
-		return
+		return errors.New("OpenAI OAuth session store is required")
 	}
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-	})
-}
-
-func (s *openAIOAuthMemorySessionStore) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.deleteExpired(time.Now())
-		}
+	ctx = openAIOAuthSessionContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-}
-
-func (s *openAIOAuthMemorySessionStore) deleteExpired(_ time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, session := range s.sessions {
-		if openAIOAuthSessionExpired(session) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if openAIOAuthSessionExpiredAt(session, now) {
 			delete(s.sessions, id)
 		}
 	}
+	return ctx.Err()
 }
 
 // NewOpenAIOAuthServiceWithRedis creates the OAuth service with Redis-backed pending session storage.
@@ -117,13 +107,10 @@ func newOpenAIOAuthSessionStore(redisClient *redis.Client) openAIOAuthSessionSto
 	if redisClient == nil {
 		return memory
 	}
-	store := &openAIOAuthRedisSessionStore{
+	return &openAIOAuthRedisSessionStore{
 		memory: memory,
 		rdb:    redisClient,
-		stopCh: make(chan struct{}),
 	}
-	go store.cleanupRedisSetFailures()
-	return store
 }
 
 type openAIOAuthRedisSessionStore struct {
@@ -132,8 +119,6 @@ type openAIOAuthRedisSessionStore struct {
 
 	// Session IDs whose Redis write failed may still be served from memory on this instance.
 	redisSetFailures sync.Map
-	stopOnce         sync.Once
-	stopCh           chan struct{}
 }
 
 type openAIOAuthRedisSetFailure struct {
@@ -210,37 +195,41 @@ func (s *openAIOAuthRedisSessionStore) Delete(_ context.Context, sessionID strin
 	}
 }
 
-func (s *openAIOAuthRedisSessionStore) Stop() {
+func (s *openAIOAuthRedisSessionStore) CleanupExpiredSessions(ctx context.Context) error {
+	if s == nil || s.memory == nil {
+		return errors.New("OpenAI OAuth session store is required")
+	}
+	return s.memory.CleanupExpiredSessions(ctx)
+}
+
+func (s *openAIOAuthRedisSessionStore) CleanupExpiredRedisSetFailures(ctx context.Context) error {
+	return s.cleanupExpiredRedisSetFailuresAt(ctx, time.Now())
+}
+
+func (s *openAIOAuthRedisSessionStore) cleanupExpiredRedisSetFailuresAt(ctx context.Context, now time.Time) error {
 	if s == nil {
-		return
+		return errors.New("OpenAI OAuth session store is required")
 	}
-	s.memory.Stop()
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-	})
-}
-
-func (s *openAIOAuthRedisSessionStore) cleanupRedisSetFailures() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.deleteExpiredRedisSetFailures(time.Now())
-		}
+	ctx = openAIOAuthSessionContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-}
-
-func (s *openAIOAuthRedisSessionStore) deleteExpiredRedisSetFailures(now time.Time) {
+	var traversalErr error
 	s.redisSetFailures.Range(func(key, value any) bool {
+		if err := ctx.Err(); err != nil {
+			traversalErr = err
+			return false
+		}
 		marker, ok := value.(openAIOAuthRedisSetFailure)
 		if !ok || now.After(marker.expiresAt) {
 			s.redisSetFailures.Delete(key)
 		}
 		return true
 	})
+	if traversalErr != nil {
+		return traversalErr
+	}
+	return ctx.Err()
 }
 
 func (s *openAIOAuthRedisSessionStore) canUseMemoryFallback(sessionID string) bool {
@@ -292,7 +281,11 @@ func openAIOAuthSessionKey(sessionID string) string {
 }
 
 func openAIOAuthSessionExpired(session *openAIOAuthPendingSession) bool {
-	return session == nil || time.Since(session.CreatedAt) > openai.SessionTTL
+	return openAIOAuthSessionExpiredAt(session, time.Now())
+}
+
+func openAIOAuthSessionExpiredAt(session *openAIOAuthPendingSession, now time.Time) bool {
+	return session == nil || now.Sub(session.CreatedAt) > openai.SessionTTL
 }
 
 func openAIOAuthSessionContext(ctx context.Context) context.Context {

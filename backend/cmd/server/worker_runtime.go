@@ -22,6 +22,7 @@ func provideWorkerRuntime(
 	oauth *service.OAuthService,
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
+	openAIOAuth *service.OpenAIOAuthService,
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
@@ -66,6 +67,14 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	openAIOAuthSessionCleanupWorker, err := service.NewOpenAIOAuthSessionCleanupWorker(openAIOAuth)
+	if err != nil {
+		return nil, err
+	}
+	openAIOAuthRedisSetFailureCleanupWorker, err := service.NewOpenAIOAuthRedisSetFailureCleanupWorker(openAIOAuth)
+	if err != nil {
+		return nil, err
+	}
 	userMessageQueueCleanupWorker, err := service.NewUserMessageQueueCleanupWorker(userMessageQueue)
 	if err != nil {
 		return nil, err
@@ -84,8 +93,12 @@ func provideWorkerRuntime(
 		claudeOAuthSessionCleanupWorker,
 		geminiOAuthSessionCleanupWorker,
 		antigravityOAuthSessionCleanupWorker,
+		openAIOAuthSessionCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
+	}
+	if openAIOAuthRedisSetFailureCleanupWorker != nil {
+		components = append(components, openAIOAuthRedisSetFailureCleanupWorker)
 	}
 	if pricingRemoteSyncWorker != nil {
 		components = append(components, pricingRemoteSyncWorker)

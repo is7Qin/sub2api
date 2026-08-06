@@ -1212,6 +1212,38 @@ func TestGatewayService_SelectAccountForModelWithExclusions_ForcePlatform(t *tes
 	require.Equal(t, PlatformAntigravity, acc.Platform)
 }
 
+func TestGatewayService_SelectAccountForModelWithExclusions_ForcedAntigravityGroupedSupportMiss(t *testing.T) {
+	groupID := int64(101206)
+	group := &Group{
+		ID:                groupID,
+		Name:              "anthropic-api-key",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.ForcePlatform, PlatformAntigravity)
+	ctx = context.WithValue(ctx, ctxkey.Group, group)
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{
+		accountRepo:           &mockAccountRepoForPlatform{},
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: reader,
+	}
+
+	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-forced-miss", nil)
+
+	require.Nil(t, account)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope:           SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID},
+		RequestedModel:  "claude-forced-miss",
+		RequiresPrivacy: true,
+	}}, reader.queries)
+}
+
 func TestGatewayService_SelectAccountForModelWithPlatform_RoutedStickySessionClears(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10)
@@ -3840,7 +3872,7 @@ func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 0, groupRepo.getByIDCalls, "trusted context group should serve privacy and classifier coordinates")
 	require.Equal(t, 0, groupRepo.getByIDLiteCalls)
 }
 
@@ -3883,7 +3915,7 @@ func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T)
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 0, groupRepo.getByIDCalls, "resolved group context should be reused after lite hydration")
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 
@@ -3953,7 +3985,7 @@ func TestGatewayService_GroupResolution_FallbackUsesLiteOnce(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 0, groupRepo.getByIDCalls, "fallback group should be reused from trusted context")
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 

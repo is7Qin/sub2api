@@ -2022,16 +2022,26 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	return true
 }
 
+func trustedOpenAISchedulingGroupFromContext(ctx context.Context, groupID *int64) *Group {
+	if groupID == nil {
+		return nil
+	}
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && IsGroupContextValid(group) && group.ID == *groupID {
+		return group
+	}
+	if group, ok := ctx.Value(ctxkey.Group).(Group); ok && IsGroupContextValid(&group) && group.ID == *groupID {
+		groupCopy := group
+		return &groupCopy
+	}
+	return nil
+}
+
 func (s *OpenAIGatewayService) resolveOpenAISchedulingGroup(ctx context.Context, groupID *int64) *Group {
 	if groupID == nil {
 		return nil
 	}
-	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && group != nil && group.ID == *groupID {
+	if group := trustedOpenAISchedulingGroupFromContext(ctx, groupID); group != nil {
 		return group
-	}
-	if group, ok := ctx.Value(ctxkey.Group).(Group); ok && group.ID == *groupID {
-		groupCopy := group
-		return &groupCopy
 	}
 	if s != nil && s.schedulerSnapshot != nil {
 		group, err := s.schedulerSnapshot.GetGroupByID(ctx, *groupID)
@@ -2391,8 +2401,8 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	selected, compactBlocked := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability)
 
 	if selected == nil {
-		schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
-		return nil, noAvailableOpenAISelectionErrorForAccounts(ctx, s, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, schedGroup, compactBlocked)
+		trustedGroup := trustedOpenAISchedulingGroupFromContext(ctx, groupID)
+		return nil, noAvailableOpenAISelectionErrorForAccounts(ctx, s, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, trustedGroup, compactBlocked)
 	}
 
 	hydrated, err := s.hydrateSelectedAccount(ctx, selected)
@@ -2490,6 +2500,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // least one candidate was filtered out solely because it lacks compact support
 // (only meaningful when requireCompact=true).
 func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability) (*Account, bool) {
+	if len(accounts) == 0 {
+		return nil, false
+	}
 	var selected *Account
 	selectedCompactTier := -1
 	compactBlocked := false
@@ -2620,7 +2633,6 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 	cfg := s.schedulingConfig()
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
@@ -2662,12 +2674,17 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return nil, err
 	}
 	if len(accounts) == 0 {
-		if isPureOpenAIModelSupportMiss(ctx, s, groupID, nil, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, schedGroup) {
+		// Classification may only consume request-authenticated group context; do not
+		// resolve a group from the snapshot/DB solely to choose a public error.
+		trustedGroup := trustedOpenAISchedulingGroupFromContext(ctx, groupID)
+		if isPureOpenAIModelSupportMiss(ctx, s, groupID, nil, requestedModel, excludedIDs, requireCompact, requiredCapability, "", OpenAIUpstreamTransportAny, trustedGroup) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		return nil, noAvailableOpenAISelectionError(requestedModel, false)
 	}
 
+	// Non-empty selection still needs the broader resolver for privacy gating.
+	schedGroup := s.resolveOpenAISchedulingGroup(ctx, groupID)
 	isExcluded := func(accountID int64) bool {
 		if excludedIDs == nil {
 			return false

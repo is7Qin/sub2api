@@ -1986,8 +1986,9 @@ func (s *GatewayService) isPureModelSupportMiss(
 		s == nil || s.supportDecisionReader == nil || s.cfg == nil || platform == "" {
 		return false
 	}
-	// Grouped lookups need the resolved group to preserve privacy and platform coordinates.
-	if groupID != nil && (!IsGroupContextValid(schedGroup) || schedGroup.ID != *groupID || schedGroup.Platform != platform) {
+	// Grouped lookups need the trusted group identity and privacy coordinates. The
+	// lookup platform is independently resolved routing state and may be forced.
+	if groupID != nil && (!IsGroupContextValid(schedGroup) || schedGroup.ID != *groupID) {
 		return false
 	}
 
@@ -3614,10 +3615,14 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	preferOAuth := platform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
-	// require_privacy_set: 获取分组信息
+	// Prefer the already-hydrated request group, including forced-platform routes
+	// where the group's own platform intentionally differs from the lookup scope.
 	var schedGroup *Group
-	if groupID != nil && s.groupRepo != nil {
-		schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+	if groupID != nil {
+		schedGroup = s.groupFromContext(ctx, *groupID)
+		if schedGroup == nil && s.groupRepo != nil {
+			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+		}
 	}
 
 	var accounts []Account
@@ -3877,10 +3882,14 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
-	// require_privacy_set: 获取分组信息
+	// Prefer the already-hydrated request group, including forced-platform routes
+	// where the group's own platform intentionally differs from the lookup scope.
 	var schedGroup *Group
-	if groupID != nil && s.groupRepo != nil {
-		schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+	if groupID != nil {
+		schedGroup = s.groupFromContext(ctx, *groupID)
+		if schedGroup == nil && s.groupRepo != nil {
+			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+		}
 	}
 
 	var accounts []Account

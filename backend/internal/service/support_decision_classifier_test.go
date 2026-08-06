@@ -95,7 +95,11 @@ func TestGatewayPureModelSupportMissUsesLocalDecision(t *testing.T) {
 		{name: "unresolved platform fails closed", ctx: WithPublicModelSupportMiss404(context.Background()), model: "model", cfg: testConfig(), reader: &recordingSupportDecisionReader{result: SupportDecisionPureMiss}},
 		{name: "grouped scope without group fails closed", ctx: WithPublicModelSupportMiss404(context.Background()), model: "model", platform: PlatformAnthropic, groupID: &groupID, cfg: testConfig(), reader: &recordingSupportDecisionReader{result: SupportDecisionPureMiss}},
 		{name: "grouped scope with mismatched group fails closed", ctx: WithPublicModelSupportMiss404(context.Background()), model: "model", platform: PlatformAnthropic, groupID: &groupID, group: &Group{ID: groupID + 1, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true}, cfg: testConfig(), reader: &recordingSupportDecisionReader{result: SupportDecisionPureMiss}},
-		{name: "grouped scope with mismatched platform fails closed", ctx: WithPublicModelSupportMiss404(context.Background()), model: "model", platform: PlatformAnthropic, groupID: &groupID, group: &Group{ID: groupID, Platform: PlatformGemini, Status: StatusActive, Hydrated: true}, cfg: testConfig(), reader: &recordingSupportDecisionReader{result: SupportDecisionPureMiss}},
+		{
+			name: "forced platform may differ from trusted group platform", ctx: WithPublicModelSupportMiss404(context.Background()), model: "model", platform: PlatformAntigravity, groupID: &groupID,
+			group: &Group{ID: groupID, Platform: PlatformGemini, Status: StatusActive, Hydrated: true}, cfg: testConfig(), reader: &recordingSupportDecisionReader{result: SupportDecisionPureMiss}, want: true, wantLookup: 1,
+			wantQuery: SupportDecisionQuery{Scope: SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID}, RequestedModel: "model"},
+		},
 		{name: "grouped scope with unresolved group fails closed", ctx: WithPublicModelSupportMiss404(context.Background()), model: "model", platform: PlatformAnthropic, groupID: &groupID, group: &Group{ID: groupID, Platform: PlatformAnthropic}, cfg: testConfig(), reader: &recordingSupportDecisionReader{result: SupportDecisionPureMiss}},
 	}
 

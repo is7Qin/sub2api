@@ -955,15 +955,19 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
-	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 	filterStats := openAISelectionFilterStats{pool: len(accounts)}
 	if len(accounts) == 0 {
+		// Classification may only consume request-authenticated group context; do not
+		// resolve a group from the snapshot/DB solely to choose a public error.
+		schedGroup := trustedOpenAISchedulingGroupFromContext(ctx, req.GroupID)
 		if isPureOpenAIModelSupportMiss(ctx, s.service, req.GroupID, nil, req.RequestedModel, req.ExcludedIDs, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport, schedGroup) {
 			return nil, 0, 0, 0, newModelNotSupportedByAccountsError(req.RequestedModel)
 		}
 		return nil, 0, 0, 0, noAvailableOpenAISelectionDiagnostic(noAvailableOpenAISelectionError(req.RequestedModel, false), filterStats, "")
 	}
 
+	// Non-empty selection still needs the broader resolver for privacy gating.
+	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {

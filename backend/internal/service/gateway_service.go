@@ -2032,6 +2032,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	ctx = s.withGroupContext(ctx, group)
+	classifierGroup := group
+	if classifierGroup == nil && groupID != nil {
+		// Forced-platform routing skips group resolution; classification may only reuse
+		// the trusted hydrated request group and must not introduce a fallback lookup.
+		classifierGroup = s.groupFromContext(ctx, *groupID)
+	}
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
@@ -2139,6 +2145,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	if len(accounts) == 0 {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, useMixed, classifierGroup, groupID) {
+			return nil, newModelNotSupportedByAccountsError(requestedModel)
+		}
 		return nil, ErrNoAvailableAccounts
 	}
 	ctx = s.withWindowCostPrefetch(ctx, accounts)
@@ -2579,7 +2588,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if len(candidates) == 0 {
-		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, useMixed, group, groupID) {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, useMixed, classifierGroup, groupID) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		return nil, ErrNoAvailableAccounts

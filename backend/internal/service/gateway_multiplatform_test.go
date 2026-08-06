@@ -32,6 +32,8 @@ type mockAccountRepoForPlatform struct {
 	accountsByID                    map[int64]*Account
 	listPlatformFunc                func(ctx context.Context, platform string) ([]Account, error)
 	listModelAvailabilityCandidates func(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error)
+	listPlatformCalls               int
+	listAvailabilityCalls           int
 	getByIDCalls                    int
 	setErrorCalls                   int
 	setSchedulableCalls             int
@@ -64,6 +66,7 @@ func (m *mockAccountRepoForPlatform) ExistsByID(ctx context.Context, id int64) (
 }
 
 func (m *mockAccountRepoForPlatform) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	m.listPlatformCalls++
 	if m.listPlatformFunc != nil {
 		return m.listPlatformFunc(ctx, platform)
 	}
@@ -81,6 +84,7 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByGroupIDAndPlatform(ctx con
 }
 
 func (m *mockAccountRepoForPlatform) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error) {
+	m.listAvailabilityCalls++
 	if m.listModelAvailabilityCandidates != nil {
 		return m.listModelAvailabilityCandidates(ctx, groupID, platforms, includeGrouped)
 	}
@@ -1212,6 +1216,50 @@ func TestGatewayService_SelectAccountForModelWithExclusions_ForcePlatform(t *tes
 	require.Equal(t, PlatformAntigravity, acc.Platform)
 }
 
+func TestGatewayService_SelectAccountWithLoadAwareness_EmptyPoolSupportDecision(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  SupportDecisionResult
+		want404 bool
+	}{
+		{name: "pure_miss", result: SupportDecisionPureMiss, want404: true},
+		{name: "unknown", result: SupportDecisionUnknown},
+		{name: "not_pure_miss", result: SupportDecisionNotPureMiss},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockAccountRepoForPlatform{}
+			reader := &recordingSupportDecisionReader{result: tt.result}
+			cfg := testConfig()
+			cfg.Gateway.Scheduling.LoadBatchEnabled = true
+			svc := &GatewayService{
+				accountRepo:           repo,
+				cache:                 &mockGatewayCacheForPlatform{},
+				cfg:                   cfg,
+				concurrencyService:    NewConcurrencyService(&mockConcurrencyCache{}),
+				supportDecisionReader: reader,
+			}
+			ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.ForcePlatform, PlatformAntigravity)
+
+			selection, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "  claude-empty-pool  ", nil, "", 0)
+
+			require.Nil(t, selection)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			if tt.want404 {
+				require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			} else {
+				require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			}
+			require.Equal(t, 1, repo.listPlatformCalls, "candidate listing should execute once")
+			require.Zero(t, repo.listAvailabilityCalls, "classification must not fall back to repository availability queries")
+			require.Equal(t, []SupportDecisionQuery{{
+				Scope:          SupportDecisionScope{Platform: PlatformAntigravity},
+				RequestedModel: "claude-empty-pool",
+			}}, reader.queries)
+		})
+	}
+}
+
 func TestGatewayService_SelectAccountForModelWithExclusions_ForcedAntigravityGroupedSupportMiss(t *testing.T) {
 	groupID := int64(101206)
 	group := &Group{
@@ -1242,6 +1290,99 @@ func TestGatewayService_SelectAccountForModelWithExclusions_ForcedAntigravityGro
 		RequestedModel:  "claude-forced-miss",
 		RequiresPrivacy: true,
 	}}, reader.queries)
+}
+
+func TestGatewayService_SelectAccountWithLoadAwareness_ForcedAntigravityGroupedSupportMiss(t *testing.T) {
+	groupID := int64(101207)
+	group := &Group{
+		ID:                groupID,
+		Name:              "anthropic-private",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	account := Account{
+		ID:          7,
+		Platform:    PlatformAntigravity,
+		Status:      StatusActive,
+		Schedulable: false,
+		Concurrency: 1,
+	}
+	repo := &mockAccountRepoForPlatform{
+		accounts:     []Account{account},
+		accountsByID: map[int64]*Account{account.ID: &account},
+	}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	cfg := testConfig()
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &GatewayService{
+		accountRepo:           repo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   cfg,
+		concurrencyService:    NewConcurrencyService(&mockConcurrencyCache{}),
+		supportDecisionReader: reader,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.Group, group)
+	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, PlatformAntigravity)
+
+	selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "claude-load-aware-forced-miss", nil, "", 0)
+
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, 1, repo.listPlatformCalls)
+	require.Zero(t, repo.listAvailabilityCalls)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope:           SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID},
+		RequestedModel:  "claude-load-aware-forced-miss",
+		RequiresPrivacy: true,
+	}}, reader.queries)
+}
+
+func TestGatewayService_SelectAccountWithLoadAwareness_ForcedGroupedSupportMissRequiresMatchingTrustedGroup(t *testing.T) {
+	groupID := int64(101208)
+	cfg := testConfig()
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+
+	for _, tt := range []struct {
+		name  string
+		group *Group
+	}{
+		{name: "absent"},
+		{name: "mismatched", group: &Group{ID: groupID + 1, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true, RequirePrivacySet: true}},
+		{name: "unhydrated", group: &Group{ID: groupID, Platform: PlatformAnthropic, Status: StatusActive, RequirePrivacySet: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockAccountRepoForPlatform{accounts: []Account{{
+				ID:          8,
+				Platform:    PlatformAntigravity,
+				Status:      StatusActive,
+				Schedulable: false,
+			}}}
+			reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+			svc := &GatewayService{
+				accountRepo:           repo,
+				cache:                 &mockGatewayCacheForPlatform{},
+				cfg:                   cfg,
+				concurrencyService:    NewConcurrencyService(&mockConcurrencyCache{}),
+				supportDecisionReader: reader,
+			}
+			ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.ForcePlatform, PlatformAntigravity)
+			if tt.group != nil {
+				ctx = context.WithValue(ctx, ctxkey.Group, tt.group)
+			}
+
+			selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "claude-untrusted-group", nil, "", 0)
+
+			require.Nil(t, selection)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			require.Empty(t, reader.queries)
+			require.Equal(t, 1, repo.listPlatformCalls)
+			require.Zero(t, repo.listAvailabilityCalls)
+		})
+	}
 }
 
 func TestGatewayService_SelectAccountForModelWithPlatform_RoutedStickySessionClears(t *testing.T) {

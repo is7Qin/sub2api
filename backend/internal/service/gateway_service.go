@@ -11053,6 +11053,9 @@ func sanitizeCountTokensRequestBody(body []byte) []byte {
 		"stream",
 		"stop_sequences",
 		"stop",
+		// OAuth mimicry injects max_tokens for messages requests, but the
+		// count_tokens endpoint accepts request-input fields only.
+		"max_tokens",
 	} {
 		if gjson.GetBytes(out, path).Exists() {
 			if next, ok := deleteJSONPathBytes(out, path); ok {

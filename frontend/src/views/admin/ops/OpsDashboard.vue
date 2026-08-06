@@ -19,6 +19,7 @@
         :query-mode="queryMode"
         :loading="loading"
         :last-updated="lastUpdated"
+        :billing-health="billingHealth"
         :thresholds="metricThresholds"
         :auto-refresh-enabled="autoRefreshEnabled"
         :auto-refresh-countdown="autoRefreshCountdown"
@@ -43,6 +44,9 @@
       <div v-if="opsEnabled && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6 lg:grid-cols-4">
         <div class="lg:col-span-1 min-h-[360px]">
           <OpsConcurrencyCard :platform-filter="platform" :group-id-filter="groupId" :refresh-token="dashboardRefreshToken" />
+        </div>
+        <div class="lg:col-span-1 min-h-[360px]">
+          <OpsBillingOutboxCard :health="billingHealth" :loading="loading" />
         </div>
         <div class="lg:col-span-1 h-[360px]">
           <OpsSwitchRateTrendChart
@@ -145,6 +149,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import {
   opsAPI,
+  type OpsBillingOutboxHealth,
   type OpsDashboardOverview,
   type OpsErrorDistributionResponse,
   type OpsErrorTrendResponse,
@@ -155,6 +160,7 @@ import {
 import { useAdminSettingsStore, useAppStore } from '@/stores'
 import OpsDashboardHeader from './components/OpsDashboardHeader.vue'
 import OpsDashboardSkeleton from './components/OpsDashboardSkeleton.vue'
+import OpsBillingOutboxCard from './components/OpsBillingOutboxCard.vue'
 import OpsConcurrencyCard from './components/OpsConcurrencyCard.vue'
 import OpsErrorDetailModal from './components/OpsErrorDetailModal.vue'
 import OpsErrorDistributionChart from './components/OpsErrorDistributionChart.vue'
@@ -676,6 +682,22 @@ async function refreshErrorDistributionWithCancel(fetchSeq: number, signal: Abor
   }
 }
 
+const billingHealth = ref<OpsBillingOutboxHealth | null>(null)
+
+// _signal: getBillingOutboxHealth 暂不支持 AbortSignal，参数仅用于对齐 refresh*WithCancel 签名
+async function refreshBillingHealthWithCancel(fetchSeq: number, _signal: AbortSignal) {
+  if (!opsEnabled.value) return
+  try {
+    const data = await opsAPI.getBillingOutboxHealth()
+    if (fetchSeq !== dashboardFetchSeq) return
+    billingHealth.value = data
+  } catch (err: any) {
+    if (fetchSeq !== dashboardFetchSeq || isCanceledRequest(err)) return
+    billingHealth.value = null
+    console.warn('[OpsDashboard] Failed to load billing outbox health', err)
+  }
+}
+
 async function refreshDeferredPanels(fetchSeq: number, signal: AbortSignal) {
   if (!opsEnabled.value) return
   await Promise.all([
@@ -708,6 +730,7 @@ async function fetchData() {
     await Promise.all([
       refreshCoreSnapshotWithCancel(fetchSeq, dashboardFetchController.signal),
       refreshSwitchTrendWithCancel(fetchSeq, dashboardFetchController.signal),
+      refreshBillingHealthWithCancel(fetchSeq, dashboardFetchController.signal),
     ])
     if (fetchSeq !== dashboardFetchSeq) return
 

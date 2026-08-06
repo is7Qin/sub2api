@@ -4910,6 +4910,31 @@ export default {
         cleanupFailed: '清理系统日志失败',
         cleanupFilterRequired: '请至少添加一个具体筛选条件后再清理系统日志'
       },
+      billingOutbox: {
+        title: '计费 Worker',
+        running: '运行中',
+        stopped: '已停止',
+        circuitOpen: '熔断中',
+        circuitClosed: '熔断关闭',
+        backlog: '积压',
+        lag: '最长延迟',
+        terminal: 'Terminal',
+        error: '计费 worker 状态不可用',
+        instanceView: '实例视角计数（当前实例快照）',
+        details: {
+          show: '显示明细',
+          hide: '收起明细',
+          processed: '已处理',
+          failures: '失败',
+          backloggedRounds: '积压轮次',
+          roundTimeouts: '轮次超时',
+          permanentFailures: '永久错误',
+          maxAttempts: '最大尝试',
+          circuitOpenedAt: '熔断开启时间',
+          lastError: '最近错误',
+          statsError: '统计错误'
+        }
+      },
       // Dashboard
       systemHealth: '系统健康',
       overview: '概览',

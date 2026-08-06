@@ -4915,6 +4915,31 @@ export default {
         cleanupFailed: 'Failed to clean up system logs.',
         cleanupFilterRequired: 'Add at least one specific filter before cleaning up system logs.'
       },
+      billingOutbox: {
+        title: 'Billing Worker',
+        running: 'Running',
+        stopped: 'Stopped',
+        circuitOpen: 'Circuit Open',
+        circuitClosed: 'Circuit Closed',
+        backlog: 'Backlog',
+        lag: 'Oldest Lag',
+        terminal: 'Terminal',
+        error: 'Billing worker health unavailable',
+        instanceView: 'Instance-scoped counters (snapshot of the instance serving this request)',
+        details: {
+          show: 'Show details',
+          hide: 'Hide details',
+          processed: 'Processed',
+          failures: 'Failures',
+          backloggedRounds: 'Backlogged rounds',
+          roundTimeouts: 'Round timeouts',
+          permanentFailures: 'Permanent failures',
+          maxAttempts: 'Max attempts',
+          circuitOpenedAt: 'Circuit opened at',
+          lastError: 'Last error',
+          statsError: 'Stats error'
+        }
+      },
       // Dashboard
       systemHealth: 'System Health',
       overview: 'Overview',

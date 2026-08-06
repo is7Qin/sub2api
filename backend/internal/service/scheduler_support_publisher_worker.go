@@ -135,9 +135,13 @@ func (w *SchedulerSupportPublisherWorker) Start(ctx context.Context) error {
 		return err
 	}
 	w.mu.Lock()
-	if w.ctx != nil && w.ctx.Err() == nil {
+	if w.done != nil {
+		if w.ctx != nil && w.ctx.Err() == nil {
+			w.mu.Unlock()
+			return nil
+		}
 		w.mu.Unlock()
-		return nil
+		return errors.New("scheduler support publisher lifecycle transition in progress")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -184,14 +188,17 @@ func (w *SchedulerSupportPublisherWorker) Stop(ctx context.Context) error {
 
 func (w *SchedulerSupportPublisherWorker) finishRun(done chan struct{}) {
 	w.mu.Lock()
-	if w.done == done {
-		w.ctx = nil
-		w.cancel = nil
-		w.done = nil
-		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+	defer w.mu.Unlock()
+	if w.done != done {
+		return
 	}
-	w.mu.Unlock()
+	// Publish completion before clearing done so a new run cannot overlap the
+	// tail of the previous run's lifecycle transition.
 	close(done)
+	w.ctx = nil
+	w.cancel = nil
+	w.done = nil
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
 }
 
 func (w *SchedulerSupportPublisherWorker) ensureBootstrap(ctx context.Context) error {
@@ -218,7 +225,13 @@ func (w *SchedulerSupportPublisherWorker) ensureBootstrap(ctx context.Context) e
 			cancel()
 			closeErr := owner.Close()
 			if publishErr != nil {
-				return fmt.Errorf("publish initial support decision: %w", publishErr)
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if !w.wait(ctx, w.pollInterval) {
+					return ctx.Err()
+				}
+				continue
 			}
 			if closeErr != nil {
 				return errors.New("release scheduler ownership after support bootstrap")

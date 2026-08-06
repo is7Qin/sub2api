@@ -3624,12 +3624,13 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	preferOAuth := platform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
-	// Prefer the already-hydrated request group, including forced-platform routes
-	// where the group's own platform intentionally differs from the lookup scope.
+	// Candidate privacy checks retain the repository-backed group used before
+	// support-miss classification was introduced. Classification is context-only.
 	var schedGroup *Group
+	var classifierGroup *Group
 	if groupID != nil {
-		schedGroup = s.groupFromContext(ctx, *groupID)
-		if schedGroup == nil && s.groupRepo != nil {
+		classifierGroup = s.groupFromContext(ctx, *groupID)
+		if s.groupRepo != nil {
 			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
 		}
 	}
@@ -3866,7 +3867,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
-		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, false, schedGroup, groupID) {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, false, classifierGroup, groupID) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		if requestedModel != "" {
@@ -3891,12 +3892,13 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
-	// Prefer the already-hydrated request group, including forced-platform routes
-	// where the group's own platform intentionally differs from the lookup scope.
+	// Candidate privacy checks retain the repository-backed group used before
+	// support-miss classification was introduced. Classification is context-only.
 	var schedGroup *Group
+	var classifierGroup *Group
 	if groupID != nil {
-		schedGroup = s.groupFromContext(ctx, *groupID)
-		if schedGroup == nil && s.groupRepo != nil {
+		classifierGroup = s.groupFromContext(ctx, *groupID)
+		if s.groupRepo != nil {
 			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
 		}
 	}
@@ -4134,7 +4136,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, nativePlatform, accounts, excludedIDs, true)
-		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, nativePlatform, excludedIDs, true, schedGroup, groupID) {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, nativePlatform, excludedIDs, true, classifierGroup, groupID) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		if requestedModel != "" {

@@ -1292,6 +1292,116 @@ func TestGatewayService_SelectAccountForModelWithExclusions_ForcedAntigravityGro
 	}}, reader.queries)
 }
 
+func TestGatewayService_SelectAccountForModelWithExclusions_UsesRepositoryGroupForPrivacyAndContextGroupForForcedClassifier(t *testing.T) {
+	groupID := int64(101209)
+	contextGroup := &Group{
+		ID:                groupID,
+		Name:              "trusted-request-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: false,
+	}
+	repositoryGroup := &Group{
+		ID:                groupID,
+		Name:              "current-repository-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	account := Account{
+		ID:          9,
+		Platform:    PlatformAntigravity,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+	accountRepo := &mockAccountRepoForPlatform{
+		accounts:     []Account{account},
+		accountsByID: map[int64]*Account{account.ID: &account},
+	}
+	groupRepo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: repositoryGroup}}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{
+		accountRepo:           accountRepo,
+		groupRepo:             groupRepo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: reader,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.Group, contextGroup)
+	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, PlatformAntigravity)
+
+	selected, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-forced-privacy-miss", nil)
+
+	require.Nil(t, selected, "repository privacy requirement must continue to reject the candidate")
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate selection should keep its existing repository fetch")
+	require.Equal(t, 1, accountRepo.setErrorCalls)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope:           SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID},
+		RequestedModel:  "claude-forced-privacy-miss",
+		RequiresPrivacy: false,
+	}}, reader.queries, "classification must use only the trusted request group")
+}
+
+func TestGatewayService_SelectAccountWithMixedScheduling_UsesRepositoryGroupForPrivacyAndContextGroupForClassifier(t *testing.T) {
+	groupID := int64(101210)
+	contextGroup := &Group{
+		ID:                groupID,
+		Name:              "trusted-request-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: false,
+	}
+	repositoryGroup := &Group{
+		ID:                groupID,
+		Name:              "current-repository-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	account := Account{
+		ID:          10,
+		Platform:    PlatformAntigravity,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{"mixed_scheduling": true},
+	}
+	accountRepo := &mockAccountRepoForPlatform{
+		accounts:     []Account{account},
+		accountsByID: map[int64]*Account{account.ID: &account},
+	}
+	groupRepo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: repositoryGroup}}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{
+		accountRepo:           accountRepo,
+		groupRepo:             groupRepo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: reader,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.Group, contextGroup)
+
+	selected, err := svc.selectAccountWithMixedScheduling(ctx, &groupID, "", "claude-mixed-privacy-miss", nil, PlatformAnthropic)
+
+	require.Nil(t, selected, "repository privacy requirement must continue to reject the candidate")
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate selection should keep its existing repository fetch")
+	require.Equal(t, 1, accountRepo.setErrorCalls)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope: SupportDecisionScope{
+			Platform:             PlatformAnthropic,
+			GroupID:              groupID,
+			AllowMixedScheduling: true,
+		},
+		RequestedModel:  "claude-mixed-privacy-miss",
+		RequiresPrivacy: false,
+	}}, reader.queries, "classification must use only the trusted request group")
+}
+
 func TestGatewayService_SelectAccountWithLoadAwareness_ForcedAntigravityGroupedSupportMiss(t *testing.T) {
 	groupID := int64(101207)
 	group := &Group{
@@ -4013,7 +4123,7 @@ func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 0, groupRepo.getByIDCalls, "trusted context group should serve privacy and classifier coordinates")
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate privacy selection must keep the repository-backed group lookup")
 	require.Equal(t, 0, groupRepo.getByIDLiteCalls)
 }
 
@@ -4056,7 +4166,7 @@ func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T)
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 0, groupRepo.getByIDCalls, "resolved group context should be reused after lite hydration")
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate privacy selection must still read the current repository group")
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 
@@ -4126,7 +4236,7 @@ func TestGatewayService_GroupResolution_FallbackUsesLiteOnce(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 0, groupRepo.getByIDCalls, "fallback group should be reused from trusted context")
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate privacy selection must read the current fallback group")
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 

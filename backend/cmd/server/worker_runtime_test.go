@@ -160,17 +160,75 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 }
 
 func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
-	publisher := service.NewSchedulerSupportPublisherWorker(nil, nil, nil, nil, nil, nil)
-	replica := service.NewSupportDecisionReplicaWorker(nil)
-	// Registration is verified without startup because intentionally incomplete
-	// test dependencies fail closed when StartAll invokes either component.
-	require.Equal(t, "scheduler-support-publisher", publisher.Descriptor().Name)
-	require.Equal(t, "scheduler-support-replica", replica.Descriptor().Name)
-
-	source, err := os.ReadFile("worker_runtime.go")
+	store := newServerSupportDecisionStore(t)
+	publisher := service.NewSchedulerSupportPublisherWorker(
+		&serverSchedulerDirtyRepo{},
+		&serverSchedulerOwnershipRepo{},
+		serverSchedulerDirtyProcessor{},
+		service.NewSupportDecisionPublisher(serverSupportDecisionGeneration{}, serverSupportDecisionSource{}, store, &config.Config{}),
+		store,
+		&config.Config{},
+	)
+	replica := service.NewSupportDecisionReplicaWorker(service.NewSupportDecisionReplica(store, service.NewSupportDecisionAtomicReader(time.Hour)))
+	usagePool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1})
+	runtime, err := provideWorkerRuntime(
+		service.NewAccountExpiryService(nil, time.Hour),
+		service.NewIdempotencyCleanupService(nil, &config.Config{}),
+		usagePool,
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
+		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
+		publisher,
+		replica,
+	)
 	require.NoError(t, err)
-	require.Contains(t, string(source), "components = append(components, supportPublisher)")
-	require.Contains(t, string(source), "components = append(components, supportReplica)")
+	require.Contains(t, snapshotNames(runtime.Snapshot()), "scheduler-support-publisher")
+	require.Contains(t, snapshotNames(runtime.Snapshot()), "scheduler-support-replica")
+	require.Equal(t, workerruntime.LifecycleRunning, publisher.Snapshot().Lifecycle.State)
+	require.Equal(t, workerruntime.LifecycleRunning, replica.Snapshot().Lifecycle.State)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	results, err := runtime.StopAll(stopCtx)
+	require.NoError(t, err)
+	require.Len(t, results, len(runtime.Snapshot()))
+	require.Equal(t, workerruntime.LifecycleStopped, publisher.Snapshot().Lifecycle.State)
+	require.Equal(t, workerruntime.LifecycleStopped, replica.Snapshot().Lifecycle.State)
+}
+
+func TestProvideWorkerRuntimeRollsBackPublisherWhenReplicaStartupFails(t *testing.T) {
+	store := newServerSupportDecisionStore(t)
+	publisher := service.NewSchedulerSupportPublisherWorker(
+		&serverSchedulerDirtyRepo{},
+		&serverSchedulerOwnershipRepo{},
+		serverSchedulerDirtyProcessor{},
+		service.NewSupportDecisionPublisher(serverSupportDecisionGeneration{}, serverSupportDecisionSource{}, store, &config.Config{}),
+		store,
+		&config.Config{},
+	)
+	badReplica := service.NewSupportDecisionReplicaWorker(service.NewSupportDecisionReplica(nil, service.NewSupportDecisionAtomicReader(time.Hour)))
+	_, err := provideWorkerRuntime(
+		service.NewAccountExpiryService(nil, time.Hour),
+		service.NewIdempotencyCleanupService(nil, &config.Config{}),
+		service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1}),
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
+		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
+		publisher,
+		badReplica,
+	)
+	require.Error(t, err)
+	require.Equal(t, workerruntime.LifecycleStopped, publisher.Snapshot().Lifecycle.State)
 }
 
 func TestWorkerProvidersDoNotStartSupportDecisionGoroutines(t *testing.T) {

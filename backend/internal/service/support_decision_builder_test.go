@@ -3,12 +3,25 @@
 package service
 
 import (
+	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+type countingCancelContext struct {
+	context.Context
+	checks *atomic.Int64
+}
+
+func (c *countingCancelContext) Err() error {
+	c.checks.Add(1)
+	return c.Context.Err()
+}
 
 func supportDecisionTestSnapshot(accounts []Account, platform string, hot []string) *SupportDecisionConstructionSnapshot {
 	groupID := int64(42)
@@ -42,6 +55,37 @@ func buildSupportDecisionTestTable(t testing.TB, snapshot *SupportDecisionConstr
 	table, err := BuildSupportDecisionTable(snapshot, option)
 	require.NoError(t, err)
 	return table
+}
+
+func TestSupportDecisionBuilderCancelsDuringLargeInternalModelWork(t *testing.T) {
+	mapping := make(map[string]any, SupportDecisionExactLimit)
+	for i := 0; i < SupportDecisionExactLimit; i++ {
+		mapping[fmt.Sprintf("model-%04d", i)] = fmt.Sprintf("upstream-%04d", i)
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"model_mapping": mapping},
+	}}, PlatformOpenAI, nil)
+	parent, cancel := context.WithCancel(context.Background())
+	var checks atomic.Int64
+	ctx := &countingCancelContext{Context: parent, checks: &checks}
+	done := make(chan error, 1)
+	go func() {
+		_, err := BuildSupportDecisionTableContext(ctx, snapshot, SupportDecisionBuildOptions{Generation: 1})
+		done <- err
+	}()
+
+	require.Eventually(t, func() bool { return checks.Load() >= 100 }, time.Second, time.Millisecond)
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+		require.Less(t, time.Since(started), 250*time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("large internal builder work did not observe cancellation")
+	}
 }
 
 func TestSupportDecisionBuilderMatchesLegacyGenericOracle(t *testing.T) {

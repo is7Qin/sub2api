@@ -540,6 +540,18 @@ type SchedulerSnapshotDirtyProcessor interface {
 // ApplyDirtyWorkBatch applies only snapshot/cache effects. Dirty ownership,
 // repository failure state, publication, and acknowledgement belong to the
 // runtime-owned scheduler support publisher.
+func (s *SchedulerSnapshotService) RecordDirtyWorkListFailure(ctx context.Context) {
+	s.recordDirtyListFailure(ctx)
+}
+
+func (s *SchedulerSnapshotService) ClearDirtyWorkListFailure() {
+	s.clearDirtyListFailure()
+}
+
+func (s *SchedulerSnapshotService) CheckDirtyWorkLag(ctx context.Context) {
+	s.checkDirtyWorkLag(ctx)
+}
+
 func (s *SchedulerSnapshotService) ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult {
 	results := make([]SchedulerDirtyWorkResult, len(work))
 	accountWork := make([]SchedulerDirtyWork, 0, len(work))

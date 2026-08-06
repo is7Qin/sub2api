@@ -25,6 +25,12 @@ type supportDecisionActiveGenerationReader interface {
 	ActiveGeneration(context.Context) (uint64, error)
 }
 
+type schedulerDirtyWorkRecovery interface {
+	RecordDirtyWorkListFailure(context.Context)
+	ClearDirtyWorkListFailure()
+	CheckDirtyWorkLag(context.Context)
+}
+
 type schedulerSupportPublisherTimer interface {
 	Chan() <-chan time.Time
 	Stop()
@@ -67,6 +73,7 @@ type SchedulerSupportPublisherWorker struct {
 	processor    SchedulerSnapshotDirtyProcessor
 	publisher    supportDecisionBatchPublisher
 	active       supportDecisionActiveGenerationReader
+	recovery     schedulerDirtyWorkRecovery
 	pollInterval time.Duration
 	clock        schedulerSupportPublisherClock
 	descriptor   workerruntime.Descriptor
@@ -85,6 +92,9 @@ func NewSchedulerSupportPublisherWorker(dirty SchedulerDirtyWorkRepository, owne
 	}
 	worker := newSchedulerSupportPublisherWorker(dirty, ownership, processor, publisher, poll, schedulerSupportPublisherTimeClock{})
 	worker.active = store
+	if recovered, ok := processor.(schedulerDirtyWorkRecovery); ok {
+		worker.recovery = recovered
+	}
 	return worker
 }
 
@@ -192,7 +202,13 @@ func (w *SchedulerSupportPublisherWorker) ensureBootstrap(ctx context.Context) e
 		}
 		owner, acquired, acquireErr := w.ownership.TryAcquire(ctx)
 		if acquireErr != nil {
-			return fmt.Errorf("acquire scheduler ownership for support bootstrap: %w", acquireErr)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if !w.wait(ctx, w.pollInterval) {
+				return ctx.Err()
+			}
+			continue
 		}
 		if acquired && owner != nil {
 			termCtx, cancel := context.WithCancel(owner.Context())
@@ -294,11 +310,14 @@ func (w *SchedulerSupportPublisherWorker) processAvailableBatch(ctx context.Cont
 			break
 		}
 	}
-	work, err := w.dirty.List(ctx, dirtyWorkBatchSize)
+	work, err := w.listDirtyWork(ctx)
 	if err != nil {
-		return false, fmt.Errorf("list scheduler dirty work: %w", err)
+		return false, err
 	}
 	if len(work) == 0 {
+		if w.recovery != nil {
+			w.recovery.CheckDirtyWorkLag(ctx)
+		}
 		return false, nil
 	}
 	coalesced, err := w.coalesce(ctx, owner, work)
@@ -349,7 +368,26 @@ func (w *SchedulerSupportPublisherWorker) processAvailableBatch(ctx context.Cont
 			return true, err
 		}
 	}
+	if w.recovery != nil {
+		w.recovery.CheckDirtyWorkLag(ctx)
+	}
 	return true, nil
+}
+
+// listDirtyWork keeps the failure latch paired with every canonical list attempt,
+// including coalescing samples that discover newly promoted source work.
+func (w *SchedulerSupportPublisherWorker) listDirtyWork(ctx context.Context) ([]SchedulerDirtyWork, error) {
+	work, err := w.dirty.List(ctx, dirtyWorkBatchSize)
+	if err != nil {
+		if w.recovery != nil && ctx.Err() == nil {
+			w.recovery.RecordDirtyWorkListFailure(ctx)
+		}
+		return nil, fmt.Errorf("list scheduler dirty work: %w", err)
+	}
+	if w.recovery != nil {
+		w.recovery.ClearDirtyWorkListFailure()
+	}
+	return work, nil
 }
 
 func (w *SchedulerSupportPublisherWorker) failBatch(ctx context.Context, owner SchedulerOwnership, work []SchedulerDirtyWork, failure error) error {
@@ -408,7 +446,7 @@ func (w *SchedulerSupportPublisherWorker) coalesce(ctx context.Context, owner Sc
 				break
 			}
 		}
-		more, err := w.dirty.List(ctx, dirtyWorkBatchSize)
+		more, err := w.listDirtyWork(ctx)
 		if err != nil {
 			return nil, err
 		}

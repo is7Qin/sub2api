@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 	"github.com/stretchr/testify/require"
 )
@@ -19,6 +22,25 @@ type schedulerSupportPublisherTestProcessor struct {
 	calls        [][]SchedulerDirtyWork
 	block        <-chan struct{}
 	ignoreCancel bool
+	listFailures int
+	clears       int
+	lagChecks    int
+}
+
+func (p *schedulerSupportPublisherTestProcessor) RecordDirtyWorkListFailure(context.Context) {
+	p.mu.Lock()
+	p.listFailures++
+	p.mu.Unlock()
+}
+func (p *schedulerSupportPublisherTestProcessor) ClearDirtyWorkListFailure() {
+	p.mu.Lock()
+	p.clears++
+	p.mu.Unlock()
+}
+func (p *schedulerSupportPublisherTestProcessor) CheckDirtyWorkLag(context.Context) {
+	p.mu.Lock()
+	p.lagChecks++
+	p.mu.Unlock()
 }
 
 func (p *schedulerSupportPublisherTestProcessor) ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult {
@@ -112,13 +134,20 @@ func (o *schedulerSupportPublisherTestOwnership) Close() error {
 }
 
 type schedulerSupportPublisherTestOwnershipRepo struct {
+	mu       sync.Mutex
 	owner    SchedulerOwnership
 	acquired bool
 	calls    int
+	errs     []error
 }
 
 func (r *schedulerSupportPublisherTestOwnershipRepo) TryAcquire(ctx context.Context) (SchedulerOwnership, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls++
+	if index := r.calls - 1; index < len(r.errs) && r.errs[index] != nil {
+		return nil, false, r.errs[index]
+	}
 	if r.acquired {
 		return nil, false, nil
 	}
@@ -126,15 +155,42 @@ func (r *schedulerSupportPublisherTestOwnershipRepo) TryAcquire(ctx context.Cont
 	return r.owner, true, nil
 }
 
+func (r *schedulerSupportPublisherTestOwnershipRepo) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type schedulerSupportPublisherActiveStub struct {
+	mu          sync.Mutex
+	generations []uint64
+	calls       int
+}
+
+func (s *schedulerSupportPublisherActiveStub) ActiveGeneration(context.Context) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.calls
+	s.calls++
+	if index < len(s.generations) {
+		return s.generations[index], nil
+	}
+	return 0, nil
+}
+
 type schedulerSupportPublisherTestRepo struct {
 	mu           sync.Mutex
 	work         []SchedulerDirtyWork
 	lists        [][]SchedulerDirtyWork
+	listErrs     []error
+	fullRebuilds int
 	listCalls    int
 	promoteCalls int
 	acks         []SchedulerDirtyWork
 	failures     []SchedulerDirtyWork
 	failureErrs  []error
+	stats        SchedulerDirtyWorkStats
+	statsErr     error
 	ackHook      func(SchedulerDirtyWork)
 	promoteHook  func(int)
 }
@@ -150,17 +206,26 @@ func (r *schedulerSupportPublisherTestRepo) Promote(context.Context, SchedulerOw
 	}
 	return 0, nil
 }
-func (r *schedulerSupportPublisherTestRepo) RequestFullRebuild(context.Context) error { return nil }
+func (r *schedulerSupportPublisherTestRepo) RequestFullRebuild(context.Context) error {
+	r.mu.Lock()
+	r.fullRebuilds++
+	r.mu.Unlock()
+	return nil
+}
 func (r *schedulerSupportPublisherTestRepo) List(context.Context, int) ([]SchedulerDirtyWork, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	index := r.listCalls
+	r.listCalls++
+	if index < len(r.listErrs) && r.listErrs[index] != nil {
+		return nil, r.listErrs[index]
+	}
 	var out []SchedulerDirtyWork
-	if r.listCalls < len(r.lists) {
-		out = r.lists[r.listCalls]
+	if index < len(r.lists) {
+		out = r.lists[index]
 	} else {
 		out = r.work
 	}
-	r.listCalls++
 	return append([]SchedulerDirtyWork(nil), out...), nil
 }
 func (r *schedulerSupportPublisherTestRepo) RecordFailure(_ context.Context, _ SchedulerOwnership, w SchedulerDirtyWork, failure error) (bool, error) {
@@ -183,7 +248,9 @@ func (r *schedulerSupportPublisherTestRepo) Acknowledge(ctx context.Context, _ S
 	return true, nil
 }
 func (r *schedulerSupportPublisherTestRepo) PendingStats(context.Context) (SchedulerDirtyWorkStats, error) {
-	return SchedulerDirtyWorkStats{}, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stats, r.statsErr
 }
 
 type schedulerSupportPublisherTestTimer struct {
@@ -234,7 +301,11 @@ func (c *schedulerSupportPublisherTestClock) timerDuration(i int) time.Duration 
 }
 
 func newSchedulerSupportPublisherTestWorker(repo SchedulerDirtyWorkRepository, ownerRepo SchedulerOwnershipRepository, processor SchedulerSnapshotDirtyProcessor, publisher supportDecisionBatchPublisher, clock schedulerSupportPublisherClock) *SchedulerSupportPublisherWorker {
-	return newSchedulerSupportPublisherWorker(repo, ownerRepo, processor, publisher, time.Hour, clock)
+	worker := newSchedulerSupportPublisherWorker(repo, ownerRepo, processor, publisher, time.Hour, clock)
+	if recovered, ok := processor.(schedulerDirtyWorkRecovery); ok {
+		worker.recovery = recovered
+	}
+	return worker
 }
 
 func TestSchedulerSupportPublisherWorkerIsSoleDirtyWorkOwner(t *testing.T) {
@@ -249,7 +320,106 @@ func TestSchedulerSnapshotStartDoesNotLaunchDirtyOwner(t *testing.T) {
 	svc := newSchedulerSnapshotService(&outboxPollCache{}, nil, &schedulerSupportPublisherTestRepo{}, repo, nil, nil, nil)
 	svc.Start()
 	svc.Stop()
-	require.Zero(t, repo.calls)
+	require.Zero(t, repo.callCount())
+}
+
+func TestSchedulerSupportPublisherRetriesTransientBootstrapAcquisition(t *testing.T) {
+	owner := newSchedulerSupportPublisherTestOwnership()
+	repo := &schedulerSupportPublisherTestRepo{}
+	ownership := &schedulerSupportPublisherTestOwnershipRepo{owner: owner, errs: []error{errors.New("temporary ownership failure")}}
+	active := &schedulerSupportPublisherActiveStub{}
+	publisher := &schedulerSupportPublisherTestPublisher{gen: 1}
+	worker := newSchedulerSupportPublisherTestWorker(repo, ownership, &schedulerSupportPublisherTestProcessor{}, publisher, immediateSchedulerSupportPublisherClock{})
+	worker.active = active
+	worker.pollInterval = time.Millisecond
+	require.NoError(t, worker.Start(context.Background()))
+	require.Eventually(t, func() bool { return ownership.callCount() >= 2 }, time.Second, time.Millisecond)
+	require.Equal(t, 1, publisher.calls)
+	require.NoError(t, worker.Stop(context.Background()))
+}
+
+func newSchedulerSupportPublisherRecovery(repo SchedulerDirtyWorkRepository, failures, rebuildSeconds, backlogRows int) *SchedulerSnapshotService {
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.OutboxLagRebuildFailures = failures
+	cfg.Gateway.Scheduling.OutboxLagRebuildSeconds = rebuildSeconds
+	cfg.Gateway.Scheduling.OutboxBacklogRebuildRows = backlogRows
+	return newSchedulerSnapshotService(nil, nil, repo, nil, nil, nil, cfg)
+}
+
+func TestSchedulerSupportPublisherRepeatedListFailuresRequestOneDurableFullRebuild(t *testing.T) {
+	owner := newSchedulerSupportPublisherTestOwnership()
+	repo := &schedulerSupportPublisherTestRepo{listErrs: []error{errors.New("list failure"), errors.New("list failure"), errors.New("list failure")}}
+	worker := newSchedulerSupportPublisherTestWorker(repo, nil, &schedulerSupportPublisherTestProcessor{}, &schedulerSupportPublisherTestPublisher{gen: 1}, immediateSchedulerSupportPublisherClock{})
+	worker.recovery = newSchedulerSupportPublisherRecovery(repo, 2, 0, 0)
+
+	for range 3 {
+		require.Error(t, worker.processAvailable(owner.Context(), owner))
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, 3, repo.listCalls)
+	require.Equal(t, 1, repo.fullRebuilds)
+}
+
+func TestSchedulerSupportPublisherSuccessfulListRearmsFailureAccounting(t *testing.T) {
+	owner := newSchedulerSupportPublisherTestOwnership()
+	repo := &schedulerSupportPublisherTestRepo{listErrs: []error{errors.New("first"), nil, errors.New("second"), errors.New("third")}}
+	worker := newSchedulerSupportPublisherTestWorker(repo, nil, &schedulerSupportPublisherTestProcessor{}, &schedulerSupportPublisherTestPublisher{gen: 1}, immediateSchedulerSupportPublisherClock{})
+	worker.recovery = newSchedulerSupportPublisherRecovery(repo, 2, 0, 0)
+
+	require.Error(t, worker.processAvailable(owner.Context(), owner))
+	require.NoError(t, worker.processAvailable(owner.Context(), owner))
+	require.Error(t, worker.processAvailable(owner.Context(), owner))
+	repo.mu.Lock()
+	require.Zero(t, repo.fullRebuilds)
+	repo.mu.Unlock()
+	require.Error(t, worker.processAvailable(owner.Context(), owner))
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, 4, repo.listCalls)
+	require.Equal(t, 1, repo.fullRebuilds)
+}
+
+func TestSchedulerSupportPublisherAgedOrLargeBacklogRequestsDurableFullRebuild(t *testing.T) {
+	tests := []struct {
+		name  string
+		stats SchedulerDirtyWorkStats
+	}{
+		{name: "aged", stats: SchedulerDirtyWorkStats{Count: 1, OldestUpdatedAt: func() *time.Time { value := time.Now().Add(-time.Hour); return &value }()}},
+		{name: "large", stats: SchedulerDirtyWorkStats{Count: 100}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner := newSchedulerSupportPublisherTestOwnership()
+			repo := &schedulerSupportPublisherTestRepo{stats: tt.stats}
+			worker := newSchedulerSupportPublisherTestWorker(repo, nil, &schedulerSupportPublisherTestProcessor{}, &schedulerSupportPublisherTestPublisher{gen: 1}, immediateSchedulerSupportPublisherClock{})
+			worker.recovery = newSchedulerSupportPublisherRecovery(repo, 2, 10, 10)
+
+			require.NoError(t, worker.processAvailable(owner.Context(), owner))
+			require.NoError(t, worker.processAvailable(owner.Context(), owner))
+			repo.mu.Lock()
+			defer repo.mu.Unlock()
+			require.Equal(t, 1, repo.fullRebuilds)
+		})
+	}
+}
+
+func TestSchedulerSupportPublisherCoalescingListFailuresAreAccounted(t *testing.T) {
+	owner := newSchedulerSupportPublisherTestOwnership()
+	item := SchedulerDirtyWork{Kind: 1, EntityID: 1, Generation: 1}
+	repo := &schedulerSupportPublisherTestRepo{
+		lists:    [][]SchedulerDirtyWork{{item}},
+		listErrs: []error{nil, errors.New("coalescing list failure")},
+	}
+	worker := newSchedulerSupportPublisherTestWorker(repo, nil, &schedulerSupportPublisherTestProcessor{}, &schedulerSupportPublisherTestPublisher{gen: 1}, immediateSchedulerSupportPublisherClock{})
+	worker.recovery = newSchedulerSupportPublisherRecovery(repo, 1, 0, 0)
+
+	require.Error(t, worker.processAvailable(owner.Context(), owner))
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, 2, repo.listCalls)
+	require.Equal(t, 1, repo.fullRebuilds)
+	require.Empty(t, repo.acks)
 }
 
 func TestSchedulerSupportPublisherDebouncesFromFirstItemFor100Milliseconds(t *testing.T) {
@@ -410,6 +580,88 @@ func TestSchedulerSupportPublisherStopsOnOwnershipLoss(t *testing.T) {
 	w := newSchedulerSupportPublisherTestWorker(repo, nil, &schedulerSupportPublisherTestProcessor{}, &schedulerSupportPublisherTestPublisher{gen: 1}, immediateSchedulerSupportPublisherClock{})
 	require.ErrorIs(t, w.processAvailable(owner.Context(), owner), context.Canceled)
 	require.Empty(t, repo.acks)
+}
+
+type schedulerSupportPublisherBuildGeneration struct{}
+
+func (schedulerSupportPublisherBuildGeneration) NextSupportDecisionGeneration(context.Context) (uint64, error) {
+	return 1, nil
+}
+
+type schedulerSupportPublisherBuildSource struct {
+	snapshot *SupportDecisionConstructionSnapshot
+}
+
+func (s schedulerSupportPublisherBuildSource) Load(context.Context) (*SupportDecisionConstructionSnapshot, error) {
+	return s.snapshot, nil
+}
+
+type schedulerSupportPublisherBuildStore struct {
+	puts      atomic.Int64
+	activates atomic.Int64
+}
+
+func (s *schedulerSupportPublisherBuildStore) PutDocument(context.Context, uint64, []byte, time.Duration) error {
+	s.puts.Add(1)
+	return nil
+}
+func (s *schedulerSupportPublisherBuildStore) Activate(context.Context, uint64) (bool, error) {
+	s.activates.Add(1)
+	return true, nil
+}
+func (*schedulerSupportPublisherBuildStore) ActiveGeneration(context.Context) (uint64, error) {
+	return 0, nil
+}
+func (*schedulerSupportPublisherBuildStore) GetDocument(context.Context, uint64) ([]byte, error) {
+	return nil, ErrSupportDecisionDocumentNotFound
+}
+func (*schedulerSupportPublisherBuildStore) PublishWakeup(context.Context, uint64) error { return nil }
+func (*schedulerSupportPublisherBuildStore) SubscribeWakeups(context.Context) (SupportDecisionWakeupSubscription, error) {
+	return nil, errors.New("unexpected subscription")
+}
+
+func TestSchedulerSupportPublisherCancellationDuringRealBuildPreventsRedisAndReleasesOwnership(t *testing.T) {
+	mapping := make(map[string]any, SupportDecisionExactLimit)
+	for i := 0; i < SupportDecisionExactLimit; i++ {
+		mapping[fmt.Sprintf("model-%04d", i)] = fmt.Sprintf("upstream-%04d", i)
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"model_mapping": mapping},
+	}}, PlatformOpenAI, nil)
+	var checks atomic.Int64
+	buildEntered := make(chan struct{})
+	store := &schedulerSupportPublisherBuildStore{}
+	publisher := NewSupportDecisionPublisher(schedulerSupportPublisherBuildGeneration{}, schedulerSupportPublisherBuildSource{snapshot: snapshot}, store, &config.Config{})
+	publisher.buildContext = func(ctx context.Context, snapshot *SupportDecisionConstructionSnapshot, options SupportDecisionBuildOptions) (*SupportDecisionTable, error) {
+		select {
+		case <-buildEntered:
+		default:
+			close(buildEntered)
+		}
+		return BuildSupportDecisionTableContext(&countingCancelContext{Context: ctx, checks: &checks}, snapshot, options)
+	}
+	owner := newSchedulerSupportPublisherTestOwnership()
+	repo := &schedulerSupportPublisherTestRepo{work: []SchedulerDirtyWork{{Kind: 1, EntityID: 1, Generation: 1}}}
+	worker := newSchedulerSupportPublisherTestWorker(repo, &schedulerSupportPublisherTestOwnershipRepo{owner: owner}, &schedulerSupportPublisherTestProcessor{}, publisher, immediateSchedulerSupportPublisherClock{})
+	require.NoError(t, worker.Start(context.Background()))
+	select {
+	case <-buildEntered:
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not enter the real builder")
+	}
+	require.Eventually(t, func() bool { return checks.Load() >= 100 }, time.Second, time.Millisecond)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, worker.Stop(stopCtx))
+	require.Zero(t, store.puts.Load())
+	require.Zero(t, store.activates.Load())
+	require.Empty(t, repo.acks)
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	require.Equal(t, 1, owner.closes)
 }
 
 func TestSchedulerSupportPublisherStopCancelsBlockedBuild(t *testing.T) {

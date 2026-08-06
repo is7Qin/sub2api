@@ -79,18 +79,27 @@ func BuildSupportDecisionTableContext(ctx context.Context, snapshot *SupportDeci
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		built, err := buildSupportDecisionScope(&scopes[i], options.OpenAIWS)
+		built, err := buildSupportDecisionScopeContext(ctx, &scopes[i], options.OpenAIWS)
 		if err != nil {
 			return nil, err
 		}
 		for model := range built.hot {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			internSet[model] = struct{}{}
 		}
 		for model, rule := range built.exact {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			internSet[model] = struct{}{}
 			internSet[rule.target] = struct{}{}
 		}
 		for prefix, rule := range built.wildcard {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			internSet[prefix] = struct{}{}
 			internSet[rule.target] = struct{}{}
 		}
@@ -106,16 +115,22 @@ func BuildSupportDecisionTableContext(ctx context.Context, snapshot *SupportDeci
 		temporary = append(temporary, built)
 	}
 
-	if err := validateSupportDecisionInternSet(internSet); err != nil {
+	if err := validateSupportDecisionInternSetContext(ctx, internSet); err != nil {
 		return nil, err
 	}
 	interned := make([]string, 0, len(internSet))
 	for value := range internSet {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		interned = append(interned, value)
 	}
 	sort.Strings(interned)
 	ordinals := make(map[string]uint32, len(interned))
 	for i, value := range interned {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		ordinals[value] = uint32(i)
 	}
 
@@ -129,7 +144,10 @@ func BuildSupportDecisionTableContext(ctx context.Context, snapshot *SupportDeci
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		scope := materializeSupportDecisionScope(temporary[i], ordinals)
+		scope, err := materializeSupportDecisionScopeContext(ctx, temporary[i], ordinals)
+		if err != nil {
+			return nil, err
+		}
 		if err := validateSupportDecisionScopeBudgets(&scope, interned); err != nil {
 			return nil, err
 		}
@@ -225,6 +243,9 @@ func collectSupportDecisionScopesContext(ctx context.Context, snapshot *SupportD
 	}
 	platformSet := make(map[string]struct{})
 	for i := range snapshot.Accounts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		platformSet[snapshot.Accounts[i].Platform] = struct{}{}
 	}
 	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformAntigravity} {
@@ -239,6 +260,9 @@ func collectSupportDecisionScopesContext(ctx context.Context, snapshot *SupportD
 		ungrouped := make([]*Account, 0)
 		all := make([]*Account, 0)
 		for i := range snapshot.Accounts {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			account := &snapshot.Accounts[i]
 			if !legacyAccountAllowedForPlatform(
 				account,
@@ -271,6 +295,10 @@ func newSupportDecisionBuildScope(key supportDecisionScopeKey, group *SupportDec
 }
 
 func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config.GatewayOpenAIWSConfig) (supportDecisionTemporaryScope, error) {
+	return buildSupportDecisionScopeContext(context.Background(), scope, wsConfig)
+}
+
+func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisionBuildScope, wsConfig config.GatewayOpenAIWSConfig) (supportDecisionTemporaryScope, error) {
 	openAI := scope.key.Platform == PlatformOpenAI
 	coordinateCount := supportDecisionGenericCoordinateCount
 	if openAI {
@@ -279,13 +307,22 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 	exactSet := make(map[string]struct{}, len(scope.exact))
 	wildcardSet := make(map[string]struct{})
 	for _, model := range scope.exact {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
 		if err := validateSupportDecisionModel(model); err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
 		exactSet[model] = struct{}{}
 	}
 	for _, account := range scope.accounts {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
 		for pattern := range account.GetModelMapping() {
+			if err := ctx.Err(); err != nil {
+				return supportDecisionTemporaryScope{}, err
+			}
 			pattern = strings.TrimSpace(pattern)
 			if pattern == "" {
 				continue
@@ -316,6 +353,9 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 		}
 		if openAI {
 			for pattern := range account.GetCompactModelMapping() {
+				if err := ctx.Err(); err != nil {
+					return supportDecisionTemporaryScope{}, err
+				}
 				pattern = strings.TrimSpace(pattern)
 				if strings.HasSuffix(pattern, "*") {
 					prefix := strings.TrimSuffix(pattern, "*")
@@ -349,12 +389,26 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 		wildcard: make(map[string]supportDecisionTemporaryRule, len(wildcardSet)),
 	}
 	for _, model := range scope.hot {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
 		if err := validateSupportDecisionModel(model); err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
-		built.hot[model] = evaluateSupportDecisionModel(scope, model, coordinateCount, wsConfig)
+		profile, err := evaluateSupportDecisionModelContext(ctx, scope, model, coordinateCount, wsConfig)
+		if err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+		built.hot[model] = profile
 	}
-	for _, alias := range supportDecisionNormalizedAliases(scope) {
+	aliases, err := supportDecisionNormalizedAliasesContext(ctx, scope)
+	if err != nil {
+		return supportDecisionTemporaryScope{}, err
+	}
+	for _, alias := range aliases {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
 		if err := validateSupportDecisionModel(alias); err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
@@ -364,27 +418,41 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, len(exactSet), SupportDecisionExactLimit)
 	}
 	for model := range exactSet {
-		target, err := supportDecisionRuleTarget(scope, model, false)
+		if err := ctx.Err(); err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+		target, err := supportDecisionRuleTargetContext(ctx, scope, model, false)
 		if err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
-		built.exact[model] = supportDecisionTemporaryRule{target: target, profile: evaluateSupportDecisionModel(scope, model, coordinateCount, wsConfig)}
+		profile, err := evaluateSupportDecisionModelContext(ctx, scope, model, coordinateCount, wsConfig)
+		if err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+		built.exact[model] = supportDecisionTemporaryRule{target: target, profile: profile}
 	}
 	for prefix := range wildcardSet {
-		target, err := supportDecisionRuleTarget(scope, prefix, true)
+		if err := ctx.Err(); err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+		target, err := supportDecisionRuleTargetContext(ctx, scope, prefix, true)
 		if err != nil {
 			return supportDecisionTemporaryScope{}, err
 		}
 		// Terminal wildcard mappings have a constant target under the frozen mapper.
 		probe := prefix + "__support_decision_probe__"
-		rule := supportDecisionTemporaryRule{target: target, profile: evaluateSupportDecisionModel(scope, probe, coordinateCount, wsConfig)}
+		profile, err := evaluateSupportDecisionModelContext(ctx, scope, probe, coordinateCount, wsConfig)
+		if err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+		rule := supportDecisionTemporaryRule{target: target, profile: profile}
 		if prefix == "" {
 			built.catchAll = &rule
 		} else {
 			built.wildcard[prefix] = rule
 		}
 	}
-	channelExact, channelWildcard, channelCatchAll, err := supportDecisionChannelModelPatterns(scope)
+	channelExact, channelWildcard, channelCatchAll, err := supportDecisionChannelModelPatternsContext(ctx, scope)
 	if err != nil {
 		return supportDecisionTemporaryScope{}, err
 	}
@@ -405,15 +473,33 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, len(built.exact)+len(built.channelExact), SupportDecisionExactLimit)
 	}
 	hasChannelPolicy := built.channelCatchAll || len(built.channelExact) > 0 || len(built.channelWildcard) > 0
-	built.fallback = evaluateSupportDecisionWithoutModel(scope, coordinateCount, wsConfig, false, hasChannelPolicy)
+	built.fallback, err = evaluateSupportDecisionWithoutModelContext(ctx, scope, coordinateCount, wsConfig, false, hasChannelPolicy)
+	if err != nil {
+		return supportDecisionTemporaryScope{}, err
+	}
 	if hasChannelPolicy {
-		built.channelAllowed = evaluateSupportDecisionWithoutModel(scope, coordinateCount, wsConfig, true, true)
+		built.channelAllowed, err = evaluateSupportDecisionWithoutModelContext(ctx, scope, coordinateCount, wsConfig, true, true)
+		if err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
 	}
 	if openAI {
-		built.knownCodexSupport = supportDecisionDefaultOAuthCodexSupport(scope, coordinateCount)
-	} else if supportDecisionScopeHasBedrock(scope) {
-		known := evaluateSupportDecisionModel(scope, "anthropic.claude-sonnet-4-5-20250929-v1:0", coordinateCount, wsConfig)
-		built.knownBedrockSupport = known.SupportBits
+		built.knownCodexSupport, err = supportDecisionDefaultOAuthCodexSupportContext(ctx, scope, coordinateCount)
+		if err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+	} else {
+		hasBedrock, err := supportDecisionScopeHasBedrockContext(ctx, scope)
+		if err != nil {
+			return supportDecisionTemporaryScope{}, err
+		}
+		if hasBedrock {
+			known, err := evaluateSupportDecisionModelContext(ctx, scope, "anthropic.claude-sonnet-4-5-20250929-v1:0", coordinateCount, wsConfig)
+			if err != nil {
+				return supportDecisionTemporaryScope{}, err
+			}
+			built.knownBedrockSupport = known.SupportBits
+		}
 	}
 
 	hotBytes := profilesSize(built.hot) + len(built.fallback.EligibleBits)
@@ -424,7 +510,15 @@ func buildSupportDecisionScope(scope *supportDecisionBuildScope, wsConfig config
 }
 
 func supportDecisionDefaultOAuthCodexSupport(scope *supportDecisionBuildScope, coordinateCount int) []byte {
+	bits, _ := supportDecisionDefaultOAuthCodexSupportContext(context.Background(), scope, coordinateCount)
+	return bits
+}
+
+func supportDecisionDefaultOAuthCodexSupportContext(ctx context.Context, scope *supportDecisionBuildScope, coordinateCount int) ([]byte, error) {
 	for _, account := range scope.accounts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !account.IsOpenAIOAuth() || len(account.GetModelMapping()) != 0 {
 			continue
 		}
@@ -432,14 +526,21 @@ func supportDecisionDefaultOAuthCodexSupport(scope *supportDecisionBuildScope, c
 		// mappings stay in exact/wildcard profiles and must not authorize aliases.
 		bits := make([]byte, (coordinateCount+7)/8)
 		for coordinate := 0; coordinate < coordinateCount; coordinate++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			setBit(bits, coordinate)
 		}
-		return bits
+		return bits, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) (exactPatterns, wildcardPatterns []string, catchAll bool, err error) {
+	return supportDecisionChannelModelPatternsContext(context.Background(), scope)
+}
+
+func supportDecisionChannelModelPatternsContext(ctx context.Context, scope *supportDecisionBuildScope) (exactPatterns, wildcardPatterns []string, catchAll bool, err error) {
 	if scope.channel == nil || scope.channel.Status != StatusActive ||
 		!scope.channel.RestrictModels ||
 		scope.channel.BillingModelSource != BillingModelSourceUpstream {
@@ -447,10 +548,16 @@ func supportDecisionChannelModelPatterns(scope *supportDecisionBuildScope) (exac
 	}
 	exact, wildcard := make(map[string]struct{}), make(map[string]struct{})
 	for _, pricing := range scope.channel.PricingModels {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, false, err
+		}
 		if pricing.Platform != scope.key.Platform {
 			continue
 		}
 		for _, model := range pricing.Models {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, false, err
+			}
 			model = strings.ToLower(strings.TrimSpace(model))
 			if model == "" {
 				continue
@@ -486,19 +593,38 @@ func sortedStringSet(values map[string]struct{}) []string {
 }
 
 func supportDecisionScopeHasBedrock(scope *supportDecisionBuildScope) bool {
+	result, _ := supportDecisionScopeHasBedrockContext(context.Background(), scope)
+	return result
+}
+
+func supportDecisionScopeHasBedrockContext(ctx context.Context, scope *supportDecisionBuildScope) (bool, error) {
 	for _, account := range scope.accounts {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if account.IsBedrock() && legacyAccountAllowedForPlatform(account, scope.key.Platform, scopeAllowsMixedScheduling(scope)) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func supportDecisionNormalizedAliases(scope *supportDecisionBuildScope) []string {
+	result, _ := supportDecisionNormalizedAliasesContext(context.Background(), scope)
+	return result
+}
+
+func supportDecisionNormalizedAliasesContext(ctx context.Context, scope *supportDecisionBuildScope) ([]string, error) {
 	aliases := make(map[string]struct{})
 	for _, account := range scope.accounts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if account.IsBedrock() {
 			for model := range domain.DefaultBedrockModelMapping {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				aliases[model] = struct{}{}
 			}
 		}
@@ -509,6 +635,9 @@ func supportDecisionNormalizedAliases(scope *supportDecisionBuildScope) []string
 			}
 			if account.Type == AccountTypeServiceAccount {
 				for mapped := range mapping {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
 					if strings.Contains(mapped, "@") {
 						aliases[strings.Replace(mapped, "@", "-", 1)] = struct{}{}
 					}
@@ -517,6 +646,9 @@ func supportDecisionNormalizedAliases(scope *supportDecisionBuildScope) []string
 		}
 		if account.Platform == PlatformAntigravity {
 			for model := range mapping {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				// Wildcard aliases are materialized as prefixes above, without the marker.
 				if strings.HasSuffix(model, "*") {
 					continue
@@ -530,10 +662,14 @@ func supportDecisionNormalizedAliases(scope *supportDecisionBuildScope) []string
 		result = append(result, alias)
 	}
 	sort.Strings(result)
-	return result
+	return result, nil
 }
 
 func supportDecisionRuleTarget(scope *supportDecisionBuildScope, key string, wildcard bool) (string, error) {
+	return supportDecisionRuleTargetContext(context.Background(), scope, key, wildcard)
+}
+
+func supportDecisionRuleTargetContext(ctx context.Context, scope *supportDecisionBuildScope, key string, wildcard bool) (string, error) {
 	probe := key
 	mappingKey := key
 	if wildcard {
@@ -544,6 +680,9 @@ func supportDecisionRuleTarget(scope *supportDecisionBuildScope, key string, wil
 	}
 	targets := make(map[string]struct{})
 	for _, account := range scope.accounts {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		mapping := account.GetModelMapping()
 		pattern := mappingKey
 		if wildcard {
@@ -568,6 +707,9 @@ func supportDecisionRuleTarget(scope *supportDecisionBuildScope, key string, wil
 	}
 	if len(targets) == 1 {
 		for target := range targets {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			return target, nil
 		}
 	}
@@ -577,70 +719,106 @@ func supportDecisionRuleTarget(scope *supportDecisionBuildScope, key string, wil
 }
 
 func evaluateSupportDecisionModel(scope *supportDecisionBuildScope, model string, coordinateCount int, wsConfig config.GatewayOpenAIWSConfig) supportDecisionProfile {
+	profile, _ := evaluateSupportDecisionModelContext(context.Background(), scope, model, coordinateCount, wsConfig)
+	return profile
+}
+
+func evaluateSupportDecisionModelContext(ctx context.Context, scope *supportDecisionBuildScope, model string, coordinateCount int, wsConfig config.GatewayOpenAIWSConfig) (supportDecisionProfile, error) {
 	byteCount := (coordinateCount + 7) / 8
 	profile := supportDecisionProfile{SupportBits: make([]byte, byteCount), EligibleBits: make([]byte, byteCount)}
 	if scope.key.Platform == PlatformOpenAI {
 		// OpenAI model support is independent of every later coordinate predicate.
 		// Resolve it once so large exact directories do not repeat mapping work 288 times.
 		for _, account := range scope.accounts {
+			if err := ctx.Err(); err != nil {
+				return supportDecisionProfile{}, err
+			}
 			if account.IsOpenAI() && account.IsModelSupported(model) {
 				for coordinate := 0; coordinate < coordinateCount; coordinate++ {
+					if err := ctx.Err(); err != nil {
+						return supportDecisionProfile{}, err
+					}
 					setBit(profile.SupportBits, coordinate)
 				}
-				return profile
+				return profile, nil
 			}
 		}
 	}
 	for coordinate := 0; coordinate < coordinateCount; coordinate++ {
-		support, eligible := evaluateSupportDecisionCoordinate(scope, model, coordinate, wsConfig)
+		if err := ctx.Err(); err != nil {
+			return supportDecisionProfile{}, err
+		}
+		support, eligible, err := evaluateSupportDecisionCoordinateContext(ctx, scope, model, coordinate, wsConfig)
+		if err != nil {
+			return supportDecisionProfile{}, err
+		}
 		if support {
 			setBit(profile.SupportBits, coordinate)
 		} else if eligible {
 			setBit(profile.EligibleBits, coordinate)
 		}
 	}
-	return profile
+	return profile, nil
 }
 
 func evaluateSupportDecisionCoordinate(scope *supportDecisionBuildScope, model string, coordinate int, wsConfig config.GatewayOpenAIWSConfig) (bool, bool) {
+	support, eligible, _ := evaluateSupportDecisionCoordinateContext(context.Background(), scope, model, coordinate, wsConfig)
+	return support, eligible
+}
+
+func evaluateSupportDecisionCoordinateContext(ctx context.Context, scope *supportDecisionBuildScope, model string, coordinate int, wsConfig config.GatewayOpenAIWSConfig) (bool, bool, error) {
 	if scope.key.Platform == PlatformOpenAI {
 		query := decodeOpenAICoordinate(coordinate)
 		otherwiseEligible := false
 		for _, account := range scope.accounts {
+			if err := ctx.Err(); err != nil {
+				return false, false, err
+			}
 			if !account.IsOpenAI() {
 				continue
 			}
 			if account.IsModelSupported(model) {
-				return true, false
+				return true, false, nil
 			}
 			if supportDecisionAccountEligible(scope, account, model, query, wsConfig) {
 				otherwiseEligible = true
 			}
 		}
-		return false, otherwiseEligible
+		return false, otherwiseEligible, nil
 	}
 	requiresPrivacy := coordinate&1 != 0
 	thinkingEnabled := coordinate&2 != 0
 	otherwiseEligible := false
 	for _, account := range scope.accounts {
+		if err := ctx.Err(); err != nil {
+			return false, false, err
+		}
 		if !legacyAccountAllowedForPlatform(account, scope.key.Platform, scopeAllowsMixedScheduling(scope)) {
 			continue
 		}
 		if supportDecisionGenericModelSupported(account, model, thinkingEnabled) {
-			return true, false
+			return true, false, nil
 		}
 		query := SupportDecisionQuery{RequiresPrivacy: requiresPrivacy, ThinkingEnabled: thinkingEnabled}
 		if supportDecisionAccountEligible(scope, account, model, query, wsConfig) {
 			otherwiseEligible = true
 		}
 	}
-	return false, otherwiseEligible
+	return false, otherwiseEligible, nil
 }
 
 func evaluateSupportDecisionWithoutModel(scope *supportDecisionBuildScope, coordinateCount int, wsConfig config.GatewayOpenAIWSConfig, channelAllowed, hasChannelPolicy bool) supportDecisionProfile {
+	profile, _ := evaluateSupportDecisionWithoutModelContext(context.Background(), scope, coordinateCount, wsConfig, channelAllowed, hasChannelPolicy)
+	return profile
+}
+
+func evaluateSupportDecisionWithoutModelContext(ctx context.Context, scope *supportDecisionBuildScope, coordinateCount int, wsConfig config.GatewayOpenAIWSConfig, channelAllowed, hasChannelPolicy bool) (supportDecisionProfile, error) {
 	byteCount := (coordinateCount + 7) / 8
 	profile := supportDecisionProfile{SupportBits: make([]byte, byteCount), EligibleBits: make([]byte, byteCount)}
 	for coordinate := 0; coordinate < coordinateCount; coordinate++ {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionProfile{}, err
+		}
 		query := SupportDecisionQuery{}
 		if scope.key.Platform == PlatformOpenAI {
 			query = decodeOpenAICoordinate(coordinate)
@@ -649,6 +827,9 @@ func evaluateSupportDecisionWithoutModel(scope *supportDecisionBuildScope, coord
 			query.ThinkingEnabled = coordinate&2 != 0
 		}
 		for _, account := range scope.accounts {
+			if err := ctx.Err(); err != nil {
+				return supportDecisionProfile{}, err
+			}
 			if scope.key.Platform == PlatformOpenAI {
 				if !account.IsOpenAI() {
 					continue
@@ -666,7 +847,7 @@ func evaluateSupportDecisionWithoutModel(scope *supportDecisionBuildScope, coord
 			}
 		}
 	}
-	return profile
+	return profile, nil
 }
 
 func supportDecisionAccountSupportsEveryModel(scope *supportDecisionBuildScope, account *Account) bool {
@@ -816,18 +997,35 @@ func decodeOpenAICoordinate(coordinate int) SupportDecisionQuery {
 }
 
 func materializeSupportDecisionScope(scope supportDecisionTemporaryScope, ordinals map[string]uint32) supportDecisionScopeTable {
+	result, _ := materializeSupportDecisionScopeContext(context.Background(), scope, ordinals)
+	return result
+}
+
+func materializeSupportDecisionScopeContext(ctx context.Context, scope supportDecisionTemporaryScope, ordinals map[string]uint32) (supportDecisionScopeTable, error) {
 	result := supportDecisionScopeTable{Key: scope.key, OpenAI: scope.openAI, ChannelCatchAll: scope.channelCatchAll, ChannelAllowed: scope.channelAllowed, KnownCodexSupport: scope.knownCodexSupport, KnownBedrockSupport: scope.knownBedrockSupport, Default: scope.fallback, Exact: make(map[string]supportDecisionExactValue, len(scope.exact))}
 	for _, model := range scope.channelExact {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionScopeTable{}, err
+		}
 		result.ChannelExact = append(result.ChannelExact, ordinals[model])
 	}
 	for _, prefix := range scope.channelWildcard {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionScopeTable{}, err
+		}
 		result.ChannelWildcard = append(result.ChannelWildcard, ordinals[prefix])
 	}
 	hotModels := sortedProfileKeys(scope.hot)
 	for _, model := range hotModels {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionScopeTable{}, err
+		}
 		result.Hot = append(result.Hot, supportDecisionHotModel{StringID: ordinals[model], Profile: scope.hot[model]})
 	}
 	for _, model := range sortedRuleKeys(scope.exact) {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionScopeTable{}, err
+		}
 		rule := scope.exact[model]
 		value := supportDecisionExactValue{TargetID: ordinals[rule.target], Profile: rule.profile}
 		result.Exact[model] = value
@@ -841,13 +1039,16 @@ func materializeSupportDecisionScope(scope supportDecisionTemporaryScope, ordina
 		return prefixes[i] < prefixes[j]
 	})
 	for _, prefix := range prefixes {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionScopeTable{}, err
+		}
 		rule := scope.wildcard[prefix]
 		result.Wildcard = append(result.Wildcard, supportDecisionWildcard{PrefixID: ordinals[prefix], TargetID: ordinals[rule.target], Profile: rule.profile})
 	}
 	if scope.catchAll != nil {
 		result.CatchAll = &supportDecisionCatchAll{TargetID: ordinals[scope.catchAll.target], Profile: scope.catchAll.profile}
 	}
-	return result
+	return result, nil
 }
 
 func sortedProfileKeys(values map[string]supportDecisionProfile) []string {
@@ -879,7 +1080,14 @@ func validateSupportDecisionModel(model string) error {
 }
 
 func validateSupportDecisionInternSet(values map[string]struct{}) error {
+	return validateSupportDecisionInternSetContext(context.Background(), values)
+}
+
+func validateSupportDecisionInternSetContext(ctx context.Context, values map[string]struct{}) error {
 	for value := range values {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := validateSupportDecisionModel(value); err != nil {
 			return fmt.Errorf("invalid support decision interned string: %w", err)
 		}

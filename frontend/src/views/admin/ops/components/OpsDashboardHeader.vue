@@ -7,6 +7,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api'
 import { opsAPI, type OpsDashboardOverview, type OpsMetricThresholds, type OpsRealtimeTrafficSummary } from '@/api/admin/ops'
+import type { OpsBillingOutboxHealth } from '@/api/admin/ops'
 import type { OpsRequestDetailsPreset } from './OpsRequestDetailsModal.vue'
 import { useAdminSettingsStore } from '@/stores'
 import { formatNumber } from '@/utils/format'
@@ -27,6 +28,7 @@ interface Props {
   fullscreen?: boolean
   customStartTime?: string | null
   customEndTime?: string | null
+  billingHealth?: OpsBillingOutboxHealth | null
 }
 
 interface Emits {
@@ -538,6 +540,36 @@ const diagnosisReport = computed<DiagnosisItem[]>(() => {
         message: t('admin.ops.diagnosis.memoryHigh', { usage: memPct.toFixed(1) }),
         impact: t('admin.ops.diagnosis.memoryHighImpact'),
         action: t('admin.ops.diagnosis.memoryHighAction')
+      })
+    }
+  }
+
+  // Billing outbox worker 诊断（异常才显示；health 未拉到时无此诊断）
+  const bh = props.billingHealth ?? null
+  if (bh) {
+    if (bh.circuit_open) {
+      report.push({
+        type: 'critical',
+        message: t('admin.ops.diagnosis.circuitBreakerOpen'),
+        impact: t('admin.ops.diagnosis.circuitBreakerOpenImpact'),
+        action: t('admin.ops.diagnosis.circuitBreakerOpenAction')
+      })
+    }
+    if (bh.terminal_alert) {
+      report.push({
+        type: 'critical',
+        message: t('admin.ops.diagnosis.terminalAlert'),
+        impact: t('admin.ops.diagnosis.terminalAlertImpact'),
+        action: t('admin.ops.diagnosis.terminalAlertAction')
+      })
+    }
+    const lagSec = (bh.oldest_lag ?? 0) / 1e9
+    if (lagSec > 3600) {
+      report.push({
+        type: 'warning',
+        message: t('admin.ops.diagnosis.billingLagCritical', { lag: Math.floor(lagSec / 3600) }),
+        impact: t('admin.ops.diagnosis.billingLagCriticalImpact'),
+        action: t('admin.ops.diagnosis.billingLagCriticalAction')
       })
     }
   }

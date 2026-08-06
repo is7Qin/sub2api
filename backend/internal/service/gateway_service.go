@@ -738,6 +738,7 @@ type GatewayService struct {
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	billingOutboxRepo     BillingOutboxRepository
+	supportDecisionReader SupportDecisionReader
 }
 
 // NewGatewayService creates a new GatewayService
@@ -770,6 +771,7 @@ func NewGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 	usageRecordWorkerPool *UsageRecordWorkerPool,
+	supportDecisionReader SupportDecisionReader,
 ) *GatewayService {
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
@@ -808,6 +810,7 @@ func NewGatewayService(
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
 		usageRecordWorkerPool: usageRecordWorkerPool,
 		billingOutboxRepo:     nil,
+		supportDecisionReader: supportDecisionReader,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -1970,7 +1973,7 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 
 func (s *GatewayService) isPureModelSupportMiss(
 	ctx context.Context,
-	accounts []Account,
+	_ []Account,
 	requestedModel string,
 	platform string,
 	excludedIDs map[int64]struct{},
@@ -1979,55 +1982,30 @@ func (s *GatewayService) isPureModelSupportMiss(
 	groupID *int64,
 ) bool {
 	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 {
+	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 ||
+		s == nil || s.supportDecisionReader == nil || s.cfg == nil || platform == "" {
+		return false
+	}
+	// Grouped lookups need the resolved group to preserve privacy and platform coordinates.
+	if groupID != nil && (!IsGroupContextValid(schedGroup) || schedGroup.ID != *groupID || schedGroup.Platform != platform) {
 		return false
 	}
 
-	// Scheduling lists exclude temporary cooldown and overload state. Re-read the
-	// persistent pool before declaring a permanent model miss, otherwise a brief
-	// capacity outage is misreported as 404.
-	if candidateRepo, ok := s.accountRepo.(ModelAvailabilityCandidateRepository); ok {
-		platforms := []string{platform}
-		if allowMixedScheduling {
-			platforms = append(platforms, PlatformAntigravity)
-		}
-		includeGrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
-		configuredAccounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, groupID, platforms, includeGrouped)
-		if err != nil {
-			return false
-		}
-		accounts = configuredAccounts
-	}
-	// Legacy repository doubles do not expose the narrow diagnostic capability;
-	// retain their supplied pool while production repositories always re-query.
-	if len(accounts) == 0 {
-		return false
-	}
-
-	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	thinkingEnabled, _ := ThinkingEnabledFromContext(ctx)
-	return legacyPureModelSupportMiss(legacyModelSupportMissInput{
-		Accounts:             accounts,
-		RequestedModel:       requestedModel,
+	scope := SupportDecisionScope{
 		Platform:             platform,
+		IncludeGrouped:       groupID == nil && s.cfg.RunMode == config.RunModeSimple,
 		AllowMixedScheduling: allowMixedScheduling,
-		RequirePrivacy:       schedGroup != nil && schedGroup.RequirePrivacySet,
-		ThinkingEnabled:      thinkingEnabled,
-		ModelSupported: func(account *Account, model string, thinking bool) bool {
-			if account.Platform != PlatformAntigravity {
-				return s.isModelSupportedByAccount(account, model)
-			}
-			mapped := mapAntigravityModel(account, model)
-			if mapped == "" {
-				return false
-			}
-			finalModel := applyThinkingModelSuffix(mapped, thinking)
-			return finalModel == mapped || account.IsModelSupported(finalModel)
-		},
-		UpstreamRestricted: func(account *Account, model string) bool {
-			return needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, model)
-		},
-	})
+	}
+	if groupID != nil {
+		scope.GroupID = *groupID
+	}
+	thinkingEnabled, _ := ThinkingEnabledFromContext(ctx)
+	return s.supportDecisionReader.Lookup(SupportDecisionQuery{
+		Scope:           scope,
+		RequestedModel:  requestedModel,
+		RequiresPrivacy: schedGroup != nil && schedGroup.RequirePrivacySet,
+		ThinkingEnabled: thinkingEnabled,
+	}) == SupportDecisionPureMiss
 }
 
 // SelectAccountWithLoadAwareness selects account with load-awareness and wait plan.

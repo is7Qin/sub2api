@@ -3,12 +3,40 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 var supportDecisionBenchmarkResult SupportDecisionResult
+var supportDecisionBenchmarkBool bool
 var supportDecisionBenchmarkTable *SupportDecisionTable
+
+func BenchmarkPureModelSupportMissClassifierBySuppliedAccountCount(b *testing.B) {
+	ctx := WithPublicModelSupportMiss404(context.Background())
+	for _, count := range []int{100, 10000, 30000} {
+		b.Run(fmt.Sprintf("generic_accounts_%d", count), func(b *testing.B) {
+			accounts := make([]Account, count)
+			svc := &GatewayService{cfg: &config.Config{}, supportDecisionReader: fixedSupportDecisionReader(SupportDecisionPureMiss)}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				supportDecisionBenchmarkBool = svc.isPureModelSupportMiss(ctx, accounts, "model", PlatformAnthropic, nil, false, nil, nil)
+			}
+		})
+		b.Run(fmt.Sprintf("openai_accounts_%d", count), func(b *testing.B) {
+			accounts := make([]Account, count)
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, supportDecisionReader: fixedSupportDecisionReader(SupportDecisionPureMiss)}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				supportDecisionBenchmarkBool = isPureOpenAIModelSupportMiss(ctx, svc, nil, accounts, "model", nil, false, "", "", OpenAIUpstreamTransportAny, nil)
+			}
+		})
+	}
+}
 
 func BenchmarkSupportDecisionHotLookup(b *testing.B) {
 	for _, count := range []int{100, 10000, 30000} {

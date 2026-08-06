@@ -246,6 +246,10 @@ func ProvideSupportDecisionAtomicReader() *SupportDecisionAtomicReader {
 	return NewSupportDecisionAtomicReader(supportDecisionReplicaMaxStale)
 }
 
+func ProvideSupportDecisionReader(reader *SupportDecisionAtomicReader) SupportDecisionReader {
+	return reader
+}
+
 // ProvideSchedulerSnapshotDirtyProcessor exposes snapshot effects without dirty ownership.
 func ProvideSchedulerSnapshotDirtyProcessor(svc *SchedulerSnapshotService) SchedulerSnapshotDirtyProcessor {
 	return svc
@@ -629,6 +633,7 @@ var ProviderSet = wire.NewSet(
 	ProvideSchedulerSnapshotService,
 	ProvideSchedulerSnapshotDirtyProcessor,
 	ProvideSupportDecisionAtomicReader,
+	ProvideSupportDecisionReader,
 	NewSupportDecisionPublisher,
 	NewSchedulerSupportPublisherWorker,
 	NewSupportDecisionReplica,

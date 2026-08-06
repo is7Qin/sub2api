@@ -44,8 +44,8 @@ func newGatewayRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo 
 		nil,
 		nil,
 		nil,
-		nil, // userPlatformQuotaRepo
-		nil, // usageRecordWorkerPool
+		nil,      // userPlatformQuotaRepo
+		nil, nil, // usageRecordWorkerPool
 	)
 }
 

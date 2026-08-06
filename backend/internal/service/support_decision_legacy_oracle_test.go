@@ -3,10 +3,8 @@
 package service
 
 import (
-	"context"
 	"testing"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,49 +78,6 @@ func TestLegacyPureModelSupportMissSemanticMatrix(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
-
-	t.Run("caller guards", func(t *testing.T) {
-		repo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{}, accounts: []Account{unsupported}}
-		svc := &GatewayService{accountRepo: repo, cfg: testConfig()}
-		enabled := WithPublicModelSupportMiss404(context.Background())
-
-		require.False(t, svc.isPureModelSupportMiss(enabled, nil, "  ", PlatformAnthropic, nil, false, nil, nil))
-		require.False(t, svc.isPureModelSupportMiss(context.Background(), nil, requestedModel, PlatformAnthropic, nil, false, nil, nil))
-		require.False(t, svc.isPureModelSupportMiss(enabled, nil, requestedModel, PlatformAnthropic, map[int64]struct{}{999: {}}, false, nil, nil))
-	})
-
-	t.Run("persistent scope replaces caller scope", func(t *testing.T) {
-		repo := &mockAccountRepoForPlatform{
-			accountsByID: map[int64]*Account{},
-			listModelAvailabilityCandidates: func(context.Context, *int64, []string, bool) ([]Account, error) {
-				return []Account{unsupported}, nil
-			},
-		}
-		svc := &GatewayService{accountRepo: repo, cfg: testConfig()}
-		got := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), []Account{supportingExact}, requestedModel, PlatformAnthropic, nil, false, nil, nil)
-		require.True(t, got)
-	})
-
-	t.Run("mixed scheduling ungrouped scope", func(t *testing.T) {
-		var gotPlatforms []string
-		var gotIncludeGrouped bool
-		repo := &mockAccountRepoForPlatform{
-			accountsByID: map[int64]*Account{},
-			listModelAvailabilityCandidates: func(_ context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error) {
-				require.Nil(t, groupID)
-				gotPlatforms = append([]string(nil), platforms...)
-				gotIncludeGrouped = includeGrouped
-				mixed := privacyBlocked
-				mixed.Extra = map[string]any{"mixed_scheduling": true, "privacy_mode": AntigravityPrivacySet}
-				return []Account{mixed}, nil
-			},
-		}
-		svc := &GatewayService{accountRepo: repo, cfg: &config.Config{RunMode: config.RunModeSimple}}
-		got := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), nil, requestedModel, PlatformAnthropic, nil, true, nil, nil)
-		require.True(t, got)
-		require.Equal(t, []string{PlatformAnthropic, PlatformAntigravity}, gotPlatforms)
-		require.True(t, gotIncludeGrouped)
-	})
 }
 
 func TestLegacyPureModelSupportMissAntigravityThinkingCoordinate(t *testing.T) {
@@ -309,24 +264,6 @@ func TestLegacyPureOpenAIModelSupportMissSemanticMatrix(t *testing.T) {
 				require.Equal(t, tc.want, legacyPureOpenAIModelSupportMiss(input))
 			})
 		}
-	})
-
-	t.Run("caller guards and persistent replacement", func(t *testing.T) {
-		repo := &mockAccountRepoForPlatform{
-			accountsByID: map[int64]*Account{},
-			listModelAvailabilityCandidates: func(context.Context, *int64, []string, bool) ([]Account, error) {
-				return []Account{unsupportedAPIKey}, nil
-			},
-		}
-		service := &OpenAIGatewayService{accountRepo: repo, cfg: testConfig()}
-		enabled := WithPublicModelSupportMiss404(context.Background())
-		supporting := unsupportedAPIKey
-		supporting.Credentials = nil
-
-		require.False(t, isPureOpenAIModelSupportMiss(enabled, service, nil, nil, " ", nil, false, "", "", OpenAIUpstreamTransportAny, nil))
-		require.False(t, isPureOpenAIModelSupportMiss(context.Background(), service, nil, nil, requestedModel, nil, false, "", "", OpenAIUpstreamTransportAny, nil))
-		require.False(t, isPureOpenAIModelSupportMiss(enabled, service, nil, nil, requestedModel, map[int64]struct{}{10: {}}, false, "", "", OpenAIUpstreamTransportAny, nil))
-		require.True(t, isPureOpenAIModelSupportMiss(enabled, service, nil, []Account{supporting}, requestedModel, nil, false, "", "", OpenAIUpstreamTransportAny, nil))
 	})
 }
 

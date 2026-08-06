@@ -948,32 +948,11 @@ func TestGatewayService_SelectAccountForModelWithPlatform_AvailabilityLookupFail
 }
 
 func TestGatewayService_IsPureModelSupportMiss_MixedSchedulingScope(t *testing.T) {
-	tests := []struct {
-		name         string
-		mixedEnabled bool
-		wantMiss     bool
-	}{
-		{name: "enabled Antigravity support keeps miss retryable", mixedEnabled: true, wantMiss: false},
-		{name: "disabled Antigravity support stays out of scope", mixedEnabled: false, wantMiss: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var requestedPlatforms []string
-			repo := &mockAccountRepoForPlatform{
-				listModelAvailabilityCandidates: func(_ context.Context, _ *int64, platforms []string, _ bool) ([]Account, error) {
-					requestedPlatforms = append([]string(nil), platforms...)
-					return []Account{
-						{ID: 1, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true, Credentials: map[string]any{"model_mapping": map[string]any{"claude-haiku": "claude-haiku"}}},
-						{ID: 2, Platform: PlatformAntigravity, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": tc.mixedEnabled}},
-					}, nil
-				},
-			}
-			svc := &GatewayService{accountRepo: repo, cfg: testConfig()}
-			miss := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), nil, "claude-sonnet-4-5", PlatformAnthropic, nil, true, nil, nil)
-			require.Equal(t, tc.wantMiss, miss)
-			require.ElementsMatch(t, []string{PlatformAnthropic, PlatformAntigravity}, requestedPlatforms)
-		})
-	}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{cfg: testConfig(), supportDecisionReader: reader}
+	miss := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), nil, "claude-sonnet-4-5", PlatformAnthropic, nil, true, nil, nil)
+	require.True(t, miss)
+	require.Equal(t, SupportDecisionScope{Platform: PlatformAnthropic, AllowMixedScheduling: true}, reader.queries[0].Scope)
 }
 
 // TestGatewayService_SelectAccountForModelWithPlatform_AllExcluded 测试所有账户被排除
@@ -1435,9 +1414,10 @@ func TestGatewayService_SelectAccountForModelWithPlatform_BedrockSupportMissRequ
 		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
 	}
 	svc := &GatewayService{
-		accountRepo: repo,
-		cache:       &mockGatewayCacheForPlatform{},
-		cfg:         testConfig(),
+		accountRepo:           repo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: fixedSupportDecisionReader(SupportDecisionPureMiss),
 	}
 
 	acc, err := svc.selectAccountForModelWithPlatform(context.Background(), nil, "", "claude-3-5-sonnet-20241022", nil, PlatformAnthropic)
@@ -1475,9 +1455,10 @@ func TestGatewayService_SelectAccountForModelWithPlatform_AntigravitySupportMiss
 		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
 	}
 	svc := &GatewayService{
-		accountRepo: repo,
-		cache:       &mockGatewayCacheForPlatform{},
-		cfg:         testConfig(),
+		accountRepo:           repo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: fixedSupportDecisionReader(SupportDecisionPureMiss),
 	}
 
 	acc, err := svc.selectAccountForModelWithPlatform(context.Background(), nil, "", "gpt-4", nil, PlatformAntigravity)

@@ -10,8 +10,15 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
+
+type schedulerSupportDecisionReader SupportDecisionResult
+
+func (r schedulerSupportDecisionReader) Lookup(SupportDecisionQuery) SupportDecisionResult {
+	return SupportDecisionResult(r)
+}
 
 type openAISnapshotCacheStub struct {
 	SchedulerCache
@@ -617,14 +624,17 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DiagnosticsPreserveType
 	unsupported := Account{ID: 38131, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1,
 		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o": "gpt-4o"}}}
 	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{unsupported}},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                &config.Config{},
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		accountRepo:           schedulerTestOpenAIAccountRepo{accounts: []Account{unsupported}},
+		cache:                 &schedulerTestGatewayCache{},
+		cfg:                   &config.Config{},
+		rateLimitService:      newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService:    NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		supportDecisionReader: schedulerSupportDecisionReader(SupportDecisionPureMiss),
 	}
 
-	selection, _, err := svc.SelectAccountWithSchedulerForCapability(WithPublicModelSupportMiss404(ctx), &groupID, "", "", "gpt-unknown-public", nil, OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityChatCompletions, false)
+	group := &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true}
+	ctx = context.WithValue(WithPublicModelSupportMiss404(ctx), ctxkey.Group, group)
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", "gpt-unknown-public", nil, OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityChatCompletions, false)
 	require.Nil(t, selection)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
@@ -798,15 +808,18 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_PureUnsupported
 		},
 	}
 	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                &config.Config{},
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		accountRepo:           schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:                 &schedulerTestGatewayCache{},
+		cfg:                   &config.Config{},
+		rateLimitService:      newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService:    NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		supportDecisionReader: schedulerSupportDecisionReader(SupportDecisionPureMiss),
 	}
 
+	group := &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true}
+	ctx = context.WithValue(WithPublicModelSupportMiss404(ctx), ctxkey.Group, group)
 	selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
-		WithPublicModelSupportMiss404(ctx),
+		ctx,
 		&groupID,
 		"",
 		"",
@@ -829,33 +842,19 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_PureUnsupported
 func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_TransientSupportingAccountStaysRetryable(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
-	resetAt := time.Now().Add(time.Hour)
-	configured := Account{
-		ID:               37032,
-		Platform:         PlatformOpenAI,
-		Type:             AccountTypeAPIKey,
-		Status:           StatusActive,
-		Schedulable:      true,
-		Concurrency:      1,
-		RateLimitResetAt: &resetAt,
-		Credentials: map[string]any{
-			"model_mapping": map[string]any{"gpt-4o": "gpt-4o"},
-		},
-	}
-	var requestedPlatforms []string
 	repo := schedulerModelAvailabilityOpenAIAccountRepo{
 		schedulerTestOpenAIAccountRepo: schedulerTestOpenAIAccountRepo{accounts: nil},
-		listModelAvailabilityCandidates: func(_ context.Context, _ *int64, platforms []string, _ bool) ([]Account, error) {
-			requestedPlatforms = append([]string(nil), platforms...)
-			return []Account{configured}, nil
+		listModelAvailabilityCandidates: func(context.Context, *int64, []string, bool) ([]Account, error) {
+			panic("classifier must not query repositories")
 		},
 	}
 	svc := &OpenAIGatewayService{
-		accountRepo:        repo,
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                &config.Config{},
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		accountRepo:           repo,
+		cache:                 &schedulerTestGatewayCache{},
+		cfg:                   &config.Config{},
+		rateLimitService:      newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService:    NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		supportDecisionReader: schedulerSupportDecisionReader(SupportDecisionNotPureMiss),
 	}
 
 	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
@@ -873,7 +872,6 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_TransientSuppor
 	require.Nil(t, selection)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
-	require.Equal(t, []string{PlatformOpenAI}, requestedPlatforms)
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_AvailabilityLookupFailureStaysRetryable(t *testing.T) {

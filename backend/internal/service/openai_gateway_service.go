@@ -441,6 +441,7 @@ type OpenAIGatewayService struct {
 	codexFingerprintService *OpenAICodexFingerprintService
 	userPlatformQuotaRepo   UserPlatformQuotaRepository
 	billingOutboxRepo       BillingOutboxRepository
+	supportDecisionReader   SupportDecisionReader
 
 	agentIdentityTaskMu           sync.Mutex
 	openaiWSPoolOnce              sync.Once
@@ -489,6 +490,7 @@ func NewOpenAIGatewayService(
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 	usageRecordWorkerPool *UsageRecordWorkerPool,
+	supportDecisionReader SupportDecisionReader,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -524,6 +526,7 @@ func NewOpenAIGatewayService(
 		userPlatformQuotaRepo:   userPlatformQuotaRepo,
 		usageRecordWorkerPool:   usageRecordWorkerPool,
 		billingOutboxRepo:       nil,
+		supportDecisionReader:   supportDecisionReader,
 		responseHeaderFilter:    compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle:   newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
@@ -1945,36 +1948,33 @@ func noAvailableOpenAISelectionErrorForAccounts(ctx context.Context, service *Op
 	return noAvailableOpenAISelectionError(requestedModel, false)
 }
 
-func isPureOpenAIModelSupportMiss(ctx context.Context, service *OpenAIGatewayService, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport, schedGroup *Group) bool {
+func isPureOpenAIModelSupportMiss(ctx context.Context, service *OpenAIGatewayService, groupID *int64, _ []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport, schedGroup *Group) bool {
 	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 || service == nil {
+	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 ||
+		service == nil || service.supportDecisionReader == nil || service.cfg == nil {
 		return false
 	}
-	if candidateRepo, ok := service.accountRepo.(ModelAvailabilityCandidateRepository); ok {
-		includeGrouped := groupID == nil && service.cfg != nil && service.cfg.RunMode == config.RunModeSimple
-		configuredAccounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, groupID, []string{PlatformOpenAI}, includeGrouped)
-		if err != nil {
-			return false
-		}
-		accounts = configuredAccounts
-	}
-	if len(accounts) == 0 {
+	// Grouped lookups need the resolved group to preserve privacy and platform coordinates.
+	if groupID != nil && (!IsGroupContextValid(schedGroup) || schedGroup.ID != *groupID || schedGroup.Platform != PlatformOpenAI) {
 		return false
 	}
-	needsUpstreamCheck := service.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	return legacyPureOpenAIModelSupportMiss(legacyOpenAIModelSupportMissInput{
-		Accounts:           accounts,
+
+	scope := SupportDecisionScope{
+		Platform:       PlatformOpenAI,
+		IncludeGrouped: groupID == nil && service.cfg.RunMode == config.RunModeSimple,
+	}
+	if groupID != nil {
+		scope.GroupID = *groupID
+	}
+	return service.supportDecisionReader.Lookup(SupportDecisionQuery{
+		Scope:              scope,
 		RequestedModel:     requestedModel,
-		RequirePrivacy:     schedGroup != nil && schedGroup.RequirePrivacySet,
+		RequiresPrivacy:    schedGroup != nil && schedGroup.RequirePrivacySet,
 		EndpointCapability: requiredCapability,
 		ImageCapability:    requiredImageCapability,
 		RequireCompact:     requireCompact,
 		Transport:          requiredTransport,
-		UpstreamRestricted: func(account *Account, model string, compact bool) bool {
-			return needsUpstreamCheck && service.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, model, compact)
-		},
-		TransportCompatible: service.isOpenAIAccountTransportCompatible,
-	})
+	}) == SupportDecisionPureMiss
 }
 
 // openAICompactSupportTier classifies an OpenAI account by compact capability.

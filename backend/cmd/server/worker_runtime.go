@@ -26,6 +26,7 @@ func provideWorkerRuntime(
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
+	opsSystemLogSink *service.OpsSystemLogSink,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -83,6 +84,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	opsSystemLogSinkWorker, err := service.NewOpsSystemLogSinkWorker(opsSystemLogSink)
+	if err != nil {
+		return nil, err
+	}
 
 	components := []workerruntime.Component{
 		accountExpiryWorker,
@@ -96,6 +101,7 @@ func provideWorkerRuntime(
 		openAIOAuthSessionCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
+		opsSystemLogSinkWorker,
 	}
 	if openAIOAuthRedisSetFailureCleanupWorker != nil {
 		components = append(components, openAIOAuthRedisSetFailureCleanupWorker)

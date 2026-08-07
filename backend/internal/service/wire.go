@@ -343,7 +343,6 @@ func ProvideOpsCleanupService(
 
 func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
-	sink.Start()
 	logger.SetSink(sink)
 	return sink
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
+	"reflect"
 	"sync"
 	"time"
 
@@ -343,6 +345,219 @@ func NewOutboxCleanupWorker(svc *OutboxCleanupService) (*workerruntime.PeriodicJ
 		RunImmediately: true,
 		Run:            svc.Run,
 	})
+}
+
+type opsSystemLogSinkWorkerTestHooks struct {
+	beforeNativeStart func()
+	beforeNativeStop  func()
+}
+
+// OpsSystemLogSinkWorker adapts the native sink lifecycle to the worker runtime.
+type OpsSystemLogSinkWorker struct {
+	sink       *OpsSystemLogSink
+	descriptor workerruntime.Descriptor
+
+	mu            sync.RWMutex
+	lifecycle     workerruntime.LifecycleSnapshot
+	started       bool
+	stopping      bool
+	stopDone      chan struct{}
+	stopInitiated chan struct{}
+	testHooks     *opsSystemLogSinkWorkerTestHooks
+}
+
+// isNilInterface safely detects nil values stored in interfaces without invoking methods.
+func isNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+// NewOpsSystemLogSinkWorker returns the runtime component for buffered operational logs.
+func NewOpsSystemLogSinkWorker(sink *OpsSystemLogSink) (*OpsSystemLogSinkWorker, error) {
+	if sink == nil || isNilInterface(sink.opsRepo) {
+		return nil, fmt.Errorf("Ops system log sink is required")
+	}
+	return &OpsSystemLogSinkWorker{
+		sink: sink,
+		descriptor: workerruntime.Descriptor{
+			Name:             "ops-system-log-sink",
+			Kind:             workerruntime.KindPool,
+			Group:            "ops",
+			CoordinationMode: workerruntime.CoordinationPerInstance,
+			Description:      "Persists buffered operational log events",
+			Tags:             []string{"ops", "system-logs", "ingestion"},
+		},
+		lifecycle: workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()},
+	}, nil
+}
+
+func (w *OpsSystemLogSinkWorker) Descriptor() workerruntime.Descriptor {
+	if w == nil {
+		return workerruntime.Descriptor{}
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	descriptor := w.descriptor
+	descriptor.Tags = append([]string(nil), descriptor.Tags...)
+	return descriptor
+}
+
+func (w *OpsSystemLogSinkWorker) Start(ctx context.Context) error {
+	if w == nil || w.sink == nil || isNilInterface(w.sink.opsRepo) {
+		return fmt.Errorf("Ops system log sink is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started {
+		return nil
+	}
+	if w.stopping {
+		return fmt.Errorf("Ops system log sink is stopping")
+	}
+	// A never-started Stop closes its generation for runtime stop-order observers.
+	// Replace that stale generation before exposing this worker as running.
+	if w.stopInitiated != nil {
+		select {
+		case <-w.stopInitiated:
+			w.stopInitiated = make(chan struct{})
+		default:
+		}
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
+	// Native Start has no once guard; hold the lifecycle lock through this non-blocking call.
+	if w.testHooks != nil && w.testHooks.beforeNativeStart != nil {
+		w.testHooks.beforeNativeStart()
+	}
+	w.sink.Start()
+	w.started = true
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	return nil
+}
+
+// StopInitiated returns a channel closed when Stop has entered.
+func (w *OpsSystemLogSinkWorker) StopInitiated() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopInitiated == nil {
+		w.stopInitiated = make(chan struct{})
+	}
+	return w.stopInitiated
+}
+
+func (w *OpsSystemLogSinkWorker) Stop(ctx context.Context) error {
+	if w == nil || w.sink == nil {
+		return nil
+	}
+	w.mu.Lock()
+	if w.stopInitiated == nil {
+		w.stopInitiated = make(chan struct{})
+	}
+	select {
+	case <-w.stopInitiated:
+	default:
+		close(w.stopInitiated)
+	}
+	if !w.started && !w.stopping {
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+		w.mu.Unlock()
+		return nil
+	}
+	if w.stopDone == nil {
+		w.stopping = true
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+		w.stopDone = make(chan struct{})
+		done := w.stopDone
+		go func() {
+			if w.testHooks != nil && w.testHooks.beforeNativeStop != nil {
+				w.testHooks.beforeNativeStop()
+			}
+			w.sink.Stop()
+			w.mu.Lock()
+			w.stopping = false
+			w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+			w.mu.Unlock()
+			close(done)
+		}()
+	}
+	done := w.stopDone
+	w.mu.Unlock()
+
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return nil
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+func (w *OpsSystemLogSinkWorker) Snapshot() workerruntime.Snapshot {
+	if w == nil {
+		return workerruntime.Snapshot{}
+	}
+	w.mu.RLock()
+	descriptor := w.descriptor
+	descriptor.Tags = append([]string(nil), descriptor.Tags...)
+	lifecycle := w.lifecycle
+	started, stopping := w.started, w.stopping
+	w.mu.RUnlock()
+
+	health := OpsSystemLogSinkHealth{}
+	if w.sink != nil {
+		health = w.sink.Health()
+	}
+	waiting := uint64(0)
+	if health.QueueDepth > 0 {
+		waiting = uint64(health.QueueDepth)
+	}
+	completed := health.WrittenCount + health.WriteFailed
+	if completed < health.WrittenCount {
+		completed = math.MaxUint64
+	}
+	running := started && (lifecycle.State == workerruntime.LifecycleRunning || stopping)
+	return workerruntime.Snapshot{
+		Descriptor: descriptor,
+		Lifecycle:  lifecycle,
+		Status: workerruntime.PoolStatus{
+			Accepting:        started && lifecycle.State == workerruntime.LifecycleRunning && !stopping,
+			StillRunning:     running,
+			MaxConcurrency:   1,
+			RunningWorkers:   boolInt64(running),
+			WaitingTasks:     waiting,
+			CompletedTasks:   completed,
+			SuccessfulTasks:  health.WrittenCount,
+			FailedTasks:      health.WriteFailed,
+			DroppedTasks:     health.DroppedCount,
+			DroppedQueueFull: health.DroppedCount,
+		},
+	}
+}
+
+func boolInt64(value bool) int64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 type usageRecordWorkerPoolWorkerTestHooks struct {

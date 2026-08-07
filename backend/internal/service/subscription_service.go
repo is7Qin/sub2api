@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/dgraph-io/ristretto"
 	"golang.org/x/sync/singleflight"
 )
@@ -55,6 +56,9 @@ type SubscriptionService struct {
 	subCacheJitter int // 抖动百分比
 
 	maintenanceQueue *SubscriptionMaintenanceQueue
+
+	// now is injectable so calendar-boundary maintenance remains deterministic in tests.
+	now func() time.Time
 }
 
 // NewSubscriptionService 创建订阅服务
@@ -64,6 +68,7 @@ func NewSubscriptionService(groupRepo GroupRepository, userSubRepo UserSubscript
 		userSubRepo:         userSubRepo,
 		billingCacheService: billingCacheService,
 		entClient:           entClient,
+		now:                 time.Now,
 	}
 	svc.initSubCache(cfg)
 	svc.initMaintenanceQueue(cfg)
@@ -344,13 +349,14 @@ func (s *SubscriptionService) withSubscriptionUpdateTx(ctx context.Context, fn f
 
 func renewedSubscriptionTerm(existingSub *UserSubscription, notes string, startsAt, expiresAt time.Time) *UserSubscription {
 	renewed := *existingSub
-	windowStart := startOfDay(startsAt)
+	dailyWindowStart := timezone.StartOfDay(startsAt)
+	periodicWindowStart := startsAt
 	renewed.StartsAt = startsAt
 	renewed.ExpiresAt = expiresAt
 	renewed.Status = SubscriptionStatusActive
-	renewed.DailyWindowStart = &windowStart
-	renewed.WeeklyWindowStart = &windowStart
-	renewed.MonthlyWindowStart = &windowStart
+	renewed.DailyWindowStart = &dailyWindowStart
+	renewed.WeeklyWindowStart = &periodicWindowStart
+	renewed.MonthlyWindowStart = &periodicWindowStart
 	renewed.DailyUsageUSD = 0
 	renewed.WeeklyUsageUSD = 0
 	renewed.MonthlyUsageUSD = 0
@@ -784,20 +790,22 @@ func (s *SubscriptionService) List(ctx context.Context, page, pageSize int, user
 // normalizeExpiredWindows 将已过期窗口的数据清零（仅影响返回数据，不影响数据库）
 // 这确保前端显示正确的当前窗口状态，而不是过期窗口的历史数据
 func normalizeExpiredWindows(subs []UserSubscription) {
+	normalizeExpiredWindowsAt(subs, time.Now())
+}
+
+func normalizeExpiredWindowsAt(subs []UserSubscription, now time.Time) {
 	for i := range subs {
 		sub := &subs[i]
-		// 日窗口过期：清零展示数据
-		if sub.NeedsDailyReset() {
+		// One-time daily quotas expire with the subscription and must not roll over.
+		if sub.NeedsDailyResetAt(now) {
 			sub.DailyWindowStart = nil
 			sub.DailyUsageUSD = 0
 		}
-		// 周窗口过期：清零展示数据
-		if sub.NeedsWeeklyReset() {
+		if sub.NeedsWeeklyResetAt(now) {
 			sub.WeeklyWindowStart = nil
 			sub.WeeklyUsageUSD = 0
 		}
-		// 月窗口过期：清零展示数据
-		if sub.NeedsMonthlyReset() {
+		if sub.NeedsMonthlyResetAt(now) {
 			sub.MonthlyWindowStart = nil
 			sub.MonthlyUsageUSD = 0
 		}
@@ -827,9 +835,8 @@ func (s *SubscriptionService) CheckAndActivateWindow(ctx context.Context, sub *U
 		return nil
 	}
 
-	// 使用当天零点作为窗口起始时间
-	windowStart := startOfDay(time.Now())
-	return s.userSubRepo.ActivateWindows(ctx, sub.ID, windowStart)
+	now := s.now()
+	return s.userSubRepo.ActivateWindows(ctx, sub.ID, timezone.StartOfDay(now), now)
 }
 
 // AdminResetQuota manually resets the daily, weekly, and/or monthly usage windows.
@@ -842,8 +849,8 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 	if err != nil {
 		return nil, err
 	}
-	windowStart := startOfDay(time.Now())
-	if err := s.userSubRepo.ResetUsageWindows(ctx, sub.ID, resetDaily, resetWeekly, resetMonthly, windowStart); err != nil {
+	now := s.now()
+	if err := s.userSubRepo.ResetUsageWindows(ctx, sub.ID, resetDaily, resetWeekly, resetMonthly, timezone.StartOfDay(now), now); err != nil {
 		return nil, err
 	}
 	// Invalidate L1 ristretto cache. Ristretto's Del() is asynchronous by design,
@@ -862,12 +869,10 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 
 // CheckAndResetWindows 检查并重置过期的窗口
 func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *UserSubscription) error {
-	// 使用当天零点作为新窗口起始时间
-	windowStart := startOfDay(time.Now())
+	now := s.now()
 	needsInvalidateCache := false
 
-	// 日窗口重置（24小时）
-	if sub.NeedsDailyReset() {
+	if windowStart, ok := sub.automaticDailyWindowStartAt(now); ok {
 		expectedWindowStart := sub.DailyWindowStart
 		if err := s.userSubRepo.ResetDailyUsage(ctx, sub.ID, expectedWindowStart, windowStart); err != nil {
 			return err
@@ -877,8 +882,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
 		needsInvalidateCache = true
 	}
 
-	// 周窗口重置（7天）
-	if sub.NeedsWeeklyReset() {
+	if windowStart, ok := sub.automaticWindowStartAt(sub.WeeklyWindowStart, 7*24*time.Hour, now); ok {
 		expectedWindowStart := sub.WeeklyWindowStart
 		if err := s.userSubRepo.ResetWeeklyUsage(ctx, sub.ID, expectedWindowStart, windowStart); err != nil {
 			return err
@@ -888,8 +892,7 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
 		needsInvalidateCache = true
 	}
 
-	// 月窗口重置（30天）
-	if sub.NeedsMonthlyReset() {
+	if windowStart, ok := sub.automaticWindowStartAt(sub.MonthlyWindowStart, 30*24*time.Hour, now); ok {
 		expectedWindowStart := sub.MonthlyWindowStart
 		if err := s.userSubRepo.ResetMonthlyUsage(ctx, sub.ID, expectedWindowStart, windowStart); err != nil {
 			return err
@@ -962,21 +965,22 @@ func (s *SubscriptionService) ValidateAndCheckLimits(sub *UserSubscription, grou
 	if sub.Status == SubscriptionStatusSuspended {
 		return false, ErrSubscriptionSuspended
 	}
-	if sub.IsExpired() {
+	now := s.now()
+	if !sub.ExpiresAt.After(now) {
 		return false, ErrSubscriptionExpired
 	}
 
 	// 2. 内存中修正过期窗口的用量，确保预检查不会误拒绝用户。
 	//    调用方随后同步推进 DB 窗口，并用回读快照重新校验。
-	if sub.NeedsDailyReset() {
+	if sub.NeedsDailyResetAt(now) {
 		sub.DailyUsageUSD = 0
 		needsMaintenance = true
 	}
-	if sub.NeedsWeeklyReset() {
+	if sub.NeedsWeeklyResetAt(now) {
 		sub.WeeklyUsageUSD = 0
 		needsMaintenance = true
 	}
-	if sub.NeedsMonthlyReset() {
+	if sub.NeedsMonthlyResetAt(now) {
 		sub.MonthlyUsageUSD = 0
 		needsMaintenance = true
 	}

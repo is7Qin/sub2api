@@ -16,9 +16,20 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
+
+const (
+	socks5DialTimeout   = 10 * time.Second
+	socks5DialKeepAlive = 30 * time.Second
+)
+
+var socks5ForwardDialer = &net.Dialer{
+	Timeout:   socks5DialTimeout,
+	KeepAlive: socks5DialKeepAlive,
+}
 
 // ConfigureTransportProxy 根据代理 URL 配置 Transport
 //
@@ -45,7 +56,7 @@ func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error
 		return nil
 
 	case "socks5", "socks5h":
-		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
+		dialer, err := proxy.FromURL(proxyURL, socks5ForwardDialer)
 		if err != nil {
 			return fmt.Errorf("create socks5 dialer: %w", err)
 		}

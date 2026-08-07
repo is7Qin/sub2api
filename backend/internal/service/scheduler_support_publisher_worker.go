@@ -131,8 +131,10 @@ func (w *SchedulerSupportPublisherWorker) Snapshot() workerruntime.Snapshot {
 	}); ok {
 		published := publisher.Snapshot()
 		status.RunCount, status.SuccessCount = published.Attempts, published.SuccessfulActivations
-		if published.Attempts >= published.SuccessfulActivations {
-			status.ErrorCount = published.Attempts - published.SuccessfulActivations
+		for stage := SupportDecisionPublisherStageGeneration; stage < supportDecisionPublisherStageCount; stage++ {
+			for class := SupportDecisionErrorOperation; class < supportDecisionErrorClassCount; class++ {
+				status.ErrorCount += published.FailureCount(stage, class)
+			}
 		}
 		status.LastRunAt, status.LastDuration, status.LastOutcome = published.LastCompletedAt, published.LastDuration, published.LastOutcome
 		status.StillRunning = status.StillRunning || published.Active

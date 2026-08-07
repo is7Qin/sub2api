@@ -109,6 +109,32 @@ type supportDecisionLegacyAccountFact struct {
 	imageSupport     uint8
 	compactSupported bool
 	transport        OpenAIUpstreamTransport
+	eligible         []byte
+}
+
+type supportDecisionLegacyCompiledProfile struct {
+	supported         bool
+	eligibleFixed     []byte
+	eligibleRequested []byte
+}
+
+type supportDecisionLegacyMappingEvent struct {
+	account int
+	target  string
+	compact bool
+}
+
+type supportDecisionLegacyMappingState struct {
+	event  supportDecisionLegacyMappingEvent
+	active bool
+}
+
+type supportDecisionLegacyTrie struct {
+	wildcards []supportDecisionLegacyMappingEvent
+	exacts    []supportDecisionLegacyMappingEvent
+	children  map[byte]*supportDecisionLegacyTrie
+	wildcard  supportDecisionLegacyCompiledProfile
+	exact     *supportDecisionLegacyCompiledProfile
 }
 
 type supportDecisionLegacyScopeOracle struct {
@@ -116,6 +142,12 @@ type supportDecisionLegacyScopeOracle struct {
 	openAI   bool
 	accounts []supportDecisionLegacyAccountFact
 	channel  *SupportDecisionChannel
+
+	openAISupportAll        bool
+	openAISupportCodex      bool
+	openAIChannelRestricted bool
+	openAIEligible          []byte
+	openAIRoot              *supportDecisionLegacyTrie
 }
 
 func newSupportDecisionLegacyScopeOracle(ctx context.Context, scope *supportDecisionBuildScope, wsConfig config.GatewayOpenAIWSConfig) (*supportDecisionLegacyScopeOracle, error) {
@@ -147,7 +179,13 @@ func newSupportDecisionLegacyScopeOracle(ctx context.Context, scope *supportDeci
 		fact.imageSupport = supportDecisionLegacyImageBits(source)
 		accounts = append(accounts, fact)
 	}
-	return &supportDecisionLegacyScopeOracle{key: scope.key, openAI: scope.key.Platform == PlatformOpenAI, accounts: accounts, channel: scope.channel}, nil
+	oracle := &supportDecisionLegacyScopeOracle{key: scope.key, openAI: scope.key.Platform == PlatformOpenAI, accounts: accounts, channel: scope.channel}
+	if oracle.openAI {
+		if err := oracle.buildOpenAIIndex(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return oracle, nil
 }
 
 func cloneSupportDecisionStringMap(source map[string]string) map[string]string {
@@ -207,24 +245,229 @@ func supportDecisionLegacyImageBits(account *Account) uint8 {
 	return bits
 }
 
+func (o *supportDecisionLegacyScopeOracle) buildOpenAIIndex(ctx context.Context) error {
+	byteCount := (supportDecisionOpenAICoordinateCount + 7) / 8
+	o.openAIEligible = make([]byte, byteCount)
+	o.openAIChannelRestricted = o.channel != nil && o.channel.Status == StatusActive && o.channel.RestrictModels && o.channel.BillingModelSource == BillingModelSourceUpstream
+	o.openAIRoot = &supportDecisionLegacyTrie{}
+	for i := range o.accounts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		fact := &o.accounts[i]
+		if !fact.account.IsOpenAI() {
+			continue
+		}
+		fact.eligible = make([]byte, byteCount)
+		for coordinate := 0; coordinate < supportDecisionOpenAICoordinateCount; coordinate++ {
+			supportDecisionCountShadowOperation(ctx)
+			if supportDecisionLegacyOpenAIEligibleWithoutModel(fact, decodeOpenAICoordinate(coordinate)) {
+				setBit(fact.eligible, coordinate)
+				setBit(o.openAIEligible, coordinate)
+			}
+		}
+		switch {
+		case fact.account.IsOpenAIAPIKeyPassthroughEnabled(), len(fact.modelMapping) == 0 && !fact.account.IsOpenAIOAuth():
+			o.openAISupportAll = true
+		case len(fact.modelMapping) == 0:
+			o.openAISupportCodex = true
+		default:
+			for model, target := range fact.modelExact {
+				o.openAIRoot.insert(model, supportDecisionLegacyMappingEvent{account: i, target: target})
+			}
+			for _, wildcard := range fact.modelWildcards {
+				o.openAIRoot.insertWildcard(wildcard.prefix, supportDecisionLegacyMappingEvent{account: i, target: wildcard.target})
+			}
+		}
+	}
+	return o.openAIRoot.compile(ctx, o)
+}
+
+func supportDecisionLegacyOpenAIEligibleWithoutModel(fact *supportDecisionLegacyAccountFact, query SupportDecisionQuery) bool {
+	if query.RequiresPrivacy && fact.privacyBlocked {
+		return false
+	}
+	if !supportDecisionLegacyEndpointAllowed(fact.endpointSupport, query.EndpointCapability) || !supportDecisionLegacyImageAllowed(fact.imageSupport, query.ImageCapability) {
+		return false
+	}
+	if query.RequireCompact && !fact.compactSupported || query.Transport != OpenAIUpstreamTransportAny && query.Transport != OpenAIUpstreamTransportHTTPSSE && fact.transport != query.Transport {
+		return false
+	}
+	return true
+}
+
+func (n *supportDecisionLegacyTrie) child(value string) *supportDecisionLegacyTrie {
+	for i := 0; i < len(value); i++ {
+		if n.children == nil {
+			n.children = make(map[byte]*supportDecisionLegacyTrie)
+		}
+		next := n.children[value[i]]
+		if next == nil {
+			next = &supportDecisionLegacyTrie{}
+			n.children[value[i]] = next
+		}
+		n = next
+	}
+	return n
+}
+
+func (n *supportDecisionLegacyTrie) insert(model string, event supportDecisionLegacyMappingEvent) {
+	node := n.child(model)
+	node.exacts = append(node.exacts, event)
+}
+
+func (n *supportDecisionLegacyTrie) insertWildcard(prefix string, event supportDecisionLegacyMappingEvent) {
+	node := n.child(prefix)
+	node.wildcards = append(node.wildcards, event)
+}
+
+func cloneSupportDecisionBits(bits []byte) []byte {
+	if len(bits) == 0 {
+		return nil
+	}
+	return append([]byte(nil), bits...)
+}
+
+func supportDecisionLegacyOrBits(dst, src []byte) {
+	for i := range dst {
+		dst[i] |= src[i]
+	}
+}
+
+func supportDecisionLegacyClearBits(dst []byte) {
+	for i := range dst {
+		dst[i] = 0
+	}
+}
+
+func (n *supportDecisionLegacyTrie) compile(ctx context.Context, oracle *supportDecisionLegacyScopeOracle) error {
+	states := make([]supportDecisionLegacyMappingState, len(oracle.accounts))
+	var walk func(*supportDecisionLegacyTrie) error
+	walk = func(node *supportDecisionLegacyTrie) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		changed := make([]supportDecisionLegacyMappingState, 0, len(node.wildcards))
+		for _, event := range node.wildcards {
+			changed = append(changed, states[event.account])
+			states[event.account] = supportDecisionLegacyMappingState{event: event, active: true}
+		}
+		node.wildcard = oracle.compileOpenAIStates(states, nil)
+		if len(node.exacts) > 0 {
+			node.exact = new(supportDecisionLegacyCompiledProfile)
+			*node.exact = oracle.compileOpenAIStates(states, node.exacts)
+		}
+		for _, child := range node.children {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+		for i := len(node.wildcards) - 1; i >= 0; i-- {
+			states[node.wildcards[i].account] = changed[i]
+		}
+		return nil
+	}
+	return walk(n)
+}
+
+func (o *supportDecisionLegacyScopeOracle) compileOpenAIStates(states []supportDecisionLegacyMappingState, exact []supportDecisionLegacyMappingEvent) supportDecisionLegacyCompiledProfile {
+	byteCount := (supportDecisionOpenAICoordinateCount + 7) / 8
+	profile := supportDecisionLegacyCompiledProfile{eligibleFixed: make([]byte, byteCount), eligibleRequested: make([]byte, byteCount)}
+	for i := range states {
+		if states[i].active {
+			o.applyOpenAIEvent(&profile, states[i].event)
+		}
+	}
+	for _, event := range exact {
+		o.applyOpenAIEvent(&profile, event)
+	}
+	return profile
+}
+
+func (o *supportDecisionLegacyScopeOracle) applyOpenAIEvent(profile *supportDecisionLegacyCompiledProfile, event supportDecisionLegacyMappingEvent) {
+	fact := &o.accounts[event.account]
+	if event.compact {
+		return
+	}
+	if fact.account.IsOpenAIOAuth() {
+		if _, known := normalizeKnownCodexModel(strings.TrimSpace(event.target)); !known {
+			return
+		}
+	}
+	profile.supported = true
+	if o.channel == nil || o.channel.Status != StatusActive || !o.channel.RestrictModels || o.channel.BillingModelSource != BillingModelSourceUpstream {
+		return
+	}
+	if supportDecisionChannelAllowsModel(o.channel, o.key.Platform, event.target) {
+		supportDecisionLegacyOrBits(profile.eligibleFixed, fact.eligible)
+		return
+	}
+	// Compact routing can turn the ordinary target into a channel-allowed model.
+	// It depends only on the ordinary target, so precompute the finite coordinate mask.
+	compact := event.target
+	if mapped, matched := supportDecisionLegacyResolve(fact.compactExact, fact.compactWildcards, compact); matched {
+		compact = mapped
+	}
+	if compact != "" && supportDecisionChannelAllowsModel(o.channel, o.key.Platform, compact) {
+		for coordinate := 0; coordinate < supportDecisionOpenAICoordinateCount; coordinate++ {
+			if decodeOpenAICoordinate(coordinate).RequireCompact && fact.eligible[coordinate>>3]&(1<<uint(coordinate&7)) != 0 {
+				setBit(profile.eligibleFixed, coordinate)
+			}
+		}
+	}
+}
+
+func (o *supportDecisionLegacyScopeOracle) openAIProfile(model string) supportDecisionLegacyCompiledProfile {
+	if o.openAISupportAll {
+		return supportDecisionLegacyCompiledProfile{supported: true}
+	}
+	node := o.openAIRoot
+	profile := node.wildcard
+	profile.eligibleFixed = cloneSupportDecisionBits(o.openAIEligible)
+	for i := 0; i < len(model); i++ {
+		next := node.children[model[i]]
+		if next == nil {
+			break
+		}
+		node = next
+		profile = node.wildcard
+		if i == len(model)-1 && node.exact != nil {
+			profile = *node.exact
+		}
+	}
+	if o.openAISupportCodex {
+		if _, known := normalizeKnownCodexModel(model); known {
+			profile.supported = true
+		}
+	}
+	return profile
+}
+
 func (o *supportDecisionLegacyScopeOracle) profile(ctx context.Context, model string, coordinateCount int) (supportDecisionProfile, error) {
 	profile := supportDecisionProfile{
 		SupportBits:  make([]byte, (coordinateCount+7)/8),
 		EligibleBits: make([]byte, (coordinateCount+7)/8),
+	}
+	if o.openAI {
+		if err := ctx.Err(); err != nil {
+			return supportDecisionProfile{}, err
+		}
+		compiled := o.openAIProfile(model)
+		if compiled.supported {
+			for coordinate := 0; coordinate < coordinateCount; coordinate++ {
+				setBit(profile.SupportBits, coordinate)
+			}
+			return profile, nil
+		}
+		copy(profile.EligibleBits, compiled.eligibleFixed)
+		return profile, nil
 	}
 	for i := range o.accounts {
 		if err := ctx.Err(); err != nil {
 			return supportDecisionProfile{}, err
 		}
 		fact := &o.accounts[i]
-		if o.openAI {
-			if fact.account.IsOpenAI() && supportDecisionLegacyOpenAIModelSupported(fact, model) {
-				for coordinate := 0; coordinate < coordinateCount; coordinate++ {
-					setBit(profile.SupportBits, coordinate)
-				}
-				return profile, nil
-			}
-		} else if legacyAccountAllowedForPlatform(&fact.account, o.key.Platform, o.key.AllowMixedScheduling) {
+		if legacyAccountAllowedForPlatform(&fact.account, o.key.Platform, o.key.AllowMixedScheduling) {
 			for coordinate := 0; coordinate < coordinateCount; coordinate++ {
 				query := supportDecisionShadowQuery(o.key, model, coordinate, false)
 				if supportDecisionLegacyGenericModelSupported(fact, model, query.ThinkingEnabled) {
@@ -392,13 +635,14 @@ func supportDecisionLegacyUpstreamRestricted(channel *SupportDecisionChannel, pl
 	if channel == nil || channel.Status != StatusActive || !channel.RestrictModels || channel.BillingModelSource != BillingModelSourceUpstream {
 		return false
 	}
-	exact, wildcards := fact.modelExact, fact.modelWildcards
-	if platform == PlatformOpenAI && compact && len(fact.compactMapping) > 0 {
-		exact, wildcards = fact.compactExact, fact.compactWildcards
-	}
 	upstream := model
-	if mapped, matched := supportDecisionLegacyResolve(exact, wildcards, model); matched {
+	if mapped, matched := supportDecisionLegacyResolve(fact.modelExact, fact.modelWildcards, upstream); matched {
 		upstream = mapped
+	}
+	if platform == PlatformOpenAI && compact {
+		if mapped, matched := supportDecisionLegacyResolve(fact.compactExact, fact.compactWildcards, upstream); matched {
+			upstream = mapped
+		}
 	}
 	return upstream != "" && !supportDecisionChannelAllowsModel(channel, platform, upstream)
 }

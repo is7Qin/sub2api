@@ -215,11 +215,11 @@ func TestSupportDecisionChannelWildcardWitnessUsesMaxLengthPrefix(t *testing.T) 
 }
 
 func TestSupportDecisionShadowLegacyOracleWorkIsAggregated(t *testing.T) {
-	mapping := make(map[string]any, 64)
-	for i := 0; i < 64; i++ {
-		mapping[fmt.Sprintf("model-%03d", i)] = "target"
+	mapping := make(map[string]any, 16)
+	for i := 0; i < 16; i++ {
+		mapping[fmt.Sprintf("model-%03d", i)] = "gpt-5.2-codex"
 	}
-	accounts := make([]Account, 100)
+	accounts := make([]Account, 8)
 	for i := range accounts {
 		accounts[i] = Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"model_mapping": mapping}}
 	}
@@ -231,7 +231,62 @@ func TestSupportDecisionShadowLegacyOracleWorkIsAggregated(t *testing.T) {
 	checks, err := VerifySupportDecisionShadow(ctx, snapshot, options, table)
 	require.NoError(t, err)
 	require.Positive(t, checks)
-	require.Less(t, operations, uint64(len(accounts))*20, "oracle account scans must not multiply by models and coordinates")
+	// Construction may inspect each account once and derive each finite coordinate
+	// once. Model witnesses must not trigger another account scan.
+	maximum := uint64(len(accounts)*(supportDecisionOpenAICoordinateCount+2) + 4096)
+	require.LessOrEqual(t, operations, maximum, "oracle work must not multiply accounts by model witnesses")
+}
+
+func TestSupportDecisionLegacyOracleRejectsUnknownOAuthMappingTargets(t *testing.T) {
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{"model_mapping": map[string]any{
+			"known":   "gpt-5.2-codex",
+			"unknown": "private-upstream-model",
+		}},
+	}}, PlatformOpenAI, nil)
+	scopes, err := collectSupportDecisionScopesContext(context.Background(), snapshot, config.SupportDecisionHotModelsConfig{})
+	require.NoError(t, err)
+	var scope *supportDecisionBuildScope
+	for i := range scopes {
+		if scopes[i].key == (supportDecisionScopeKey{Platform: PlatformOpenAI, GroupID: 42}) {
+			scope = &scopes[i]
+			break
+		}
+	}
+	require.NotNil(t, scope)
+	oracle, err := newSupportDecisionLegacyScopeOracle(context.Background(), scope, config.GatewayOpenAIWSConfig{})
+	require.NoError(t, err)
+
+	known, err := oracle.profile(context.Background(), "known", supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	unknown, err := oracle.profile(context.Background(), "unknown", supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	require.Equal(t, SupportDecisionNotPureMiss, profileResult(known, 0))
+	require.Equal(t, SupportDecisionNotPureMiss, profileResult(unknown, 0))
+}
+
+func TestSupportDecisionLegacyUpstreamRestrictionChainsCompactMapping(t *testing.T) {
+	channel := &SupportDecisionChannel{
+		Status:             StatusActive,
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{"compact-target"},
+		}},
+	}
+	fact := supportDecisionLegacyAccountFact{
+		modelMapping:     map[string]string{"requested": "ordinary-target"},
+		modelExact:       map[string]string{"requested": "ordinary-target"},
+		compactMapping:   map[string]string{"ordinary-target": "compact-target"},
+		compactExact:     map[string]string{"ordinary-target": "compact-target"},
+		compactSupported: true,
+	}
+
+	require.False(t, supportDecisionLegacyUpstreamRestricted(channel, PlatformOpenAI, &fact, "requested", true))
+	require.True(t, supportDecisionLegacyUpstreamRestricted(channel, PlatformOpenAI, &fact, "requested", false))
 }
 
 func TestSupportDecisionWildcardComplementWitnessIsDeterministicAndExhaustive(t *testing.T) {
@@ -274,6 +329,22 @@ func TestSupportDecisionReplicaFetchCancellationIdentityAndSanitization(t *testi
 			require.NotContains(t, err.Error(), "secret")
 		})
 	}
+}
+
+func TestSupportDecisionPublisherRuntimeStatusDoesNotCountActiveAttemptAsFailure(t *testing.T) {
+	publisher := newSupportDecisionPublisherTestSubject(
+		&supportDecisionPublisherGenerationStub{generations: []uint64{1}},
+		&supportDecisionPublisherSourceStub{snapshots: []*SupportDecisionConstructionSnapshot{emptySupportDecisionPublisherSnapshot()}},
+		&supportDecisionPublisherStoreStub{},
+	)
+	publisher.metrics.attempts.Store(1)
+	publisher.metrics.active.Store(true)
+	worker := newSchedulerSupportPublisherWorker(nil, nil, nil, publisher, time.Second, immediateSchedulerSupportPublisherClock{})
+
+	status := worker.Snapshot().Status.(workerruntime.PeriodicStatus)
+	require.Equal(t, uint64(1), status.RunCount)
+	require.Zero(t, status.ErrorCount)
+	require.True(t, status.StillRunning)
 }
 
 func TestSupportDecisionPublisherRuntimeStatusFailureThenSuccess(t *testing.T) {

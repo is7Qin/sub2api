@@ -272,6 +272,45 @@ func TestOpsSystemLogSinkWorkerStopDeadlineRemainsTruthfullyStopping(t *testing.
 	require.NotContains(t, fmt.Sprintf("%+v", snapshot), "blocked-final-flush-content")
 }
 
+func TestOpsSystemLogSinkWorkerRejectsStartAfterStoppingBegins(t *testing.T) {
+	worker, _ := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{
+		beforeNativeStop: func() {
+			close(stopEntered)
+			<-releaseStop
+		},
+	}
+
+	require.NoError(t, worker.Start(context.Background()))
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- worker.Stop(context.Background()) }()
+	<-stopEntered
+	require.EqualError(t, worker.Start(context.Background()), "Ops system log sink is stopping")
+	close(releaseStop)
+	require.NoError(t, <-stopErr)
+}
+
+func TestOpsSystemLogSinkWorkerRejectsRestartAfterNativeStop(t *testing.T) {
+	worker, _ := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	var starts atomic.Int64
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{
+		beforeNativeStart: func() { starts.Add(1) },
+	}
+
+	require.NoError(t, worker.Start(context.Background()))
+	require.NoError(t, worker.Stop(context.Background()))
+	require.EqualError(t, worker.Start(context.Background()), "Ops system log sink is non-restartable after Stop")
+	require.Equal(t, int64(1), starts.Load())
+	snapshot := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.False(t, status.Accepting)
+	require.False(t, status.StillRunning)
+	require.Zero(t, status.RunningWorkers)
+}
+
 func TestOpsSystemLogSinkWorkerStopBeforeStartPreservesFutureStart(t *testing.T) {
 	persisted := make(chan struct{}, 1)
 	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {

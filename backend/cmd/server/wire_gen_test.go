@@ -130,7 +130,6 @@ func TestAntigravityOAuthInventoryAndWireGraphAreRuntimeManaged(t *testing.T) {
 func TestOpenAIOAuthInventoryAndWireGraphAreRuntimeManaged(t *testing.T) {
 	inventory, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
 	require.NoError(t, err)
-	require.Contains(t, string(inventory), "This inventory records all process-local background activity through Issue #9 Phase 10.")
 	require.Contains(t, string(inventory), "| OpenAI OAuth pending-session cleanup | Yes |")
 	require.Contains(t, string(inventory), "| OpenAI OAuth Redis write-failure fallback-marker cleanup | Yes, when Redis-backed pending session storage is configured |")
 

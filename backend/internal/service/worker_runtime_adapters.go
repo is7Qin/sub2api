@@ -360,6 +360,7 @@ type OpsSystemLogSinkWorker struct {
 	mu            sync.RWMutex
 	lifecycle     workerruntime.LifecycleSnapshot
 	started       bool
+	nativeStopped bool
 	stopping      bool
 	stopDone      chan struct{}
 	stopInitiated chan struct{}
@@ -419,11 +420,14 @@ func (w *OpsSystemLogSinkWorker) Start(ctx context.Context) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.started {
-		return nil
+	if w.nativeStopped {
+		return fmt.Errorf("Ops system log sink is non-restartable after Stop")
 	}
 	if w.stopping {
 		return fmt.Errorf("Ops system log sink is stopping")
+	}
+	if w.started {
+		return nil
 	}
 	// A never-started Stop closes its generation for runtime stop-order observers.
 	// Replace that stale generation before exposing this worker as running.
@@ -484,7 +488,9 @@ func (w *OpsSystemLogSinkWorker) Stop(ctx context.Context) error {
 			}
 			w.sink.Stop()
 			w.mu.Lock()
+			w.started = false
 			w.stopping = false
+			w.nativeStopped = true
 			w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
 			w.mu.Unlock()
 			close(done)

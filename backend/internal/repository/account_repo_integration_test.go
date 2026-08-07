@@ -1204,6 +1204,19 @@ func (s *AccountRepoSuite) requireNoSchedulerOutbox() {
 	s.Require().Zero(count)
 }
 
+func (s *AccountRepoSuite) requireAccountChangedOutbox(accountID int64) {
+	s.T().Helper()
+	var count int
+	s.Require().NoError(scanSingleRow(
+		s.ctx,
+		s.repo.sql,
+		"SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1 AND account_id = $2",
+		[]any{service.SchedulerOutboxEventAccountChanged, accountID},
+		&count,
+	))
+	s.Require().Equal(1, count)
+}
+
 func (s *AccountRepoSuite) TestUpdateSessionWindow_SyncsSchedulerSnapshot() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:                "session-window-sync",
@@ -2038,51 +2051,106 @@ func (s *AccountRepoSuite) lastUsedOutboxPayload() map[string]int64 {
 
 // --- SetError ---
 
-func (s *AccountRepoSuite) TestSetError() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-err", Status: service.StatusActive, Schedulable: true})
+func (s *AccountRepoSuite) TestSetErrorPreservesSchedulingIntent() {
+	for _, schedulable := range []bool{true, false} {
+		s.Run(strconv.FormatBool(schedulable), func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name:   "acc-err-" + strconv.FormatBool(schedulable),
+				Status: service.StatusActive,
+			})
+			if !schedulable {
+				s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
+			_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
 
-	s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "something went wrong"))
+			s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "something went wrong"))
 
-	got, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusError, got.Status)
-	s.Require().Equal("something went wrong", got.ErrorMessage)
-	s.Require().False(got.Schedulable)
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusError, got.Status)
+			s.Require().Equal("something went wrong", got.ErrorMessage)
+			s.Require().Equal(schedulable, got.Schedulable)
+			s.Require().False(got.IsSchedulable(), "error status must still block effective scheduling")
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal(service.StatusError, cacheRecorder.setAccounts[0].Status)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].Schedulable)
+			s.Require().False(cacheRecorder.setAccounts[0].IsSchedulable())
+			s.requireAccountChangedOutbox(account.ID)
+		})
+	}
 }
 
-func (s *AccountRepoSuite) TestUpdateErrorStatusUnschedulesAccount() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-update-err", Status: service.StatusActive, Schedulable: true})
-	account.Status = service.StatusError
-	account.ErrorMessage = "token revoked"
-	account.Schedulable = true
+func (s *AccountRepoSuite) TestUpdateErrorStatusPreservesSchedulingIntent() {
+	for _, schedulable := range []bool{true, false} {
+		s.Run(strconv.FormatBool(schedulable), func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name:   "acc-update-err-" + strconv.FormatBool(schedulable),
+				Status: service.StatusActive,
+			})
+			if !schedulable {
+				s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
+			_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
+			account.Schedulable = schedulable
+			account.Status = service.StatusError
+			account.ErrorMessage = "token revoked"
 
-	s.Require().NoError(s.repo.Update(s.ctx, account))
+			s.Require().NoError(s.repo.Update(s.ctx, account))
 
-	got, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusError, got.Status)
-	s.Require().Equal("token revoked", got.ErrorMessage)
-	s.Require().False(got.Schedulable)
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusError, got.Status)
+			s.Require().Equal("token revoked", got.ErrorMessage)
+			s.Require().Equal(schedulable, got.Schedulable)
+			s.Require().False(got.IsSchedulable(), "error status must still block effective scheduling")
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal(service.StatusError, cacheRecorder.setAccounts[0].Status)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].Schedulable)
+			s.Require().False(cacheRecorder.setAccounts[0].IsSchedulable())
+			s.requireAccountChangedOutbox(account.ID)
+		})
+	}
 }
 
 func (s *AccountRepoSuite) TestClearError_SyncSchedulerSnapshotOnRecovery() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{
-		Name:         "acc-clear-err",
-		Status:       service.StatusError,
-		ErrorMessage: "temporary error",
-	})
-	cacheRecorder := &schedulerCacheRecorder{}
-	s.repo.schedulerCache = cacheRecorder
+	for _, schedulable := range []bool{true, false} {
+		s.Run(strconv.FormatBool(schedulable), func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name:   "acc-clear-err-" + strconv.FormatBool(schedulable),
+				Status: service.StatusActive,
+			})
+			if !schedulable {
+				s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
 
-	s.Require().NoError(s.repo.ClearError(s.ctx, account.ID))
+			s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "temporary error"))
+			cacheRecorder.setAccounts = nil
+			_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
+			s.Require().NoError(s.repo.ClearError(s.ctx, account.ID))
 
-	got, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusActive, got.Status)
-	s.Require().Empty(got.ErrorMessage)
-	s.Require().Len(cacheRecorder.setAccounts, 1)
-	s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
-	s.Require().Equal(service.StatusActive, cacheRecorder.setAccounts[0].Status)
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusActive, got.Status)
+			s.Require().Empty(got.ErrorMessage)
+			s.Require().Equal(schedulable, got.Schedulable)
+			s.Require().Equal(schedulable, got.IsSchedulable())
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
+			s.Require().Equal(service.StatusActive, cacheRecorder.setAccounts[0].Status)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].Schedulable)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].IsSchedulable())
+			s.requireAccountChangedOutbox(account.ID)
+		})
+	}
 }
 
 func (s *AccountRepoSuite) TestClearError_UnchangedAvoidsRedundantEffects() {

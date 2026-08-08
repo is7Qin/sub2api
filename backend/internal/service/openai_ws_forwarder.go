@@ -1890,6 +1890,15 @@ func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) (
 	}
 	delete(decoded, "input")
 	delete(decoded, "previous_response_id")
+	// Codex changes transport metadata for every response.create. These fields
+	// do not alter the context referenced by previous_response_id.
+	delete(decoded, "client_metadata")
+	delete(decoded, "stream_options")
+	// Codex prewarms with generate=false, then omits it on the request that
+	// continues from the prewarm response. Preserve an explicit generate=true.
+	if generate, ok := decoded["generate"].(bool); ok && !generate {
+		delete(decoded, "generate")
+	}
 	return json.Marshal(decoded)
 }
 

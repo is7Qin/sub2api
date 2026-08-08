@@ -1,6 +1,6 @@
 # Worker Runtime Inventory
 
-This inventory records all process-local background activity through Issue #9 Phase 10.
+This inventory records all process-local background activity through Issue #9 Phase 11.
 `managed` means the component is registered in `workerruntime.Runtime` and appears in
 `GET /api/v1/admin/ops/workers/status`; `unmanaged` components retain their existing
 startup and shutdown behavior until a later phase. The status endpoint intentionally
@@ -17,7 +17,8 @@ reports no process identifier, credentials, payloads, stack traces, or raw upstr
 | UserMessageQueue cleanup | Yes, when cache is configured and `cleanup_interval_seconds` is positive | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance | Ops worker status | Phase 4 |
 | DashboardAggregation | No | `service.ProvideDashboardAggregationService` | TimingWheel recurring callback plus async backfill | Service provider | No dedicated stop/cancel for scheduled work | singleton per run when leader lock configured | Admin dashboard / logs | Later migration |
 | UsageCleanup | No | `service.ProvideUsageCleanupService` | TimingWheel recurring callback | Service provider | Cancels worker context and timer; no explicit join guarantee | per-instance | Admin usage cleanup tasks / logs | Later migration |
-| Ops jobs (metrics, aggregation, alerts, cleanup, reports, system-log sink) | No | service providers and server cleanup | service-specific tickers / cron / queues | Service providers | Cleanup invokes `Stop`; guarantee is component-specific | mixed; some singleton via locks | Ops endpoints and logs | Later migration |
+| OpsSystemLogSink | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter | Server runtime | `Runtime.StopAll` joins native drain and final flush to caller deadline, reporting still-running truthfully | per-instance | Ops worker status plus unchanged dedicated system-log health endpoint | Phase 11 |
+| Other Ops jobs (metrics, aggregation, alerts, cleanup, reports) | No | service providers and server cleanup | service-specific tickers / cron | Service providers | Cleanup invokes `Stop`; guarantee is component-specific | mixed; some singleton via locks | Ops endpoints and logs | Later migration |
 | BillingCache pool | No | `service.ProvideBillingCacheService` / lazy pool use | bounded async work pool | Service provider | `BillingCacheService.Stop` closes pool; component-specific wait | per-instance | Cache metrics / logs | Later migration |
 | Billing outbox | No | `service.ProvideBillingOutboxWorker` | ticker poller with durable claims | Service provider | `Stop` cancels and waits for its `WaitGroup` | durable claim | `GET /api/v1/admin/ops/billing-outbox/health` | Later migration |
 | Auth-cache outbox | No | `service.ProvideAuthCacheInvalidationWorker` | ticker poller with durable claims | Service provider | `Stop` cancels and waits for its `WaitGroup` | durable claim | Logs only | Later migration |

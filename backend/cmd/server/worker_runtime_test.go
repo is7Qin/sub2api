@@ -36,12 +36,25 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "ops-system-log-sink", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	var sinkSnapshots int
+	for _, snapshot := range snapshots {
+		if snapshot.Descriptor.Name == "ops-system-log-sink" {
+			sinkSnapshots++
+			require.Equal(t, workerruntime.KindPool, snapshot.Descriptor.Kind)
+			require.Equal(t, "ops", snapshot.Descriptor.Group)
+			require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+			require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
+			require.IsType(t, workerruntime.PoolStatus{}, snapshot.Status)
+		}
+	}
+	require.Equal(t, 1, sinkSnapshots)
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
@@ -78,6 +91,7 @@ func TestProvideWorkerRuntimeRegistersOpenAIOAuthMarkerCleanupOnlyForRedisStore(
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -117,6 +131,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -143,6 +158,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = enabledRuntime.StopAll(context.Background()) })
@@ -167,6 +183,7 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: interval}),
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -200,6 +217,7 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			concurrency,
 			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -267,6 +285,20 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "antigravityOAuth *service.AntigravityOAuthService")
 	require.NotContains(t, legacyCleanup, "openaiOAuth.Stop()")
 	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "openaiOAuth *service.OpenAIOAuthService")
+	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "opsSystemLogSink *service.OpsSystemLogSink")
+	require.NotContains(t, legacyCleanup, `{"OpsSystemLogSink"`)
+
+	provider := functionSource(serviceWire, "ProvideOpsSystemLogSink")
+	require.NotContains(t, provider, "sink.Start()")
+	require.Contains(t, provider, "logger.SetSink(sink)")
+}
+
+type serverOpsRepositoryStub struct {
+	service.OpsRepository
+}
+
+func (serverOpsRepositoryStub) BatchInsertSystemLogs(context.Context, []*service.OpsInsertSystemLogInput) (int64, error) {
+	return 0, nil
 }
 
 type serverConcurrencyCacheStub struct {

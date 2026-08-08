@@ -5,16 +5,360 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 	"github.com/stretchr/testify/require"
 )
+
+func newOpsSystemLogSinkWorkerForTest(t *testing.T, repo OpsRepository) (*OpsSystemLogSinkWorker, *OpsSystemLogSink) {
+	t.Helper()
+	sink := NewOpsSystemLogSink(repo)
+	sink.batchSize = 200
+	sink.flushInterval = time.Hour
+	worker, err := NewOpsSystemLogSinkWorker(sink)
+	require.NoError(t, err)
+	return worker, sink
+}
+
+func opsSystemLogEvent(message string) *logger.LogEvent {
+	return &logger.LogEvent{Time: time.Now().UTC(), Level: "warn", Component: "app", Message: message, Fields: map[string]any{}}
+}
+
+func TestOpsSystemLogSinkWorkerDescriptorAndInitialStatusAreDetached(t *testing.T) {
+	worker, _ := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	want := workerruntime.Descriptor{Name: "ops-system-log-sink", Kind: workerruntime.KindPool, Group: "ops", CoordinationMode: workerruntime.CoordinationPerInstance, Description: "Persists buffered operational log events", Tags: []string{"ops", "system-logs", "ingestion"}}
+	require.Equal(t, want, worker.Descriptor())
+	snapshot := worker.Snapshot()
+	require.Equal(t, want, snapshot.Descriptor)
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status, ok := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, ok)
+	require.False(t, status.Accepting)
+	require.False(t, status.StillRunning)
+	require.Equal(t, 1, status.MaxConcurrency)
+	require.Zero(t, status.RunningWorkers)
+
+	detached := worker.Descriptor()
+	detached.Tags[0] = "mutated"
+	require.Equal(t, want.Tags, worker.Descriptor().Tags)
+}
+
+func TestOpsSystemLogSinkWorkerRejectsMissingSinkOrRepository(t *testing.T) {
+	for _, sink := range []*OpsSystemLogSink{nil, NewOpsSystemLogSink(nil)} {
+		worker, err := NewOpsSystemLogSinkWorker(sink)
+		require.Nil(t, worker)
+		require.EqualError(t, err, "Ops system log sink is required")
+	}
+}
+
+func TestOpsSystemLogSinkWorkerRejectsTypedNilRepository(t *testing.T) {
+	var repo *opsRepoMock
+	worker, err := NewOpsSystemLogSinkWorker(NewOpsSystemLogSink(repo))
+	require.Nil(t, worker)
+	require.EqualError(t, err, "Ops system log sink is required")
+}
+
+func TestOpsSystemLogSinkWorkerPreCanceledStartDoesNotLaunchConsumer(t *testing.T) {
+	var calls atomic.Int64
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(context.Context, []*OpsInsertSystemLogInput) (int64, error) {
+		calls.Add(1)
+		return 1, nil
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, worker.Start(ctx), context.Canceled)
+	sink.WriteLogEvent(opsSystemLogEvent("buffered-before-valid-start"))
+	require.Equal(t, 1, len(sink.queue))
+	require.Zero(t, calls.Load())
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+
+	require.NoError(t, worker.Start(context.Background()))
+	require.NoError(t, worker.Stop(context.Background()))
+	require.Equal(t, int64(1), calls.Load())
+}
+
+func TestOpsSystemLogSinkWorkerStartIsIdempotentAndPersistsEligibleEvent(t *testing.T) {
+	persisted := make(chan []*OpsInsertSystemLogInput, 2)
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {
+		persisted <- inputs
+		return int64(len(inputs)), nil
+	}})
+	sink.batchSize = 1
+	require.NoError(t, worker.Start(context.Background()))
+	require.NoError(t, worker.Start(context.Background()))
+	snapshot := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, status.Accepting)
+	require.True(t, status.StillRunning)
+	require.Equal(t, int64(1), status.RunningWorkers)
+
+	sink.WriteLogEvent(opsSystemLogEvent("persist-me"))
+	select {
+	case inputs := <-persisted:
+		require.Len(t, inputs, 1)
+	case <-time.After(time.Second):
+		t.Fatal("eligible event was not persisted")
+	}
+	require.NoError(t, worker.Stop(context.Background()))
+	select {
+	case <-persisted:
+		t.Fatal("idempotent Start launched a second consumer")
+	default:
+	}
+}
+
+func TestOpsSystemLogSinkWorkerConcurrentStartCallsNativeStartExactlyOnce(t *testing.T) {
+	worker, _ := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	var calls atomic.Int64
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{beforeNativeStart: func() { calls.Add(1) }}
+
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- worker.Start(context.Background())
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(1), calls.Load())
+	require.NoError(t, worker.Stop(context.Background()))
+}
+
+func TestOpsSystemLogSinkWorkerMapsTruthfulCountersWithoutDiagnosticContent(t *testing.T) {
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	sink.queue = make(chan *logger.LogEvent, 1)
+	sink.lastError.Store("repository-secret-error")
+	atomic.StoreUint64(&sink.writtenCount, 4)
+	atomic.StoreUint64(&sink.writeFailed, 3)
+	sink.WriteLogEvent(opsSystemLogEvent("private-event-content"))
+	sink.WriteLogEvent(opsSystemLogEvent("queue-full-private-content"))
+
+	snapshot := worker.Snapshot()
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.Equal(t, uint64(1), status.WaitingTasks)
+	require.Equal(t, uint64(4), status.SuccessfulTasks)
+	require.Equal(t, uint64(3), status.FailedTasks)
+	require.Equal(t, uint64(7), status.CompletedTasks)
+	require.Equal(t, uint64(1), status.DroppedTasks)
+	require.Equal(t, uint64(1), status.DroppedQueueFull)
+	require.Zero(t, status.DroppedPoolStopped)
+	require.Zero(t, status.SubmittedTasks)
+	require.Zero(t, status.SyncFallbackTasks)
+	projection := fmt.Sprintf("%+v", snapshot)
+	require.NotContains(t, projection, "repository-secret-error")
+	require.NotContains(t, projection, "private-event-content")
+}
+
+func TestOpsSystemLogSinkWorkerNormalStopDrainsPrivateBatchAndQueue(t *testing.T) {
+	firstReceived := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	persisted := make(chan int, 2)
+	var calls atomic.Int64
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {
+		if calls.Add(1) == 1 {
+			close(firstReceived)
+			<-releaseFirst
+		}
+		persisted <- len(inputs)
+		return int64(len(inputs)), nil
+	}})
+	sink.batchSize = 2
+	require.NoError(t, worker.Start(context.Background()))
+	sink.WriteLogEvent(opsSystemLogEvent("private-batch"))
+	sink.WriteLogEvent(opsSystemLogEvent("triggers-flush"))
+	<-firstReceived
+	sink.WriteLogEvent(opsSystemLogEvent("queued-during-flush"))
+	close(releaseFirst)
+	require.NoError(t, worker.Stop(context.Background()))
+	require.Equal(t, 2, <-persisted)
+	require.Equal(t, 1, <-persisted)
+	snapshot := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.False(t, status.StillRunning)
+	require.False(t, status.Accepting)
+	require.Zero(t, status.RunningWorkers)
+	require.Equal(t, uint64(3), status.SuccessfulTasks)
+}
+
+func TestOpsSystemLogSinkWorkerConcurrentStopSharesNativeCompletion(t *testing.T) {
+	flushEntered := make(chan struct{})
+	releaseFlush := make(chan struct{})
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {
+		close(flushEntered)
+		<-releaseFlush
+		return int64(len(inputs)), nil
+	}})
+	var calls atomic.Int64
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{beforeNativeStop: func() { calls.Add(1) }}
+	require.NoError(t, worker.Start(context.Background()))
+	sink.WriteLogEvent(opsSystemLogEvent("drain-once"))
+
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- worker.Stop(context.Background())
+		}()
+	}
+	close(start)
+	<-flushEntered
+	close(releaseFlush)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.NoError(t, worker.Stop(context.Background()))
+	require.Equal(t, int64(1), calls.Load())
+}
+
+func TestOpsSystemLogSinkWorkerStopDeadlineRemainsTruthfullyStopping(t *testing.T) {
+	flushEntered := make(chan struct{})
+	releaseFlush := make(chan struct{})
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {
+		close(flushEntered)
+		<-releaseFlush
+		return int64(len(inputs)), nil
+	}})
+	require.NoError(t, worker.Start(context.Background()))
+	sink.WriteLogEvent(opsSystemLogEvent("blocked-final-flush-content"))
+	ctx, cancel := context.WithCancel(context.Background())
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- worker.Stop(ctx) }()
+	<-flushEntered
+	cancel()
+	require.ErrorIs(t, <-stopErr, context.Canceled)
+	snapshot := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopping, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, status.StillRunning)
+	require.False(t, status.Accepting)
+	require.Equal(t, int64(1), status.RunningWorkers)
+
+	close(releaseFlush)
+	require.NoError(t, worker.Stop(context.Background()))
+	snapshot = worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status = snapshot.Status.(workerruntime.PoolStatus)
+	require.False(t, status.StillRunning)
+	require.Zero(t, status.RunningWorkers)
+	require.NotContains(t, fmt.Sprintf("%+v", snapshot), "blocked-final-flush-content")
+}
+
+func TestOpsSystemLogSinkWorkerRejectsStartAfterStoppingBegins(t *testing.T) {
+	worker, _ := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{
+		beforeNativeStop: func() {
+			close(stopEntered)
+			<-releaseStop
+		},
+	}
+
+	require.NoError(t, worker.Start(context.Background()))
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- worker.Stop(context.Background()) }()
+	<-stopEntered
+	require.EqualError(t, worker.Start(context.Background()), "Ops system log sink is stopping")
+	close(releaseStop)
+	require.NoError(t, <-stopErr)
+}
+
+func TestOpsSystemLogSinkWorkerRejectsRestartAfterNativeStop(t *testing.T) {
+	worker, _ := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{})
+	var starts atomic.Int64
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{
+		beforeNativeStart: func() { starts.Add(1) },
+	}
+
+	require.NoError(t, worker.Start(context.Background()))
+	require.NoError(t, worker.Stop(context.Background()))
+	require.EqualError(t, worker.Start(context.Background()), "Ops system log sink is non-restartable after Stop")
+	require.Equal(t, int64(1), starts.Load())
+	snapshot := worker.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.False(t, status.Accepting)
+	require.False(t, status.StillRunning)
+	require.Zero(t, status.RunningWorkers)
+}
+
+func TestOpsSystemLogSinkWorkerStopBeforeStartPreservesFutureStart(t *testing.T) {
+	persisted := make(chan struct{}, 1)
+	worker, sink := newOpsSystemLogSinkWorkerForTest(t, &opsRepoMock{BatchInsertSystemLogsFn: func(_ context.Context, inputs []*OpsInsertSystemLogInput) (int64, error) {
+		persisted <- struct{}{}
+		return int64(len(inputs)), nil
+	}})
+	var starts, stops atomic.Int64
+	worker.testHooks = &opsSystemLogSinkWorkerTestHooks{
+		beforeNativeStart: func() { starts.Add(1) },
+		beforeNativeStop:  func() { stops.Add(1) },
+	}
+	require.NoError(t, worker.Stop(context.Background()))
+	require.Zero(t, stops.Load())
+	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
+	staleNotifier := worker.StopInitiated()
+	select {
+	case <-staleNotifier:
+	default:
+		t.Fatal("never-started Stop did not close its notifier generation")
+	}
+
+	sink.WriteLogEvent(opsSystemLogEvent("buffered-after-noop-stop"))
+	require.Equal(t, 1, len(sink.queue))
+	require.NoError(t, worker.Start(context.Background()))
+	require.Equal(t, int64(1), starts.Load())
+	activeNotifier := worker.StopInitiated()
+	require.NotEqual(t, staleNotifier, activeNotifier)
+	select {
+	case <-activeNotifier:
+		t.Fatal("valid Start retained the closed notifier from never-started Stop")
+	default:
+	}
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- worker.Stop(context.Background()) }()
+	select {
+	case <-activeNotifier:
+	case <-time.After(time.Second):
+		t.Fatal("real Stop did not close the active notifier generation")
+	}
+	require.NoError(t, <-stopErr)
+	require.Equal(t, int64(1), stops.Load())
+	select {
+	case <-persisted:
+	case <-time.After(time.Second):
+		t.Fatal("future valid start was canceled by never-started Stop")
+	}
+}
 
 func TestUsageRecordWorkerPoolWorkerStartDoesNotOverwriteStopping(t *testing.T) {
 	pool := NewUsageRecordWorkerPoolWithOptions(UsageRecordWorkerPoolOptions{

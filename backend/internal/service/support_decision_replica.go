@@ -69,7 +69,8 @@ func newSupportDecisionReplica(store SupportDecisionPublicationStore, reader *Su
 }
 
 // Start publishes cancellation and completion state before any blocking store
-// call, then reports success only after the initial verified load.
+// call. An existing generation is installed synchronously; a missing generation
+// is a valid cold start and remains unknown while the managed loop polls.
 func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	if r == nil || r.store == nil || r.reader == nil {
 		return errors.New("support decision replica dependencies are incomplete")
@@ -131,7 +132,7 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 	r.subscription = subscription
 	r.mu.Unlock()
 
-	if err := r.refresh(runCtx); err != nil {
+	if err := r.refresh(runCtx); err != nil && !errors.Is(err, ErrSupportDecisionActiveGenerationNotFound) {
 		cancel()
 		_ = subscription.Close()
 		r.finishLifecycle(done)
@@ -140,9 +141,6 @@ func (r *SupportDecisionReplica) Start(ctx context.Context) error {
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return context.DeadlineExceeded
-		}
-		if errors.Is(err, ErrSupportDecisionActiveGenerationNotFound) {
-			return ErrSupportDecisionActiveGenerationNotFound
 		}
 		return errors.New("load active support decision generation: class=operation")
 	}
@@ -280,7 +278,7 @@ func (r *SupportDecisionReplica) refresh(ctx context.Context) (resultErr error) 
 		return err
 	}
 	generation, err := r.store.ActiveGeneration(ctx)
-	if err != nil || generation == 0 {
+	if err != nil {
 		failure(SupportDecisionReplicaStageActive, supportDecisionErrorClass(err))
 		if errors.Is(err, context.Canceled) {
 			return context.Canceled
@@ -288,10 +286,14 @@ func (r *SupportDecisionReplica) refresh(ctx context.Context) (resultErr error) 
 		if errors.Is(err, context.DeadlineExceeded) {
 			return context.DeadlineExceeded
 		}
-		if errors.Is(err, ErrSupportDecisionActiveGenerationNotFound) || generation == 0 {
+		if errors.Is(err, ErrSupportDecisionActiveGenerationNotFound) {
 			return ErrSupportDecisionActiveGenerationNotFound
 		}
 		return errors.New("support decision replica stage=active class=operation")
+	}
+	if generation == 0 {
+		failure(SupportDecisionReplicaStageActive, SupportDecisionErrorOperation)
+		return ErrSupportDecisionActiveGenerationNotFound
 	}
 	completedMutations = append(completedMutations, func() { r.metrics.activeGeneration.Store(generation) })
 

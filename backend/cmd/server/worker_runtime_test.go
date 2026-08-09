@@ -94,6 +94,8 @@ func TestProvideWorkerRuntimeRegistersOpenAIOAuthMarkerCleanupOnlyForRedisStore(
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -260,9 +262,14 @@ func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		publisher,
 		replica,
 	)
@@ -301,9 +308,14 @@ func TestProvideWorkerRuntimeRollsBackPublisherWhenReplicaStartupFails(t *testin
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		publisher,
 		badReplica,
 	)

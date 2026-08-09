@@ -153,7 +153,7 @@ func TestOpsSystemLogSinkWireGraphAndInventoryAreRuntimeManaged(t *testing.T) {
 	generated := string(wireGen)
 	initialize := functionSource(generated, "initializeApplication")
 	require.Equal(t, 1, strings.Count(initialize, "service.ProvideOpsSystemLogSink("))
-	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService, userMessageQueueService, concurrencyService, emailQueueService, opsSystemLogSink)")
+	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService, userMessageQueueService, concurrencyService, emailQueueService, opsSystemLogSink, schedulerSupportPublisherWorker, supportDecisionReplicaWorker)")
 	require.NotContains(t, functionSource(generated, "provideCleanup"), "opsSystemLogSink *service.OpsSystemLogSink")
 	require.NotContains(t, initialize, "provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink,")
 }

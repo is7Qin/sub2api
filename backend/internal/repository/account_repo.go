@@ -479,11 +479,6 @@ func nullTimePointer(value sql.NullTime) *time.Time {
 }
 
 func (r *accountRepository) updateAccountRow(ctx context.Context, client *dbent.Client, account *service.Account) error {
-	schedulable := account.Schedulable
-	if account.Status == service.StatusError {
-		schedulable = false
-	}
-
 	builder := client.Account.UpdateOneID(account.ID).
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
@@ -495,7 +490,8 @@ func (r *accountRepository) updateAccountRow(ctx context.Context, client *dbent.
 		SetPriority(account.Priority).
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
-		SetSchedulable(schedulable).
+		// Status is transient health; preserve the administrator's scheduling intent.
+		SetSchedulable(account.Schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
 
 	if account.RateMultiplier != nil {
@@ -1298,11 +1294,11 @@ func (r *accountRepository) batchUpdateLastUsedChunk(ctx context.Context, ids []
 
 func (r *accountRepository) SetError(ctx context.Context, id int64, errorMsg string) error {
 	client := clientFromContext(ctx, r.client)
+	// Error status blocks effective scheduling without overwriting administrator intent.
 	_, err := client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
 		SetStatus(service.StatusError).
 		SetErrorMessage(errorMsg).
-		SetSchedulable(false).
 		Save(ctx)
 	if err != nil {
 		return err

@@ -10,6 +10,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,9 +29,14 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		nil,
 		nil,
 	)
@@ -37,7 +44,19 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "email-queue", "idempotency-cleanup", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "ops-system-log-sink", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	var sinkSnapshots int
+	for _, snapshot := range snapshots {
+		if snapshot.Descriptor.Name == "ops-system-log-sink" {
+			sinkSnapshots++
+			require.Equal(t, workerruntime.KindPool, snapshot.Descriptor.Kind)
+			require.Equal(t, "ops", snapshot.Descriptor.Group)
+			require.Equal(t, workerruntime.CoordinationPerInstance, snapshot.Descriptor.CoordinationMode)
+			require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
+			require.IsType(t, workerruntime.PoolStatus{}, snapshot.Status)
+		}
+	}
+	require.Equal(t, 1, sinkSnapshots)
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
@@ -50,6 +69,47 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		require.IsType(t, workerruntime.PeriodicStatus{}, snapshot.Status)
 	}
 	require.True(t, usagePool.Accepting())
+	antigravitySnapshot := snapshots[1]
+	require.Equal(t, "antigravity-oauth-session-cleanup", antigravitySnapshot.Descriptor.Name)
+	require.Equal(t, workerruntime.LifecycleRunning, antigravitySnapshot.Lifecycle.State)
+	require.IsType(t, workerruntime.PeriodicStatus{}, antigravitySnapshot.Status)
+}
+
+func TestProvideWorkerRuntimeRegistersOpenAIOAuthMarkerCleanupOnlyForRedisStore(t *testing.T) {
+	newRuntime := func(openAIOAuth *service.OpenAIOAuthService) *workerruntime.Runtime {
+		runtime, err := provideWorkerRuntime(
+			service.NewAccountExpiryService(nil, time.Hour),
+			service.NewIdempotencyCleanupService(nil, &config.Config{}),
+			service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1}),
+			service.NewSubscriptionExpiryService(nil, time.Hour),
+			service.NewPaymentOrderExpiryService(nil, time.Hour),
+			service.NewPricingService(&config.Config{}, nil),
+			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+			service.NewOAuthService(nil, nil),
+			service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+			service.NewAntigravityOAuthService(nil),
+			openAIOAuth,
+			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
+			service.NewConcurrencyService(nil),
+			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		)
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
+		return runtime
+	}
+
+	memoryNames := snapshotNames(newRuntime(service.NewOpenAIOAuthService(nil, nil)).Snapshot())
+	require.Contains(t, memoryNames, "openai-oauth-session-cleanup")
+	require.NotContains(t, memoryNames, "openai-oauth-redis-set-failure-cleanup")
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	redisNames := snapshotNames(newRuntime(service.NewOpenAIOAuthServiceWithRedis(nil, nil, rdb)).Snapshot())
+	require.Contains(t, redisNames, "openai-oauth-session-cleanup")
+	require.Contains(t, redisNames, "openai-oauth-redis-set-failure-cleanup")
 }
 
 func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) {
@@ -66,9 +126,14 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		disabled,
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		nil,
 		nil,
 	)
@@ -90,9 +155,14 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewPricingService(&config.Config{}, nil),
 		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 		enabled,
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
 		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 		nil,
 		nil,
 	)
@@ -112,9 +182,14 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewPricingService(&config.Config{}, nil),
 			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+			service.NewOAuthService(nil, nil),
+			service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+			service.NewAntigravityOAuthService(nil),
+			service.NewOpenAIOAuthService(nil, nil),
 			service.NewUserMessageQueueService(cache, nil, &config.UserMessageQueueConfig{CleanupIntervalSeconds: interval}),
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 			nil,
 			nil,
 		)
@@ -143,9 +218,14 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			service.NewPricingService(&config.Config{}, nil),
 			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
 			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+			service.NewOAuthService(nil, nil),
+			service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+			service.NewAntigravityOAuthService(nil),
+			service.NewOpenAIOAuthService(nil, nil),
 			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
 			concurrency,
 			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
 			nil,
 			nil,
 		)
@@ -289,6 +369,26 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	require.NotContains(t, legacyCleanup, "paymentOrderExpiry.Stop()")
 	require.NotContains(t, legacyCleanup, "pricing.Stop()")
 	require.NotContains(t, legacyCleanup, "tokenRefresh.Stop()")
+	require.NotContains(t, legacyCleanup, "geminiOAuth.Stop()")
+	require.NotContains(t, legacyCleanup, "antigravityOAuth.Stop()")
+	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "geminiOAuth *service.GeminiOAuthService")
+	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "antigravityOAuth *service.AntigravityOAuthService")
+	require.NotContains(t, legacyCleanup, "openaiOAuth.Stop()")
+	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "openaiOAuth *service.OpenAIOAuthService")
+	require.NotContains(t, functionSource(legacyCleanup, "provideCleanup"), "opsSystemLogSink *service.OpsSystemLogSink")
+	require.NotContains(t, legacyCleanup, `{"OpsSystemLogSink"`)
+
+	provider := functionSource(serviceWire, "ProvideOpsSystemLogSink")
+	require.NotContains(t, provider, "sink.Start()")
+	require.Contains(t, provider, "logger.SetSink(sink)")
+}
+
+type serverOpsRepositoryStub struct {
+	service.OpsRepository
+}
+
+func (serverOpsRepositoryStub) BatchInsertSystemLogs(context.Context, []*service.OpsInsertSystemLogInput) (int64, error) {
+	return 0, nil
 }
 
 type serverConcurrencyCacheStub struct {

@@ -201,7 +201,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	backupHandler := handler.ProvideBackupHandler(backupService, userService, totpService)
 	oAuthHandler := admin.NewOAuthHandler(oAuthService)
 	openAIQuotaService := service.ProvideOpenAIQuotaService(accountRepository, proxyRepository, openAITokenProvider, privacyClientFactory, openAIGatewayService)
-	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService, openAIQuotaService)
+	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService, openAIQuotaService, rateLimitService)
 	geminiOAuthHandler := admin.NewGeminiOAuthHandler(geminiOAuthService)
 	antigravityOAuthHandler := admin.NewAntigravityOAuthHandler(antigravityOAuthService)
 	proxyHandler := admin.NewProxyHandler(adminService)
@@ -235,7 +235,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	schedulerSupportPublisherWorker := service.NewSchedulerSupportPublisherWorker(schedulerDirtyWorkRepository, schedulerOwnershipRepository, schedulerSnapshotDirtyProcessor, supportDecisionPublisher, supportDecisionPublicationStore, configConfig)
 	supportDecisionReplica := service.NewSupportDecisionReplica(supportDecisionPublicationStore, supportDecisionAtomicReader)
 	supportDecisionReplicaWorker := service.NewSupportDecisionReplicaWorker(supportDecisionReplica)
-	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, userMessageQueueService, concurrencyService, emailQueueService, schedulerSupportPublisherWorker, supportDecisionReplicaWorker)
+	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService, userMessageQueueService, concurrencyService, emailQueueService, opsSystemLogSink, schedulerSupportPublisherWorker, supportDecisionReplicaWorker)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +297,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	scheduledTestRunnerService := service.ProvideScheduledTestRunnerService(scheduledTestPlanRepository, scheduledTestService, accountTestService, rateLimitService, configConfig)
 	channelMonitorRunner := service.ProvideChannelMonitorRunner(channelMonitorService, settingService)
 	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, authCacheInvalidationWorker, apiKeyService, schedulerSnapshotService, usageCleanupService, billingCacheService, subscriptionService, openAIOAuthStartupConfigValidation, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, channelMonitorRunner, userPlatformQuotaUsageFlusher, billingOutboxWorker, runtime)
+	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, authCacheInvalidationWorker, apiKeyService, schedulerSnapshotService, usageCleanupService, billingCacheService, subscriptionService, openAIOAuthStartupConfigValidation, openAIGatewayService, scheduledTestRunnerService, backupService, channelMonitorRunner, userPlatformQuotaUsageFlusher, billingOutboxWorker, runtime)
 	application := &Application{
 		Server:  httpServer,
 		Cleanup: v,
@@ -331,7 +331,6 @@ func provideCleanup(
 	opsAlertEvaluator *service.OpsAlertEvaluatorService,
 	opsCleanup *service.OpsCleanupService,
 	opsScheduledReport *service.OpsScheduledReportService,
-	opsSystemLogSink *service.OpsSystemLogSink,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	apiKeyService *service.APIKeyService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
@@ -339,10 +338,6 @@ func provideCleanup(
 	billingCache *service.BillingCacheService,
 	subscriptionService *service.SubscriptionService,
 	openAIOAuthStartupConfigValidation *service.OpenAIOAuthStartupConfigValidation,
-	oauth *service.OAuthService,
-	openaiOAuth *service.OpenAIOAuthService,
-	geminiOAuth *service.GeminiOAuthService,
-	antigravityOAuth *service.AntigravityOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
@@ -386,12 +381,6 @@ func provideCleanup(
 				}
 				return nil
 			}},
-			{"OpsSystemLogSink", func() error {
-				if opsSystemLogSink != nil {
-					opsSystemLogSink.Stop()
-				}
-				return nil
-			}},
 			{"OpsAlertEvaluatorService", func() error {
 				if opsAlertEvaluator != nil {
 					opsAlertEvaluator.Stop()
@@ -430,22 +419,6 @@ func provideCleanup(
 			}},
 			{"BillingCacheService", func() error {
 				billingCache.Stop()
-				return nil
-			}},
-			{"OAuthService", func() error {
-				oauth.Stop()
-				return nil
-			}},
-			{"OpenAIOAuthService", func() error {
-				openaiOAuth.Stop()
-				return nil
-			}},
-			{"GeminiOAuthService", func() error {
-				geminiOAuth.Stop()
-				return nil
-			}},
-			{"AntigravityOAuthService", func() error {
-				antigravityOAuth.Stop()
 				return nil
 			}},
 			{"OpenAIWSPool", func() error {

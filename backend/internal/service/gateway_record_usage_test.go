@@ -73,6 +73,9 @@ func (s *gatewayRecordUsageBillingOutboxStub) Enqueue(_ context.Context, command
 func (s *gatewayRecordUsageBillingOutboxStub) Claim(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
 	return nil, nil
 }
+func (s *gatewayRecordUsageBillingOutboxStub) ClaimExpiredLeased(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
 func (s *gatewayRecordUsageBillingOutboxStub) Retry(context.Context, int64, string, time.Time, string, bool) error {
 	return nil
 }
@@ -591,9 +594,10 @@ func TestDetachedBillingContextPreservesShorterDeadline(t *testing.T) {
 	require.WithinDuration(t, parentDeadline, detachedDeadline, time.Millisecond)
 }
 
-func TestGatewayServiceRecordUsage_BillingErrorSkipsUsageLogWrite(t *testing.T) {
+func TestGatewayServiceRecordUsage_BillingErrorWritesUnsettledUsageLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
-	billingRepo := &openAIRecordUsageBillingRepoStub{err: context.DeadlineExceeded}
+	billingErr := errors.New("billing tx failed")
+	billingRepo := &openAIRecordUsageBillingRepoStub{err: billingErr}
 	userRepo := &openAIRecordUsageUserRepoStub{}
 	subRepo := &openAIRecordUsageSubRepoStub{}
 	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo)
@@ -613,9 +617,14 @@ func TestGatewayServiceRecordUsage_BillingErrorSkipsUsageLogWrite(t *testing.T) 
 		Account: &Account{ID: 705},
 	})
 
-	require.Error(t, err)
+	require.ErrorIs(t, err, billingErr)
 	require.Equal(t, 1, billingRepo.calls)
-	require.Equal(t, 0, usageRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 10, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 6, usageRepo.lastLog.OutputTokens)
+	require.Greater(t, usageRepo.lastLog.TotalCost, 0.0)
+	require.Zero(t, usageRepo.lastLog.ActualCost)
 }
 
 func TestGatewayServiceRecordUsage_InvalidUsageSkipsBillingAndUsageLog(t *testing.T) {

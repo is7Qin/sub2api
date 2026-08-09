@@ -31,7 +31,6 @@ func (s *openaiOAuthClientAuthURLStub) RefreshTokenWithOptions(ctx context.Conte
 
 func TestOpenAIOAuthService_GenerateAuthURL_OpenAIKeepsCodexFlow(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientAuthURLStub{})
-	defer svc.Stop()
 
 	result, err := svc.GenerateAuthURL(context.Background(), nil, "", PlatformOpenAI)
 	require.NoError(t, err)
@@ -55,7 +54,6 @@ func TestOpenAIOAuthService_GenerateAuthURL_OpenAIKeepsCodexFlow(t *testing.T) {
 
 func TestOpenAIOAuthService_GenerateAuthURL_ReauthUsesAccountFingerprint(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientAuthURLStub{})
-	defer svc.Stop()
 
 	accountProfile := OpenAICodexUAProfile{
 		Originator:    "account-originator",

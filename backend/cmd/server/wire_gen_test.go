@@ -48,14 +48,8 @@ func TestShutdownErrorReturnsSoDeferredCleanupRuns(t *testing.T) {
 func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	cfg := &config.Config{}
 
-	oauthSvc := service.NewOAuthService(nil, nil)
-	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
-	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
-	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
-
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
-	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
 	cleanup := provideCleanup(
 		nil, // entClient
@@ -65,7 +59,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		&service.OpsAlertEvaluatorService{},
 		&service.OpsCleanupService{},
 		&service.OpsScheduledReportService{},
-		opsSystemLogSinkSvc,
 		nil, // authCacheInvalidationWorker
 		nil, // apiKeyService
 		schedulerSnapshotSvc,
@@ -73,10 +66,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		billingCacheSvc,
 		&service.SubscriptionService{},
 		&service.OpenAIOAuthStartupConfigValidation{},
-		oauthSvc,
-		openAIOAuthSvc,
-		geminiOAuthSvc,
-		antigravityOAuthSvc,
 		nil, // openAIGateway
 		nil, // scheduledTestRunner
 		nil, // backupSvc
@@ -107,6 +96,66 @@ func TestEmailQueueInventoryIsRuntimeManaged(t *testing.T) {
 	content, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
 	require.NoError(t, err)
 	require.Contains(t, string(content), "| EmailQueueService | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter | Server runtime | `Runtime.StopAll` waits to deadline and reports still-running truthfully | per-instance | Ops worker status | Phase 6 |")
+}
+
+func TestGeminiOAuthInventoryAndWireGraphAreRuntimeManaged(t *testing.T) {
+	inventory, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
+	require.NoError(t, err)
+	require.Contains(t, string(inventory), "| Gemini OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 8 |")
+
+	wireGen, err := os.ReadFile("wire_gen.go")
+	require.NoError(t, err)
+	generated := string(wireGen)
+	initialize := functionSource(generated, "initializeApplication")
+	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService,")
+	require.NotContains(t, functionSource(generated, "provideCleanup"), "geminiOAuth *service.GeminiOAuthService")
+}
+
+func TestAntigravityOAuthInventoryAndWireGraphAreRuntimeManaged(t *testing.T) {
+	inventory, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
+	require.NoError(t, err)
+	require.Contains(t, string(inventory), "| Antigravity OAuth session cleanup | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` (delayed fixed-delay 5-minute interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance in-memory session map protected by an RW mutex | Ops worker status | Phase 9 |")
+	require.Contains(t, string(inventory), "| OpenAI OAuth pending-session cleanup | Yes |")
+
+	wireGen, err := os.ReadFile("wire_gen.go")
+	require.NoError(t, err)
+	generated := string(wireGen)
+	initialize := functionSource(generated, "initializeApplication")
+	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService,")
+	require.Contains(t, initialize, "admin.NewAntigravityOAuthHandler(antigravityOAuthService)")
+	require.NotContains(t, functionSource(generated, "provideCleanup"), "antigravityOAuth *service.AntigravityOAuthService")
+	require.NotContains(t, initialize, "provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, authCacheInvalidationWorker, apiKeyService, schedulerSnapshotService, usageCleanupService, billingCacheService, subscriptionService, openAIOAuthStartupConfigValidation, openAIOAuthService, antigravityOAuthService,")
+}
+
+func TestOpenAIOAuthInventoryAndWireGraphAreRuntimeManaged(t *testing.T) {
+	inventory, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
+	require.NoError(t, err)
+	require.Contains(t, string(inventory), "| OpenAI OAuth pending-session cleanup | Yes |")
+	require.Contains(t, string(inventory), "| OpenAI OAuth Redis write-failure fallback-marker cleanup | Yes, when Redis-backed pending session storage is configured |")
+
+	wireGen, err := os.ReadFile("wire_gen.go")
+	require.NoError(t, err)
+	initialize := functionSource(string(wireGen), "initializeApplication")
+	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService,")
+	require.Contains(t, initialize, "admin.NewOpenAIOAuthHandler(openAIOAuthService")
+	require.NotContains(t, functionSource(string(wireGen), "provideCleanup"), "openaiOAuth *service.OpenAIOAuthService")
+	require.Equal(t, 1, strings.Count(initialize, "service.ProvideOpenAIOAuthService("))
+}
+
+func TestOpsSystemLogSinkWireGraphAndInventoryAreRuntimeManaged(t *testing.T) {
+	inventory, err := os.ReadFile("../../../docs/worker-runtime-inventory.md")
+	require.NoError(t, err)
+	require.Contains(t, string(inventory), "This inventory records all process-local background activity through Issue #9 Phase 11.")
+	require.Contains(t, string(inventory), "| OpsSystemLogSink | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter | Server runtime | `Runtime.StopAll` joins native drain and final flush to caller deadline, reporting still-running truthfully | per-instance | Ops worker status plus unchanged dedicated system-log health endpoint | Phase 11 |")
+
+	wireGen, err := os.ReadFile("wire_gen.go")
+	require.NoError(t, err)
+	generated := string(wireGen)
+	initialize := functionSource(generated, "initializeApplication")
+	require.Equal(t, 1, strings.Count(initialize, "service.ProvideOpsSystemLogSink("))
+	require.Contains(t, initialize, "provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService, userMessageQueueService, concurrencyService, emailQueueService, opsSystemLogSink)")
+	require.NotContains(t, functionSource(generated, "provideCleanup"), "opsSystemLogSink *service.OpsSystemLogSink")
+	require.NotContains(t, initialize, "provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink,")
 }
 
 func TestWireGeneratedStartupValidationRunsBeforeSideEffectingProviders(t *testing.T) {

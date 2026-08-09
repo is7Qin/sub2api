@@ -48,6 +48,42 @@ func TestOpsHandlerBillingOutboxHealthUnavailable(t *testing.T) {
 	}
 }
 
+// TestOpsHandlerBillingOutboxHealthExposesDrainCounters asserts the Task D circuit
+// fields and the Task G drain counters/alert fields flow through the
+// /billing-outbox/health JSON payload (worker.Health is serialized as a whole).
+func TestOpsHandlerBillingOutboxHealthExposesDrainCounters(t *testing.T) {
+	svc := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	worker := service.NewBillingOutboxWorker(nil, nil)
+	h := NewOpsHandler(svc)
+	h.SetBillingOutboxWorker(worker)
+	r := newOpsSystemLogTestRouter(h, false)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/billing-outbox/health", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200", w.Code)
+	}
+
+	var resp responseEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	for _, field := range []string{"backlogged_rounds", "round_timeouts", "circuit_open", "permanent_failures", "oldest_lag", "pending", "terminal"} {
+		if _, ok := body[field]; !ok {
+			t.Fatalf("health response missing field %q in %v", field, body)
+		}
+	}
+	for _, field := range []string{"backlogged_rounds", "round_timeouts", "permanent_failures"} {
+		if _, ok := body[field].(float64); !ok {
+			t.Fatalf("%s must be numeric, got %T (%v)", field, body[field], body[field])
+		}
+	}
+}
+
 func TestOpsSystemLogHandler_ListUnavailable(t *testing.T) {
 	h := NewOpsHandler(nil)
 	r := newOpsSystemLogTestRouter(h, false)

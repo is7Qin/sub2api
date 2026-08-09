@@ -345,7 +345,20 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			)
 			return s.ForwardAsAnthropic(ctx, c, account, body, promptCacheKey, defaultMappedModel)
 		}
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+		shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody)
+		// Explicit account rules must run before the compat handler commits the error response.
+		tempUnscheduled := false
+		if !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
+			tempUnscheduled = s.rateLimitService.CheckErrorPolicy(
+				ctx,
+				account,
+				resp.StatusCode,
+				respBody,
+				upstreamModel,
+			) == ErrorPolicyTempUnscheduled
+			shouldFailover = tempUnscheduled
+		}
+		if shouldFailover {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -364,7 +377,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			if !tempUnscheduled {
+				s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			}
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,

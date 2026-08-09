@@ -2064,6 +2064,9 @@ func (stubUserSubscriptionRepo) Create(ctx context.Context, sub *service.UserSub
 func (stubUserSubscriptionRepo) GetByID(ctx context.Context, id int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
+func (r stubUserSubscriptionRepo) GetByIDForUpdate(ctx context.Context, id int64) (*service.UserSubscription, error) {
+	return r.GetByID(ctx, id)
+}
 func (stubUserSubscriptionRepo) GetByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }

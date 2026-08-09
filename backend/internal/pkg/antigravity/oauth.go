@@ -285,16 +285,10 @@ type OAuthSession struct {
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*OAuthSession
-	stopCh   chan struct{}
 }
 
 func NewSessionStore() *SessionStore {
-	store := &SessionStore{
-		sessions: make(map[string]*OAuthSession),
-		stopCh:   make(chan struct{}),
-	}
-	go store.cleanup()
-	return store
+	return &SessionStore{sessions: make(map[string]*OAuthSession)}
 }
 
 func (s *SessionStore) Set(sessionID string, session *OAuthSession) {
@@ -322,32 +316,27 @@ func (s *SessionStore) Delete(sessionID string) {
 	delete(s.sessions, sessionID)
 }
 
-func (s *SessionStore) Stop() {
-	select {
-	case <-s.stopCh:
-		return
-	default:
-		close(s.stopCh)
-	}
+// CleanupExpired removes sessions older than SessionTTL for one runtime callback.
+func (s *SessionStore) CleanupExpired(ctx context.Context) error {
+	return s.cleanupExpiredAt(ctx, time.Now())
 }
 
-func (s *SessionStore) cleanup() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.mu.Lock()
-			for id, session := range s.sessions {
-				if time.Since(session.CreatedAt) > SessionTTL {
-					delete(s.sessions, id)
-				}
-			}
-			s.mu.Unlock()
+func (s *SessionStore) cleanupExpiredAt(ctx context.Context, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, session := range s.sessions {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if now.Sub(session.CreatedAt) > SessionTTL {
+			delete(s.sessions, id)
 		}
 	}
+	return ctx.Err()
 }
 
 func GenerateRandomBytes(n int) ([]byte, error) {

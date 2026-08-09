@@ -116,7 +116,52 @@ func TestBillingOutboxRepository_ClaimUsesColumnIdentityOverPayload(t *testing.T
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestBillingOutboxRepository_ClaimFinalizationUsesLeaseAndReturnsStagedResult(t *testing.T) {
+func TestBillingOutboxRepository_ClaimUsesSinglePendingBranchMatchingPartialIndex(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	payload, err := json.Marshal(testBillingOutboxCommand())
+	require.NoError(t, err)
+	// Claim 必须是单分支（status = 'pending'）且 ORDER BY (available_at, id)，
+	// 与部分索引 idx_billing_attempt_outbox_claim (status, available_at, id) 的
+	// 前导列一致；旧的 OR 双分支 + ORDER BY id 无法匹配索引，planner 回退
+	// pkey 全表扫描（生产积压时每轮过滤数百万 succeeded 行）。
+	mock.ExpectQuery(`(?s)WHERE status = 'pending' AND available_at <= NOW\(\).*ORDER BY available_at, id.*FOR UPDATE SKIP LOCKED.*RETURNING`).
+		WithArgs("worker-a", int64(100), int64(30)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "attempt_id", "api_key_id", "request_fingerprint", "command", "status", "attempts", "apply_result", "available_at", "lease_until", "leased_by", "last_error", "created_at", "updated_at"}).
+			AddRow(int64(4), "attempt-1", int64(9), "fingerprint-1", payload, "processing", 1, nil, time.Now(), time.Now().Add(time.Minute), "worker-a", nil, time.Now(), time.Now()))
+	repo := NewBillingOutboxRepository(db)
+	rows, err := repo.Claim(context.Background(), "worker-a", 100, 30*time.Second)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "attempt-1", rows[0].Command.AttemptID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBillingOutboxRepository_ClaimExpiredLeasedReclaimsExpiredProcessingLeases(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	payload, err := json.Marshal(testBillingOutboxCommand())
+	require.NoError(t, err)
+	// 过期租约的 processing 记录走独立语句（不能与 pending 分支 UNION/OR，
+	// 否则再次破坏部分索引匹配），补领时替换 leased_by 为当前 worker。
+	mock.ExpectQuery(`(?s)WHERE status = 'processing' AND lease_until <= NOW\(\).*ORDER BY available_at, id.*FOR UPDATE SKIP LOCKED.*RETURNING`).
+		WithArgs("worker-b", int64(100), int64(30)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "attempt_id", "api_key_id", "request_fingerprint", "command", "status", "attempts", "apply_result", "available_at", "lease_until", "leased_by", "last_error", "created_at", "updated_at"}).
+			AddRow(int64(5), "attempt-1", int64(9), "fingerprint-1", payload, "processing", 2, nil, time.Now(), time.Now().Add(time.Minute), "worker-b", nil, time.Now(), time.Now()))
+
+	repo := NewBillingOutboxRepository(db)
+	rows, err := repo.ClaimExpiredLeased(context.Background(), "worker-b", 100, 30*time.Second)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "worker-b", rows[0].LeasedBy)
+	require.Equal(t, int64(9), rows[0].Command.APIKeyID)
+	require.Equal(t, int64(9), rows[0].Command.Billing.APIKeyID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBillingOutboxRepository_ClaimFinalizationUsesSinglePendingBranchMatchingPartialIndex(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
@@ -124,7 +169,9 @@ func TestBillingOutboxRepository_ClaimFinalizationUsesLeaseAndReturnsStagedResul
 	require.NoError(t, err)
 	applyResult, err := json.Marshal(&service.UsageBillingApplyResult{Applied: true})
 	require.NoError(t, err)
-	mock.ExpectQuery("(?s)finalization_pending.*FOR UPDATE SKIP LOCKED.*finalizing.*RETURNING").
+	// 与 Claim 同构：单分支 + ORDER BY (available_at, id)，命中
+	// idx_billing_attempt_outbox_finalize_claim 部分索引。
+	mock.ExpectQuery(`(?s)WHERE status = 'finalization_pending' AND available_at <= NOW\(\).*ORDER BY available_at, id.*FOR UPDATE SKIP LOCKED.*RETURNING`).
 		WithArgs("worker-a", int64(100), int64(30)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "attempt_id", "api_key_id", "request_fingerprint", "command", "status", "attempts", "apply_result", "available_at", "lease_until", "leased_by", "last_error", "created_at", "updated_at"}).
 			AddRow(int64(6), "attempt-1", int64(9), "fingerprint-1", payload, "finalizing", 2, applyResult, time.Now(), time.Now().Add(time.Minute), "worker-a", nil, time.Now(), time.Now()))
@@ -136,6 +183,30 @@ func TestBillingOutboxRepository_ClaimFinalizationUsesLeaseAndReturnsStagedResul
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	require.NotNil(t, records[0].ApplyResult)
+	require.True(t, records[0].ApplyResult.Applied)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBillingOutboxRepository_ClaimFinalizationExpiredLeasedReclaimsExpiredFinalizingLeases(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	payload, err := json.Marshal(testBillingOutboxCommand())
+	require.NoError(t, err)
+	applyResult, err := json.Marshal(&service.UsageBillingApplyResult{Applied: true})
+	require.NoError(t, err)
+	mock.ExpectQuery(`(?s)WHERE status = 'finalizing' AND lease_until <= NOW\(\).*ORDER BY available_at, id.*FOR UPDATE SKIP LOCKED.*RETURNING`).
+		WithArgs("worker-b", int64(100), int64(30)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "attempt_id", "api_key_id", "request_fingerprint", "command", "status", "attempts", "apply_result", "available_at", "lease_until", "leased_by", "last_error", "created_at", "updated_at"}).
+			AddRow(int64(7), "attempt-1", int64(9), "fingerprint-1", payload, "finalizing", 3, applyResult, time.Now(), time.Now().Add(time.Minute), "worker-b", nil, time.Now(), time.Now()))
+
+	repo := NewBillingOutboxRepository(db)
+	finalizer, ok := repo.(service.BillingOutboxFinalizationRepository)
+	require.True(t, ok)
+	records, err := finalizer.ClaimFinalizationExpiredLeased(context.Background(), "worker-b", 100, 30*time.Second)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, "worker-b", records[0].LeasedBy)
 	require.True(t, records[0].ApplyResult.Applied)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

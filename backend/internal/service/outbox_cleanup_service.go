@@ -10,11 +10,19 @@ import (
 )
 
 const (
-	outboxCleanupInterval = time.Minute
+	// 清理周期 20s。配合 50000×10 的批量，每轮容量 500K 行：
+	// 名义速率 25K/s，最坏情况（每轮吃满周期超时）下 500K/(20s+25s)≈11.1K/s，
+	// 仍 ≥ 10K/s 摄入设计点（稳态删除率必须 ≥ 摄入率，否则 30 天保留期下
+	// 表无界增长）。参数由 TestOutboxCleanupService_TuningSustainsDesignPointIngest 锁定。
+	outboxCleanupInterval = 20 * time.Second
 	// 单周期超时需小于 leader 锁 TTL，避免锁到期后仍有清理在跑。
 	outboxCleanupCycleTimeout = 25 * time.Second
 	outboxCleanupLockTTL      = 30 * time.Second
-	outboxCleanupBatchSize    = 5000
+	// 批大小 50000：终态行 DELETE 走 (updated_at, id) retention 索引（仅触及
+	// PK / identity / retention 三个索引，claim 部分索引不覆盖 succeeded/terminal），
+	// 单批 WAL ≈ 9MB；25s 超时预算内 10 批 500K 行需要 ≥20K/s 的删除吞吐
+	// （实测 bulk delete 30-60K/s，500K 行耗时约 8-17s）。
+	outboxCleanupBatchSize = 50000
 	// 每周期最多清理的批次：限速避免清理瞬间占满磁盘 IO / WAL。
 	outboxCleanupMaxBatches = 10
 )
@@ -27,8 +35,10 @@ const outboxCleanupLeaderLockKey = "outbox-cleanup"
 //     事件全部成功后才推进，删除不丢事件）。
 //
 // terminalRetention 为 billing 终态行保留期（表注释明确这些行"retained for
-// reconciliation"）；<= 0 表示禁用该清理目标。计费幂等由
-// usage_billing_dedup / usage_billing_dedup_archive 独立兜底，不依赖 outbox 行。
+// reconciliation"）；<= 0 表示禁用该清理目标。默认 30 天对齐月度计费对账窗口，
+// 同时是 Task D terminal 行人工恢复窗口的下界，**不得缩短**（本任务只调删除
+// 吞吐，不动保留期）。计费幂等由 usage_billing_dedup / usage_billing_dedup_archive
+// 独立兜底，不依赖 outbox 行。
 // 生命周期由 server worker runtime 统一管理（见 NewOutboxCleanupWorker）；
 // Run 内部通过 Redis 单例 leader 锁保证多副本下每周期只有一个实例执行，
 // Redis 故障时回退 PostgreSQL advisory lock。

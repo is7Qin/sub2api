@@ -146,6 +146,32 @@ const AdminOrderTableStub = {
   `,
 }
 
+const AdminRefundDialogStub = {
+  props: ['show', 'order', 'submitting', 'requireForce', 'warning'],
+  emits: ['confirm', 'cancel'],
+  template: '<div v-if="show" data-testid="refund-dialog" />',
+}
+
+function mountAdminOrdersView() {
+  return mount(AdminOrdersView, {
+    global: {
+      stubs: {
+        AppLayout: { template: '<div><slot /></div>' },
+        OrderTable: AdminOrderTableStub,
+        Pagination: true,
+        BaseDialog: {
+          props: ['show'],
+          template: '<div v-if="show"><slot /><slot name="footer" /></div>',
+        },
+        Select: true,
+        Icon: true,
+        OrderStatusBadge: true,
+        AdminRefundDialog: AdminRefundDialogStub,
+      },
+    },
+  })
+}
+
 function orderFactory(overrides: Partial<PaymentOrder> = {}): PaymentOrder {
   return {
     id: 42,
@@ -470,6 +496,40 @@ describe('order currency display', () => {
     expect(adminGetOrder).toHaveBeenCalledWith(42)
     expect(wrapper.text()).toContain('¥100.00')
     expect(wrapper.text()).toContain('¥101.00')
+  })
+
+  it('keeps the refund dialog open and requests force after a partial-success response', async () => {
+    const order = orderFactory({ status: 'COMPLETED' })
+    adminGetOrders.mockResolvedValue({ data: { items: [order], total: 1 } })
+    adminRefundOrder.mockResolvedValue({
+      data: {
+        success: false,
+        warning: 'user balance is insufficient for deduction, use force',
+        require_force: true,
+      },
+    })
+    const wrapper = mountAdminOrdersView()
+    await flushPromises()
+
+    const refundButton = wrapper.findAll('button').find(button => button.text().includes('payment.admin.refund'))
+    expect(refundButton).toBeTruthy()
+    await refundButton!.trigger('click')
+
+    const dialog = wrapper.getComponent(AdminRefundDialogStub)
+    await dialog.vm.$emit('confirm', { amount: 10, reason: '', deduct_balance: true, force: false })
+    await flushPromises()
+
+    expect(adminRefundOrder).toHaveBeenCalledWith(42, {
+      amount: 10,
+      reason: '',
+      deduct_balance: true,
+      force: false,
+    })
+    expect(dialog.props('show')).toBe(true)
+    expect(dialog.props('requireForce')).toBe(true)
+    expect(dialog.props('warning')).toBe('user balance is insufficient for deduction, use force')
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(showError).not.toHaveBeenCalled()
   })
 
   it('uses order currency in legacy admin order table amount cells', () => {

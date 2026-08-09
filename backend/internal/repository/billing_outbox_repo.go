@@ -132,9 +132,8 @@ func (r *billingOutboxRepository) Claim(ctx context.Context, workerID string, li
 		WITH candidates AS (
 			SELECT id
 			FROM billing_attempt_outbox
-			WHERE (status = 'pending' AND available_at <= NOW())
-			   OR (status = 'processing' AND lease_until <= NOW())
-			ORDER BY id ASC
+			WHERE status = 'pending' AND available_at <= NOW()
+			ORDER BY available_at, id
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
 		)
@@ -152,6 +151,59 @@ func (r *billingOutboxRepository) Claim(ctx context.Context, workerID string, li
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	return scanClaimRows(rows, workerID, limit)
+}
+
+// ClaimExpiredLeased 补领租约过期的 processing 记录（worker 崩溃或 apply 超时
+// 后遗留）。必须与 Claim 分离为独立语句：OR 双分支 + ORDER BY id 无法匹配
+// 部分索引 idx_billing_attempt_outbox_claim (status, available_at, id)，
+// 生产积压时 planner 会回退 pkey 全表扫描逐轮过滤数百万终态行。
+// attempts + 1 与 Claim 一致（补领视为一次新尝试），leased_by 替换为当前
+// worker，RETURNING 字段与 Claim 完全相同。
+func (r *billingOutboxRepository) ClaimExpiredLeased(ctx context.Context, workerID string, limit int, lease time.Duration) ([]service.BillingOutboxRecord, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("billing outbox database is nil")
+	}
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return nil, errors.New("billing outbox worker id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	leaseSeconds := int64(lease / time.Second)
+	if leaseSeconds < 1 {
+		leaseSeconds = 30
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		WITH candidates AS (
+			SELECT id
+			FROM billing_attempt_outbox
+			WHERE status = 'processing' AND lease_until <= NOW()
+			ORDER BY available_at, id
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE billing_attempt_outbox AS o
+		SET status = 'processing', attempts = o.attempts + 1,
+			lease_until = NOW() + ($3 * INTERVAL '1 second'), leased_by = $1,
+			updated_at = NOW()
+		FROM candidates AS c
+		WHERE o.id = c.id
+		RETURNING o.id, o.attempt_id, o.api_key_id, o.request_fingerprint, o.command,
+			o.status, o.attempts, o.apply_result, o.available_at, o.lease_until, o.leased_by,
+			o.last_error, o.created_at, o.updated_at
+	`, workerID, limit, leaseSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanClaimRows(rows, workerID, limit)
+}
+
+// scanClaimRows 扫描 Claim/ClaimExpiredLeased 的 RETURNING 行并统一后处理：
+// 身份列权威覆盖载荷、租约人归属当前 worker。
+func scanClaimRows(rows *sql.Rows, workerID string, limit int) ([]service.BillingOutboxRecord, error) {
 	records := make([]service.BillingOutboxRecord, 0, limit)
 	for rows.Next() {
 		record, err := scanBillingOutboxRecord(rows)
@@ -225,9 +277,8 @@ func (r *billingOutboxRepository) ClaimFinalization(ctx context.Context, workerI
 		WITH candidates AS (
 			SELECT id
 			FROM billing_attempt_outbox
-			WHERE (status = 'finalization_pending' AND available_at <= NOW())
-			   OR (status = 'finalizing' AND lease_until <= NOW())
-			ORDER BY id ASC
+			WHERE status = 'finalization_pending' AND available_at <= NOW()
+			ORDER BY available_at, id
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
 		)
@@ -245,6 +296,57 @@ func (r *billingOutboxRepository) ClaimFinalization(ctx context.Context, workerI
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	return scanFinalizationClaimRows(rows, workerID, limit)
+}
+
+// ClaimFinalizationExpiredLeased 补领租约过期的 finalizing 记录。与
+// ClaimFinalization 分离为独立语句，使两条语句分别命中部分索引
+// idx_billing_attempt_outbox_finalize_claim (status, available_at, id)
+// （finalization 记录极少，此处为一致性 + 防同类 OR 全表扫描问题）。
+func (r *billingOutboxRepository) ClaimFinalizationExpiredLeased(ctx context.Context, workerID string, limit int, lease time.Duration) ([]service.BillingOutboxRecord, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("billing outbox database is nil")
+	}
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return nil, errors.New("billing outbox worker id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	leaseSeconds := int64(lease / time.Second)
+	if leaseSeconds < 1 {
+		leaseSeconds = 30
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		WITH candidates AS (
+			SELECT id
+			FROM billing_attempt_outbox
+			WHERE status = 'finalizing' AND lease_until <= NOW()
+			ORDER BY available_at, id
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE billing_attempt_outbox AS o
+		SET status = 'finalizing', attempts = o.attempts + 1,
+			lease_until = NOW() + ($3 * INTERVAL '1 second'), leased_by = $1,
+			updated_at = NOW()
+		FROM candidates AS c
+		WHERE o.id = c.id
+		RETURNING o.id, o.attempt_id, o.api_key_id, o.request_fingerprint, o.command,
+			o.status, o.attempts, o.apply_result, o.available_at, o.lease_until, o.leased_by,
+			o.last_error, o.created_at, o.updated_at
+	`, workerID, limit, leaseSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanFinalizationClaimRows(rows, workerID, limit)
+}
+
+// scanFinalizationClaimRows 扫描 finalization Claim 的 RETURNING 行，
+// 仅归属租约人，不覆盖载荷身份（与既有 ClaimFinalization 行为一致）。
+func scanFinalizationClaimRows(rows *sql.Rows, workerID string, limit int) ([]service.BillingOutboxRecord, error) {
 	records := make([]service.BillingOutboxRecord, 0, limit)
 	for rows.Next() {
 		record, err := scanBillingOutboxRecord(rows)
@@ -396,6 +498,20 @@ func (r *billingOutboxRepository) Ack(ctx context.Context, id int64, workerID st
 // 走 (updated_at, id) retention 索引（migration 171），小批次避免长事务。
 // 已终态行不再参与 claim/重放，删除仅影响 enqueue 幂等检查（重新入队会
 // 插入新行，由 usage_billing_dedup 的 apply 幂等兜底，不会重复计费）。
+//
+// 运维恢复窗口：误判 terminal（或需要重放某条 terminal 记录）时，可在
+// 保留期（CleanupTerminal 的 cutoff）内手动重置回 pending 重试——
+//   UPDATE billing_attempt_outbox
+//   SET status = 'pending', available_at = NOW(), lease_until = NULL,
+//       leased_by = NULL, attempts = 0
+//   WHERE status = 'terminal';
+// 保留期不得短于人工恢复窗口（Task F 复核 retention 与恢复窗口的关系）；
+// 重放由 usage_billing_dedup 去重键幂等兜底，不会重复计费。注意：该重放只
+// 适用于 apply 路径 terminal 的行（重放重新 apply，去重幂等后转入
+// finalization）。finalization 阶段 terminal 的行（仅确定性毒药或 PG 错误达
+// maxAttempts 时产生，见 service.billingOutboxFailureTerminal）重置为 pending
+// 会命中已存在的去重键直接 Ack，不会重放已扣费记录的后置效应（缓存失效/
+// 通知），需人工处理。
 func (r *billingOutboxRepository) CleanupTerminal(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("billing outbox database is nil")

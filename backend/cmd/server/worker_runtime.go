@@ -19,9 +19,14 @@ func provideWorkerRuntime(
 	pricing *service.PricingService,
 	outboxCleanup *service.OutboxCleanupService,
 	tokenRefresh *service.TokenRefreshService,
+	oauth *service.OAuthService,
+	geminiOAuth *service.GeminiOAuthService,
+	antigravityOAuth *service.AntigravityOAuthService,
+	openAIOAuth *service.OpenAIOAuthService,
 	userMessageQueue *service.UserMessageQueueService,
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
+	opsSystemLogSink *service.OpsSystemLogSink,
 	supportPublisher *service.SchedulerSupportPublisherWorker,
 	supportReplica *service.SupportDecisionReplicaWorker,
 ) (*workerruntime.Runtime, error) {
@@ -53,11 +58,35 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	claudeOAuthSessionCleanupWorker, err := service.NewClaudeOAuthSessionCleanupWorker(oauth)
+	if err != nil {
+		return nil, err
+	}
+	geminiOAuthSessionCleanupWorker, err := service.NewGeminiOAuthSessionCleanupWorker(geminiOAuth)
+	if err != nil {
+		return nil, err
+	}
+	antigravityOAuthSessionCleanupWorker, err := service.NewAntigravityOAuthSessionCleanupWorker(antigravityOAuth)
+	if err != nil {
+		return nil, err
+	}
+	openAIOAuthSessionCleanupWorker, err := service.NewOpenAIOAuthSessionCleanupWorker(openAIOAuth)
+	if err != nil {
+		return nil, err
+	}
+	openAIOAuthRedisSetFailureCleanupWorker, err := service.NewOpenAIOAuthRedisSetFailureCleanupWorker(openAIOAuth)
+	if err != nil {
+		return nil, err
+	}
 	userMessageQueueCleanupWorker, err := service.NewUserMessageQueueCleanupWorker(userMessageQueue)
 	if err != nil {
 		return nil, err
 	}
 	concurrencySlotCleanupWorker, err := service.NewConcurrencySlotCleanupWorker(concurrency)
+	if err != nil {
+		return nil, err
+	}
+	opsSystemLogSinkWorker, err := service.NewOpsSystemLogSinkWorker(opsSystemLogSink)
 	if err != nil {
 		return nil, err
 	}
@@ -68,8 +97,16 @@ func provideWorkerRuntime(
 		subscriptionExpiryWorker,
 		paymentOrderExpiryWorker,
 		outboxCleanupWorker,
+		claudeOAuthSessionCleanupWorker,
+		geminiOAuthSessionCleanupWorker,
+		antigravityOAuthSessionCleanupWorker,
+		openAIOAuthSessionCleanupWorker,
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
+		opsSystemLogSinkWorker,
+	}
+	if openAIOAuthRedisSetFailureCleanupWorker != nil {
+		components = append(components, openAIOAuthRedisSetFailureCleanupWorker)
 	}
 	if supportPublisher != nil {
 		components = append(components, supportPublisher)

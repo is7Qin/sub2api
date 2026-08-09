@@ -78,7 +78,6 @@ func provideCleanup(
 	opsAlertEvaluator *service.OpsAlertEvaluatorService,
 	opsCleanup *service.OpsCleanupService,
 	opsScheduledReport *service.OpsScheduledReportService,
-	opsSystemLogSink *service.OpsSystemLogSink,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	apiKeyService *service.APIKeyService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
@@ -86,10 +85,6 @@ func provideCleanup(
 	billingCache *service.BillingCacheService,
 	subscriptionService *service.SubscriptionService,
 	openAIOAuthStartupConfigValidation *service.OpenAIOAuthStartupConfigValidation,
-	oauth *service.OAuthService,
-	openaiOAuth *service.OpenAIOAuthService,
-	geminiOAuth *service.GeminiOAuthService,
-	antigravityOAuth *service.AntigravityOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
@@ -134,12 +129,6 @@ func provideCleanup(
 				}
 				return nil
 			}},
-			{"OpsSystemLogSink", func() error {
-				if opsSystemLogSink != nil {
-					opsSystemLogSink.Stop()
-				}
-				return nil
-			}},
 			{"OpsAlertEvaluatorService", func() error {
 				if opsAlertEvaluator != nil {
 					opsAlertEvaluator.Stop()
@@ -178,22 +167,6 @@ func provideCleanup(
 			}},
 			{"BillingCacheService", func() error {
 				billingCache.Stop()
-				return nil
-			}},
-			{"OAuthService", func() error {
-				oauth.Stop()
-				return nil
-			}},
-			{"OpenAIOAuthService", func() error {
-				openaiOAuth.Stop()
-				return nil
-			}},
-			{"GeminiOAuthService", func() error {
-				geminiOAuth.Stop()
-				return nil
-			}},
-			{"AntigravityOAuthService", func() error {
-				antigravityOAuth.Stop()
 				return nil
 			}},
 			{"OpenAIWSPool", func() error {

@@ -72,6 +72,23 @@ func TestOpenAICompactKeepalive_AdjustedSizeIgnoresHeartbeatAndSerializesWrites(
 	require.Contains(t, before, ": keepalive")
 }
 
+func TestOpenAIStreamClientOutputStarted_IgnoresCompactKeepaliveBytes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(openAICompactClientStreamKey, true)
+	stop := startOpenAICompactSSEKeepalive(c, time.Millisecond)
+	t.Cleanup(stop)
+
+	require.Eventually(t, func() bool { return c.Writer.Written() }, time.Second, time.Millisecond)
+	require.False(t, openAIStreamClientOutputStarted(c, false))
+
+	_, err := c.Writer.Write([]byte("semantic"))
+	require.NoError(t, err)
+	require.True(t, openAIStreamClientOutputStarted(c, false))
+}
+
 func TestMergeOpenAICompactTerminalOutput_RecoversRawCompactionItem(t *testing.T) {
 	body := "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n\n" +
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[{\"type\":\"message\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"

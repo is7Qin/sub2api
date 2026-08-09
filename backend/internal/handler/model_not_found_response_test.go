@@ -12,12 +12,19 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type pureMissSupportDecisionReader struct{}
+
+func (pureMissSupportDecisionReader) Lookup(service.SupportDecisionQuery) service.SupportDecisionResult {
+	return service.SupportDecisionPureMiss
+}
 
 func TestWriteModelNotFoundIfPureSupportMissSanitizesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -124,6 +131,7 @@ func TestOpenAIMessagesModelNotFoundUsesRequestedPublicModel(t *testing.T) {
 		nil,
 		nil,
 		nil, // usageRecordWorkerPool
+		pureMissSupportDecisionReader{},
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
@@ -134,9 +142,11 @@ func TestOpenAIMessagesModelNotFoundUsesRequestedPublicModel(t *testing.T) {
 			ID:                    groupID,
 			Platform:              service.PlatformOpenAI,
 			Status:                service.StatusActive,
+			Hydrated:              true,
 			AllowMessagesDispatch: true,
 		},
 	})
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, c.MustGet(string(middleware.ContextKeyAPIKey)).(*service.APIKey).Group))
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7041000, Concurrency: 0})
 
 	h.Messages(c)
@@ -215,6 +225,7 @@ func TestOpenAIMessagesStreamingModelNotFoundAfterPingUsesAnthropicSSE(t *testin
 		nil,
 		nil,
 		nil, // usageRecordWorkerPool
+		pureMissSupportDecisionReader{},
 	)
 	h := NewOpenAIGatewayHandler(gatewaySvc, concurrencySvc, billingCacheSvc, &service.APIKeyService{}, nil, nil, nil, cfg)
 	h.concurrencyHelper = NewConcurrencyHelper(concurrencySvc, SSEPingFormatComment, time.Millisecond)
@@ -226,9 +237,11 @@ func TestOpenAIMessagesStreamingModelNotFoundAfterPingUsesAnthropicSSE(t *testin
 			ID:                    groupID,
 			Platform:              service.PlatformOpenAI,
 			Status:                service.StatusActive,
+			Hydrated:              true,
 			AllowMessagesDispatch: true,
 		},
 	})
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, c.MustGet(string(middleware.ContextKeyAPIKey)).(*service.APIKey).Group))
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7043000, Concurrency: 1})
 
 	h.Messages(c)
@@ -309,6 +322,7 @@ func TestOpenAICompatibleChatCompletionsStreamingModelNotFoundAfterPingUsesSSE(t
 		nil,
 		nil,
 		nil, // usageRecordWorkerPool
+		pureMissSupportDecisionReader{},
 	)
 	h := &GatewayHandler{
 		gatewayService:           gatewaySvc,
@@ -321,8 +335,9 @@ func TestOpenAICompatibleChatCompletionsStreamingModelNotFoundAfterPingUsesSSE(t
 		ID:      704400,
 		GroupID: &groupID,
 		User:    &service.User{ID: 7044000, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive},
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive, Hydrated: true},
 	})
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, c.MustGet(string(middleware.ContextKeyAPIKey)).(*service.APIKey).Group))
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7044000, Concurrency: 1})
 
 	h.ChatCompletions(c)
@@ -373,8 +388,9 @@ func TestCountTokensUnsupportedModelReturnsModelNotFound(t *testing.T) {
 		ID:      704500,
 		GroupID: &groupID,
 		User:    &service.User{ID: 7045000, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive},
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive, Hydrated: true},
 	})
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, c.MustGet(string(middleware.ContextKeyAPIKey)).(*service.APIKey).Group))
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7045000, Concurrency: 0})
 
 	h.CountTokens(c)
@@ -430,8 +446,9 @@ func TestCountTokensTemporaryUnavailableRemains503(t *testing.T) {
 		ID:      704600,
 		GroupID: &groupID,
 		User:    &service.User{ID: 7046000, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive},
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive, Hydrated: true},
 	})
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, c.MustGet(string(middleware.ContextKeyAPIKey)).(*service.APIKey).Group))
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7046000, Concurrency: 0})
 
 	h.CountTokens(c)
@@ -506,6 +523,7 @@ func TestGeminiV1BetaModelNotFoundUsesRoutePublicModel(t *testing.T) {
 		nil,
 		nil,
 		nil, // usageRecordWorkerPool
+		pureMissSupportDecisionReader{},
 	)
 	h := &GatewayHandler{
 		gatewayService:      gatewaySvc,
@@ -516,8 +534,9 @@ func TestGeminiV1BetaModelNotFoundUsesRoutePublicModel(t *testing.T) {
 		ID:      704200,
 		GroupID: &groupID,
 		User:    &service.User{ID: 7042000, Status: service.StatusActive},
-		Group:   &service.Group{ID: groupID, Platform: service.PlatformGemini, Status: service.StatusActive},
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformGemini, Status: service.StatusActive, Hydrated: true},
 	})
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, c.MustGet(string(middleware.ContextKeyAPIKey)).(*service.APIKey).Group))
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7042000, Concurrency: 0})
 
 	h.GeminiV1BetaModels(c)
@@ -598,7 +617,7 @@ func newCountTokensModelNotFoundGatewayHandler(t *testing.T, groupID int64, acco
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	concurrencySvc := service.NewConcurrencyService(nil)
-	group := &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive}
+	group := &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive, Hydrated: true}
 	gatewaySvc := service.NewGatewayService(
 		&modelNotFoundAccountRepoStub{accounts: accounts},
 		&fakeGroupRepo{group: group},
@@ -628,6 +647,7 @@ func newCountTokensModelNotFoundGatewayHandler(t *testing.T, groupID int64, acco
 		nil,
 		nil,
 		nil, // usageRecordWorkerPool
+		pureMissSupportDecisionReader{},
 	)
 	return &GatewayHandler{gatewayService: gatewaySvc, billingCacheService: billingCacheSvc}, billingCacheSvc.Stop
 }

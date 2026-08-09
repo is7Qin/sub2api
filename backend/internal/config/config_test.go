@@ -431,6 +431,38 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultSchedulingConfigIncludesSupportDecisionHotModels(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.OpenAI)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.Anthropic)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.Gemini)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.Antigravity)
+}
+
+func TestLoadSupportDecisionHotModels(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`gateway:
+  scheduling:
+    support_decision_hot_models:
+      openai: [" gpt-b ", "gpt-a", "gpt-b", ""]
+      anthropic: ["claude-b", "claude-a"]
+      gemini: ["gemini-b"]
+      antigravity: ["antigravity-b"]
+`), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-b", "gpt-a"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.OpenAI)
+	require.Equal(t, []string{"claude-b", "claude-a"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.Anthropic)
+	require.Equal(t, []string{"gemini-b"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.Gemini)
+	require.Equal(t, []string{"antigravity-b"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.Antigravity)
+}
+
 func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

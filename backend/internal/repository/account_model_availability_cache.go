@@ -172,6 +172,31 @@ var modelAvailabilityExtraSubKeys = []string{
 	"openai_ws_enabled",
 }
 
+// The background support source and the retained request-path diagnostic cache
+// consume exactly the same vetted subkeys. Keep aliases rather than duplicate
+// allowlists so future support predicates cannot silently diverge.
+var (
+	supportDecisionCredentialsSubKeys = modelAvailabilityCredentialsSubKeys
+	supportDecisionExtraSubKeys       = modelAvailabilityExtraSubKeys
+)
+
+func appendProjectedJSONColumns(cols []string, alias, column string, keys []string) []string {
+	for _, key := range keys {
+		cols = append(cols, alias+"."+column+"->'"+key+"'")
+	}
+	return cols
+}
+
+func decodeProjectedJSONSubKeys(values []sql.NullString, keys []string) map[string]any {
+	projected := make(map[string]any, len(keys))
+	for i, key := range keys {
+		if values[i].Valid {
+			projected[key] = decodeProjectedJSONValue(values[i])
+		}
+	}
+	return projected
+}
+
 // modelAvailabilityCandidateSelectList 生成投影 SELECT 列表：除 id/platform/type/
 // concurrency/priority 标量列外，credentials/extra 只以 JSONB 子键表达式出现。
 // 全量凭据列（access_token/refresh_token 等敏感字段）不进入扫描与解码。
@@ -183,12 +208,8 @@ func modelAvailabilityCandidateSelectList(alias string) string {
 		alias + ".concurrency",
 		alias + ".priority",
 	}
-	for _, key := range modelAvailabilityCredentialsSubKeys {
-		cols = append(cols, alias+".credentials->'"+key+"'")
-	}
-	for _, key := range modelAvailabilityExtraSubKeys {
-		cols = append(cols, alias+".extra->'"+key+"'")
-	}
+	cols = appendProjectedJSONColumns(cols, alias, "credentials", modelAvailabilityCredentialsSubKeys)
+	cols = appendProjectedJSONColumns(cols, alias, "extra", modelAvailabilityExtraSubKeys)
 	return strings.Join(cols, ", ")
 }
 
@@ -264,21 +285,9 @@ ORDER BY a.priority`, modelAvailabilityCandidateSelectList("a"), platformsClause
 
 		// 仅解码白名单子键：与 ListAccountCredentialSubset 相同的扫描策略，
 		// jsonb->'key' 返回带类型的 JSON 文本，统一 json.Unmarshal 还原类型。
-		credentials := make(map[string]any, len(modelAvailabilityCredentialsSubKeys))
-		for i, key := range modelAvailabilityCredentialsSubKeys {
-			if subValues[i].Valid {
-				credentials[key] = decodeProjectedJSONValue(subValues[i])
-			}
-		}
-		extra := make(map[string]any, len(modelAvailabilityExtraSubKeys))
 		offset := len(modelAvailabilityCredentialsSubKeys)
-		for i, key := range modelAvailabilityExtraSubKeys {
-			if subValues[offset+i].Valid {
-				extra[key] = decodeProjectedJSONValue(subValues[offset+i])
-			}
-		}
-		acc.Credentials = credentials
-		acc.Extra = extra
+		acc.Credentials = decodeProjectedJSONSubKeys(subValues[:offset], modelAvailabilityCredentialsSubKeys)
+		acc.Extra = decodeProjectedJSONSubKeys(subValues[offset:], modelAvailabilityExtraSubKeys)
 		out = append(out, acc)
 	}
 	if err := rows.Err(); err != nil {

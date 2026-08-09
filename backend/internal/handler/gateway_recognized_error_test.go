@@ -78,7 +78,7 @@ func TestGatewayHandlerMessages_RecognizedAnthropicErrorAfterOutputEmitsOneNamed
 		nil, &fakeGroupRepo{group: group}, nil, nil, nil, nil, nil, nil, cfg,
 		schedulerSnapshot, concurrencyService, nil, &service.RateLimitService{}, nil, nil,
 		recognizedAnthropicSSEUpstream{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, // usageRecordWorkerPool
+		nil, nil, // usageRecordWorkerPool
 	)
 	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCacheService.Stop)

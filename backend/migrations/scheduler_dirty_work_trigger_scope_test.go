@@ -135,6 +135,81 @@ var schedulerRuntimeOverlayKeys = []string{
 	"passive_usage_sampled_at",
 }
 
+func TestSchedulerSupportDecisionChannelUpdateDirtiesAffectedGroups(t *testing.T) {
+	sql := readSchedulerSupportDecisionMigration(t)
+	require.Contains(t, sql, "create or replace function scheduler_support_channels_dirty()")
+	require.Contains(t, sql, "from old_rows as o full join new_rows as n using (id)")
+	for _, column := range []string{"status", "restrict_models", "billing_model_source"} {
+		require.Contains(t, sql, "o."+column+" is distinct from n."+column)
+	}
+	for _, column := range []string{"name", "description", "model_mapping", "features", "features_config", "apply_pricing_to_account_stats", "updated_at"} {
+		require.NotContains(t, sql, "o."+column+" is distinct from n."+column)
+	}
+	require.Contains(t, sql, "from public.channel_groups cg")
+	require.Contains(t, sql, "where cg.channel_id = any(channel_ids)")
+	require.Contains(t, sql, "insert into public.scheduler_dirty_group_sources (group_id)")
+	require.Contains(t, sql, "create trigger scheduler_support_channels_update_dirty")
+	require.Contains(t, sql, "referencing old table as old_rows new table as new_rows")
+}
+
+func TestSchedulerSupportDecisionChannelMembershipDeleteDirtiesOldGroup(t *testing.T) {
+	sql := readSchedulerSupportDecisionMigration(t)
+	require.Contains(t, sql, "create or replace function scheduler_support_channel_groups_dirty()")
+	require.Contains(t, sql, "from old_rows as o full join new_rows as n using (id)")
+	require.Contains(t, sql, "o.id is null or n.id is null")
+	require.Contains(t, sql, "o.channel_id is distinct from n.channel_id")
+	require.Contains(t, sql, "o.group_id is distinct from n.group_id")
+	require.Contains(t, sql, "select group_id from old_rows order by group_id")
+	require.Contains(t, sql, "create trigger scheduler_support_channel_groups_delete_dirty")
+	require.Contains(t, sql, "referencing old table as old_rows")
+}
+
+func TestSchedulerSupportDecisionPricingModelChangeDirtiesAffectedGroups(t *testing.T) {
+	sql := readSchedulerSupportDecisionMigration(t)
+	require.Contains(t, sql, "create or replace function scheduler_support_channel_pricing_dirty()")
+	require.Contains(t, sql, "from old_rows as o full join new_rows as n using (id)")
+	require.Contains(t, sql, "o.id is null or n.id is null")
+	for _, column := range []string{"channel_id", "models", "platform"} {
+		require.Contains(t, sql, "o."+column+" is distinct from n."+column)
+	}
+	require.Contains(t, sql, "o.channel_id as old_channel_id")
+	require.Contains(t, sql, "n.channel_id as new_channel_id")
+	require.Contains(t, sql, "select old_channel_id as channel_id from changed")
+	require.Contains(t, sql, "select new_channel_id as channel_id from changed")
+	for _, column := range []string{"input_price", "output_price", "cache_write_price", "cache_read_price", "image_output_price", "per_request_price", "billing_mode", "updated_at"} {
+		require.NotContains(t, sql, "o."+column+" is distinct from n."+column)
+	}
+	require.Contains(t, sql, "create trigger scheduler_support_channel_pricing_update_dirty")
+	require.Contains(t, sql, "referencing old table as old_rows new table as new_rows")
+	require.Contains(t, sql, "c.status = 'active'")
+	require.Contains(t, sql, "c.restrict_models")
+	require.Contains(t, sql, "billing_model_source = 'upstream'")
+	// Interval columns are all price/tier data; the support builder consumes only
+	// the parent pricing row's platform and models.
+	require.NotContains(t, sql, "create trigger scheduler_support_pricing_intervals_")
+}
+
+func TestSchedulerSupportDecisionUnscopedChannelChangeRequestsGlobalRebuild(t *testing.T) {
+	sql := readSchedulerSupportDecisionMigration(t)
+	require.Contains(t, sql, "insert into public.scheduler_dirty_work (kind, entity_id, rebuild_buckets)")
+	require.Contains(t, sql, "select 3, 0, true")
+	require.Contains(t, sql, "where not exists")
+	require.Contains(t, sql, "on conflict (kind, entity_id) do update")
+	require.Contains(t, sql, "generation = public.scheduler_dirty_work.generation + 1")
+}
+
+func TestSchedulerSupportDecisionTransientAccountChangesRemainIgnored(t *testing.T) {
+	raw, err := FS.ReadFile("177_scheduler_dirty_work_trigger_scope.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(raw))
+	for _, column := range []string{"last_used_at", "updated_at", "created_at", "error_message"} {
+		require.NotContains(t, sql, "o."+column+" is distinct from")
+	}
+	for _, key := range schedulerRuntimeOverlayKeys {
+		require.NotContains(t, sql, "o.extra -> '"+key+"'")
+	}
+}
+
 func TestSchedulerDirtyWorkTriggerScopeMigrationPinsFixedPointWhitelist(t *testing.T) {
 	raw, err := FS.ReadFile("177_scheduler_dirty_work_trigger_scope.sql")
 	require.NoError(t, err)

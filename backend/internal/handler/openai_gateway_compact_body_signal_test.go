@@ -155,7 +155,7 @@ func newRemoteCompactionHandler(t *testing.T, upstream *remoteCompactionHandlerU
 		accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
 		service.NewBillingService(cfg, nil), nil, billingCache, upstream,
 		&service.DeferredService{}, nil, nil, nil, nil, nil, nil,
-		nil, // usageRecordWorkerPool
+		nil, nil, // usageRecordWorkerPool
 	)
 	return NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCache, &service.APIKeyService{}, nil, nil, nil, cfg), groupID
 }

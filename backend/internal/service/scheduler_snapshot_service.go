@@ -120,7 +120,7 @@ type SchedulerSnapshotService struct {
 	cfg                     *config.Config
 	stopCh                  chan struct{}
 	stopOnce                sync.Once
-	workerCtx               context.Context
+	workerCtx               context.Context // retained for focused legacy construction compatibility; not used for dirty ownership
 	workerCancel            context.CancelFunc
 	wg                      sync.WaitGroup
 	fallbackLimit           *fallbackLimiter
@@ -266,13 +266,6 @@ func (s *SchedulerSnapshotService) Start() {
 	}()
 
 	interval := s.outboxPollInterval()
-	if s.dirtyWorkRepo != nil && s.ownershipRepo != nil && interval > 0 {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.runDirtyWorkWorker(interval)
-		}()
-	}
 	// Keep the legacy worker during producer migration: observational last-used
 	// events are intentionally absent from lifecycle dirty sources.
 	if s.outboxRepo != nil && interval > 0 {
@@ -547,150 +540,65 @@ func (s *SchedulerSnapshotService) runInitialRebuild() {
 	}
 }
 
-func (s *SchedulerSnapshotService) runDirtyWorkWorker(interval time.Duration) {
-	if s.dirtyWorkRepo == nil || s.ownershipRepo == nil {
-		return
-	}
-	if interval <= 0 {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		if s.workerCtx.Err() != nil {
-			return
-		}
-		ownership, acquired, err := s.ownershipRepo.TryAcquire(s.workerCtx)
-		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] ownership acquisition failed: %v", err)
-			}
-		} else if acquired {
-			s.consumeDirtyWork(ownership, interval)
-			if err := ownership.Close(); err != nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] ownership release failed: %v", err)
-			}
-		}
-
-		select {
-		case <-ticker.C:
-		case <-s.workerCtx.Done():
-			return
-		}
-	}
+type SchedulerDirtyWorkResult struct {
+	Work SchedulerDirtyWork
+	Err  error
 }
 
-func (s *SchedulerSnapshotService) consumeDirtyWork(ownership SchedulerOwnership, interval time.Duration) {
-	if ownership == nil {
-		return
-	}
-	if interval <= 0 {
-		interval = time.Second
-	}
-	consumeCtx, cancel := context.WithCancel(ownership.Context())
-	stopWorkerCancel := context.AfterFunc(s.workerCtx, cancel)
-	defer func() {
-		stopWorkerCancel()
-		cancel()
-	}()
+type SchedulerSnapshotDirtyProcessor interface {
+	ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult
+}
 
-	poll := func() {
-		for range dirtyWorkBatchSize {
-			promoted, err := s.dirtyWorkRepo.Promote(consumeCtx, ownership, dirtyWorkBatchSize)
-			if err != nil {
-				if consumeCtx.Err() == nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty source promotion failed: %v", err)
-				}
-				return
-			}
-			if promoted == 0 {
-				break
-			}
-		}
+// ApplyDirtyWorkBatch applies only snapshot/cache effects. Dirty ownership,
+// repository failure state, publication, and acknowledgement belong to the
+// runtime-owned scheduler support publisher.
+func (s *SchedulerSnapshotService) RecordDirtyWorkListFailure(ctx context.Context) {
+	s.recordDirtyListFailure(ctx)
+}
 
-		work, err := s.dirtyWorkRepo.List(consumeCtx, dirtyWorkBatchSize)
-		if err != nil {
-			if consumeCtx.Err() == nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work list failed: %v", err)
-				s.recordDirtyListFailure(consumeCtx)
+func (s *SchedulerSnapshotService) ClearDirtyWorkListFailure() {
+	s.clearDirtyListFailure()
+}
+
+func (s *SchedulerSnapshotService) CheckDirtyWorkLag(ctx context.Context) {
+	s.checkDirtyWorkLag(ctx)
+}
+
+func (s *SchedulerSnapshotService) ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult {
+	results := make([]SchedulerDirtyWorkResult, len(work))
+	accountWork := make([]SchedulerDirtyWork, 0, len(work))
+	accountIndexes := make(map[int64][]int, len(work))
+	for i, item := range work {
+		results[i].Work = item
+		if err := ctx.Err(); err != nil {
+			for j := i; j < len(results); j++ {
+				results[j] = SchedulerDirtyWorkResult{Work: work[j], Err: err}
 			}
-			return
+			break
 		}
-		s.clearDirtyListFailure()
-		// 账号脏项合并为一次批量读取 + 批量缓存写入；分组/全量项保持逐项处理。
-		// 账号项按批量结果逐项确认或记录失败，保持单项错误隔离。
-		accountWork := make([]SchedulerDirtyWork, 0, len(work))
-		otherWork := make([]SchedulerDirtyWork, 0, len(work))
-		for _, item := range work {
-			if item.Kind == SchedulerDirtyWorkAccount {
+		if item.Kind == SchedulerDirtyWorkAccount {
+			if _, seen := accountIndexes[item.EntityID]; !seen {
 				accountWork = append(accountWork, item)
-			} else {
-				otherWork = append(otherWork, item)
 			}
+			accountIndexes[item.EntityID] = append(accountIndexes[item.EntityID], i)
+			continue
 		}
-		for _, item := range otherWork {
-			if consumeCtx.Err() != nil {
-				return
-			}
-			err := s.handleDirtyWork(consumeCtx, item)
-			if err != nil {
-				recorded, recordErr := s.dirtyWorkRepo.RecordFailure(consumeCtx, ownership, item, err)
-				if recordErr != nil && consumeCtx.Err() == nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failure recording failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, recordErr)
-				} else if recorded {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failed: kind=%d entity=%d", item.Kind, item.EntityID)
-				}
-				continue
-			}
-			if _, err := s.dirtyWorkRepo.Acknowledge(consumeCtx, ownership, item); err != nil && consumeCtx.Err() == nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work acknowledgement failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, err)
-			}
-		}
-		if len(accountWork) > 0 {
-			if consumeCtx.Err() != nil {
-				return
-			}
-			accountIDs := make([]int64, 0, len(accountWork))
-			for _, item := range accountWork {
-				accountIDs = append(accountIDs, item.EntityID)
-			}
-			results := s.refreshDirtyAccounts(consumeCtx, accountIDs)
-			for i, item := range accountWork {
-				if consumeCtx.Err() != nil {
-					return
-				}
-				err := results[i]
-				if err != nil {
-					recorded, recordErr := s.dirtyWorkRepo.RecordFailure(consumeCtx, ownership, item, err)
-					if recordErr != nil && consumeCtx.Err() == nil {
-						logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failure recording failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, recordErr)
-					} else if recorded {
-						logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failed: kind=%d entity=%d", item.Kind, item.EntityID)
-					}
-					continue
-				}
-				if _, err := s.dirtyWorkRepo.Acknowledge(consumeCtx, ownership, item); err != nil && consumeCtx.Err() == nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work acknowledgement failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, err)
-				}
-			}
-		}
-		s.checkDirtyWorkLag(consumeCtx)
+		results[i].Err = s.handleDirtyWork(ctx, item)
 	}
-
-	poll()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			poll()
-		case <-ownership.Lost():
-			return
-		case <-s.workerCtx.Done():
-			return
+	if len(accountWork) == 0 || ctx.Err() != nil {
+		return results
+	}
+	accountIDs := make([]int64, len(accountWork))
+	for i := range accountWork {
+		accountIDs[i] = accountWork[i].EntityID
+	}
+	accountResults := s.refreshDirtyAccounts(ctx, accountIDs)
+	for i, item := range accountWork {
+		for _, resultIndex := range accountIndexes[item.EntityID] {
+			results[resultIndex].Err = accountResults[i]
 		}
 	}
+	return results
 }
 
 func (s *SchedulerSnapshotService) handleDirtyWork(ctx context.Context, work SchedulerDirtyWork) error {
@@ -755,18 +663,18 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 		return results
 	}
 
-	// 去重并保留首次出现顺序；重复项与节流跳过项都直接视为成功。
+	// 去重并保留首次出现顺序；同一账号的所有输入共享实际刷新结果。
 	uniqueIDs := make([]int64, 0, len(ids))
-	indexByID := make(map[int64]int, len(ids))
+	indexesByID := make(map[int64][]int, len(ids))
 	now := time.Now()
 	for i, id := range ids {
 		if id <= 0 {
 			continue
 		}
-		if _, dup := indexByID[id]; dup {
+		indexesByID[id] = append(indexesByID[id], i)
+		if len(indexesByID[id]) > 1 {
 			continue
 		}
-		indexByID[id] = i
 		if s.dirtyRefreshThrottle != nil && !s.dirtyRefreshThrottle.Allow(id, now) {
 			continue
 		}
@@ -776,10 +684,15 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 		return results
 	}
 
+	setResult := func(id int64, err error) {
+		for _, index := range indexesByID[id] {
+			results[index] = err
+		}
+	}
 	accounts, err := s.accountRepo.GetByIDs(ctx, uniqueIDs)
 	if err != nil {
 		for _, id := range uniqueIDs {
-			results[indexByID[id]] = err
+			setResult(id, err)
 		}
 		return results
 	}
@@ -794,7 +707,7 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 		if account == nil || account.ID <= 0 {
 			continue
 		}
-		if _, ok := indexByID[account.ID]; !ok {
+		if _, ok := indexesByID[account.ID]; !ok {
 			continue
 		}
 		foundByID[account.ID] = *account
@@ -811,21 +724,20 @@ func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids
 	} else {
 		for _, account := range found {
 			if err := s.cache.SetAccount(ctx, &account); err != nil {
-				results[indexByID[account.ID]] = err
+				setResult(account.ID, err)
 			}
 		}
 	}
 
 	for _, id := range uniqueIDs {
-		index := indexByID[id]
 		if _, exists := foundByID[id]; !exists {
 			if err := s.cache.DeleteAccount(ctx, id); err != nil {
-				results[index] = err
+				setResult(id, err)
 			}
 			continue
 		}
 		if batchWrite {
-			results[index] = batchErr
+			setResult(id, batchErr)
 		}
 	}
 	return results

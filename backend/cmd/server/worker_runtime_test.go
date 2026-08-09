@@ -37,6 +37,8 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -92,6 +94,8 @@ func TestProvideWorkerRuntimeRegistersOpenAIOAuthMarkerCleanupOnlyForRedisStore(
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -132,6 +136,8 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -159,6 +165,8 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = enabledRuntime.StopAll(context.Background()) })
@@ -184,6 +192,8 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -218,6 +228,8 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			concurrency,
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
@@ -227,6 +239,96 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 	require.NotContains(t, snapshotNames(newRuntime(nil, time.Minute).Snapshot()), "concurrency-slot-cleanup")
 	require.NotContains(t, snapshotNames(newRuntime(&serverConcurrencyCacheStub{}, 0).Snapshot()), "concurrency-slot-cleanup")
 	require.Contains(t, snapshotNames(newRuntime(&serverConcurrencyCacheStub{}, time.Minute).Snapshot()), "concurrency-slot-cleanup")
+}
+
+func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
+	store := newServerSupportDecisionStore(t)
+	publisher := service.NewSchedulerSupportPublisherWorker(
+		&serverSchedulerDirtyRepo{},
+		&serverSchedulerOwnershipRepo{},
+		serverSchedulerDirtyProcessor{},
+		service.NewSupportDecisionPublisher(serverSupportDecisionGeneration{}, serverSupportDecisionSource{}, store, &config.Config{}),
+		store,
+		&config.Config{},
+	)
+	replica := service.NewSupportDecisionReplicaWorker(service.NewSupportDecisionReplica(store, service.NewSupportDecisionAtomicReader(time.Hour)))
+	usagePool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1})
+	runtime, err := provideWorkerRuntime(
+		service.NewAccountExpiryService(nil, time.Hour),
+		service.NewIdempotencyCleanupService(nil, &config.Config{}),
+		usagePool,
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
+		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
+		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		publisher,
+		replica,
+	)
+	require.NoError(t, err)
+	require.Contains(t, snapshotNames(runtime.Snapshot()), "scheduler-support-publisher")
+	require.Contains(t, snapshotNames(runtime.Snapshot()), "scheduler-support-replica")
+	require.Equal(t, workerruntime.LifecycleRunning, publisher.Snapshot().Lifecycle.State)
+	require.Equal(t, workerruntime.LifecycleRunning, replica.Snapshot().Lifecycle.State)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	results, err := runtime.StopAll(stopCtx)
+	require.NoError(t, err)
+	require.Len(t, results, len(runtime.Snapshot()))
+	require.Equal(t, workerruntime.LifecycleStopped, publisher.Snapshot().Lifecycle.State)
+	require.Equal(t, workerruntime.LifecycleStopped, replica.Snapshot().Lifecycle.State)
+}
+
+func TestProvideWorkerRuntimeRollsBackPublisherWhenReplicaStartupFails(t *testing.T) {
+	store := newServerSupportDecisionStore(t)
+	publisher := service.NewSchedulerSupportPublisherWorker(
+		&serverSchedulerDirtyRepo{},
+		&serverSchedulerOwnershipRepo{},
+		serverSchedulerDirtyProcessor{},
+		service.NewSupportDecisionPublisher(serverSupportDecisionGeneration{}, serverSupportDecisionSource{}, store, &config.Config{}),
+		store,
+		&config.Config{},
+	)
+	badReplica := service.NewSupportDecisionReplicaWorker(service.NewSupportDecisionReplica(nil, service.NewSupportDecisionAtomicReader(time.Hour)))
+	_, err := provideWorkerRuntime(
+		service.NewAccountExpiryService(nil, time.Hour),
+		service.NewIdempotencyCleanupService(nil, &config.Config{}),
+		service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1}),
+		service.NewSubscriptionExpiryService(nil, time.Hour),
+		service.NewPaymentOrderExpiryService(nil, time.Hour),
+		service.NewPricingService(&config.Config{}, nil),
+		service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+		service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		service.NewOAuthService(nil, nil),
+		service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+		service.NewAntigravityOAuthService(nil),
+		service.NewOpenAIOAuthService(nil, nil),
+		service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
+		service.NewConcurrencyService(nil),
+		service.NewEmailQueueService(nil, 1),
+		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		publisher,
+		badReplica,
+	)
+	require.Error(t, err)
+	require.Equal(t, workerruntime.LifecycleStopped, publisher.Snapshot().Lifecycle.State)
+}
+
+func TestWorkerProvidersDoNotStartSupportDecisionGoroutines(t *testing.T) {
+	content, err := os.ReadFile("../../internal/service/wire.go")
+	require.NoError(t, err)
+	serviceWire := string(content)
+	require.NotContains(t, functionSource(serviceWire, "ProvideSupportDecisionAtomicReader"), ".Start(")
+	require.NotContains(t, functionSource(serviceWire, "ProvideSchedulerSnapshotDirtyProcessor"), ".Start(")
 }
 
 func TestConcurrencySlotCleanupLifecycleIsRuntimeOwned(t *testing.T) {

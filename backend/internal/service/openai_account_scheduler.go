@@ -955,15 +955,19 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
-	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 	filterStats := openAISelectionFilterStats{pool: len(accounts)}
 	if len(accounts) == 0 {
+		// Classification may only consume request-authenticated group context; do not
+		// resolve a group from the snapshot/DB solely to choose a public error.
+		schedGroup := trustedOpenAISchedulingGroupFromContext(ctx, req.GroupID)
 		if isPureOpenAIModelSupportMiss(ctx, s.service, req.GroupID, nil, req.RequestedModel, req.ExcludedIDs, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport, schedGroup) {
 			return nil, 0, 0, 0, newModelNotSupportedByAccountsError(req.RequestedModel)
 		}
 		return nil, 0, 0, 0, noAvailableOpenAISelectionDiagnostic(noAvailableOpenAISelectionError(req.RequestedModel, false), filterStats, "")
 	}
 
+	// Non-empty selection still needs the broader resolver for privacy gating.
+	schedGroup := s.service.resolveOpenAISchedulingGroup(ctx, req.GroupID)
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
@@ -1330,7 +1334,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
+	selectionCtx := ctx
+	if requiredCapability == OpenAIImagesCapabilityNative {
+		// Native failure is non-terminal because this API immediately retries with basic.
+		// Only the final effective capability may consume the request's classifier lookup.
+		selectionCtx = context.WithValue(ctx, publicModelSupportMiss404ContextKey{}, false)
+	}
+	selection, decision, err := s.selectAccountWithScheduler(selectionCtx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}
@@ -1361,9 +1371,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 			effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 			for {
-				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability)
+				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, excludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport)
 				if err != nil {
-					if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) {
+					if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrModelNotSupportedByAccounts) {
 						return nil, decision, noAvailableOpenAISelectionCapacityError(requestedModel)
 					}
 					return nil, decision, err
@@ -1389,9 +1399,9 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 
 		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 		for {
-			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability)
+			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, sessionHash, requestedModel, effectiveExcludedIDs, excludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport)
 			if err != nil {
-				if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) {
+				if len(effectiveExcludedIDs) > len(excludedIDs) && errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrModelNotSupportedByAccounts) {
 					return nil, decision, noAvailableOpenAISelectionCapacityError(requestedModel)
 				}
 				return nil, decision, err

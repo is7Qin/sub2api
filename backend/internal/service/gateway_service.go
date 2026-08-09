@@ -738,6 +738,7 @@ type GatewayService struct {
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	billingOutboxRepo     BillingOutboxRepository
+	supportDecisionReader SupportDecisionReader
 }
 
 // NewGatewayService creates a new GatewayService
@@ -770,6 +771,7 @@ func NewGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 	usageRecordWorkerPool *UsageRecordWorkerPool,
+	supportDecisionReader SupportDecisionReader,
 ) *GatewayService {
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
@@ -808,6 +810,7 @@ func NewGatewayService(
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
 		usageRecordWorkerPool: usageRecordWorkerPool,
 		billingOutboxRepo:     nil,
+		supportDecisionReader: supportDecisionReader,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -1970,7 +1973,7 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 
 func (s *GatewayService) isPureModelSupportMiss(
 	ctx context.Context,
-	accounts []Account,
+	_ []Account,
 	requestedModel string,
 	platform string,
 	excludedIDs map[int64]struct{},
@@ -1979,50 +1982,31 @@ func (s *GatewayService) isPureModelSupportMiss(
 	groupID *int64,
 ) bool {
 	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 {
+	if requestedModel == "" || !publicModelSupportMiss404Enabled(ctx) || len(excludedIDs) > 0 ||
+		s == nil || s.supportDecisionReader == nil || s.cfg == nil || platform == "" {
+		return false
+	}
+	// Grouped lookups need the trusted group identity and privacy coordinates. The
+	// lookup platform is independently resolved routing state and may be forced.
+	if groupID != nil && (!IsGroupContextValid(schedGroup) || schedGroup.ID != *groupID) {
 		return false
 	}
 
-	// Scheduling lists exclude temporary cooldown and overload state. Re-read the
-	// persistent pool before declaring a permanent model miss, otherwise a brief
-	// capacity outage is misreported as 404.
-	if candidateRepo, ok := s.accountRepo.(ModelAvailabilityCandidateRepository); ok {
-		platforms := []string{platform}
-		if allowMixedScheduling {
-			platforms = append(platforms, PlatformAntigravity)
-		}
-		includeGrouped := groupID == nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
-		configuredAccounts, err := candidateRepo.ListModelAvailabilityCandidates(ctx, groupID, platforms, includeGrouped)
-		if err != nil {
-			return false
-		}
-		accounts = configuredAccounts
+	scope := SupportDecisionScope{
+		Platform:             platform,
+		IncludeGrouped:       groupID == nil && s.cfg.RunMode == config.RunModeSimple,
+		AllowMixedScheduling: allowMixedScheduling,
 	}
-	// Legacy repository doubles do not expose the narrow diagnostic capability;
-	// retain their supplied pool while production repositories always re-query.
-	if len(accounts) == 0 {
-		return false
+	if groupID != nil {
+		scope.GroupID = *groupID
 	}
-
-	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	otherwiseEligible := 0
-	for i := range accounts {
-		acc := &accounts[i]
-		if acc == nil || !s.isAccountAllowedForPlatform(acc, platform, allowMixedScheduling) {
-			continue
-		}
-		if s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-			return false
-		}
-		if shouldBlockAccountForPrivacyRequirement(acc, schedGroup) {
-			continue
-		}
-		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
-			continue
-		}
-		otherwiseEligible++
-	}
-	return otherwiseEligible > 0
+	thinkingEnabled, _ := ThinkingEnabledFromContext(ctx)
+	return s.supportDecisionReader.Lookup(SupportDecisionQuery{
+		Scope:           scope,
+		RequestedModel:  requestedModel,
+		RequiresPrivacy: schedGroup != nil && schedGroup.RequirePrivacySet,
+		ThinkingEnabled: thinkingEnabled,
+	}) == SupportDecisionPureMiss
 }
 
 // SelectAccountWithLoadAwareness selects account with load-awareness and wait plan.
@@ -2048,6 +2032,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	ctx = s.withGroupContext(ctx, group)
+	classifierGroup := group
+	if classifierGroup == nil && groupID != nil {
+		// Forced-platform routing skips group resolution; classification may only reuse
+		// the trusted hydrated request group and must not introduce a fallback lookup.
+		classifierGroup = s.groupFromContext(ctx, *groupID)
+	}
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
@@ -2155,6 +2145,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	if len(accounts) == 0 {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, useMixed, classifierGroup, groupID) {
+			return nil, newModelNotSupportedByAccountsError(requestedModel)
+		}
 		return nil, ErrNoAvailableAccounts
 	}
 	ctx = s.withWindowCostPrefetch(ctx, accounts)
@@ -2595,7 +2588,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if len(candidates) == 0 {
-		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, useMixed, group, groupID) {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, useMixed, classifierGroup, groupID) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		return nil, ErrNoAvailableAccounts
@@ -3631,10 +3624,15 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	preferOAuth := platform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
-	// require_privacy_set: 获取分组信息
+	// Candidate privacy checks retain the repository-backed group used before
+	// support-miss classification was introduced. Classification is context-only.
 	var schedGroup *Group
-	if groupID != nil && s.groupRepo != nil {
-		schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+	var classifierGroup *Group
+	if groupID != nil {
+		classifierGroup = s.groupFromContext(ctx, *groupID)
+		if s.groupRepo != nil {
+			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+		}
 	}
 
 	var accounts []Account
@@ -3869,7 +3867,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
-		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, false, schedGroup, groupID) {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, platform, excludedIDs, false, classifierGroup, groupID) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		if requestedModel != "" {
@@ -3894,10 +3892,15 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
-	// require_privacy_set: 获取分组信息
+	// Candidate privacy checks retain the repository-backed group used before
+	// support-miss classification was introduced. Classification is context-only.
 	var schedGroup *Group
-	if groupID != nil && s.groupRepo != nil {
-		schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+	var classifierGroup *Group
+	if groupID != nil {
+		classifierGroup = s.groupFromContext(ctx, *groupID)
+		if s.groupRepo != nil {
+			schedGroup, _ = s.groupRepo.GetByID(ctx, *groupID)
+		}
 	}
 
 	var accounts []Account
@@ -4133,7 +4136,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, nativePlatform, accounts, excludedIDs, true)
-		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, nativePlatform, excludedIDs, true, schedGroup, groupID) {
+		if s.isPureModelSupportMiss(ctx, accounts, requestedModel, nativePlatform, excludedIDs, true, classifierGroup, groupID) {
 			return nil, newModelNotSupportedByAccountsError(requestedModel)
 		}
 		if requestedModel != "" {

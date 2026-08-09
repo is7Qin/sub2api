@@ -407,6 +407,13 @@ gateway:
   # Scheduling configuration
   # 调度配置
   scheduling:
+    # Optional support-decision hot catalogs; empty lists use platform defaults
+    # 可选的支持决策热模型目录；空列表使用平台默认目录
+    support_decision_hot_models:
+      openai: []
+      anthropic: []
+      gemini: []
+      antigravity: []
     # Sticky session max waiting queue size
     # 粘性会话最大排队长度
     sticky_session_max_waiting: 3

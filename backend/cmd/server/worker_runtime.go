@@ -27,6 +27,8 @@ func provideWorkerRuntime(
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
 	opsSystemLogSink *service.OpsSystemLogSink,
+	supportPublisher *service.SchedulerSupportPublisherWorker,
+	supportReplica *service.SupportDecisionReplicaWorker,
 ) (*workerruntime.Runtime, error) {
 	accountExpiryWorker, err := service.NewAccountExpiryWorker(accountExpiry)
 	if err != nil {
@@ -105,6 +107,12 @@ func provideWorkerRuntime(
 	}
 	if openAIOAuthRedisSetFailureCleanupWorker != nil {
 		components = append(components, openAIOAuthRedisSetFailureCleanupWorker)
+	}
+	if supportPublisher != nil {
+		components = append(components, supportPublisher)
+	}
+	if supportReplica != nil {
+		components = append(components, supportReplica)
 	}
 	if pricingRemoteSyncWorker != nil {
 		components = append(components, pricingRemoteSyncWorker)

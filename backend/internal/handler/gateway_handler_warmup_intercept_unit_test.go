@@ -117,24 +117,24 @@ func newTestGatewayHandler(t *testing.T, group *service.Group, accounts []*servi
 		nil, // cache (disable sticky)
 		nil, // cfg
 		schedulerSnapshot,
-		nil, // concurrencyService (disable load-aware; tryAcquire always acquired)
-		nil, // billingService
-		nil, // rateLimitService
-		nil, // billingCacheService
-		nil, // identityService
-		nil, // httpUpstream
-		nil, // deferredService
-		nil, // claudeTokenProvider
-		nil, // sessionLimitCache
-		nil, // rpmCache
-		nil, // digestStore
-		nil, // settingService
-		nil, // tlsFPProfileService
-		nil, // channelService
-		nil, // resolver
-		nil, // balanceNotifyService
-		nil, // userPlatformQuotaRepo
-		nil, // usageRecordWorkerPool
+		nil,      // concurrencyService (disable load-aware; tryAcquire always acquired)
+		nil,      // billingService
+		nil,      // rateLimitService
+		nil,      // billingCacheService
+		nil,      // identityService
+		nil,      // httpUpstream
+		nil,      // deferredService
+		nil,      // claudeTokenProvider
+		nil,      // sessionLimitCache
+		nil,      // rpmCache
+		nil,      // digestStore
+		nil,      // settingService
+		nil,      // tlsFPProfileService
+		nil,      // channelService
+		nil,      // resolver
+		nil,      // balanceNotifyService
+		nil,      // userPlatformQuotaRepo
+		nil, nil, // usageRecordWorkerPool
 	)
 
 	// RunModeSimple：跳过计费检查，避免引入 repo/cache 依赖。

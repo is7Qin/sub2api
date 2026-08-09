@@ -449,16 +449,28 @@ func TestSupportDecisionReplicaSameGenerationVerifiesWithoutRefetch(t *testing.T
 	require.Equal(t, h.now, h.reader.verifiedAt())
 }
 
-func TestSupportDecisionReplicaStartupRequiresActiveGeneration(t *testing.T) {
+func TestSupportDecisionReplicaStartupStillFailsOnActiveGenerationOperationError(t *testing.T) {
 	h := newSupportDecisionReplicaHarness(t)
-	h.store.setActive(0, ErrSupportDecisionActiveGenerationNotFound)
-	require.ErrorIs(t, h.replica.Start(context.Background()), ErrSupportDecisionActiveGenerationNotFound)
-	require.Equal(t, SupportDecisionUnknown, h.reader.Lookup(h.query))
+	h.store.setActive(0, errors.New("redis unavailable"))
+	require.EqualError(t, h.replica.Start(context.Background()), "load active support decision generation: class=operation")
 	select {
 	case <-h.store.subscription.closed:
 	case <-time.After(time.Second):
 		t.Fatal("failed startup did not close subscription")
 	}
+}
+
+func TestSupportDecisionReplicaColdStartPollsUntilActiveGenerationExists(t *testing.T) {
+	h := newSupportDecisionReplicaHarness(t)
+	h.store.setActive(0, ErrSupportDecisionActiveGenerationNotFound)
+	h.start(t)
+	require.Equal(t, SupportDecisionUnknown, h.reader.Lookup(h.query))
+
+	h.addDocument(t, 1, []Account{{Platform: PlatformAnthropic}})
+	h.store.setActive(1, nil)
+	h.tickAndWait(t)
+	require.Equal(t, SupportDecisionNotPureMiss, h.reader.Lookup(h.query))
+	require.Equal(t, uint64(1), h.reader.generation())
 }
 
 func TestSupportDecisionReplicaPreventsActiveGenerationRollback(t *testing.T) {

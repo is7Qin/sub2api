@@ -82,6 +82,12 @@ type schedulerSupportPublisherTestPublisher struct {
 	block   <-chan struct{}
 }
 
+func (p *schedulerSupportPublisherTestPublisher) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
 func (p *schedulerSupportPublisherTestPublisher) Publish(ctx context.Context) (uint64, error) {
 	p.mu.Lock()
 	p.calls++
@@ -159,7 +165,8 @@ func (r *schedulerSupportPublisherBootstrapOwnershipRepo) TryAcquire(context.Con
 	if index >= len(r.owners) {
 		return nil, false, nil
 	}
-	return r.owners[index], true, nil
+	owner := r.owners[index]
+	return owner, owner != nil, nil
 }
 
 func (r *schedulerSupportPublisherBootstrapOwnershipRepo) callCount() int {
@@ -350,6 +357,36 @@ func TestSchedulerSnapshotStartDoesNotLaunchDirtyOwner(t *testing.T) {
 	require.Zero(t, repo.callCount())
 }
 
+func TestSchedulerSupportPublisherStartDoesNotWaitForBootstrapOwnership(t *testing.T) {
+	owner := newSchedulerSupportPublisherTestOwnership()
+	ownership := &schedulerSupportPublisherBootstrapOwnershipRepo{owners: []SchedulerOwnership{nil, owner}}
+	publisher := &schedulerSupportPublisherTestPublisher{gen: 1}
+	clock := &schedulerSupportPublisherTestClock{now: time.Now()}
+	worker := newSchedulerSupportPublisherTestWorker(&schedulerSupportPublisherTestRepo{}, ownership, &schedulerSupportPublisherTestProcessor{}, publisher, clock)
+	worker.active = &schedulerSupportPublisherActiveStub{}
+	worker.pollInterval = time.Hour
+
+	started := make(chan error, 1)
+	go func() { started <- worker.Start(context.Background()) }()
+	require.Eventually(t, func() bool { return ownership.callCount() == 1 && clock.timerCount() == 1 }, time.Second, time.Millisecond)
+	select {
+	case err := <-started:
+		require.NoError(t, err)
+	default:
+		t.Cleanup(func() { _ = worker.Stop(context.Background()) })
+		t.Fatal("Start is waiting for bootstrap ownership")
+	}
+	require.Equal(t, workerruntime.LifecycleRunning, worker.Snapshot().Lifecycle.State)
+	require.Zero(t, publisher.callCount())
+
+	clock.fire(0, time.Hour)
+	require.Eventually(t, func() bool { return publisher.callCount() == 1 }, time.Second, time.Millisecond)
+	require.NoError(t, worker.Stop(context.Background()))
+	owner.mu.Lock()
+	require.Equal(t, 1, owner.closes)
+	owner.mu.Unlock()
+}
+
 func TestSchedulerSupportPublisherRetriesTransientBootstrapPublication(t *testing.T) {
 	firstOwner := newSchedulerSupportPublisherTestOwnership()
 	secondOwner := newSchedulerSupportPublisherTestOwnership()
@@ -364,14 +401,14 @@ func TestSchedulerSupportPublisherRetriesTransientBootstrapPublication(t *testin
 
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return ownership.callCount() >= 2 }, time.Second, time.Millisecond)
-	require.Equal(t, 2, publisher.calls)
+	require.Equal(t, 2, publisher.callCount())
+	require.NoError(t, worker.Stop(context.Background()))
 	firstOwner.mu.Lock()
 	require.Equal(t, 1, firstOwner.closes)
 	firstOwner.mu.Unlock()
 	secondOwner.mu.Lock()
 	require.Equal(t, 1, secondOwner.closes)
 	secondOwner.mu.Unlock()
-	require.NoError(t, worker.Stop(context.Background()))
 }
 
 func TestSchedulerSupportPublisherRejectsStartWhilePriorRunIsStopping(t *testing.T) {
@@ -407,7 +444,7 @@ func TestSchedulerSupportPublisherRetriesTransientBootstrapAcquisition(t *testin
 	worker.pollInterval = time.Millisecond
 	require.NoError(t, worker.Start(context.Background()))
 	require.Eventually(t, func() bool { return ownership.callCount() >= 2 }, time.Second, time.Millisecond)
-	require.Equal(t, 1, publisher.calls)
+	require.Equal(t, 1, publisher.callCount())
 	require.NoError(t, worker.Stop(context.Background()))
 }
 

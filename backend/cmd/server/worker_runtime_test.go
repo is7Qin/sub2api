@@ -241,6 +241,69 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 	require.Contains(t, snapshotNames(newRuntime(&serverConcurrencyCacheStub{}, time.Minute).Snapshot()), "concurrency-slot-cleanup")
 }
 
+func TestProvideWorkerRuntimeStartsWithMissingSupportGenerationAndForeignOwnership(t *testing.T) {
+	store := &serverSupportDecisionStore{documents: make(map[uint64][]byte)}
+	publisher := service.NewSchedulerSupportPublisherWorker(
+		&serverSchedulerDirtyRepo{},
+		&serverSchedulerOwnershipRepo{},
+		serverSchedulerDirtyProcessor{},
+		service.NewSupportDecisionPublisher(serverSupportDecisionGeneration{}, serverSupportDecisionSource{}, store, &config.Config{}),
+		store,
+		&config.Config{},
+	)
+	reader := service.NewSupportDecisionAtomicReader(time.Hour)
+	replica := service.NewSupportDecisionReplicaWorker(service.NewSupportDecisionReplica(store, reader))
+
+	started := make(chan struct{})
+	var runtime *workerruntime.Runtime
+	var err error
+	go func() {
+		runtime, err = provideWorkerRuntime(
+			service.NewAccountExpiryService(nil, time.Hour),
+			service.NewIdempotencyCleanupService(nil, &config.Config{}),
+			service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1}),
+			service.NewSubscriptionExpiryService(nil, time.Hour),
+			service.NewPaymentOrderExpiryService(nil, time.Hour),
+			service.NewPricingService(&config.Config{}, nil),
+			service.NewOutboxCleanupService(nil, nil, nil, 30*24*time.Hour),
+			service.NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+			service.NewOAuthService(nil, nil),
+			service.NewGeminiOAuthService(nil, nil, nil, nil, &config.Config{}),
+			service.NewAntigravityOAuthService(nil),
+			service.NewOpenAIOAuthService(nil, nil),
+			service.NewUserMessageQueueService(nil, nil, &config.UserMessageQueueConfig{}),
+			service.NewConcurrencyService(nil),
+			service.NewEmailQueueService(nil, 1),
+			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			publisher,
+			replica,
+		)
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker runtime startup waited for support publication")
+	}
+	require.NoError(t, err)
+	require.NotNil(t, runtime)
+	require.Equal(t, workerruntime.LifecycleRunning, publisher.Snapshot().Lifecycle.State)
+	require.Equal(t, workerruntime.LifecycleRunning, replica.Snapshot().Lifecycle.State)
+	require.Equal(t, service.SupportDecisionUnknown, reader.Lookup(service.SupportDecisionQuery{}))
+
+	table, buildErr := service.BuildSupportDecisionTable(&service.SupportDecisionConstructionSnapshot{}, service.SupportDecisionBuildOptions{Generation: 1})
+	require.NoError(t, buildErr)
+	payload, encodeErr := service.EncodeSupportDecisionDocument(table)
+	require.NoError(t, encodeErr)
+	store.publish(1, payload)
+	require.Eventually(t, func() bool { return reader.Snapshot().Generation == 1 }, time.Second, time.Millisecond)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = runtime.StopAll(stopCtx)
+	require.NoError(t, err)
+}
+
 func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
 	store := newServerSupportDecisionStore(t)
 	publisher := service.NewSchedulerSupportPublisherWorker(

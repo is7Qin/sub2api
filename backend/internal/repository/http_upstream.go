@@ -36,6 +36,10 @@ const (
 	openAIH2ReadIdleTimeout = 30 * time.Second
 	openAIH2PingTimeout     = 10 * time.Second
 
+	defaultUpstreamDialTimeout         = 10 * time.Second
+	defaultUpstreamDialKeepAlive       = 30 * time.Second
+	defaultUpstreamTLSHandshakeTimeout = 10 * time.Second
+
 	// directProxyKey: 无代理时的缓存键标识
 	directProxyKey = "direct"
 	// defaultMaxIdleConns: 默认最大空闲连接总数
@@ -1057,8 +1061,17 @@ func defaultPoolSettings(cfg *config.Config) poolSettings {
 //   - MaxConnsPerHost: 每主机最大连接数（达到后新请求等待）
 //   - IdleConnTimeout: 空闲连接超时（超时后关闭）
 //   - ResponseHeaderTimeout: 等待响应头超时（不影响流式传输）
+func newUpstreamDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout:   defaultUpstreamDialTimeout,
+		KeepAlive: defaultUpstreamDialKeepAlive,
+	}
+}
+
 func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMode string) (*http.Transport, error) {
 	transport := &http.Transport{
+		DialContext:           newUpstreamDialer().DialContext,
+		TLSHandshakeTimeout:   defaultUpstreamTLSHandshakeTimeout,
 		MaxIdleConns:          settings.maxIdleConns,
 		MaxIdleConnsPerHost:   settings.maxIdleConnsPerHost,
 		MaxConnsPerHost:       settings.maxConnsPerHost,

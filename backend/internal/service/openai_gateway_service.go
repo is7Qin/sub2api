@@ -5384,10 +5384,57 @@ func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if strings.TrimSpace(eventType) == "response.failed" {
+	switch strings.TrimSpace(eventType) {
+	case "response.failed":
 		return false
+	case "error":
+		payload := []byte(trimmed)
+		return !openAIStreamFailedEventShouldFailover(payload, extractOpenAISSEErrorMessage(payload))
 	}
 	return !openAIStreamEventIsPreamble(eventType)
+}
+
+func openAIStreamFailedEventErrorCode(payload []byte) string {
+	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String()))
+	if code == "" {
+		code = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.code").String()))
+	}
+	return code
+}
+
+func isOpenAIUpstreamCapacityShedEvent(payload []byte) bool {
+	switch openAIStreamFailedEventErrorCode(payload) {
+	case "server_is_overloaded", "slow_down":
+		return true
+	default:
+		return false
+	}
+}
+
+const openAICapacityShedRetryableClientCode = "server_error"
+
+// Capacity-shed codes are fatal to Codex, so downstream-only copies use a
+// retryable code after gateway failover is no longer possible.
+func sanitizeOpenAICapacityShedErrorCodeForClient(payload []byte) ([]byte, bool) {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) || !isOpenAIUpstreamCapacityShedEvent(payload) {
+		return payload, false
+	}
+	updated := payload
+	changed := false
+	for _, path := range []string{"response.error.code", "error.code"} {
+		switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(updated, path).String())) {
+		case "server_is_overloaded", "slow_down":
+		default:
+			continue
+		}
+		next, err := sjson.SetBytes(updated, path, openAICapacityShedRetryableClientCode)
+		if err != nil {
+			return payload, false
+		}
+		updated = next
+		changed = true
+	}
+	return updated, changed
 }
 
 func openAIStreamDataStartsRealClientOutput(data, eventType string) bool {
@@ -5521,9 +5568,10 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 			"message": message,
 		},
 	})
-	// HTTP 200 stream failures do not carry a transport status for capacity and
-	// other transient processing errors, so evaluate their semantic payload too.
-	retryableOnSameAccount := account != nil && account.IsPoolMode() &&
+	// Capacity shedding is request-scoped, so retry the same account before
+	// consuming the rest of the account pool.
+	capacityShed := isOpenAIUpstreamCapacityShedEvent(payload)
+	retryableOnSameAccount := capacityShed || account != nil && account.IsPoolMode() &&
 		(account.IsPoolModeRetryableStatus(statusCode) ||
 			isOpenAITransientProcessingError(http.StatusBadRequest, message, payload))
 	if statusCode == http.StatusTooManyRequests {
@@ -5545,6 +5593,7 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		ResponseBody:           body,
 		ResponseHeaders:        headers,
 		RetryableOnSameAccount: retryableOnSameAccount,
+		RequestScopedTransient: capacityShed,
 		upstreamFact:           &fact,
 	}
 }
@@ -5584,6 +5633,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawTerminalEvent := false
 	sawFailedEvent := false
 	failedMessage := ""
+	capacityShedPrelude := false
 	clientOutputStarted := false
 	realOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -5690,6 +5740,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if acceptTerminalState && openAIResponseStreamTerminalIsFailure(eventType) {
 				SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 			}
+			if acceptTerminalState && eventType == "error" && isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+				capacityShedPrelude = true
+			}
 			if acceptTerminalState && eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				s.parseSSEUsageBytesForEvent(dataBytes, usage, eventType)
@@ -5699,7 +5752,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					requestErr = newOpenAIUpstreamRequestError(dataBytes, upstreamRequestID)
 				}
 				outputStarted := realOutputStarted || openAIStreamClientOutputStarted(c, clientOutputStarted)
-				if requestErr != nil {
+				if !outputStarted && capacityShedPrelude && isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+					return resultWithUsage(),
+						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, openAIResponseFailedPayloadForDiagnostic(dataBytes, eventType), failedMessage, resp.Header)
+				} else if requestErr != nil {
 					requestErr.observeTerminal(*usage, outputStarted)
 					streamRequestErr = requestErr
 					suppressClientOutput = isNewRecognizedDirectOpenAIError(fact) && !outputStarted
@@ -5719,7 +5775,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				sawTerminalEvent = true
 			}
 			imageCounter.AddSSEData(dataBytes)
-			if eventType == "response.failed" {
+			if eventType == "error" || eventType == "response.failed" {
 				if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(dataBytes, eventType); sanitized {
 					dataBytes = sanitizedData
 					trimmedData = strings.TrimSpace(string(sanitizedData))
@@ -6545,6 +6601,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithNamespaceRestorer(ctx 
 	sawTerminalEvent := false
 	sawFailedEvent := false
 	failedMessage := ""
+	capacityShedPrelude := false
 	clientOutputStarted := false
 	realOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -6722,6 +6779,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithNamespaceRestorer(ctx 
 			if acceptTerminalState && openAIResponseStreamTerminalIsFailure(eventType) {
 				SetOpenAIRemoteCompactionSemanticOutcome(c, OpenAIRemoteCompactionSemanticOutcomeFailed)
 			}
+			if acceptTerminalState && eventType == "error" && isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+				capacityShedPrelude = true
+			}
 			if acceptTerminalState && eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				s.parseSSEUsageBytesForEvent(dataBytes, usage, eventType)
@@ -6731,7 +6791,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithNamespaceRestorer(ctx 
 					requestErr = newOpenAIUpstreamRequestError(dataBytes, upstreamRequestID)
 				}
 				outputStarted := realOutputStarted || openAIStreamClientOutputStarted(c, clientOutputStarted)
-				if requestErr != nil {
+				if !outputStarted && capacityShedPrelude && isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+					sawFailedEvent = true
+					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, openAIResponseFailedPayloadForDiagnostic(dataBytes, eventType), failedMessage, resp.Header)
+					return
+				} else if requestErr != nil {
 					requestErr.observeTerminal(*usage, outputStarted)
 					streamRequestErr = requestErr
 					suppressClientOutput = isNewRecognizedDirectOpenAIError(fact) && !outputStarted
@@ -6803,7 +6867,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithNamespaceRestorer(ctx 
 					line = "data: " + data
 				}
 			}
-			if eventType == "response.failed" {
+			if eventType == "error" || eventType == "response.failed" {
 				if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(dataBytes, eventType); sanitized {
 					dataBytes = sanitizedData
 					data = string(sanitizedData)
@@ -7871,11 +7935,19 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 	if eventType = strings.TrimSpace(eventType); eventType == "" {
 		eventType = classifyOpenAIResponseSSEEvent(payload, "")
 	}
-	if eventType != "response.failed" || len(payload) == 0 || !gjson.ValidBytes(payload) {
+	isFailedEvent := eventType == "response.failed"
+	if (!isFailedEvent && eventType != "error") || len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return payload, false
 	}
+	updated := payload
+	if rewritten, changed := sanitizeOpenAICapacityShedErrorCodeForClient(updated); changed {
+		updated = rewritten
+	}
+	if !isFailedEvent {
+		return updated, !bytes.Equal(updated, payload)
+	}
 	fact := ParseOpenAIJSONErrorFact(PlatformOpenAI, UpstreamErrorSourceSSE, payload, "")
-	if requestErr := newRecognizedOpenAIUpstreamRequestError(fact); requestErr != nil {
+	if requestErr := newRecognizedOpenAIUpstreamRequestError(fact); requestErr != nil && !isOpenAIUpstreamCapacityShedEvent(payload) {
 		response := gin.H{
 			"status": "failed",
 			"error":  gin.H{"code": requestErr.Code, "type": requestErr.Type, "message": requestErr.Message},
@@ -7886,7 +7958,7 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 		sanitized, _ := json.Marshal(gin.H{"type": "response.failed", "response": response})
 		return sanitized, true
 	}
-	if requestErr := newOpenAIUpstreamRequestError(payload, ""); requestErr != nil {
+	if requestErr := newOpenAIUpstreamRequestError(payload, ""); requestErr != nil && !isOpenAIUpstreamCapacityShedEvent(payload) {
 		response := gin.H{
 			"status": "failed",
 			"error":  gin.H{"code": requestErr.Code, "type": requestErr.Type, "message": requestErr.Message},
@@ -7897,11 +7969,11 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 		sanitized, _ := json.Marshal(gin.H{"type": "response.failed", "response": response})
 		return sanitized, true
 	}
-	updated, changed, ok := deleteOpenAIResponseFailedVerboseFields(payload)
+	cleaned, changed, ok := deleteOpenAIResponseFailedVerboseFields(updated)
 	if !ok {
 		return payload, false
 	}
-	return updated, changed
+	return cleaned, changed || !bytes.Equal(updated, payload)
 }
 
 func deleteOpenAIResponseFailedVerboseFields(payload []byte) ([]byte, bool, bool) {

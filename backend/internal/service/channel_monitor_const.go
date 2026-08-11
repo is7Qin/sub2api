@@ -111,6 +111,9 @@ var (
 	ErrChannelMonitorNotFound = infraerrors.NotFound(
 		"CHANNEL_MONITOR_NOT_FOUND", "channel monitor not found",
 	)
+	ErrChannelMonitorDisabled = infraerrors.Forbidden(
+		"CHANNEL_MONITOR_DISABLED", "channel monitor is disabled",
+	)
 	ErrChannelMonitorInvalidProvider = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini",
 	)

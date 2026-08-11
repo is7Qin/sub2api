@@ -196,6 +196,27 @@ func NewSubscriptionExpiryWorker(svc *SubscriptionExpiryService) (*workerruntime
 	})
 }
 
+// NewChannelMonitorV2AggregationWorker adapts passive aggregation to the unified runtime.
+func NewChannelMonitorV2AggregationWorker(svc *ChannelMonitorV2Aggregator) (*workerruntime.PeriodicJob, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("channel monitor v2 aggregator is required")
+	}
+	return workerruntime.NewPeriodicJob(workerruntime.PeriodicJobSpec{
+		Descriptor: workerruntime.Descriptor{
+			Name:             "channel-monitor-v2-aggregation",
+			Kind:             workerruntime.KindPeriodic,
+			Group:            "monitoring",
+			CoordinationMode: workerruntime.CoordinationSingletonRun,
+			Description:      "Aggregates passive channel health metrics",
+			Tags:             []string{"channel-monitor", "passive", "aggregation"},
+		},
+		Interval:       svc.Interval(),
+		Timeout:        channelMonitorV2AggregationTimeout,
+		RunImmediately: true,
+		Run:            svc.Run,
+	})
+}
+
 const paymentOrderExpiryWorkerTimeout = paymentOrderExpiryLockAcquireTimeout + 2*expiryCheckTimeout + time.Second
 
 // NewPaymentOrderExpiryWorker adapts payment-order expiry maintenance to the worker runtime.

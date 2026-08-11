@@ -255,7 +255,7 @@ func (r *ChannelMonitorRunner) runScheduled(ctx context.Context, task *scheduled
 // fire 提交一次检测到 worker 池。功能开关关闭时跳过本次（不取消任务，
 // 重新启用时立即恢复）；池满或重复在飞时也跳过。
 func (r *ChannelMonitorRunner) fire(ctx context.Context, task *scheduledMonitor) {
-	if r.settingService != nil && !r.settingService.GetChannelMonitorRuntime(ctx).Enabled {
+	if r.settingService != nil && !r.settingService.GetChannelMonitorRuntime(ctx).ActiveProbesAllowed() {
 		return
 	}
 	if !r.tryAcquireInFlight(task.id) {

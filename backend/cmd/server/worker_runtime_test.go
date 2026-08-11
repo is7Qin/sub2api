@@ -37,6 +37,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 		nil,
 		nil,
 	)
@@ -44,7 +45,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "ops-system-log-sink", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "channel-monitor-v2-aggregation", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "ops-system-log-sink", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
 	var sinkSnapshots int
 	for _, snapshot := range snapshots {
 		if snapshot.Descriptor.Name == "ops-system-log-sink" {
@@ -94,6 +95,7 @@ func TestProvideWorkerRuntimeRegistersOpenAIOAuthMarkerCleanupOnlyForRedisStore(
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 			nil,
 			nil,
 		)
@@ -136,6 +138,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 		nil,
 		nil,
 	)
@@ -165,6 +168,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 		nil,
 		nil,
 	)
@@ -192,6 +196,7 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 			nil,
 			nil,
 		)
@@ -228,6 +233,7 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			concurrency,
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 			nil,
 			nil,
 		)
@@ -270,6 +276,7 @@ func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 		publisher,
 		replica,
 	)
@@ -316,6 +323,7 @@ func TestProvideWorkerRuntimeRollsBackPublisherWhenReplicaStartupFails(t *testin
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		service.NewChannelMonitorV2Aggregator(nil, nil, nil, nil),
 		publisher,
 		badReplica,
 	)
@@ -329,6 +337,17 @@ func TestWorkerProvidersDoNotStartSupportDecisionGoroutines(t *testing.T) {
 	serviceWire := string(content)
 	require.NotContains(t, functionSource(serviceWire, "ProvideSupportDecisionAtomicReader"), ".Start(")
 	require.NotContains(t, functionSource(serviceWire, "ProvideSchedulerSnapshotDirtyProcessor"), ".Start(")
+}
+
+func TestChannelMonitorV2AggregationLifecycleIsRuntimeOwned(t *testing.T) {
+	workerRuntimeSource, err := os.ReadFile("worker_runtime.go")
+	require.NoError(t, err)
+	require.Contains(t, string(workerRuntimeSource), "service.NewChannelMonitorV2AggregationWorker")
+
+	serviceWireSource, err := os.ReadFile("../../internal/service/wire.go")
+	require.NoError(t, err)
+	provider := functionSource(string(serviceWireSource), "ProvideChannelMonitorV2Aggregator")
+	require.NotContains(t, provider, ".Start(")
 }
 
 func TestConcurrencySlotCleanupLifecycleIsRuntimeOwned(t *testing.T) {

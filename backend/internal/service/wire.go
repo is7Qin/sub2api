@@ -671,6 +671,8 @@ var ProviderSet = wire.NewSet(
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
+	ProvideChannelMonitorV2Service,
+	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
@@ -727,4 +729,20 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settings *SettingService) *ChannelMonitorV2Service {
+	svc := NewChannelMonitorV2Service(repo)
+	svc.SetRuntimeReader(settings)
+	return svc
+}
+
+// ProvideChannelMonitorV2Aggregator constructs state only; the worker runtime owns its lifecycle.
+func ProvideChannelMonitorV2Aggregator(
+	repo ChannelMonitorV2Repository,
+	settings *SettingService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+) *ChannelMonitorV2Aggregator {
+	return NewChannelMonitorV2Aggregator(repo, settings, lockCache, db)
 }

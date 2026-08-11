@@ -905,7 +905,19 @@ const (
 	channelMonitorIntervalMin      = 15
 	channelMonitorIntervalMax      = 3600
 	channelMonitorIntervalFallback = 60
+	defaultChannelMonitorMode      = ChannelMonitorModeV1
 )
+
+func normalizeChannelMonitorMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case ChannelMonitorModeV2:
+		return ChannelMonitorModeV2
+	case ChannelMonitorModeV1, "":
+		return ChannelMonitorModeV1
+	default:
+		return defaultChannelMonitorMode
+	}
+}
 
 // parseChannelMonitorInterval parses the stored string and clamps to [15, 3600].
 // Empty / invalid input falls back to channelMonitorIntervalFallback.
@@ -931,26 +943,48 @@ func clampChannelMonitorInterval(v int) int {
 	return v
 }
 
-// ChannelMonitorRuntime is the lightweight view of the channel monitor feature
-// consumed by the runner and user-facing handlers.
+// ChannelMonitorRuntime is the lightweight view consumed by both exclusive monitor modes.
 type ChannelMonitorRuntime struct {
 	Enabled                bool
+	Mode                   string
 	DefaultIntervalSeconds int
+	HideThroughput         bool
 }
 
-// GetChannelMonitorRuntime reads the channel monitor feature flags directly from
-// the settings store. Fail-open: on error returns Enabled=true with the default interval.
+func (r ChannelMonitorRuntime) ActiveProbesAllowed() bool {
+	return r.Enabled && r.Mode == ChannelMonitorModeV1
+}
+
+func (r ChannelMonitorRuntime) PassiveAggregationAllowed() bool {
+	return r.Enabled && r.Mode == ChannelMonitorModeV2
+}
+
+// GetChannelMonitorRuntime reads the channel monitor flags directly from the settings store.
+// Errors preserve V1 behavior but fail closed for V2 and throughput privacy.
 func (s *SettingService) GetChannelMonitorRuntime(ctx context.Context) ChannelMonitorRuntime {
+	fallback := ChannelMonitorRuntime{
+		Enabled:                true,
+		Mode:                   defaultChannelMonitorMode,
+		DefaultIntervalSeconds: channelMonitorIntervalFallback,
+		HideThroughput:         true,
+	}
+	if s == nil || s.settingRepo == nil {
+		return fallback
+	}
 	vals, err := s.settingRepo.GetMultiple(ctx, []string{
 		SettingKeyChannelMonitorEnabled,
+		SettingKeyChannelMonitorMode,
 		SettingKeyChannelMonitorDefaultIntervalSeconds,
+		SettingKeyChannelMonitorHideThroughput,
 	})
 	if err != nil {
-		return ChannelMonitorRuntime{Enabled: true, DefaultIntervalSeconds: channelMonitorIntervalFallback}
+		return fallback
 	}
 	return ChannelMonitorRuntime{
 		Enabled:                !isFalseSettingValue(vals[SettingKeyChannelMonitorEnabled]),
+		Mode:                   normalizeChannelMonitorMode(vals[SettingKeyChannelMonitorMode]),
 		DefaultIntervalSeconds: parseChannelMonitorInterval(vals[SettingKeyChannelMonitorDefaultIntervalSeconds]),
+		HideThroughput:         !isFalseSettingValue(vals[SettingKeyChannelMonitorHideThroughput]),
 	}
 }
 

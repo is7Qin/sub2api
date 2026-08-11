@@ -227,6 +227,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	tokenRefreshService := service.ProvideTokenRefreshService(accountRepository, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, compositeTokenCacheInvalidator, schedulerCache, configConfig, tempUnschedCache, privacyClientFactory, proxyRepository, oAuthRefreshAPI, openAIGatewayService)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
+	channelMonitorV2Repository := repository.NewChannelMonitorV2Repository(db)
+	channelMonitorV2Aggregator := service.ProvideChannelMonitorV2Aggregator(channelMonitorV2Repository, settingService, leaderLockCache, db)
 	schedulerSnapshotDirtyProcessor := service.ProvideSchedulerSnapshotDirtyProcessor(schedulerSnapshotService)
 	supportDecisionGenerationRepository := repository.NewSupportDecisionGenerationRepository(db)
 	supportDecisionSource := repository.NewSupportDecisionSource(db)
@@ -235,7 +237,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	schedulerSupportPublisherWorker := service.NewSchedulerSupportPublisherWorker(schedulerDirtyWorkRepository, schedulerOwnershipRepository, schedulerSnapshotDirtyProcessor, supportDecisionPublisher, supportDecisionPublicationStore, configConfig)
 	supportDecisionReplica := service.NewSupportDecisionReplica(supportDecisionPublicationStore, supportDecisionAtomicReader)
 	supportDecisionReplicaWorker := service.NewSupportDecisionReplicaWorker(supportDecisionReplica)
-	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService, userMessageQueueService, concurrencyService, emailQueueService, opsSystemLogSink, schedulerSupportPublisherWorker, supportDecisionReplicaWorker)
+	runtime, err := provideWorkerRuntime(accountExpiryService, idempotencyCleanupService, usageRecordWorkerPool, subscriptionExpiryService, paymentOrderExpiryService, pricingService, outboxCleanupService, tokenRefreshService, oAuthService, geminiOAuthService, antigravityOAuthService, openAIOAuthService, userMessageQueueService, concurrencyService, emailQueueService, opsSystemLogSink, channelMonitorV2Aggregator, schedulerSupportPublisherWorker, supportDecisionReplicaWorker)
 	if err != nil {
 		return nil, err
 	}

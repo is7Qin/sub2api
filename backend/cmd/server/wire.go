@@ -78,7 +78,6 @@ func provideCleanup(
 	opsAlertEvaluator *service.OpsAlertEvaluatorService,
 	opsCleanup *service.OpsCleanupService,
 	opsScheduledReport *service.OpsScheduledReportService,
-	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	apiKeyService *service.APIKeyService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	usageCleanup *service.UsageCleanupService,
@@ -102,12 +101,6 @@ func provideCleanup(
 			{"BillingOutboxWorker", func() error {
 				if billingOutboxWorker != nil {
 					billingOutboxWorker.Stop()
-				}
-				return nil
-			}},
-			{"AuthCacheInvalidationWorker", func() error {
-				if authCacheInvalidationWorker != nil {
-					authCacheInvalidationWorker.Stop()
 				}
 				return nil
 			}},

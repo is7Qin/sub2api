@@ -527,6 +527,272 @@ func TestUsageRecordWorkerPoolWorkerStopReturnsSuccessAfterCompletionWithExpired
 	require.Equal(t, workerruntime.LifecycleStopped, worker.Snapshot().Lifecycle.State)
 }
 
+func newAuthCacheInvalidationOutboxAdapterForTest(t *testing.T, repo AuthCacheInvalidationOutboxRepository, cache APIKeyCache) (*AuthCacheInvalidationOutboxWorker, *AuthCacheInvalidationWorker) {
+	t.Helper()
+	native := NewAuthCacheInvalidationWorker(repo, cache)
+	adapter, err := NewAuthCacheInvalidationOutboxWorker(native)
+	require.NoError(t, err)
+	return adapter, native
+}
+
+func TestAuthCacheInvalidationOutboxWorkerDescriptorAndInitialStatusAreDetached(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	want := workerruntime.Descriptor{
+		Name:             "auth-cache-invalidation-outbox",
+		Kind:             workerruntime.KindPool,
+		Group:            "auth",
+		CoordinationMode: workerruntime.CoordinationDurableClaim,
+		Description:      "Processes durable API key auth cache invalidation events",
+		Tags:             []string{"auth", "cache", "invalidation", "outbox"},
+	}
+	require.Equal(t, want, adapter.Descriptor())
+	snapshot := adapter.Snapshot()
+	require.Equal(t, want, snapshot.Descriptor)
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status, ok := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, ok)
+	require.False(t, status.Accepting)
+	require.False(t, status.StillRunning)
+	require.Equal(t, authInvalidationConcurrency, status.MaxConcurrency)
+	require.Zero(t, status.RunningWorkers)
+
+	detached := adapter.Descriptor()
+	detached.Tags[0] = "mutated"
+	require.Equal(t, want.Tags, adapter.Descriptor().Tags)
+}
+
+func TestAuthCacheInvalidationOutboxWorkerRejectsMissingDependencies(t *testing.T) {
+	var typedNilRepo *authInvalidationRepoStub
+	var typedNilCache *authInvalidationCacheStub
+	validRepo := &authInvalidationRepoStub{}
+	validCache := &authInvalidationCacheStub{}
+	for _, native := range []*AuthCacheInvalidationWorker{
+		nil,
+		{},
+		NewAuthCacheInvalidationWorker(typedNilRepo, validCache),
+		NewAuthCacheInvalidationWorker(validRepo, typedNilCache),
+	} {
+		adapter, err := NewAuthCacheInvalidationOutboxWorker(native)
+		require.Nil(t, adapter)
+		require.EqualError(t, err, "Auth cache invalidation worker is required")
+	}
+}
+
+func TestAuthCacheInvalidationOutboxWorkerPreCanceledStartDoesNotInvokeNativeStart(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	var starts atomic.Int64
+	adapter.testHooks = &authCacheInvalidationOutboxWorkerTestHooks{beforeNativeStart: func() { starts.Add(1) }}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, adapter.Start(ctx), context.Canceled)
+	require.Zero(t, starts.Load())
+	require.Equal(t, workerruntime.LifecycleStopped, adapter.Snapshot().Lifecycle.State)
+	require.NoError(t, adapter.Start(context.Background()))
+	require.NoError(t, adapter.Stop(context.Background()))
+}
+
+func TestAuthCacheInvalidationOutboxWorkerStartIsRunningAndIdempotent(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	var starts atomic.Int64
+	adapter.testHooks = &authCacheInvalidationOutboxWorkerTestHooks{beforeNativeStart: func() { starts.Add(1) }}
+	require.NoError(t, adapter.Start(context.Background()))
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, adapter.Start(canceledCtx))
+	require.Equal(t, int64(1), starts.Load())
+	snapshot := adapter.Snapshot()
+	require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.True(t, status.Accepting)
+	require.True(t, status.StillRunning)
+	require.Equal(t, int64(1), status.RunningWorkers)
+	require.NoError(t, adapter.Stop(context.Background()))
+}
+
+func TestAuthCacheInvalidationOutboxWorkerConcurrentStartCallsNativeStartExactlyOnce(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	var starts atomic.Int64
+	adapter.testHooks = &authCacheInvalidationOutboxWorkerTestHooks{beforeNativeStart: func() { starts.Add(1) }}
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- adapter.Start(context.Background())
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(1), starts.Load())
+	require.NoError(t, adapter.Stop(context.Background()))
+}
+
+func TestAuthCacheInvalidationOutboxWorkerMapsOnlyProcessLocalCounters(t *testing.T) {
+	repo := &authInvalidationRepoStub{stats: AuthCacheInvalidationOutboxStats{Pending: 99, LastError: "repository-secret-error"}}
+	adapter, native := newAuthCacheInvalidationOutboxAdapterForTest(t, repo, &authInvalidationCacheStub{})
+	native.processed.Store(7)
+	native.failures.Store(3)
+	native.lastError.Store("redis-secret-error")
+	native.workerID = "private-worker-uuid"
+	snapshot := adapter.Snapshot()
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.Equal(t, uint64(7), status.SuccessfulTasks)
+	require.Equal(t, uint64(3), status.FailedTasks)
+	require.Zero(t, status.CompletedTasks)
+	require.Zero(t, status.WaitingTasks)
+	require.Zero(t, status.SubmittedTasks)
+	require.Zero(t, status.DroppedTasks)
+	require.Zero(t, status.DroppedQueueFull)
+	require.Zero(t, status.DroppedPoolStopped)
+	require.Zero(t, status.SyncFallbackTasks)
+	require.Zero(t, repo.statsCalls, "generic runtime status must not query durable stats")
+	projection := fmt.Sprintf("%+v", snapshot)
+	for _, private := range []string{"repository-secret-error", "redis-secret-error", "private-worker-uuid", "private-cache-key", "private-event-id"} {
+		require.NotContains(t, projection, private)
+	}
+}
+
+func TestAuthCacheInvalidationOutboxWorkerNormalStopReachesStopped(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	require.NoError(t, adapter.Start(context.Background()))
+	require.NoError(t, adapter.Stop(context.Background()))
+	require.NoError(t, adapter.Stop(context.Background()))
+	snapshot := adapter.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopped, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.False(t, status.Accepting)
+	require.False(t, status.StillRunning)
+	require.Zero(t, status.RunningWorkers)
+}
+
+func TestAuthCacheInvalidationOutboxWorkerConcurrentStopSharesNativeCompletion(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	var stops atomic.Int64
+	adapter.testHooks = &authCacheInvalidationOutboxWorkerTestHooks{beforeNativeStop: func() {
+		stops.Add(1)
+		close(stopEntered)
+		<-releaseStop
+	}}
+	require.NoError(t, adapter.Start(context.Background()))
+	const callers = 32
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- adapter.Stop(context.Background())
+		}()
+	}
+	close(start)
+	<-stopEntered
+	close(releaseStop)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(1), stops.Load())
+	require.NoError(t, adapter.Stop(context.Background()))
+}
+
+func TestAuthCacheInvalidationOutboxWorkerStopDeadlineRemainsTruthfullyStopping(t *testing.T) {
+	claimEntered := make(chan struct{})
+	releaseClaim := make(chan struct{})
+	repo := &authInvalidationRepoStub{claimFn: func(context.Context, string, int, time.Duration) ([]AuthCacheInvalidationEvent, error) {
+		close(claimEntered)
+		<-releaseClaim
+		return nil, nil
+	}}
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, repo, &authInvalidationCacheStub{})
+	require.NoError(t, adapter.Start(context.Background()))
+	<-claimEntered
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, adapter.Stop(ctx), context.Canceled)
+	snapshot := adapter.Snapshot()
+	require.Equal(t, workerruntime.LifecycleStopping, snapshot.Lifecycle.State)
+	status := snapshot.Status.(workerruntime.PoolStatus)
+	require.False(t, status.Accepting)
+	require.True(t, status.StillRunning)
+	require.Equal(t, int64(1), status.RunningWorkers)
+	close(releaseClaim)
+	require.NoError(t, adapter.Stop(context.Background()))
+	require.Equal(t, workerruntime.LifecycleStopped, adapter.Snapshot().Lifecycle.State)
+}
+
+func TestAuthCacheInvalidationOutboxWorkerRejectsStartDuringAndAfterStop(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	var starts atomic.Int64
+	adapter.testHooks = &authCacheInvalidationOutboxWorkerTestHooks{
+		beforeNativeStart: func() { starts.Add(1) },
+		beforeNativeStop: func() {
+			close(stopEntered)
+			<-releaseStop
+		},
+	}
+	require.NoError(t, adapter.Start(context.Background()))
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- adapter.Stop(context.Background()) }()
+	<-stopEntered
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.EqualError(t, adapter.Start(canceledCtx), "Auth cache invalidation worker is stopping")
+	close(releaseStop)
+	require.NoError(t, <-stopErr)
+	require.EqualError(t, adapter.Start(canceledCtx), "Auth cache invalidation worker is non-restartable after Stop")
+	require.Equal(t, int64(1), starts.Load())
+}
+
+func TestAuthCacheInvalidationOutboxWorkerStopBeforeStartPreservesFutureStart(t *testing.T) {
+	adapter, _ := newAuthCacheInvalidationOutboxAdapterForTest(t, &authInvalidationRepoStub{}, &authInvalidationCacheStub{})
+	var starts, stops atomic.Int64
+	adapter.testHooks = &authCacheInvalidationOutboxWorkerTestHooks{
+		beforeNativeStart: func() { starts.Add(1) },
+		beforeNativeStop:  func() { stops.Add(1) },
+	}
+	require.NoError(t, adapter.Stop(context.Background()))
+	require.Zero(t, stops.Load())
+	staleNotifier := adapter.StopInitiated()
+	select {
+	case <-staleNotifier:
+	default:
+		t.Fatal("never-started Stop did not close its notifier generation")
+	}
+	require.NoError(t, adapter.Start(context.Background()))
+	require.Equal(t, int64(1), starts.Load())
+	activeNotifier := adapter.StopInitiated()
+	require.NotEqual(t, staleNotifier, activeNotifier)
+	select {
+	case <-activeNotifier:
+		t.Fatal("valid Start retained the closed notifier from never-started Stop")
+	default:
+	}
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- adapter.Stop(context.Background()) }()
+	select {
+	case <-activeNotifier:
+	case <-time.After(time.Second):
+		t.Fatal("real Stop did not close the active notifier generation")
+	}
+	require.NoError(t, <-stopErr)
+	require.Equal(t, int64(1), stops.Load())
+}
+
 // periodicJobDuration reads a concrete PeriodicJob duration only in tests. The runtime
 // intentionally exposes no public spec accessor, so bounded reflection verifies the
 // constructed adapter rather than merely checking the shared source constant.

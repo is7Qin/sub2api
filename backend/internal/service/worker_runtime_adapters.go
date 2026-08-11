@@ -566,6 +566,193 @@ func boolInt64(value bool) int64 {
 	return 0
 }
 
+type authCacheInvalidationOutboxWorkerTestHooks struct {
+	beforeNativeStart func()
+	beforeNativeStop  func()
+}
+
+// AuthCacheInvalidationOutboxWorker adapts the durable auth-cache invalidation poller.
+type AuthCacheInvalidationOutboxWorker struct {
+	worker     *AuthCacheInvalidationWorker
+	descriptor workerruntime.Descriptor
+
+	mu            sync.RWMutex
+	lifecycle     workerruntime.LifecycleSnapshot
+	started       bool
+	stopping      bool
+	nativeStopped bool
+	stopDone      chan struct{}
+	stopInitiated chan struct{}
+	testHooks     *authCacheInvalidationOutboxWorkerTestHooks
+}
+
+// NewAuthCacheInvalidationOutboxWorker returns the runtime-owned outbox adapter.
+func NewAuthCacheInvalidationOutboxWorker(worker *AuthCacheInvalidationWorker) (*AuthCacheInvalidationOutboxWorker, error) {
+	if worker == nil || isNilInterface(worker.repo) || isNilInterface(worker.cache) {
+		return nil, fmt.Errorf("Auth cache invalidation worker is required")
+	}
+	return &AuthCacheInvalidationOutboxWorker{
+		worker: worker,
+		descriptor: workerruntime.Descriptor{
+			Name:             "auth-cache-invalidation-outbox",
+			Kind:             workerruntime.KindPool,
+			Group:            "auth",
+			CoordinationMode: workerruntime.CoordinationDurableClaim,
+			Description:      "Processes durable API key auth cache invalidation events",
+			Tags:             []string{"auth", "cache", "invalidation", "outbox"},
+		},
+		lifecycle: workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()},
+	}, nil
+}
+
+func (w *AuthCacheInvalidationOutboxWorker) Descriptor() workerruntime.Descriptor {
+	if w == nil {
+		return workerruntime.Descriptor{}
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	descriptor := w.descriptor
+	descriptor.Tags = append([]string(nil), descriptor.Tags...)
+	return descriptor
+}
+
+func (w *AuthCacheInvalidationOutboxWorker) Start(ctx context.Context) error {
+	if w == nil || w.worker == nil || isNilInterface(w.worker.repo) || isNilInterface(w.worker.cache) {
+		return fmt.Errorf("Auth cache invalidation worker is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.nativeStopped {
+		return fmt.Errorf("Auth cache invalidation worker is non-restartable after Stop")
+	}
+	if w.stopping {
+		return fmt.Errorf("Auth cache invalidation worker is stopping")
+	}
+	if w.started {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Replace a closed no-op Stop generation before publishing a real running state.
+	if w.stopInitiated != nil {
+		select {
+		case <-w.stopInitiated:
+			w.stopInitiated = make(chan struct{})
+		default:
+		}
+	}
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStarting, UpdatedAt: time.Now()}
+	if w.testHooks != nil && w.testHooks.beforeNativeStart != nil {
+		w.testHooks.beforeNativeStart()
+	}
+	w.worker.Start()
+	w.started = true
+	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
+	return nil
+}
+
+// StopInitiated returns a channel closed when Stop has entered.
+func (w *AuthCacheInvalidationOutboxWorker) StopInitiated() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopInitiated == nil {
+		w.stopInitiated = make(chan struct{})
+	}
+	return w.stopInitiated
+}
+
+func (w *AuthCacheInvalidationOutboxWorker) Stop(ctx context.Context) error {
+	if w == nil || w.worker == nil {
+		return nil
+	}
+	w.mu.Lock()
+	if w.stopInitiated == nil {
+		w.stopInitiated = make(chan struct{})
+	}
+	select {
+	case <-w.stopInitiated:
+	default:
+		close(w.stopInitiated)
+	}
+	if !w.started && !w.stopping {
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+		w.mu.Unlock()
+		return nil
+	}
+	if w.stopDone == nil {
+		w.stopping = true
+		w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopping, UpdatedAt: time.Now()}
+		w.stopDone = make(chan struct{})
+		done := w.stopDone
+		go func() {
+			if w.testHooks != nil && w.testHooks.beforeNativeStop != nil {
+				w.testHooks.beforeNativeStop()
+			}
+			w.worker.Stop()
+			w.mu.Lock()
+			w.started = false
+			w.stopping = false
+			w.nativeStopped = true
+			w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
+			w.mu.Unlock()
+			close(done)
+		}()
+	}
+	done := w.stopDone
+	w.mu.Unlock()
+
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return nil
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+func (w *AuthCacheInvalidationOutboxWorker) Snapshot() workerruntime.Snapshot {
+	if w == nil {
+		return workerruntime.Snapshot{}
+	}
+	w.mu.RLock()
+	descriptor := w.descriptor
+	descriptor.Tags = append([]string(nil), descriptor.Tags...)
+	lifecycle := w.lifecycle
+	started, stopping := w.started, w.stopping
+	worker := w.worker
+	w.mu.RUnlock()
+
+	running := started && (lifecycle.State == workerruntime.LifecycleRunning || stopping)
+	var successful, failed uint64
+	if worker != nil {
+		successful = worker.processed.Load()
+		failed = worker.failures.Load()
+	}
+	// Native failures include poll, ack, and retry failures and are not a terminal-event count.
+	return workerruntime.Snapshot{
+		Descriptor: descriptor,
+		Lifecycle:  lifecycle,
+		Status: workerruntime.PoolStatus{
+			Accepting:       started && lifecycle.State == workerruntime.LifecycleRunning && !stopping,
+			StillRunning:    running,
+			MaxConcurrency:  authInvalidationConcurrency,
+			RunningWorkers:  boolInt64(running),
+			SuccessfulTasks: successful,
+			FailedTasks:     failed,
+		},
+	}
+}
+
 type usageRecordWorkerPoolWorkerTestHooks struct {
 	afterPoolStart func()
 	afterPoolStop  func()

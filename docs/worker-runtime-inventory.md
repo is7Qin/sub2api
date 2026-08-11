@@ -1,6 +1,6 @@
 # Worker Runtime Inventory
 
-This inventory records all process-local background activity through Issue #9 Phase 11.
+This inventory records all process-local background activity through Issue #9 Phase 12.
 `managed` means the component is registered in `workerruntime.Runtime` and appears in
 `GET /api/v1/admin/ops/workers/status`; `unmanaged` components retain their existing
 startup and shutdown behavior until a later phase. The status endpoint intentionally
@@ -21,7 +21,8 @@ reports no process identifier, credentials, payloads, stack traces, or raw upstr
 | Other Ops jobs (metrics, aggregation, alerts, cleanup, reports) | No | service providers and server cleanup | service-specific tickers / cron | Service providers | Cleanup invokes `Stop`; guarantee is component-specific | mixed; some singleton via locks | Ops endpoints and logs | Later migration |
 | BillingCache pool | No | `service.ProvideBillingCacheService` / lazy pool use | bounded async work pool | Service provider | `BillingCacheService.Stop` closes pool; component-specific wait | per-instance | Cache metrics / logs | Later migration |
 | Billing outbox | No | `service.ProvideBillingOutboxWorker` | ticker poller with durable claims | Service provider | `Stop` cancels and waits for its `WaitGroup` | durable claim | `GET /api/v1/admin/ops/billing-outbox/health` | Later migration |
-| Auth-cache outbox | No | `service.ProvideAuthCacheInvalidationWorker` | ticker poller with durable claims | Service provider | `Stop` cancels and waits for its `WaitGroup` | durable claim | Logs only | Later migration |
+| Auth-cache outbox | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime` pool adapter over native durable outbox poller | Server runtime | `Runtime.StopAll` initiates and joins native stop to caller deadline, reporting still-running truthfully | durable claim | Generic process-local Ops worker status; unchanged native auth-cache invalidation `Health` method remains authoritative for durable backlog | Phase 12 |
+| API-key auth-cache Pub/Sub subscriber | No | `service.ProvideAPIKeyAuthCacheInvalidator` | Redis Pub/Sub subscriber | Service provider / cleanup | Server cleanup cancels and joins the subscriber | per-instance subscriber to shared invalidation channel | Dedicated auth-cache behavior and logs; not represented as a runtime worker | Later migration |
 | SubscriptionExpiryService | Yes | `cmd/server/provideWorkerRuntime` | `workerruntime.PeriodicJob` | Server runtime | `Runtime.StopAll` waits to deadline and reports timeout | per-instance; reminder scan reuses its leader lock | Ops worker status | Phase 2 |
 | TokenRefreshService | Yes | `cmd/server/provideWorkerRuntime` when `token_refresh.enabled` | `workerruntime.PeriodicJob` (immediate then fixed-delay interval) | Server runtime | `Runtime.StopAll` waits to deadline and reports still-running truthfully | per-instance; refresh path retains its own OAuth coordination | Ops worker status | Phase 3 |
 | SchedulerSnapshotService | No | `service.ProvideSchedulerSnapshotService` | initial rebuild plus outbox, dirty-work, and full-rebuild goroutines | Service provider; server cleanup | `Stop` cancels worker context/closes stop channel and waits for its `WaitGroup` | durable ownership for dirty work; per-instance legacy outbox/full rebuild with per-bucket locks | Scheduler cache behavior and logs | Later migration |

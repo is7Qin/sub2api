@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,13 +22,20 @@ type authInvalidationRepoStub struct {
 	retryError string
 	stats      AuthCacheInvalidationOutboxStats
 	statsErr   error
+	statsCalls int
+	claimFn    func(context.Context, string, int, time.Duration) ([]AuthCacheInvalidationEvent, error)
 }
 
-func (r *authInvalidationRepoStub) Claim(_ context.Context, _ string, limit int, _ time.Duration) ([]AuthCacheInvalidationEvent, error) {
+func (r *authInvalidationRepoStub) Claim(ctx context.Context, workerID string, limit int, lease time.Duration) ([]AuthCacheInvalidationEvent, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.claimLimit = limit
-	return append([]AuthCacheInvalidationEvent(nil), r.events...), nil
+	claimFn := r.claimFn
+	events := append([]AuthCacheInvalidationEvent(nil), r.events...)
+	r.mu.Unlock()
+	if claimFn != nil {
+		return claimFn(ctx, workerID, limit, lease)
+	}
+	return events, nil
 }
 func (r *authInvalidationRepoStub) DeleteClaimed(_ context.Context, id int64, _ string) error {
 	r.mu.Lock()
@@ -48,6 +57,9 @@ func (r *authInvalidationRepoStub) RetryClaimed(_ context.Context, id int64, _ s
 	return nil
 }
 func (r *authInvalidationRepoStub) Stats(context.Context) (AuthCacheInvalidationOutboxStats, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.statsCalls++
 	return r.stats, r.statsErr
 }
 
@@ -203,6 +215,19 @@ func TestAuthCacheInvalidationWorker_LifecycleIsManagedAndIdempotent(t *testing.
 	require.Eventually(t, func() bool { return worker.Health(context.Background()).Running }, time.Second, 10*time.Millisecond)
 	require.NotPanics(t, func() { worker.Stop(); worker.Stop() })
 	require.False(t, worker.Health(context.Background()).Running)
+}
+
+func TestAuthCacheInvalidationWorkerProviderDoesNotStartNativeWorker(t *testing.T) {
+	content, err := os.ReadFile("auth_cache_invalidation_outbox.go")
+	require.NoError(t, err)
+	source := string(content)
+	start := strings.Index(source, "func ProvideAuthCacheInvalidationWorker(")
+	require.NotEqual(t, -1, start)
+	body := source[start:]
+	if next := strings.Index(body, "\n}"); next >= 0 {
+		body = body[:next+2]
+	}
+	require.NotContains(t, body, ".Start()")
 }
 
 func TestAuthInvalidationRetryDelayIsBoundedAndJittered(t *testing.T) {

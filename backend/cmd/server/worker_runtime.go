@@ -27,6 +27,7 @@ func provideWorkerRuntime(
 	concurrency *service.ConcurrencyService,
 	emailQueue *service.EmailQueueService,
 	opsSystemLogSink *service.OpsSystemLogSink,
+	authCacheInvalidation *service.AuthCacheInvalidationWorker,
 	supportPublisher *service.SchedulerSupportPublisherWorker,
 	supportReplica *service.SupportDecisionReplicaWorker,
 ) (*workerruntime.Runtime, error) {
@@ -90,6 +91,10 @@ func provideWorkerRuntime(
 	if err != nil {
 		return nil, err
 	}
+	authCacheInvalidationWorker, err := service.NewAuthCacheInvalidationOutboxWorker(authCacheInvalidation)
+	if err != nil {
+		return nil, err
+	}
 
 	components := []workerruntime.Component{
 		accountExpiryWorker,
@@ -104,6 +109,7 @@ func provideWorkerRuntime(
 		service.NewUsageRecordWorkerPoolWorker(usagePool),
 		service.NewEmailQueueWorker(emailQueue),
 		opsSystemLogSinkWorker,
+		authCacheInvalidationWorker,
 	}
 	if openAIOAuthRedisSetFailureCleanupWorker != nil {
 		components = append(components, openAIOAuthRedisSetFailureCleanupWorker)

@@ -37,6 +37,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		newServerAuthCacheInvalidationWorker(),
 		nil,
 		nil,
 	)
@@ -44,9 +45,17 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	t.Cleanup(func() { _, _ = runtime.StopAll(context.Background()) })
 
 	snapshots := runtime.Snapshot()
-	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "ops-system-log-sink", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
-	var sinkSnapshots int
+	require.Equal(t, []string{"account-expiry", "antigravity-oauth-session-cleanup", "auth-cache-invalidation-outbox", "claude-oauth-session-cleanup", "email-queue", "gemini-oauth-session-cleanup", "idempotency-cleanup", "openai-oauth-session-cleanup", "ops-system-log-sink", "outbox-cleanup", "payment-order-expiry", "subscription-expiry", "usage-record-pool"}, snapshotNames(snapshots))
+	var sinkSnapshots, authInvalidationSnapshots int
 	for _, snapshot := range snapshots {
+		if snapshot.Descriptor.Name == "auth-cache-invalidation-outbox" {
+			authInvalidationSnapshots++
+			require.Equal(t, workerruntime.KindPool, snapshot.Descriptor.Kind)
+			require.Equal(t, "auth", snapshot.Descriptor.Group)
+			require.Equal(t, workerruntime.CoordinationDurableClaim, snapshot.Descriptor.CoordinationMode)
+			require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
+			require.IsType(t, workerruntime.PoolStatus{}, snapshot.Status)
+		}
 		if snapshot.Descriptor.Name == "ops-system-log-sink" {
 			sinkSnapshots++
 			require.Equal(t, workerruntime.KindPool, snapshot.Descriptor.Kind)
@@ -57,6 +66,7 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, sinkSnapshots)
+	require.Equal(t, 1, authInvalidationSnapshots)
 	for _, snapshot := range snapshots {
 		require.Equal(t, workerruntime.LifecycleRunning, snapshot.Lifecycle.State)
 	}
@@ -94,6 +104,7 @@ func TestProvideWorkerRuntimeRegistersOpenAIOAuthMarkerCleanupOnlyForRedisStore(
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			newServerAuthCacheInvalidationWorker(),
 			nil,
 			nil,
 		)
@@ -136,6 +147,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		newServerAuthCacheInvalidationWorker(),
 		nil,
 		nil,
 	)
@@ -165,6 +177,7 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		newServerAuthCacheInvalidationWorker(),
 		nil,
 		nil,
 	)
@@ -192,6 +205,7 @@ func TestProvideWorkerRuntimeRegistersUserMessageQueueCleanupOnlyWhenEnabled(t *
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			newServerAuthCacheInvalidationWorker(),
 			nil,
 			nil,
 		)
@@ -228,6 +242,7 @@ func TestProvideWorkerRuntimeRegistersConcurrencySlotCleanupOnlyWhenEnabled(t *t
 			concurrency,
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			newServerAuthCacheInvalidationWorker(),
 			nil,
 			nil,
 		)
@@ -275,6 +290,7 @@ func TestProvideWorkerRuntimeStartsWithMissingSupportGenerationAndForeignOwnersh
 			service.NewConcurrencyService(nil),
 			service.NewEmailQueueService(nil, 1),
 			service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+			newServerAuthCacheInvalidationWorker(),
 			publisher,
 			replica,
 		)
@@ -333,6 +349,7 @@ func TestProvideWorkerRuntimeRegistersSupportPublisherAndReplica(t *testing.T) {
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		newServerAuthCacheInvalidationWorker(),
 		publisher,
 		replica,
 	)
@@ -379,6 +396,7 @@ func TestProvideWorkerRuntimeRollsBackPublisherWhenReplicaStartupFails(t *testin
 		service.NewConcurrencyService(nil),
 		service.NewEmailQueueService(nil, 1),
 		service.NewOpsSystemLogSink(&serverOpsRepositoryStub{}),
+		newServerAuthCacheInvalidationWorker(),
 		publisher,
 		badReplica,
 	)
@@ -456,6 +474,48 @@ func TestWorkerProvidersAndLegacyCleanupDoNotOwnPilotLifecycle(t *testing.T) {
 	provider := functionSource(serviceWire, "ProvideOpsSystemLogSink")
 	require.NotContains(t, provider, "sink.Start()")
 	require.Contains(t, provider, "logger.SetSink(sink)")
+}
+
+func TestAuthCacheInvalidationLifecycleIsRuntimeOwned(t *testing.T) {
+	serviceSource, err := os.ReadFile("../../internal/service/auth_cache_invalidation_outbox.go")
+	require.NoError(t, err)
+	provider := functionSource(string(serviceSource), "ProvideAuthCacheInvalidationWorker")
+	require.NotContains(t, provider, ".Start()")
+
+	workerRuntimeSource, err := os.ReadFile("worker_runtime.go")
+	require.NoError(t, err)
+	require.Contains(t, string(workerRuntimeSource), "authCacheInvalidation *service.AuthCacheInvalidationWorker")
+	require.Contains(t, string(workerRuntimeSource), "service.NewAuthCacheInvalidationOutboxWorker(authCacheInvalidation)")
+
+	cleanupSource, err := os.ReadFile("wire.go")
+	require.NoError(t, err)
+	cleanup := functionSource(string(cleanupSource), "provideCleanup")
+	require.NotContains(t, cleanup, "authCacheInvalidationWorker *service.AuthCacheInvalidationWorker")
+	require.NotContains(t, cleanup, `{"AuthCacheInvalidationWorker"`)
+	require.Contains(t, cleanup, `{"AuthCacheInvalidationSubscriber"`)
+	require.Contains(t, cleanup, "apiKeyService.StopAuthCacheInvalidationSubscriber()")
+}
+
+func newServerAuthCacheInvalidationWorker() *service.AuthCacheInvalidationWorker {
+	return service.NewAuthCacheInvalidationWorker(&serverAuthInvalidationRepoStub{}, &serverAuthInvalidationCacheStub{})
+}
+
+type serverAuthInvalidationRepoStub struct {
+	service.AuthCacheInvalidationOutboxRepository
+}
+
+func (serverAuthInvalidationRepoStub) Claim(ctx context.Context, _ string, _ int, _ time.Duration) ([]service.AuthCacheInvalidationEvent, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type serverAuthInvalidationCacheStub struct {
+	service.APIKeyCache
+}
+
+func (serverAuthInvalidationCacheStub) DeleteAuthCache(context.Context, string) error { return nil }
+func (serverAuthInvalidationCacheStub) PublishAuthCacheInvalidation(context.Context, string) error {
+	return nil
 }
 
 type serverOpsRepositoryStub struct {

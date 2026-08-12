@@ -73,7 +73,6 @@ func performOpenAIOAuthJSONRequest(router *gin.Engine, method string, path strin
 func TestOpenAIOAuthHandler_PublicTokenResponsesOmitCodexFingerprint(t *testing.T) {
 	client := &openAIOAuthHandlerOAuthClientStub{}
 	oauthSvc := service.NewOpenAIOAuthService(nil, client)
-	defer oauthSvc.Stop()
 	router := setupOpenAIOAuthHandlerRouter(oauthSvc, newStubAdminService())
 
 	generateRec := performOpenAIOAuthJSONRequest(router, http.MethodPost, "/api/v1/admin/openai/generate-auth-url", map[string]any{})
@@ -121,7 +120,6 @@ func TestOpenAIOAuthHandler_PublicTokenResponsesOmitCodexFingerprint(t *testing.
 func TestOpenAIOAuthHandler_CreateAccountFromRefreshTokenPersistsServerOwnedFingerprint(t *testing.T) {
 	client := &openAIOAuthHandlerOAuthClientStub{}
 	oauthSvc := service.NewOpenAIOAuthService(nil, client)
-	defer oauthSvc.Stop()
 	adminSvc := newStubAdminService()
 	router := setupOpenAIOAuthHandlerRouter(oauthSvc, adminSvc)
 

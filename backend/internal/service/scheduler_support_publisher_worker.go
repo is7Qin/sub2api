@@ -164,13 +164,6 @@ func (w *SchedulerSupportPublisherWorker) Start(ctx context.Context) error {
 	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleRunning, UpdatedAt: time.Now()}
 	w.mu.Unlock()
 
-	if w.active != nil {
-		if err := w.ensureBootstrap(runCtx); err != nil {
-			cancel()
-			w.finishRun(done)
-			return err
-		}
-	}
 	go w.run(runCtx, done)
 	return nil
 }
@@ -216,58 +209,25 @@ func (w *SchedulerSupportPublisherWorker) finishRun(done chan struct{}) {
 	w.lifecycle = workerruntime.LifecycleSnapshot{State: workerruntime.LifecycleStopped, UpdatedAt: time.Now()}
 }
 
-func (w *SchedulerSupportPublisherWorker) ensureBootstrap(ctx context.Context) error {
-	for {
-		generation, err := w.active.ActiveGeneration(ctx)
-		if err == nil && generation > 0 {
-			return nil
-		}
-		owner, acquired, acquireErr := w.ownership.TryAcquire(ctx)
-		if acquireErr != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if !w.wait(ctx, w.pollInterval) {
-				return ctx.Err()
-			}
-			continue
-		}
-		if acquired && owner != nil {
-			termCtx, cancel := context.WithCancel(owner.Context())
-			stop := context.AfterFunc(ctx, cancel)
-			_, publishErr := w.publisher.Publish(termCtx)
-			stop()
-			cancel()
-			closeErr := owner.Close()
-			if publishErr != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				if !w.wait(ctx, w.pollInterval) {
-					return ctx.Err()
-				}
-				continue
-			}
-			if closeErr != nil {
-				return errors.New("release scheduler ownership after support bootstrap")
-			}
-			return nil
-		}
-		if !w.wait(ctx, w.pollInterval) {
-			return ctx.Err()
-		}
-	}
-}
-
 func (w *SchedulerSupportPublisherWorker) run(ctx context.Context, done chan struct{}) {
 	defer w.finishRun(done)
+	bootstrapPending := w.active != nil
 	for ctx.Err() == nil {
+		if bootstrapPending {
+			generation, err := w.active.ActiveGeneration(ctx)
+			bootstrapPending = err != nil || generation == 0
+		}
 		owner, acquired, err := w.ownership.TryAcquire(ctx)
 		if err != nil && ctx.Err() == nil {
 			logger.LegacyPrintf("service.scheduler_support_publisher", "[Scheduler] ownership acquisition failed class=%s", schedulerSupportErrorClass(err))
 		}
 		if acquired && owner != nil {
-			w.runOwnershipTerm(ctx, owner)
+			if bootstrapPending {
+				bootstrapPending = !w.publishBootstrap(ctx, owner)
+			}
+			if !bootstrapPending {
+				w.runOwnershipTerm(ctx, owner)
+			}
 			// Ownership Context is canceled by lease loss as well as Close. Closing the
 			// session-backed owner is still mandatory and occurs exactly once per term.
 			if err := owner.Close(); err != nil && ctx.Err() == nil {
@@ -278,6 +238,17 @@ func (w *SchedulerSupportPublisherWorker) run(ctx context.Context, done chan str
 			return
 		}
 	}
+}
+
+func (w *SchedulerSupportPublisherWorker) publishBootstrap(parent context.Context, owner SchedulerOwnership) bool {
+	ctx, cancel := context.WithCancel(owner.Context())
+	stop := context.AfterFunc(parent, cancel)
+	defer func() { stop(); cancel() }()
+	_, err := w.publisher.Publish(ctx)
+	if err != nil && parent.Err() == nil {
+		logger.LegacyPrintf("service.scheduler_support_publisher", "[Scheduler] support bootstrap failed class=%s", schedulerSupportErrorClass(err))
+	}
+	return err == nil
 }
 
 func (w *SchedulerSupportPublisherWorker) runOwnershipTerm(parent context.Context, owner SchedulerOwnership) {

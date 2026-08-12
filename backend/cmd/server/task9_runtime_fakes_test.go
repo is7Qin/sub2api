@@ -83,6 +83,9 @@ func (*serverSupportDecisionStore) Activate(context.Context, uint64) (bool, erro
 func (s *serverSupportDecisionStore) ActiveGeneration(context.Context) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.active == 0 {
+		return 0, service.ErrSupportDecisionActiveGenerationNotFound
+	}
 	return s.active, nil
 }
 func (s *serverSupportDecisionStore) GetDocument(_ context.Context, generation uint64) ([]byte, error) {
@@ -90,7 +93,25 @@ func (s *serverSupportDecisionStore) GetDocument(_ context.Context, generation u
 	defer s.mu.Unlock()
 	return append([]byte(nil), s.documents[generation]...), nil
 }
-func (*serverSupportDecisionStore) PublishWakeup(context.Context, uint64) error { return nil }
+func (s *serverSupportDecisionStore) PublishWakeup(_ context.Context, generation uint64) error {
+	s.mu.Lock()
+	subscriptions := append([]*serverSupportDecisionSubscription(nil), s.subscriptions...)
+	s.mu.Unlock()
+	for _, subscription := range subscriptions {
+		select {
+		case subscription.hints <- generation:
+		default:
+		}
+	}
+	return nil
+}
+func (s *serverSupportDecisionStore) publish(generation uint64, payload []byte) {
+	s.mu.Lock()
+	s.documents[generation] = append([]byte(nil), payload...)
+	s.active = generation
+	s.mu.Unlock()
+	_ = s.PublishWakeup(context.Background(), generation)
+}
 func (s *serverSupportDecisionStore) SubscribeWakeups(context.Context) (service.SupportDecisionWakeupSubscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -100,12 +121,13 @@ func (s *serverSupportDecisionStore) SubscribeWakeups(context.Context) (service.
 }
 
 type serverSupportDecisionSubscription struct {
+	hints     chan uint64
 	closed    chan struct{}
 	closeOnce sync.Once
 }
 
 func newServerSupportDecisionSubscription() *serverSupportDecisionSubscription {
-	return &serverSupportDecisionSubscription{closed: make(chan struct{})}
+	return &serverSupportDecisionSubscription{hints: make(chan uint64, 1), closed: make(chan struct{})}
 }
 func (s *serverSupportDecisionSubscription) Receive(ctx context.Context) (uint64, error) {
 	select {
@@ -113,6 +135,8 @@ func (s *serverSupportDecisionSubscription) Receive(ctx context.Context) (uint64
 		return 0, ctx.Err()
 	case <-s.closed:
 		return 0, context.Canceled
+	case generation := <-s.hints:
+		return generation, nil
 	}
 }
 func (s *serverSupportDecisionSubscription) Close() error {

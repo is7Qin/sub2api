@@ -202,6 +202,70 @@ func TestAdminService_CreateGroup_NilImagePricing(t *testing.T) {
 	require.Nil(t, repo.created.ImagePrice4K)
 }
 
+func TestAdminService_CreateGroup_WebSearchPricePerCall(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	price := 0.02
+	input := &CreateGroupInput{
+		Name:                  "openai-search",
+		Platform:              PlatformOpenAI,
+		RateMultiplier:        2.0,
+		WebSearchPricePerCall: &price,
+	}
+
+	group, err := svc.CreateGroup(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.NotNil(t, repo.created.WebSearchPricePerCall)
+	require.InDelta(t, 0.02, *repo.created.WebSearchPricePerCall, 0.0001)
+
+	// 负数归一化为 nil（回默认价 0.01）
+	negative := -1.0
+	input.WebSearchPricePerCall = &negative
+	group, err = svc.CreateGroup(context.Background(), input)
+	require.NoError(t, err)
+	require.Nil(t, group.WebSearchPricePerCall)
+
+	// 0 保留（免费）
+	zero := 0.0
+	input.WebSearchPricePerCall = &zero
+	group, err = svc.CreateGroup(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, group.WebSearchPricePerCall)
+	require.InDelta(t, 0.0, *group.WebSearchPricePerCall, 0.0001)
+}
+
+func TestAdminService_UpdateGroup_WebSearchPricePerCall(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	repo.getByID = &Group{ID: 5, Platform: PlatformOpenAI, RateMultiplier: 1.0}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	price := 0.005
+	input := &UpdateGroupInput{WebSearchPricePerCall: &price}
+
+	group, err := svc.UpdateGroup(context.Background(), 5, input)
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, group.WebSearchPricePerCall)
+	require.InDelta(t, 0.005, *group.WebSearchPricePerCall, 0.0001)
+
+	// nil 表示不修改
+	input = &UpdateGroupInput{}
+	group, err = svc.UpdateGroup(context.Background(), 5, input)
+	require.NoError(t, err)
+	require.NotNil(t, group.WebSearchPricePerCall)
+	require.InDelta(t, 0.005, *group.WebSearchPricePerCall, 0.0001)
+
+	// 负数归一化为 nil（清除回默认价）
+	negative := -1.0
+	input = &UpdateGroupInput{WebSearchPricePerCall: &negative}
+	group, err = svc.UpdateGroup(context.Background(), 5, input)
+	require.NoError(t, err)
+	require.Nil(t, group.WebSearchPricePerCall)
+}
+
 func TestSanitizeGroupMessagesDispatchFields_ClearsOpenAILongContextPolicyOutsideOpenAI(t *testing.T) {
 	group := &Group{
 		Platform:                        PlatformAnthropic,

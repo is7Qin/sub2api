@@ -19,6 +19,7 @@ func TestAdminBackupS3ConfigRouteRegistered(t *testing.T) {
 		v1,
 		&handler.Handlers{Admin: &handler.AdminHandlers{}},
 		middleware.AdminAuthMiddleware(pass),
+		nil,
 	)
 
 	routes := make(map[string]struct{}, len(router.Routes()))
@@ -38,6 +39,7 @@ func TestAdminWorkerRuntimeStatusRouteRegistered(t *testing.T) {
 		v1,
 		&handler.Handlers{Admin: &handler.AdminHandlers{}},
 		middleware.AdminAuthMiddleware(pass),
+		nil,
 	)
 
 	routes := make(map[string]struct{}, len(router.Routes()))

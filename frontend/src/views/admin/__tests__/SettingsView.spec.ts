@@ -1468,4 +1468,56 @@ describe("admin SettingsView platform quota matrix", () => {
     // 不管输入是什么，提交值应为 null（而非 "" 或 NaN）
     expect(quotas["anthropic"]?.["daily"]).toBe(null);
   });
+
+  it("switches channel monitor mode and gates v1/v2 controls on submit", async () => {
+    const wrapper = mountView();
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="settings-tab-features"]').trigger("click");
+      await flushPromises();
+
+      // 后端未下发时表单默认与本地后端一致：v1 模式 + 隐藏吞吐开。
+      // v1 只显示默认间隔输入框，隐藏吞吐开关不渲染。
+      expect(
+        wrapper.get('[data-testid="channel-monitor-interval"]').isVisible()
+      ).toBe(true);
+      expect(
+        wrapper.find('[data-testid="channel-monitor-hide-throughput"]').exists()
+      ).toBe(false);
+
+      // 切到 v2：间隔输入框消失，隐藏吞吐开关出现。
+      await wrapper.get('[data-testid="channel-monitor-mode-v2"]').trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.find('[data-testid="channel-monitor-interval"]').exists()
+      ).toBe(false);
+      expect(
+        wrapper.get('[data-testid="channel-monitor-hide-throughput"]').isVisible()
+      ).toBe(true);
+
+      // 保存载荷带出模式与隐藏吞吐（显式布尔值）。
+      await wrapper.get('[data-testid="channel-monitor-hide-throughput"]').setValue(false);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+
+      expect(updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel_monitor_mode: "v2",
+          channel_monitor_hide_throughput: false,
+        })
+      );
+
+      // 切回 v1：间隔输入框恢复，隐藏吞吐开关再次隐藏。
+      await wrapper.get('[data-testid="channel-monitor-mode-v1"]').trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.get('[data-testid="channel-monitor-interval"]').isVisible()
+      ).toBe(true);
+      expect(
+        wrapper.find('[data-testid="channel-monitor-hide-throughput"]').exists()
+      ).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
 });

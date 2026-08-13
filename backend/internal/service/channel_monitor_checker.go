@@ -294,7 +294,34 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	if provider == MonitorProviderOpenAI && apiMode == MonitorAPIModeResponses {
 		return extractOpenAIResponsesText(respBytes), string(respBytes), status, nil
 	}
+	if provider == MonitorProviderAnthropic {
+		return extractAnthropicMonitorText(respBytes), string(respBytes), status, nil
+	}
 	return gjson.GetBytes(respBytes, adapter.textPath).String(), string(respBytes), status, nil
+}
+
+// extractAnthropicMonitorText 聚合 Anthropic messages API 响应中的所有 text block。
+// 思考模型（或网关 emulation 开启 thinking）会把 thinking/tool_use block 排在文本
+// block 前面，content.0.text 会落空导致 challenge 误判——必须跳过非 text block，
+// 把散落的文本拼接起来再校验。与 extractOpenAIResponsesText 同一类问题。
+func extractAnthropicMonitorText(respBytes []byte) string {
+	content := gjson.GetBytes(respBytes, "content")
+	if !content.IsArray() {
+		return ""
+	}
+
+	parts := make([]string, 0, 1)
+	content.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() != "text" {
+			return true
+		}
+		text := strings.TrimSpace(item.Get("text").String())
+		if text != "" {
+			parts = append(parts, text)
+		}
+		return true
+	})
+	return strings.Join(parts, "\n")
 }
 
 // extractOpenAIResponsesText 聚合 Responses API 的最终 assistant 文本。

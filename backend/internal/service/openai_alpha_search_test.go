@@ -67,9 +67,89 @@ func TestForwardAlphaSearchOAuthPreservesWire(t *testing.T) {
 	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "chatgpt-account", upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Accept"))
-	require.Equal(t, "0.144.1", upstream.lastReq.Header.Get("Version"))
+	require.Equal(t, codexCLIVersion, upstream.lastReq.Header.Get("Version"))
 	require.Empty(t, upstream.lastReq.Header.Get("OpenAI-Beta"))
 	require.JSONEq(t, string(body), string(upstream.lastBody))
+	// 出站身份取网关规范身份（codex-tui/0.144.1），客户端自报 originator 不参与构造。
+	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, codexOfficialOriginator, upstream.lastReq.Header.Get("Originator"))
+}
+
+// OAuth 出站 UA/originator/version 一律取网关规范身份，客户端自报身份不参与构造
+// （上游 2eb24814f 对 alpha-search 的语义）。客户端携带陈旧/非官方身份
+// （如 codex_cli_rs/0.140.0）会稳定落入上游降载桶，必须以规范身份改写。
+func TestForwardAlphaSearchOAuthForcesCanonicalIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"id":"search-session","model":"gpt-5.6-sol","commands":{"search_query":[{"q":"news"}]}}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	// 客户端自报陈旧身份：落后官方发布，且 originator 与规范身份（codex-tui）不同。
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.140.0 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (codex_cli_rs; 0.140.0)")
+	c.Request.Header.Set("Originator", "codex_cli_rs")
+	c.Request.Header.Set("Version", "0.140.0")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"encrypted_output":"ciphertext","output":"ok"}`)),
+	}}
+	service := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          43,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-account",
+		},
+	}
+
+	result, err := service.ForwardAlphaSearch(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, codexOfficialOriginator, upstream.lastReq.Header.Get("Originator"))
+	require.Equal(t, codexCLIVersion, upstream.lastReq.Header.Get("Version"))
+}
+
+// APIKey 透传边界：alpha-search 的 APIKey 路径是透明度透传，客户端自报身份
+// 原样上送，不做规范身份改写（OAuth 才统一身份）。
+func TestForwardAlphaSearchAPIKeyPreservesClientIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"id":"search-session","model":"gpt-5.6-sol","commands":{}}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", "my-custom-client/1.2.3")
+	c.Request.Header.Set("Originator", "my-originator")
+	c.Request.Header.Set("Version", "9.9.9")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"encrypted_output":"ciphertext","output":"ok"}`)),
+	}}
+	service := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:       44,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-test",
+		},
+	}
+
+	result, err := service.ForwardAlphaSearch(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "my-custom-client/1.2.3", upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, "my-originator", upstream.lastReq.Header.Get("Originator"))
+	require.Equal(t, "9.9.9", upstream.lastReq.Header.Get("Version"))
 }
 
 func TestForwardAlphaSearchAPIKeyMapsModelAndPassesThroughError(t *testing.T) {

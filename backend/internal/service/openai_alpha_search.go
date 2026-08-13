@@ -139,10 +139,12 @@ func (s *OpenAIGatewayService) buildOpenAIAlphaSearchRequest(ctx context.Context
 	} else {
 		req.Header.Set("OpenAI-Beta", clientBeta)
 	}
-	if version := strings.TrimSpace(c.GetHeader("Version")); version != "" {
-		req.Header.Set("Version", version)
-	} else if account.Type == AccountTypeOAuth {
-		req.Header.Set("Version", codexCLIVersion)
+	// APIKey 透传是透明度边界：客户端自报身份原样上送。OAuth 的
+	// user-agent/originator/version 由上面的规范身份构造，客户端头不参与。
+	if account.IsOpenAIApiKey() {
+		if version := strings.TrimSpace(c.GetHeader("Version")); version != "" {
+			req.Header.Set("Version", version)
+		}
 	}
 	return req, nil
 }
@@ -179,6 +181,24 @@ func (s *OpenAIGatewayService) buildOpenAIAlphaSearchOAuthRequest(ctx context.Co
 	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", chatgptAccountID)
 	}
+	// 出站身份统一为网关规范身份（面板覆写 → 内置常量），客户端自报的
+	// user-agent/originator/version 不参与构造——上游容量紧张时按客户端身份
+	// 分优先级降载，陈旧自报身份会稳定落在被优先丢弃的一侧。与 Responses
+	// OAuth adapter 同一套指纹身份逻辑（openai_gateway_service.go:4810）。
+	fingerprint, err := s.ensureOpenAICodexFingerprint(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	applyOpenAICodexFingerprintHeaders(req, fingerprint)
+	if getHeaderRaw(req.Header, "Version") == "" {
+		setHeaderRaw(req.Header, "Version", codexCLIVersion)
+	}
+	codexUA := s.resolveOpenAICodexUserAgent(ctx)
+	if ua := fingerprint.UAProfile.UserAgent(); ua != "" {
+		codexUA = ua
+	}
+	setHeaderRaw(req.Header, "User-Agent", codexUA)
+
 	if getHeaderRaw(req.Header, "Content-Type") == "" {
 		setHeaderRaw(req.Header, "Content-Type", "application/json")
 	}

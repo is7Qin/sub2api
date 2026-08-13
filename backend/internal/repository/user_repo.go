@@ -788,6 +788,52 @@ func (r *userRepository) DeductBalance(ctx context.Context, id int64, amount flo
 	return nil
 }
 
+// DeductAvailableBalance atomically deducts min(amount, max(balance, 0)).
+// Unlike DeductBalance, this refund-specific operation never increases an
+// existing deficit or permits a concurrent deduction to cause an overdraft:
+// 计划额在 prepDeduct 里按读取到的余额钳制，但上游并发消费可能让余额在
+// 扣减前缩水，这里把「读余额 → 钳制 → 写回」压进一条语句并返回实际扣减额，
+// 让退款审计与结果都以真实扣减为准。
+func (r *userRepository) DeductAvailableBalance(ctx context.Context, id int64, amount float64) (deducted float64, err error) {
+	if amount < 0 {
+		return 0, fmt.Errorf("deduction amount must be nonnegative")
+	}
+	const updateSQL = `
+		WITH target AS (
+			SELECT id, balance
+			FROM users
+			WHERE id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		), updated AS (
+			UPDATE users AS u
+			SET balance = target.balance - LEAST($1, GREATEST(target.balance, 0)), updated_at = NOW()
+			FROM target
+			WHERE u.id = target.id AND u.deleted_at IS NULL
+			RETURNING target.balance - u.balance AS deducted
+		)
+		SELECT deducted FROM updated
+	`
+	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, updateSQL, amount, id)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return 0, rowsErr
+		}
+		return 0, service.ErrUserNotFound
+	}
+	if err := rows.Scan(&deducted); err != nil {
+		return 0, err
+	}
+	return deducted, rows.Err()
+}
+
 func (r *userRepository) UpdateConcurrency(ctx context.Context, id int64, amount int) error {
 	client := clientFromContext(ctx, r.client)
 	n, err := client.User.Update().Where(dbuser.IDEQ(id)).AddConcurrency(amount).Save(ctx)

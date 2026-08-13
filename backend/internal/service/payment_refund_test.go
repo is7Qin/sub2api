@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	paymentauditlog "github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -302,4 +303,61 @@ func TestValidateRefundProviderResponseAcceptsPending(t *testing.T) {
 	require.NoError(t, validateRefundProviderResponse(&payment.RefundResponse{Status: payment.ProviderStatusSuccess}))
 	require.Error(t, validateRefundProviderResponse(&payment.RefundResponse{Status: payment.ProviderStatusFailed}))
 	require.Error(t, validateRefundProviderResponse(nil))
+}
+
+// 退款扣减必须以「实际可扣余额」为准：计划在 prepDeduct 里按读取到的余额
+// 钳制，但上游并发消费可能让余额在扣减前缩水。ExecuteRefund 必须走原子
+// DeductAvailableBalance，把实际扣减额回写进 plan——审计与结果都以实际额为准，
+// 否则 REFUND_SUCCESS 审计里记的 balanceDeducted 与真实扣减不一致。
+func TestExecuteRefundUsesActualAvailableBalanceDeduction(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("refund-execute-clamp@example.com").
+		SetPasswordHash("hash").
+		SetUsername("refund-execute-clamp").
+		Save(ctx)
+	require.NoError(t, err)
+
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(100).
+		SetPayAmount(100).
+		SetFeeRate(0).
+		SetRechargeCode("REFUND-EXECUTE-CLAMP").
+		SetOutTradeNo("refund_execute_clamp").
+		SetPaymentType(payment.TypeStripe).
+		SetPaymentTradeNo("").
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusCompleted).
+		SetExpiresAt(time.Now().Add(time.Hour)).
+		SetPaidAt(time.Now()).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	repo := &mockUserRepo{deductAvailableBalanceFn: func(_ context.Context, id int64, amount float64) (float64, error) {
+		require.Equal(t, user.ID, id)
+		require.Equal(t, 100.0, amount)
+		return 25, nil
+	}}
+	plan := &RefundPlan{
+		OrderID: order.ID, Order: order, RefundAmount: 100, GatewayAmount: 100,
+		Reason: "concurrent spend", Force: true, DeductionType: payment.DeductionTypeBalance, BalanceToDeduct: 100,
+	}
+
+	result, err := (&PaymentService{entClient: client, userRepo: repo}).ExecuteRefund(ctx, plan)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, 25.0, plan.BalanceToDeduct, "plan 必须回写实际扣减额")
+	require.Equal(t, 25.0, result.BalanceDeducted, "结果必须以实际扣减额为准")
+	audit, err := client.PaymentAuditLog.Query().
+		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_SUCCESS")).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Contains(t, audit.Detail, `"balanceDeducted":25`)
 }

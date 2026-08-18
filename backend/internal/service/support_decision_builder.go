@@ -379,6 +379,18 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 			}
 		}
 	}
+	channelExact, channelWildcard, channelCatchAll, err := supportDecisionChannelModelPatternsContext(ctx, scope)
+	if err != nil {
+		return supportDecisionTemporaryScope{}, err
+	}
+	if openAI {
+		for _, model := range channelExact {
+			exactSet[model] = struct{}{}
+		}
+		for _, prefix := range channelWildcard {
+			wildcardSet[prefix] = struct{}{}
+		}
+	}
 	if len(exactSet) > SupportDecisionExactLimit {
 		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, len(exactSet), SupportDecisionExactLimit)
 	}
@@ -448,7 +460,7 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 			return supportDecisionTemporaryScope{}, err
 		}
 		// Terminal wildcard mappings have a constant target under the frozen mapper.
-		probe := prefix + "__support_decision_probe__"
+		probe := supportDecisionWildcardProbe(prefix, exactSet, wildcardSet, built.hot)
 		profile, err := evaluateSupportDecisionModelContext(ctx, scope, probe, coordinateCount, wsConfig)
 		if err != nil {
 			return supportDecisionTemporaryScope{}, err
@@ -461,14 +473,13 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 			built.wildcard[prefix] = rule
 		}
 	}
-	channelExact, channelWildcard, channelCatchAll, err := supportDecisionChannelModelPatternsContext(ctx, scope)
-	if err != nil {
-		return supportDecisionTemporaryScope{}, err
-	}
 	built.channelExact = channelExact
 	built.channelWildcard = channelWildcard
 	built.channelCatchAll = channelCatchAll
-	wildcardCount := len(built.wildcard) + len(built.channelWildcard)
+	wildcardCount := len(built.wildcard)
+	if !openAI {
+		wildcardCount += len(built.channelWildcard)
+	}
 	if built.catchAll != nil {
 		wildcardCount++
 	}
@@ -478,8 +489,12 @@ func buildSupportDecisionScopeContext(ctx context.Context, scope *supportDecisio
 	if wildcardCount > SupportDecisionWildcardLimit {
 		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d wildcard rules; limit is %d", scope.key, wildcardCount, SupportDecisionWildcardLimit)
 	}
-	if len(built.exact)+len(built.channelExact) > SupportDecisionExactLimit {
-		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, len(built.exact)+len(built.channelExact), SupportDecisionExactLimit)
+	exactCount := len(built.exact)
+	if !openAI {
+		exactCount += len(built.channelExact)
+	}
+	if exactCount > SupportDecisionExactLimit {
+		return supportDecisionTemporaryScope{}, fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.key, exactCount, SupportDecisionExactLimit)
 	}
 	hasChannelPolicy := built.channelCatchAll || len(built.channelExact) > 0 || len(built.channelWildcard) > 0
 	built.fallback, err = evaluateSupportDecisionWithoutModelContext(ctx, scope, coordinateCount, wsConfig, false, hasChannelPolicy)
@@ -607,6 +622,37 @@ func sortedStringSet(values map[string]struct{}) []string {
 	return result
 }
 
+// supportDecisionWildcardProbe selects a reachable model for one wildcard rule.
+// It avoids exact/hot models and longer wildcard prefixes while staying within
+// the wire model limit; an unreachable rule only needs a valid bounded label.
+func supportDecisionWildcardProbe(prefix string, exact map[string]struct{}, wildcard map[string]struct{}, hot map[string]supportDecisionProfile) string {
+	blocked := &supportDecisionPrefixTrie{}
+	for other := range wildcard {
+		if other == prefix || len(other) <= len(prefix) || !strings.HasPrefix(other, prefix) {
+			continue
+		}
+		blocked.insert(strings.TrimPrefix(other, prefix))
+	}
+	minLength := len(prefix)
+	if minLength == 0 {
+		minLength = 1
+	}
+	pointBlocked := func(model string) bool {
+		if _, exists := exact[model]; exists {
+			return true
+		}
+		_, exists := hot[model]
+		return exists
+	}
+	if witness, ok := supportDecisionShadowComplement(blocked, prefix, minLength, pointBlocked); ok {
+		return witness
+	}
+	if prefix != "" {
+		return prefix
+	}
+	return "\x00"
+}
+
 func supportDecisionScopeHasBedrock(scope *supportDecisionBuildScope) bool {
 	result, _ := supportDecisionScopeHasBedrockContext(context.Background(), scope)
 	return result
@@ -729,7 +775,13 @@ func supportDecisionRuleTargetContext(ctx context.Context, scope *supportDecisio
 		}
 	}
 	// Multiple accounts may map the same source differently. The aggregate profile
-	// already folds those identities, so retain a deterministic non-secret label.
+	// already folds those identities, so retain a deterministic bounded label.
+	if len(probe) > SupportDecisionMaxModelBytes {
+		if mappingKey != "" {
+			return mappingKey, nil
+		}
+		return "\x00", nil
+	}
 	return probe, nil
 }
 
@@ -841,6 +893,7 @@ func evaluateSupportDecisionWithoutModelContext(ctx context.Context, scope *supp
 			query.RequiresPrivacy = coordinate&1 != 0
 			query.ThinkingEnabled = coordinate&2 != 0
 		}
+		otherwiseEligible := false
 		for _, account := range scope.accounts {
 			if err := ctx.Err(); err != nil {
 				return supportDecisionProfile{}, err
@@ -854,12 +907,15 @@ func evaluateSupportDecisionWithoutModelContext(ctx context.Context, scope *supp
 			}
 			if supportDecisionAccountSupportsEveryModel(scope, account) {
 				setBit(profile.SupportBits, coordinate)
+				otherwiseEligible = false
 				break
 			}
 			if supportDecisionAccountEligibleWithoutModel(scope, account, query, wsConfig, channelAllowed, hasChannelPolicy) {
-				setBit(profile.EligibleBits, coordinate)
-				break
+				otherwiseEligible = true
 			}
+		}
+		if !bitSet(profile.SupportBits, coordinate) && otherwiseEligible {
+			setBit(profile.EligibleBits, coordinate)
 		}
 	}
 	return profile, nil
@@ -964,6 +1020,9 @@ func supportDecisionUpstreamRestricted(channel *SupportDecisionChannel, platform
 }
 
 func supportDecisionChannelAllowsModel(channel *SupportDecisionChannel, platform, model string) bool {
+	if channel == nil {
+		return false
+	}
 	model = strings.ToLower(model)
 	alias := claudePricingRevisionAlias(model)
 	for _, pricing := range channel.PricingModels {
@@ -1172,7 +1231,10 @@ func supportDecisionSerializedFallbackSize(scope *supportDecisionScopeTable, glo
 }
 
 func validateSupportDecisionScopeBudgets(scope *supportDecisionScopeTable, globalStrings []string) error {
-	wildcardCount := len(scope.Wildcard) + len(scope.ChannelWildcard)
+	wildcardCount := len(scope.Wildcard)
+	if !scope.OpenAI {
+		wildcardCount += len(scope.ChannelWildcard)
+	}
 	if scope.CatchAll != nil {
 		wildcardCount++
 	}
@@ -1182,7 +1244,10 @@ func validateSupportDecisionScopeBudgets(scope *supportDecisionScopeTable, globa
 	if wildcardCount > SupportDecisionWildcardLimit {
 		return fmt.Errorf("scope %+v has %d wildcard rules; limit is %d", scope.Key, wildcardCount, SupportDecisionWildcardLimit)
 	}
-	exactCount := len(scope.ExactWire) + len(scope.ChannelExact)
+	exactCount := len(scope.ExactWire)
+	if !scope.OpenAI {
+		exactCount += len(scope.ChannelExact)
+	}
 	if exactCount > SupportDecisionExactLimit {
 		return fmt.Errorf("scope %+v has %d exact keys; limit is %d", scope.Key, exactCount, SupportDecisionExactLimit)
 	}

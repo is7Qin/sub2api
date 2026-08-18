@@ -33,6 +33,420 @@ func TestSupportDecisionShadowExercisesReachableOverlappingWildcardParent(t *tes
 	require.ErrorIs(t, err, ErrSupportDecisionShadowMismatch)
 }
 
+func TestSupportDecisionBuilderWildcardProbeDoesNotReuseExactBoundaryProfile(t *testing.T) {
+	prefix := strings.Repeat("p", SupportDecisionMaxModelBytes-1)
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				prefix:       "gpt-5.4",
+				prefix + "*": "private-upstream-model",
+			},
+		},
+	}}, PlatformOpenAI, nil)
+	options := SupportDecisionBuildOptions{Generation: 27}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	query := SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+		RequestedModel: prefix + "\x00",
+	}
+	require.Equal(t, SupportDecisionPureMiss, table.Lookup(query))
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionBuilderKeepsCompactOnlyMappingsOutOfOrdinarySupport(t *testing.T) {
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"compact_model_mapping": map[string]any{
+				"unknown-model": "gpt-5.4",
+			},
+		},
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{account}, PlatformOpenAI, nil)
+	options := SupportDecisionBuildOptions{Generation: 28}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	oracle := supportDecisionScopeOracleForReview(t, snapshot, options)
+	for _, requireCompact := range []bool{false, true} {
+		query := SupportDecisionQuery{
+			Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+			RequestedModel: "unknown-model",
+			RequireCompact: requireCompact,
+		}
+		direct, err := oracle.lookup(context.Background(), query)
+		require.NoError(t, err)
+		compiled, err := oracle.profile(context.Background(), query.RequestedModel, supportDecisionOpenAICoordinateCount)
+		require.NoError(t, err)
+		coordinate := 0
+		if requireCompact {
+			coordinate = 4
+		}
+		require.Equal(t, SupportDecisionPureMiss, direct)
+		require.Equal(t, direct, table.Lookup(query))
+		require.Equal(t, direct, profileResult(compiled, coordinate))
+	}
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionShadowAcceptsUnsupportedOpenAIModelsAlongMappingPath(t *testing.T) {
+	const mappingModel = "gpt-5.4"
+	for _, requestedModel := range []string{"gpt-5", "gpt-5.4-preview"} {
+		t.Run(requestedModel, func(t *testing.T) {
+			snapshot := supportDecisionTestSnapshot([]Account{{
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{mappingModel: mappingModel},
+				},
+			}}, PlatformOpenAI, []string{requestedModel})
+			options := SupportDecisionBuildOptions{Generation: 28}
+			table := buildSupportDecisionTestTable(t, snapshot, options)
+
+			require.Equal(t, SupportDecisionPureMiss, table.Lookup(SupportDecisionQuery{
+				Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+				RequestedModel: requestedModel,
+			}))
+			_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestSupportDecisionShadowAcceptsUnsupportedOpenAIModelWithOverlappingWildcards(t *testing.T) {
+	const requestedModel = "gpt-5.4"
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-*": "upstream"},
+		},
+	}, {
+		ID:       2,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5*": "private-upstream-model"},
+		},
+	}}, PlatformOpenAI, []string{requestedModel})
+	options := SupportDecisionBuildOptions{Generation: 29}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+
+	require.Equal(t, SupportDecisionNotPureMiss, table.Lookup(SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+		RequestedModel: requestedModel,
+	}))
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionShadowAcceptsUnsupportedOpenAIModelsWithChannelPolicy(t *testing.T) {
+	const requestedModel = "gpt-5"
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.4": "upstream-5.4"},
+		},
+	}}, PlatformOpenAI, []string{requestedModel})
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{requestedModel},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 30}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	scopes, err := collectSupportDecisionScopesContext(context.Background(), snapshot, options.HotModels)
+	require.NoError(t, err)
+	var scope *supportDecisionBuildScope
+	for i := range scopes {
+		if scopes[i].key == (supportDecisionScopeKey{Platform: PlatformOpenAI, GroupID: 42}) {
+			scope = &scopes[i]
+			break
+		}
+	}
+	require.NotNil(t, scope)
+	oracle, err := newSupportDecisionLegacyScopeOracle(context.Background(), scope, options.OpenAIWS)
+	require.NoError(t, err)
+
+	for _, model := range []string{requestedModel, "\x00"} {
+		query := SupportDecisionQuery{
+			Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+			RequestedModel: model,
+		}
+		compiled, profileErr := oracle.profile(context.Background(), model, supportDecisionOpenAICoordinateCount)
+		require.NoError(t, profileErr)
+		direct, lookupErr := oracle.lookup(context.Background(), query)
+		require.NoError(t, lookupErr)
+		require.Equal(t, table.Lookup(query), direct, "direct oracle model %q", model)
+		require.Equal(t, direct, profileResult(compiled, 0), "compiled oracle model %q", model)
+	}
+
+	_, err = VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionShadowRejectsUnsupportedOpenAIModelDeniedByChannel(t *testing.T) {
+	const requestedModel = "missing"
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"other": "ordinary-target"},
+		},
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{account}, PlatformOpenAI, []string{requestedModel})
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{"allowed-only"},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 31}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	oracle := supportDecisionScopeOracleForReview(t, snapshot, options)
+	query := SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+		RequestedModel: requestedModel,
+	}
+	compiled, err := oracle.profile(context.Background(), requestedModel, supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	direct, err := oracle.lookup(context.Background(), query)
+	require.NoError(t, err)
+	require.Equal(t, SupportDecisionNotPureMiss, table.Lookup(query))
+	require.Equal(t, table.Lookup(query), direct)
+	require.Equal(t, direct, profileResult(compiled, 0))
+
+	_, err = VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionShadowAcceptsUnsupportedOpenAICompactChannelMapping(t *testing.T) {
+	const requestedModel = "missing"
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping":         map[string]any{"other": "ordinary-target"},
+			"compact_model_mapping": map[string]any{"*": "compact-target"},
+		},
+		Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{account}, PlatformOpenAI, []string{requestedModel})
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{"compact-target"},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 32}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	scope := supportDecisionScopeOracleForReview(t, snapshot, options)
+
+	for _, compact := range []bool{false, true} {
+		query := SupportDecisionQuery{
+			Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+			RequestedModel: requestedModel,
+			RequireCompact: compact,
+		}
+		compiled, err := scope.profile(context.Background(), requestedModel, supportDecisionOpenAICoordinateCount)
+		require.NoError(t, err)
+		direct, err := scope.lookup(context.Background(), query)
+		require.NoError(t, err)
+		coordinate := 0
+		if compact {
+			coordinate = 4
+		}
+		require.Equal(t, table.Lookup(query), direct)
+		require.Equal(t, direct, profileResult(compiled, coordinate), "compact=%v", compact)
+	}
+
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionShadowRejectsUnsupportedOpenAICompactTargetDeniedByChannel(t *testing.T) {
+	const requestedModel = "missing"
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping":         map[string]any{"other": "ordinary-target"},
+			"compact_model_mapping": map[string]any{"*": "denied-compact-target"},
+		},
+		Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
+	}
+	snapshot := supportDecisionTestSnapshot([]Account{account}, PlatformOpenAI, []string{requestedModel})
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{requestedModel},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 34}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	oracle := supportDecisionScopeOracleForReview(t, snapshot, options)
+	query := SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+		RequestedModel: requestedModel,
+		RequireCompact: true,
+	}
+	compiled, err := oracle.profile(context.Background(), requestedModel, supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	direct, err := oracle.lookup(context.Background(), query)
+	require.NoError(t, err)
+	require.Equal(t, SupportDecisionNotPureMiss, table.Lookup(query))
+	require.Equal(t, table.Lookup(query), direct)
+	require.Equal(t, direct, profileResult(compiled, 4))
+
+	_, err = VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionBuilderPreservesRequestedChannelEligibilityUnderWildcard(t *testing.T) {
+	const requestedModel = "gpt-5"
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-*":  "gpt-5.4",
+				"gpt-5*": "compact-target",
+			},
+		},
+	}, {
+		ID:       2,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"foo-*": "allowed"},
+		},
+	}}, PlatformOpenAI, nil)
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{requestedModel},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 36}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	query := SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+		RequestedModel: requestedModel,
+	}
+	require.Equal(t, SupportDecisionPureMiss, table.Lookup(query))
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionBuilderChannelProfilePreservesLaterSupportingAccount(t *testing.T) {
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"foo-*": "compact-target"},
+		},
+	}, {
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeSetupToken,
+		Credentials: map[string]any{
+			"compact_model_mapping": map[string]any{"known": "gpt-5.2-codex"},
+		},
+	}}, PlatformOpenAI, nil)
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{"*"},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 37}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	query := SupportDecisionQuery{
+		Scope:          SupportDecisionScope{Platform: PlatformOpenAI, GroupID: 42},
+		RequestedModel: "missing",
+	}
+	require.Equal(t, SupportDecisionNotPureMiss, table.Lookup(query))
+	_, err := VerifySupportDecisionShadow(context.Background(), snapshot, options, table)
+	require.NoError(t, err)
+}
+
+func TestSupportDecisionLegacyOracleProfilesRemainImmutableAcrossLookups(t *testing.T) {
+	const requestedModel = "allowed"
+	snapshot := supportDecisionTestSnapshot([]Account{{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"other": "ordinary-target"},
+		},
+	}}, PlatformOpenAI, []string{requestedModel})
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{requestedModel},
+		}},
+	}}
+	oracle := supportDecisionScopeOracleForReview(t, snapshot, SupportDecisionBuildOptions{Generation: 35})
+
+	first, err := oracle.profile(context.Background(), requestedModel, supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	require.Equal(t, SupportDecisionPureMiss, profileResult(first, 0))
+	second, err := oracle.profile(context.Background(), "\x00", supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	require.Equal(t, SupportDecisionNotPureMiss, profileResult(second, 0))
+	third, err := oracle.profile(context.Background(), requestedModel, supportDecisionOpenAICoordinateCount)
+	require.NoError(t, err)
+	require.Equal(t, SupportDecisionPureMiss, profileResult(third, 0))
+}
+
+func supportDecisionScopeOracleForReview(t *testing.T, snapshot *SupportDecisionConstructionSnapshot, options SupportDecisionBuildOptions) *supportDecisionLegacyScopeOracle {
+	t.Helper()
+	scopes, err := collectSupportDecisionScopesContext(context.Background(), snapshot, options.HotModels)
+	require.NoError(t, err)
+	for i := range scopes {
+		if scopes[i].key == (supportDecisionScopeKey{Platform: PlatformOpenAI, GroupID: 42}) {
+			oracle, err := newSupportDecisionLegacyScopeOracle(context.Background(), &scopes[i], options.OpenAIWS)
+			require.NoError(t, err)
+			return oracle
+		}
+	}
+	require.FailNow(t, "OpenAI group scope not found")
+	return nil
+}
+
 func TestSupportDecisionShadowDetectsPublishedBranchCorruption(t *testing.T) {
 	channel := SupportDecisionChannel{Status: StatusActive, RestrictModels: true, BillingModelSource: BillingModelSourceUpstream, GroupIDs: []int64{42}, PricingModels: []SupportDecisionPricingModels{{Platform: PlatformAnthropic, Models: []string{"DIRECT", "claude-sonnet-4.5*"}}}}
 	snapshot := supportDecisionTestSnapshot([]Account{{Platform: PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{"direct": "direct", "claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929", "wild-*": "wild-target", "*": "catch-target"}}}}, PlatformAnthropic, nil)
@@ -237,34 +651,43 @@ func TestSupportDecisionShadowLegacyOracleWorkIsAggregated(t *testing.T) {
 	require.LessOrEqual(t, operations, maximum, "oracle work must not multiply accounts by model witnesses")
 }
 
-func TestSupportDecisionLegacyOracleRejectsUnknownOAuthMappingTargets(t *testing.T) {
-	snapshot := supportDecisionTestSnapshot([]Account{{
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{"model_mapping": map[string]any{
-			"known":   "gpt-5.2-codex",
-			"unknown": "private-upstream-model",
-		}},
-	}}, PlatformOpenAI, nil)
-	scopes, err := collectSupportDecisionScopesContext(context.Background(), snapshot, config.SupportDecisionHotModelsConfig{})
-	require.NoError(t, err)
-	var scope *supportDecisionBuildScope
-	for i := range scopes {
-		if scopes[i].key == (supportDecisionScopeKey{Platform: PlatformOpenAI, GroupID: 42}) {
-			scope = &scopes[i]
-			break
+func TestSupportDecisionShadowLegacyOracleCompactChannelWorkIsAggregated(t *testing.T) {
+	mapping := make(map[string]any, 16)
+	for i := 0; i < 16; i++ {
+		mapping[fmt.Sprintf("model-%03d", i)] = "gpt-5.2-codex"
+	}
+	accounts := make([]Account, 8)
+	for i := range accounts {
+		accounts[i] = Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"model_mapping":         mapping,
+				"compact_model_mapping": map[string]any{"*": "compact-target"},
+			},
+			Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
 		}
 	}
-	require.NotNil(t, scope)
-	oracle, err := newSupportDecisionLegacyScopeOracle(context.Background(), scope, config.GatewayOpenAIWSConfig{})
+	snapshot := supportDecisionTestSnapshot(accounts, PlatformOpenAI, nil)
+	snapshot.Channels = []SupportDecisionChannel{{
+		Status:             StatusActive,
+		GroupIDs:           []int64{42},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceUpstream,
+		PricingModels: []SupportDecisionPricingModels{{
+			Platform: PlatformOpenAI,
+			Models:   []string{"compact-target"},
+		}},
+	}}
+	options := SupportDecisionBuildOptions{Generation: 33}
+	table := buildSupportDecisionTestTable(t, snapshot, options)
+	var operations uint64
+	ctx := context.WithValue(context.Background(), supportDecisionShadowOperationCounterKey{}, &operations)
+	checks, err := VerifySupportDecisionShadow(ctx, snapshot, options, table)
 	require.NoError(t, err)
-
-	known, err := oracle.profile(context.Background(), "known", supportDecisionOpenAICoordinateCount)
-	require.NoError(t, err)
-	unknown, err := oracle.profile(context.Background(), "unknown", supportDecisionOpenAICoordinateCount)
-	require.NoError(t, err)
-	require.Equal(t, SupportDecisionNotPureMiss, profileResult(known, 0))
-	require.Equal(t, SupportDecisionNotPureMiss, profileResult(unknown, 0))
+	require.Positive(t, checks)
+	maximum := uint64(len(accounts)*(supportDecisionOpenAICoordinateCount+2) + 4096)
+	require.LessOrEqual(t, operations, maximum, "compact channel work must not multiply accounts by model witnesses")
 }
 
 func TestSupportDecisionLegacyUpstreamRestrictionChainsCompactMapping(t *testing.T) {

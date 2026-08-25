@@ -4,6 +4,12 @@ Sub2API is an independently maintained AI API gateway for routing, managing, and
 
 This branch keeps the deployable name `sub2api` for compatibility, but its releases are owned by this repository and start from `v1.0.0`.
 
+## Sponsor
+
+If this project helps you, consider supporting its development:
+
+- [**ForZTN**](https://sponsorship.forztn.com/github.com/is7Qin/sub2api): Next-gen VPC-based IDC cloud panel · network/VM exchange
+
 ## Independent Maintenance
 
 This repository is maintained independently from upstream `Wei-Shaw/sub2api`.

@@ -261,6 +261,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 
 	return &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            usage,
 		Model:            originalModel,
 		BillingModel:     billingModel,
@@ -384,6 +385,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		}
 		return &OpenAIForwardResult{
 			RequestID:        requestID,
+			AttemptID:        forwardResultAttemptID(resp),
 			Usage:            usage,
 			Model:            originalModel,
 			BillingModel:     billingModel,
@@ -415,6 +417,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 
 	return &OpenAIForwardResult{
 		RequestID:        requestID,
+		AttemptID:        forwardResultAttemptID(resp),
 		Usage:            usage,
 		Model:            originalModel,
 		BillingModel:     billingModel,

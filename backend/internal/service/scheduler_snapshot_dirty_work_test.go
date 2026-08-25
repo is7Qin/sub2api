@@ -47,6 +47,22 @@ func (r *dirtyWorkTestAccountRepo) GetByID(context.Context, int64) (*Account, er
 	return r.account, r.err
 }
 
+func (r *dirtyWorkTestAccountRepo) GetByIDs(_ context.Context, ids []int64) ([]*Account, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.account == nil {
+		return nil, nil
+	}
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if id == r.account.ID {
+			out = append(out, r.account)
+		}
+	}
+	return out, nil
+}
+
 type dirtyWorkTestRepo struct {
 	promoteResults      []int
 	promoteCalls        int
@@ -121,22 +137,20 @@ func TestSchedulerSnapshotDirtyWorkPromotesUntilDrainedAndAcknowledges(t *testin
 		promoteResults: []int{1, 1, 0},
 		work:           []SchedulerDirtyWork{{Kind: SchedulerDirtyWorkAccount, EntityID: account.ID, Generation: 7}},
 	}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
 	svc := &SchedulerSnapshotService{
 		cache:         cache,
 		dirtyWorkRepo: repo,
 		accountRepo:   &dirtyWorkTestAccountRepo{account: account},
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
+	results := svc.ApplyDirtyWorkBatch(context.Background(), repo.work)
 
-	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
-
-	require.Equal(t, 3, repo.promoteCalls)
-	require.Equal(t, repo.work, repo.acknowledged)
+	require.Zero(t, repo.promoteCalls)
+	require.Empty(t, repo.acknowledged)
 	require.Empty(t, repo.failures)
+	require.Len(t, results, 1)
+	require.Equal(t, repo.work[0], results[0].Work)
+	require.NoError(t, results[0].Err)
 	require.Equal(t, []*Account{account}, cache.setAccounts)
 }
 
@@ -147,20 +161,17 @@ func TestSchedulerSnapshotDirtyWorkRecordsFailureWithoutAcknowledging(t *testing
 		promoteResults: []int{0},
 		work:           []SchedulerDirtyWork{{Kind: SchedulerDirtyWorkAccount, EntityID: account.ID, Generation: 3}},
 	}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
 	svc := &SchedulerSnapshotService{
 		cache:         cache,
 		dirtyWorkRepo: repo,
 		accountRepo:   &dirtyWorkTestAccountRepo{account: account},
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		workerCtx:     context.Background(),
 	}
-	owner := newDirtyWorkTestOwnership()
+	results := svc.ApplyDirtyWorkBatch(context.Background(), repo.work)
 
-	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
-
-	require.Equal(t, repo.work, repo.failures)
+	require.Len(t, results, 1)
+	require.Error(t, results[0].Err)
+	require.Empty(t, repo.failures)
 	require.Empty(t, repo.acknowledged)
 }
 
@@ -222,24 +233,14 @@ func TestSchedulerSnapshotDirtyWorkListFailuresRequestLatchedRebuild(t *testing.
 			OutboxLagRebuildFailures: 2,
 		}}},
 	}
-	owner := newDirtyWorkTestOwnership()
-
 	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
+	svc.recordDirtyListFailure(context.Background())
 	require.Zero(t, repo.fullRebuildRequests)
 
-	workerCtx, workerCancel = context.WithCancel(context.Background())
-	svc.workerCtx = workerCtx
-	svc.workerCancel = workerCancel
-	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
+	svc.recordDirtyListFailure(context.Background())
 	require.Equal(t, 1, repo.fullRebuildRequests)
 
-	workerCtx, workerCancel = context.WithCancel(context.Background())
-	svc.workerCtx = workerCtx
-	svc.workerCancel = workerCancel
-	workerCancel()
-	svc.consumeDirtyWork(owner, time.Hour)
+	svc.recordDirtyListFailure(context.Background())
 	require.Equal(t, 1, repo.fullRebuildRequests)
 
 	// A successful list proves recovery and rearms the next outage.

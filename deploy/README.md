@@ -1,613 +1,173 @@
 # Sub2API Deployment Files
 
-This directory contains files for deploying Sub2API on Linux servers.
+This directory contains the supported Docker Compose and binary/systemd deployment inputs. Docker Compose is the recommended all-in-one path. Binary installation remains available on Linux through `install.sh`, which renders the shipped `sub2api.service` template. Its full installer, systemd, signal, symlink, and lifecycle contract is Linux-only and runs authoritatively in the `ubuntu-latest` deployment CI job; non-Linux hosts perform only static wiring and Bash syntax checks.
 
-## Deployment Methods
+## Docker Compose prerequisites
 
-| Method | Best For | Setup Wizard |
-|--------|----------|--------------|
-| **Docker Compose** | Quick setup, all-in-one | Not needed (auto-setup) |
-| **Binary Install** | Production servers, systemd | Web-based wizard |
+- Docker Engine with the **Compose v2** plugin (`docker compose`, not `docker-compose`).
+- OpenSSL when using `docker-deploy.sh` to generate secrets.
+- The development override requires Docker Compose **v2.24.4 or newer** because it uses `!override`. CI uses v2.24.7 as a tested pin; operators may use any compatible newer v2 release and are not required to install exactly v2.24.7.
 
-## Files
+## Default deployment: managed services and named volumes
 
-| File | Description |
-|------|-------------|
-| `docker-compose.yml` | Docker Compose configuration (named volumes) |
-| `docker-compose.local.yml` | Docker Compose configuration (local directories, easy migration) |
-| `docker-deploy.sh` | **One-click Docker deployment script (recommended)** |
-| `.env.example` | Docker environment variables template |
-| `DOCKER.md` | Docker Hub documentation |
-| `install.sh` | One-click binary installation script |
-| `install-datamanagementd.sh` | datamanagementd 一键安装脚本 |
-| `sub2api.service` | Systemd service unit file |
-| `sub2api-datamanagementd.service` | datamanagementd systemd service unit file |
-| `DATAMANAGEMENTD_CN.md` | datamanagementd 部署与联动说明（中文） |
-| `config.example.yaml` | Example configuration file |
+The canonical stack is `compose.yaml`. It runs Sub2API with PostgreSQL 18 and Redis 8. Its default persistence is in Docker named volumes:
 
----
+- `sub2api_data` at `/app/data`
+- `postgres_data` at `/var/lib/postgresql/data`
+- `redis_data` at `/data`
 
-## Docker Deployment (Recommended)
-
-### Method 1: One-Click Deployment (Recommended)
-
-Use the automated preparation script for the easiest setup:
+From a repository checkout:
 
 ```bash
-# Download and run the preparation script
-curl -sSL https://raw.githubusercontent.com/is7Qin/sub2api/main/deploy/docker-deploy.sh | bash
+cd deploy
+cp .env.example .env
+# Set DATABASE_PASSWORD and TOTP_ENCRYPTION_KEY; set JWT_SECRET if you manage it externally.
+# Example secret generator: openssl rand -hex 32
+docker compose up -d
+```
 
-# Or download first, then run
+After a deployment directory has `compose.yaml` and `.env`, routine commands are plain commands from that directory:
+
+```bash
+docker compose ps
+docker compose logs -f sub2api
+docker compose restart sub2api
+docker compose down
+```
+
+Do not run `docker compose config` into a terminal or support log: the rendered output contains credentials. The repository contract test uses isolated non-secret fixtures and redirects rendered configuration to temporary files.
+
+### Bootstrap a separate deployment directory
+
+The public bootstrap URL remains stable. It downloads the canonical `compose.yaml` and `.env.example` from one repository ref, generates `DATABASE_PASSWORD`, `JWT_SECRET`, and `TOTP_ENCRYPTION_KEY`, and creates a private `.env` without printing secret values.
+
+```bash
 curl -sSL https://raw.githubusercontent.com/is7Qin/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
 chmod +x docker-deploy.sh
-./docker-deploy.sh
+./docker-deploy.sh --destination sub2api-deploy --ref v1.2.3
+cd sub2api-deploy
+docker compose up -d
 ```
 
-**What the script does:**
-- Downloads `docker-compose.local.yml` and `.env.example`
-- Automatically generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
-- Creates `.env` file with generated secrets
-- Creates necessary data directories (data/, postgres_data/, redis_data/)
-- **Displays generated credentials** (POSTGRES_PASSWORD, JWT_SECRET, etc.)
+Replace `v1.2.3` with the Git release you intend to deploy. If `--ref` is omitted, the script uses `main`; release tag pinning is recommended for production so bootstrap files and the selected application version can be reviewed together. Image tags do not include the Git tag's leading `v`, so Git ref `v1.2.3` corresponds to `SUB2API_VERSION=1.2.3` in `.env`.
 
-**After running the script:**
-```bash
-# Start services
-docker compose -f docker-compose.local.yml up -d
+The destination must not exist, even as an empty directory or symlink. The script prepares all three files beside the destination, atomically claims the absent directory name, and uses same-filesystem no-clobber links with ownership-checked rollback; failures and handled interruptions therefore leave no partial deployment. The script never merges into an existing deployment, never overwrites `.env`, never creates or alters runtime data directories, and never starts containers. Choose a new, absent path when an installation already exists.
 
-# View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
+Bootstrap into a new directory is a **fresh Compose project** unless you deliberately preserve the old project identity and migrate or restore its data. Do not start the new directory against an existing installation until you have followed the named-volume or bind-directory migration guidance below.
 
-# If admin password was auto-generated, find it in logs:
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+Environment equivalents are available for automation: `SUB2API_DEPLOY_DIR`, `SUB2API_REF`, and `SUB2API_RAW_BASE_URL`.
 
-# Access Web UI
-# http://localhost:8080
-```
+## Explicit deployment modes
 
-### Method 2: Manual Deployment
+These modes are opt-in. They do not replace the named-volume default.
 
-If you prefer manual control:
+### Bind-mounted storage
+
+Use host directories `./data`, `./postgres_data`, and `./redis_data`:
 
 ```bash
-# Clone repository
-git clone https://github.com/is7Qin/sub2api.git
-cd sub2api/deploy
-
-# Configure environment
-cp .env.example .env
-nano .env  # Set POSTGRES_PASSWORD and other required variables
-
-# Generate secure secrets (recommended)
-JWT_SECRET=$(openssl rand -hex 32)
-TOTP_ENCRYPTION_KEY=$(openssl rand -hex 32)
-echo "JWT_SECRET=${JWT_SECRET}" >> .env
-echo "TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}" >> .env
-
-# Create data directories
-mkdir -p data postgres_data redis_data
-
-# Start all services using local directory version
-docker compose -f docker-compose.local.yml up -d
-
-# View logs (check for auto-generated admin password)
-docker compose -f docker-compose.local.yml logs -f sub2api
-
-# Access Web UI
-# http://localhost:8080
+docker compose -f compose.yaml -f compose.bind.yaml up -d
 ```
 
-### Deployment Version Comparison
+Create and secure the directories according to your host's container UID/GID and backup policy. Keep using the same `-f` arguments for subsequent commands in this mode.
 
-| Version | Data Storage | Migration | Best For |
-|---------|-------------|-----------|----------|
-| **docker-compose.local.yml** | Local directories (./data, ./postgres_data, ./redis_data) | ✅ Easy (tar entire directory) | Production, need frequent backups/migration |
-| **docker-compose.yml** | Named volumes (/var/lib/docker/volumes/) | ⚠️ Requires docker commands | Simple setup, don't need migration |
+### Development source build
 
-**Recommendation:** Use `docker-compose.local.yml` (deployed by `docker-deploy.sh`) for easier data management and migration.
+Build the repository-root `Dockerfile`, enable debug mode, and publish only on loopback:
 
-### How Auto-Setup Works
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up -d
+```
 
-When using Docker Compose with `AUTO_SETUP=true`:
+For development with bind-mounted storage:
 
-1. On first run, the system automatically:
-   - Connects to PostgreSQL and Redis
-   - Applies database migrations (SQL files in `backend/migrations/*.sql`) and records them in `schema_migrations`
-   - Generates JWT secret (if not provided)
-   - Creates admin account (password auto-generated if not provided)
-   - Writes config.yaml
+```bash
+docker compose -f compose.yaml -f compose.bind.yaml -f compose.dev.yaml up -d
+```
 
-2. No manual Setup Wizard needed - just configure `.env` and start
+These development commands require Compose v2.24.4+ for `!override`.
 
-3. If `ADMIN_PASSWORD` is not set, check logs for the generated password:
+### External PostgreSQL and Redis
+
+`compose.external.yaml` runs only Sub2API. Set external `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_DBNAME`, `REDIS_HOST`, `REDIS_PORT`, and optional `REDIS_PASSWORD` in `.env`. Leave `REDIS_USERNAME` empty to authenticate as the Redis default user; set it only for an externally managed named ACL user. Then run:
+
+```bash
+docker compose -f compose.external.yaml up -d
+```
+
+The application still persists `/app/data` in the `sub2api_data` named volume. External database and Redis backup, upgrade, and availability are the operator's responsibility.
+
+## Initial setup and credentials
+
+`AUTO_SETUP=true` is fixed by the canonical Compose topology. On first application startup it applies migrations, writes application state under `/app/data`, and creates the initial administrator. If `ADMIN_PASSWORD` is blank, inspect application logs for the generated password:
+
+```bash
+docker compose logs sub2api | grep "admin password"
+```
+
+`DATABASE_PASSWORD` and `TOTP_ENCRYPTION_KEY` are required by the Compose contract. A fixed TOTP key is essential: changing it invalidates existing encrypted TOTP data. A blank `JWT_SECRET` can be generated by initial auto-setup and persisted in `/app/data/config.yaml`, but production operators may set and manage a stable value explicitly.
+
+PostgreSQL's `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` are **initialization variables**, not live credential-management controls. The PostgreSQL image reads them only when initializing an empty data directory. Editing `DATABASE_*` in `.env` later does not rename a populated database or rotate its database password; perform those changes in PostgreSQL and coordinate application settings separately.
+
+## Compose project identity and data migration
+
+The names `sub2api_data`, `postgres_data`, and `redis_data` in `compose.yaml` are logical volume keys. Docker's actual volume names are scoped by the Compose project, normally derived from the deployment directory name (for example, `sub2api-deploy_postgres_data`). Setting `COMPOSE_PROJECT_NAME`, using `docker compose -p`, moving or renaming the directory, or bootstrapping into a differently named directory can select a different project and cause Compose to create fresh volumes. An empty application after such a change often means the old volumes are detached, not deleted.
+
+Before moving or converting an installation:
+
+1. From the old directory, record the project name with `docker compose ls` and record the exact mounts/volume names with `docker compose config --volumes`, `docker volume ls`, and `docker volume inspect <volume>`. Treat rendered configuration as sensitive and do not publish it.
+2. Back up PostgreSQL with a database-aware dump and back up `/app/data`; include Redis if required by the recovery plan. A named volume is not safely migrated by copying its host-internal directory while containers are running.
+3. To reuse the canonical named volumes in a new directory, preserve the same project identity by setting the recorded `COMPOSE_PROJECT_NAME` (or consistently using `docker compose -p <old-project>`) before the first `up`. Inspect the rendered volume names before starting. Otherwise restore the backups into newly created volumes.
+4. Bind-storage installations are different: stop the old stack, preserve ownership and permissions, copy `data`, `postgres_data`, and `redis_data` with an appropriate host backup tool, and continue using `compose.bind.yaml`. Do not treat bind directories as Compose named volumes.
+5. Keep the old directory, project-name record, volume-name record, and backups until verification succeeds. Rollback must use the original Compose project identity and original volumes or restore the backup; merely changing back to an old directory name is not a complete rollback plan.
+
+Never run `docker compose down -v` during migration or rollback: it deletes the project's named volumes. A bootstrap into a new directory is a fresh project unless project identity and data migration are explicitly preserved.
+
+## Updates, backups, and major database upgrades
+
+1. Back up PostgreSQL and `/app/data` before every update. Include Redis persistence if your recovery plan depends on it.
+2. Prefer a release tag in `SUB2API_VERSION` instead of `latest`, and review release notes plus Compose changes before changing the pin.
+3. Pull and recreate without deleting volumes:
+
    ```bash
-   docker compose logs sub2api | grep "admin password"
+   docker compose pull
+   docker compose up -d
    ```
 
-### Database Migration Notes (PostgreSQL)
+4. Verify health and logs before retiring the backup.
 
-- Migrations are applied in lexicographic order (e.g. `001_...sql`, `002_...sql`).
-- `schema_migrations` tracks applied migrations (filename + checksum).
-- Migrations are forward-only; rollback requires a DB backup restore or a manual compensating SQL script.
+**Never use `docker compose down -v` for a normal stop or update.** `-v` deletes the named volumes and therefore the managed PostgreSQL database, Redis data, and `/app/data` application state.
 
-**Verify `users.allowed_groups` → `user_allowed_groups` backfill**
+The canonical stack runs PostgreSQL 18. A PostgreSQL 15, 16, or 17 data directory is not binary-compatible with PostgreSQL 18. **Never mount an older major-version data directory directly into the PostgreSQL 18 container.** Upgrade with a tested logical dump/restore or `pg_upgrade` procedure and retain a backup and rollback path. The same rule applies whether the source is a named volume or bind directory.
 
-During the incremental GORM→Ent migration, `users.allowed_groups` (legacy `BIGINT[]`) is being replaced by a normalized join table `user_allowed_groups(user_id, group_id)`.
+Application schema migrations are forward-only and tracked in `schema_migrations`; rollback requires restoring a database backup or applying a reviewed compensating migration.
 
-Run this query to compare the legacy data vs the join table:
+## File map
 
-```sql
-WITH old_pairs AS (
-  SELECT DISTINCT u.id AS user_id, x.group_id
-  FROM users u
-  CROSS JOIN LATERAL unnest(u.allowed_groups) AS x(group_id)
-  WHERE u.allowed_groups IS NOT NULL
-)
-SELECT
-  (SELECT COUNT(*) FROM old_pairs)           AS old_pair_count,
-  (SELECT COUNT(*) FROM user_allowed_groups) AS new_pair_count;
-```
+| File | Purpose |
+|------|---------|
+| `compose.yaml` | Canonical managed production stack with named volumes |
+| `compose.bind.yaml` | Bind-storage override |
+| `compose.dev.yaml` | Development source-build/debug override |
+| `compose.external.yaml` | App-only topology for external PostgreSQL and Redis |
+| `.env.example` | Compose and application environment template |
+| `docker-deploy.sh` | Safe bootstrap for a new isolated Compose directory |
+| `test-compose-config.sh` | Static rendered Compose contract test |
+| `test-docker-deploy.sh` | Isolated bootstrap behavior test |
+| `test-install-contract.sh` | Network-free binary installer/systemd contract test |
+| `DOCKER.md` | Published container image documentation |
+| `install.sh` | Binary/systemd installer |
+| `sub2api.service` | Systemd unit template consumed by `install.sh` |
+| `config.example.yaml` | Binary/systemd configuration example |
 
-### datamanagementd（数据管理）联动
+The legacy `docker-compose*.yml` files served one compatibility release after the compose refactor and have been removed. Use `compose.yaml` and the compact `compose.*.yaml` variants only.
 
-如需启用管理后台“数据管理”功能，请额外部署宿主机 `datamanagementd`：
+## Binary/systemd installation
 
-- 主进程固定探测 `/tmp/sub2api-datamanagement.sock`
-- Docker 场景下需把宿主机 Socket 挂载到容器内同路径
-- 详细步骤见：`deploy/DATAMANAGEMENTD_CN.md`
-
-### Commands
-
-For **local directory version** (docker-compose.local.yml):
-
-```bash
-# Start services
-docker compose -f docker-compose.local.yml up -d
-
-# Stop services
-docker compose -f docker-compose.local.yml down
-
-# View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
-
-# Restart Sub2API only
-docker compose -f docker-compose.local.yml restart sub2api
-
-# Update to latest version
-docker compose -f docker-compose.local.yml pull
-docker compose -f docker-compose.local.yml up -d
-
-# Remove all data (caution!)
-docker compose -f docker-compose.local.yml down
-rm -rf data/ postgres_data/ redis_data/
-```
-
-For **named volumes version** (docker-compose.yml):
-
-```bash
-# Start services
-docker compose up -d
-
-# Stop services
-docker compose down
-
-# View logs
-docker compose logs -f sub2api
-
-# Restart Sub2API only
-docker compose restart sub2api
-
-# Update to latest version
-docker compose pull
-docker compose up -d
-
-# Remove all data (caution!)
-docker compose down -v
-```
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_PASSWORD` | **Yes** | - | PostgreSQL password |
-| `JWT_SECRET` | **Recommended** | *(auto-generated)* | JWT secret (fixed for persistent sessions) |
-| `TOTP_ENCRYPTION_KEY` | **Recommended** | *(auto-generated)* | TOTP encryption key (fixed for persistent 2FA) |
-| `SERVER_PORT` | No | `8080` | Server port |
-| `ADMIN_EMAIL` | No | `admin@sub2api.local` | Admin email |
-| `ADMIN_PASSWORD` | No | *(auto-generated)* | Admin password |
-| `TZ` | No | `Asia/Shanghai` | Timezone |
-| `GEMINI_OAUTH_CLIENT_ID` | No | *(builtin)* | Google OAuth client ID (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
-| `GEMINI_OAUTH_CLIENT_SECRET` | No | *(builtin)* | Google OAuth client secret (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
-| `GEMINI_OAUTH_SCOPES` | No | *(default)* | OAuth scopes (Gemini OAuth) |
-| `GEMINI_QUOTA_POLICY` | No | *(empty)* | JSON overrides for Gemini local quota simulation (Code Assist only). |
-
-See `.env.example` for all available options.
-
-> **Note:** The `docker-deploy.sh` script automatically generates `JWT_SECRET`, `TOTP_ENCRYPTION_KEY`, and `POSTGRES_PASSWORD` for you.
-
-### Easy Migration (Local Directory Version)
-
-When using `docker-compose.local.yml`, all data is stored in local directories, making migration simple:
-
-```bash
-# On source server: Stop services and create archive
-cd /path/to/deployment
-docker compose -f docker-compose.local.yml down
-cd ..
-tar czf sub2api-complete.tar.gz deployment/
-
-# Transfer to new server
-scp sub2api-complete.tar.gz user@new-server:/path/to/destination/
-
-# On new server: Extract and start
-tar xzf sub2api-complete.tar.gz
-cd deployment/
-docker compose -f docker-compose.local.yml up -d
-```
-
-Your entire deployment (configuration + data) is migrated!
-
----
-
-## Gemini OAuth Configuration
-
-Sub2API supports three methods to connect to Gemini:
-
-### Method 1: Code Assist OAuth (Recommended for GCP Users)
-
-**No configuration needed** - always uses the built-in Gemini CLI OAuth client (public).
-
-1. Leave `GEMINI_OAUTH_CLIENT_ID` and `GEMINI_OAUTH_CLIENT_SECRET` empty
-2. In the Admin UI, create a Gemini OAuth account and select **"Code Assist"** type
-3. Complete the OAuth flow in your browser
-
-> Note: Even if you configure `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` for AI Studio OAuth,
-> Code Assist OAuth will still use the built-in Gemini CLI client.
-
-**Requirements:**
-- Google account with access to Google Cloud Platform
-- A GCP project (auto-detected or manually specified)
-
-**How to get Project ID (if auto-detection fails):**
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Click the project dropdown at the top of the page
-3. Copy the Project ID (not the project name) from the list
-4. Common formats: `my-project-123456` or `cloud-ai-companion-xxxxx`
-
-### Method 2: AI Studio OAuth (For Regular Google Accounts)
-
-Requires your own OAuth client credentials.
-
-**Step 1: Create OAuth Client in Google Cloud Console**
-
-1. Go to [Google Cloud Console - Credentials](https://console.cloud.google.com/apis/credentials)
-2. Create a new project or select an existing one
-3. **Enable the Generative Language API:**
-   - Go to "APIs & Services" → "Library"
-   - Search for "Generative Language API"
-   - Click "Enable"
-4. **Configure OAuth Consent Screen** (if not done):
-   - Go to "APIs & Services" → "OAuth consent screen"
-   - Choose "External" user type
-   - Fill in app name, user support email, developer contact
-   - Add scopes: `https://www.googleapis.com/auth/generative-language.retriever` (and optionally `https://www.googleapis.com/auth/cloud-platform`)
-   - Add test users (your Google account email)
-5. **Create OAuth 2.0 credentials:**
-   - Go to "APIs & Services" → "Credentials"
-   - Click "Create Credentials" → "OAuth client ID"
-   - Application type: **Web application** (or **Desktop app**)
-   - Name: e.g., "Sub2API Gemini"
-   - Authorized redirect URIs: Add `http://localhost:1455/auth/callback`
-6. Copy the **Client ID** and **Client Secret**
-7. **⚠️ Publish to Production (IMPORTANT):**
-   - Go to "APIs & Services" → "OAuth consent screen"
-   - Click "PUBLISH APP" to move from Testing to Production
-   - **Testing mode limitations:**
-     - Only manually added test users can authenticate (max 100 users)
-     - Refresh tokens expire after 7 days
-     - Users must be re-added periodically
-   - **Production mode:** Any Google user can authenticate, tokens don't expire
-   - Note: For sensitive scopes, Google may require verification (demo video, privacy policy)
-
-**Step 2: Configure Environment Variables**
-
-```bash
-GEMINI_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GEMINI_OAUTH_CLIENT_SECRET=GOCSPX-your-client-secret
-
-# 可选：如需使用 Gemini CLI 内置 OAuth Client（Code Assist / Google One）
-# 安全说明：本仓库不会内置该 client_secret，请在运行环境通过环境变量注入。
-# GEMINI_CLI_OAUTH_CLIENT_SECRET=GOCSPX-your-built-in-secret
-```
-
-**Step 3: Create Account in Admin UI**
-
-1. Create a Gemini OAuth account and select **"AI Studio"** type
-2. Complete the OAuth flow
-   - After consent, your browser will be redirected to `http://localhost:1455/auth/callback?code=...&state=...`
-   - Copy the full callback URL (recommended) or just the `code` and paste it back into the Admin UI
-
-### Method 3: API Key (Simplest)
-
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Click "Create API key"
-3. In Admin UI, create a Gemini **API Key** account
-4. Paste your API key (starts with `AIza...`)
-
-### Comparison Table
-
-| Feature | Code Assist OAuth | AI Studio OAuth | API Key |
-|---------|-------------------|-----------------|---------|
-| Setup Complexity | Easy (no config) | Medium (OAuth client) | Easy |
-| GCP Project Required | Yes | No | No |
-| Custom OAuth Client | No (built-in) | Yes (required) | N/A |
-| Rate Limits | GCP quota | Standard | Standard |
-| Best For | GCP developers | Regular users needing OAuth | Quick testing |
-
----
-
-## Binary Installation
-
-For production servers using systemd.
-
-### One-Line Installation
+The binary installer is a Linux-only systemd manager and rejects every non-Linux kernel before privilege checks, downloads, or lifecycle work:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/is7Qin/sub2api/main/deploy/install.sh | sudo bash
 ```
 
-### Manual Installation
-
-1. Download the latest release from [GitHub Releases](https://github.com/is7Qin/sub2api/releases)
-2. Extract and copy the binary to `/opt/sub2api/`
-3. Copy `sub2api.service` to `/etc/systemd/system/`
-4. Run:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable sub2api
-   sudo systemctl start sub2api
-   ```
-5. Open the Setup Wizard in your browser to complete configuration
-
-### Commands
-
-```bash
-# Install
-sudo ./install.sh
-
-# Upgrade
-sudo ./install.sh upgrade
-
-# Uninstall
-sudo ./install.sh uninstall
-```
-
-### Service Management
-
-```bash
-# Start the service
-sudo systemctl start sub2api
-
-# Stop the service
-sudo systemctl stop sub2api
-
-# Restart the service
-sudo systemctl restart sub2api
-
-# Check status
-sudo systemctl status sub2api
-
-# View logs
-sudo journalctl -u sub2api -f
-
-# Enable auto-start on boot
-sudo systemctl enable sub2api
-```
-
-### Configuration
-
-#### Server Address and Port
-
-During installation, you will be prompted to configure the server listen address and port. These settings are stored in the systemd service file as environment variables.
-
-To change after installation:
-
-1. Edit the systemd service:
-   ```bash
-   sudo systemctl edit sub2api
-   ```
-
-2. Add or modify:
-   ```ini
-   [Service]
-   Environment=SERVER_HOST=0.0.0.0
-   Environment=SERVER_PORT=3000
-   ```
-
-3. Reload and restart:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart sub2api
-   ```
-
-#### Gemini OAuth Configuration
-
-If you need to use AI Studio OAuth for Gemini accounts, add the OAuth client credentials to the systemd service file:
-
-1. Edit the service file:
-   ```bash
-   sudo nano /etc/systemd/system/sub2api.service
-   ```
-
-2. Add your OAuth credentials in the `[Service]` section (after the existing `Environment=` lines):
-   ```ini
-   Environment=GEMINI_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
-   Environment=GEMINI_OAUTH_CLIENT_SECRET=GOCSPX-your-client-secret
-   ```
-
-   如需使用“内置 Gemini CLI OAuth Client”（Code Assist / Google One），还需要注入：
-   ```ini
-   Environment=GEMINI_CLI_OAUTH_CLIENT_SECRET=GOCSPX-your-built-in-secret
-   ```
-
-3. Reload and restart:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart sub2api
-   ```
-
-> **Note:** Code Assist OAuth does not require any configuration - it uses the built-in Gemini CLI client.
-> See the [Gemini OAuth Configuration](#gemini-oauth-configuration) section above for detailed setup instructions.
-
-#### Application Configuration
-
-The main config file is at `/etc/sub2api/config.yaml` (created by Setup Wizard).
-
-### Prerequisites
-
-- Linux server (Ubuntu 20.04+, Debian 11+, CentOS 8+, etc.)
-- PostgreSQL 14+
-- Redis 6+
-- systemd
-
-### Directory Structure
-
-```
-/opt/sub2api/
-├── sub2api              # Main binary
-├── sub2api.backup       # Backup (after upgrade)
-└── data/                # Runtime data
-
-/etc/sub2api/
-└── config.yaml          # Configuration file
-```
-
----
-
-## Troubleshooting
-
-### Docker
-
-For **local directory version**:
-
-```bash
-# Check container status
-docker compose -f docker-compose.local.yml ps
-
-# View detailed logs
-docker compose -f docker-compose.local.yml logs --tail=100 sub2api
-
-# Check database connection
-docker compose -f docker-compose.local.yml exec postgres pg_isready
-
-# Check Redis connection
-docker compose -f docker-compose.local.yml exec redis redis-cli ping
-
-# Restart all services
-docker compose -f docker-compose.local.yml restart
-
-# Check data directories
-ls -la data/ postgres_data/ redis_data/
-```
-
-For **named volumes version**:
-
-```bash
-# Check container status
-docker compose ps
-
-# View detailed logs
-docker compose logs --tail=100 sub2api
-
-# Check database connection
-docker compose exec postgres pg_isready
-
-# Check Redis connection
-docker compose exec redis redis-cli ping
-
-# Restart all services
-docker compose restart
-```
-
-### Binary Install
-
-```bash
-# Check service status
-sudo systemctl status sub2api
-
-# View recent logs
-sudo journalctl -u sub2api -n 50
-
-# Check config file
-sudo cat /etc/sub2api/config.yaml
-
-# Check PostgreSQL
-sudo systemctl status postgresql
-
-# Check Redis
-sudo systemctl status redis
-```
-
-### Common Issues
-
-1. **Port already in use**: Change `SERVER_PORT` in `.env` or systemd config
-2. **Database connection failed**: Check PostgreSQL is running and credentials are correct
-3. **Redis connection failed**: Check Redis is running and password is correct
-4. **Permission denied**: Ensure proper file ownership for binary install
-
----
-
-## TLS Fingerprint Configuration
-
-Sub2API supports TLS fingerprint simulation to make requests appear as if they come from the official Claude CLI (Node.js client).
-
-> **💡 Tip:** Visit **[tls.sub2api.org](https://tls.sub2api.org/)** to get TLS fingerprint information for different devices and browsers.
-
-### Default Behavior
-
-- Built-in `claude_cli_v2` profile simulates Node.js 20.x + OpenSSL 3.x
-- JA3 Hash: `1a28e69016765d92e3b381168d68922c`
-- JA4: `t13d5911h1_a33745022dd6_1f22a2ca17c4`
-- Profile selection: `accountID % profileCount`
-
-### Configuration
-
-```yaml
-gateway:
-  tls_fingerprint:
-    enabled: true  # Global switch
-    profiles:
-      # Simple profile (uses default cipher suites)
-      profile_1:
-        name: "Profile 1"
-
-      # Profile with custom cipher suites (use compact array format)
-      profile_2:
-        name: "Profile 2"
-        cipher_suites: [4866, 4867, 4865, 49199, 49195, 49200, 49196]
-        curves: [29, 23, 24]
-        point_formats: 0
-
-      # Another custom profile
-      profile_3:
-        name: "Profile 3"
-        cipher_suites: [4865, 4866, 4867, 49199, 49200]
-        curves: [29, 23, 24, 25]
-```
-
-### Profile Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Display name (required) |
-| `cipher_suites` | []uint16 | Cipher suites in decimal. Empty = default |
-| `curves` | []uint16 | Elliptic curves in decimal. Empty = default |
-| `point_formats` | []uint8 | EC point formats. Empty = default |
-
-### Common Values Reference
-
-**Cipher Suites (TLS 1.3):** `4865` (AES_128_GCM), `4866` (AES_256_GCM), `4867` (CHACHA20)
-
-**Cipher Suites (TLS 1.2):** `49195`, `49196`, `49199`, `49200` (ECDHE variants)
-
-**Curves:** `29` (X25519), `23` (P-256), `24` (P-384), `25` (P-521)
+The release archive ships `sub2api.service`; `install.sh` renders that template with the selected user, install directory, host, and port. `SERVER_HOST` deliberately accepts only IPv4 addresses, DNS hostnames, or unbracketed pure-hex IPv6 literals; IPv4-embedded IPv6 forms are not supported. `SERVICE_USER` accepts a bounded Linux account-name grammar, and `INSTALL_DIR` must be a normalized absolute path with portable components; whitespace, control characters, unit specifiers, quotes, backslashes, and dot segments are rejected. The unit waits for `network-online.target` but does not require local PostgreSQL or Redis units, so externally managed services remain supported. See `config.example.yaml` for the file-based configuration shape.

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
@@ -185,6 +186,9 @@ func TestLogger_AccessLogUsesForwardedClientIP(t *testing.T) {
 	sink := initMiddlewareTestLogger(t)
 
 	r := gin.New()
+	r.Use(ip.RequestMiddleware(func() ip.RequestSettings {
+		return ip.RequestSettings{TrustForwardedIP: true}
+	}))
 	r.Use(Logger())
 	r.GET("/api/test", func(c *gin.Context) {
 		c.Status(http.StatusOK)

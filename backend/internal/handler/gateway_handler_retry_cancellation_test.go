@@ -65,6 +65,8 @@ func (f *retryCancellationSchedulerCache) SetOutboxWatermark(context.Context, in
 type retryCancellationConcurrencyCache struct {
 	accountAcquires atomic.Int32
 	accountReleases atomic.Int32
+	keyAcquires     atomic.Int32
+	keyReleases     atomic.Int32
 	userAcquires    atomic.Int32
 	userReleases    atomic.Int32
 }
@@ -91,6 +93,20 @@ func (f *retryCancellationConcurrencyCache) DecrementAccountWaitCount(context.Co
 }
 func (f *retryCancellationConcurrencyCache) GetAccountWaitingCount(context.Context, int64) (int, error) {
 	return 0, nil
+}
+func (f *retryCancellationConcurrencyCache) AcquireAPIKeySlot(context.Context, int64, int, string) (bool, error) {
+	f.keyAcquires.Add(1)
+	return true, nil
+}
+func (f *retryCancellationConcurrencyCache) ReleaseAPIKeySlot(context.Context, int64, string) error {
+	f.keyReleases.Add(1)
+	return nil
+}
+func (f *retryCancellationConcurrencyCache) GetAPIKeyConcurrency(context.Context, int64) (int, error) {
+	return 0, nil
+}
+func (f *retryCancellationConcurrencyCache) GetAPIKeyConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
+	return map[int64]int{}, nil
 }
 func (f *retryCancellationConcurrencyCache) AcquireUserSlot(context.Context, int64, int, string) (bool, error) {
 	f.userAcquires.Add(1)
@@ -216,6 +232,7 @@ func TestGatewayHandlerMessages_AdmittedRetryCancellationDoesNotWriteFallback(t 
 		nil,
 		nil,
 		nil,
+		nil, nil, // usageRecordWorkerPool
 	)
 	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	defer billingCacheService.Stop()
@@ -235,10 +252,11 @@ func TestGatewayHandlerMessages_AdmittedRetryCancellationDoesNotWriteFallback(t 
 	req = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
 	c.Request = req
 	apiKey := &service.APIKey{
-		ID:      9203,
-		UserID:  9204,
-		GroupID: &groupID,
-		Status:  service.StatusActive,
+		ID:          9203,
+		UserID:      9204,
+		Concurrency: 1,
+		GroupID:     &groupID,
+		Status:      service.StatusActive,
 		User: &service.User{
 			ID:          9204,
 			Concurrency: 1,
@@ -257,6 +275,10 @@ func TestGatewayHandlerMessages_AdmittedRetryCancellationDoesNotWriteFallback(t 
 	require.Empty(t, recorder.Body.String())
 	require.Eventually(t, func() bool {
 		return concurrencyCache.accountAcquires.Load() == concurrencyCache.accountReleases.Load() &&
-			concurrencyCache.userAcquires.Load() == concurrencyCache.userReleases.Load()
+			concurrencyCache.userAcquires.Load() == concurrencyCache.userReleases.Load() &&
+			concurrencyCache.keyAcquires.Load() == concurrencyCache.keyReleases.Load()
 	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, int32(1), concurrencyCache.keyAcquires.Load(), "key lease must remain logical across failover")
+	require.Equal(t, int32(1), concurrencyCache.userAcquires.Load(), "user lease must remain logical across failover")
+	require.Equal(t, int32(1), concurrencyCache.accountAcquires.Load(), "same-account service retry keeps its admitted account attempt")
 }

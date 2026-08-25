@@ -9,21 +9,21 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/authidentity"
 	"github.com/Wei-Shaw/sub2api/ent/authidentitychannel"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/modelcatalog"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/util/httputil"
 )
@@ -67,7 +67,7 @@ type AdminService interface {
 	UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error
 
 	// API Key management (admin)
-	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
+	AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int, resetRateLimitUsage bool) (*AdminUpdateAPIKeyGroupIDResult, error)
 	AdminResetAPIKeyRateLimitUsage(ctx context.Context, keyID int64) (*APIKey, error)
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
@@ -208,8 +208,10 @@ type CreateGroupInput struct {
 	ImagePrice1K         *float64
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
-	ClaudeCodeOnly       bool   // 仅允许 Claude Code 客户端
-	FallbackGroupID      *int64 // 降级分组 ID
+	// Codex alpha/search 网页搜索单次价格（USD/次，仅 openai 平台使用）；nil/负数按默认价 0.01 处理
+	WebSearchPricePerCall *float64
+	ClaudeCodeOnly        bool   // 仅允许 Claude Code 客户端
+	FallbackGroupID       *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
 	// 模型路由配置（仅 anthropic 平台使用）
@@ -219,12 +221,13 @@ type CreateGroupInput struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch       bool
-	DefaultMappedModel          string
-	RequireOAuthOnly            bool
-	RequirePrivacySet           bool
-	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
-	ModelsListConfig            GroupModelsListConfig
+	AllowMessagesDispatch           bool
+	DefaultMappedModel              string
+	RequireOAuthOnly                bool
+	RequirePrivacySet               bool
+	MessagesDispatchModelConfig     OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                GroupModelsListConfig
+	OpenAILongContextBillingEnabled bool
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit int
 	// 从指定分组复制账号（创建分组后在同一事务内绑定）
@@ -249,8 +252,10 @@ type UpdateGroupInput struct {
 	ImagePrice1K         *float64
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
-	ClaudeCodeOnly       *bool  // 仅允许 Claude Code 客户端
-	FallbackGroupID      *int64 // 降级分组 ID
+	// Codex alpha/search 网页搜索单次价格（USD/次）；nil 表示不修改，负数表示清除回默认价 0.01
+	WebSearchPricePerCall *float64
+	ClaudeCodeOnly        *bool  // 仅允许 Claude Code 客户端
+	FallbackGroupID       *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
 	// 模型路由配置（仅 anthropic 平台使用）
@@ -260,12 +265,13 @@ type UpdateGroupInput struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch       *bool
-	DefaultMappedModel          *string
-	RequireOAuthOnly            *bool
-	RequirePrivacySet           *bool
-	MessagesDispatchModelConfig *OpenAIMessagesDispatchModelConfig
-	ModelsListConfig            *GroupModelsListConfig
+	AllowMessagesDispatch           *bool
+	DefaultMappedModel              *string
+	RequireOAuthOnly                *bool
+	RequirePrivacySet               *bool
+	MessagesDispatchModelConfig     *OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                *GroupModelsListConfig
+	OpenAILongContextBillingEnabled *bool
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit *int
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
@@ -576,6 +582,7 @@ type adminServiceImpl struct {
 	privacyClientFactory PrivacyClientFactory
 	runtimeBlocker       AccountRuntimeBlocker
 	rateLimitService     *RateLimitService
+	accountsListCache    *accountsListTTLCache
 }
 
 type userGroupRateBatchReader interface {
@@ -624,6 +631,7 @@ func NewAdminService(
 		privacyClientFactory: privacyClientFactory,
 		runtimeBlocker:       runtimeBlocker,
 		rateLimitService:     rateLimitService,
+		accountsListCache:    newAccountsListTTLCache(),
 	}
 }
 
@@ -1753,29 +1761,7 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 }
 
 func defaultModelsListCandidateIDs(platform string) []string {
-	switch platform {
-	case PlatformOpenAI:
-		return openai.DefaultModelIDs()
-	case PlatformGemini:
-		ids := make([]string, 0, len(geminicli.DefaultModels))
-		for _, model := range geminicli.DefaultModels {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	case PlatformAntigravity:
-		models := antigravity.DefaultModels()
-		ids := make([]string, 0, len(models))
-		for _, model := range models {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	default:
-		ids := make([]string, 0, len(claude.DefaultModels))
-		for _, model := range claude.DefaultModels {
-			ids = append(ids, model.ID)
-		}
-		return ids
-	}
+	return modelcatalog.DefaultModelIDs(platform)
 }
 
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
@@ -1802,6 +1788,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	imagePrice1K := normalizePrice(input.ImagePrice1K)
 	imagePrice2K := normalizePrice(input.ImagePrice2K)
 	imagePrice4K := normalizePrice(input.ImagePrice4K)
+	webSearchPricePerCall := normalizePrice(input.WebSearchPricePerCall)
 	imageRateMultiplier := 1.0
 	if input.ImageRateMultiplier != nil {
 		if *input.ImageRateMultiplier < 0 {
@@ -1882,6 +1869,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		ImagePrice1K:                    imagePrice1K,
 		ImagePrice2K:                    imagePrice2K,
 		ImagePrice4K:                    imagePrice4K,
+		WebSearchPricePerCall:           webSearchPricePerCall,
 		ClaudeCodeOnly:                  input.ClaudeCodeOnly,
 		FallbackGroupID:                 input.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
@@ -1894,6 +1882,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		DefaultMappedModel:              input.DefaultMappedModel,
 		MessagesDispatchModelConfig:     normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
 		ModelsListConfig:                normalizeGroupModelsListConfig(input.ModelsListConfig),
+		OpenAILongContextBillingEnabled: input.OpenAILongContextBillingEnabled,
 		RPMLimit:                        input.RPMLimit,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
@@ -2071,6 +2060,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.ImagePrice1K != nil {
 		group.ImagePrice1K = normalizePrice(input.ImagePrice1K)
 	}
+	if input.WebSearchPricePerCall != nil {
+		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)
+	}
 	if input.ImagePrice2K != nil {
 		group.ImagePrice2K = normalizePrice(input.ImagePrice2K)
 	}
@@ -2143,6 +2135,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.ModelsListConfig != nil {
 		group.ModelsListConfig = normalizeGroupModelsListConfig(*input.ModelsListConfig)
+	}
+	if input.OpenAILongContextBillingEnabled != nil {
+		group.OpenAILongContextBillingEnabled = *input.OpenAILongContextBillingEnabled
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit
@@ -2285,7 +2280,15 @@ func (s *adminServiceImpl) ClearGroupRateMultipliers(ctx context.Context, groupI
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
-	return s.userGroupRateRepo.DeleteByGroupID(ctx, groupID)
+	if err := s.userGroupRateRepo.DeleteByGroupID(ctx, groupID); err != nil {
+		return err
+	}
+	// DeleteByGroupID 会连同 rpm_override 行一起删除（整行删除），
+	// RPM override 已嵌入 auth cache snapshot，必须一并失效相关缓存。
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByGroupID(ctx, groupID)
+	}
+	return nil
 }
 
 func (s *adminServiceImpl) BatchSetGroupRateMultipliers(ctx context.Context, groupID int64, entries []GroupRateMultiplierInput) error {
@@ -2335,6 +2338,105 @@ func (s *adminServiceImpl) BatchSetGroupRPMOverrides(ctx context.Context, groupI
 
 func (s *adminServiceImpl) UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
 	return s.groupRepo.UpdateSortOrders(ctx, updates)
+}
+
+// AdminUpdateAPIKey updates the requested admin-managed API key fields.
+// Nil fields are omitted; concurrency zero explicitly disables the key-specific ceiling.
+func (s *adminServiceImpl) AdminUpdateAPIKey(ctx context.Context, keyID int64, groupID *int64, concurrency *int, resetRateLimitUsage bool) (*AdminUpdateAPIKeyGroupIDResult, error) {
+	if concurrency != nil && (*concurrency < 0 || *concurrency > 2147483647) {
+		return nil, ErrInvalidAPIKeyConcurrency
+	}
+	if concurrency == nil && !resetRateLimitUsage {
+		return s.AdminUpdateAPIKeyGroupID(ctx, keyID, groupID)
+	}
+
+	apiKey, err := s.apiKeyRepo.GetByID(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+	patch := APIKeyConfigPatch{Concurrency: concurrency, ResetRateLimitUsage: resetRateLimitUsage}
+	var targetGroup *Group
+	if groupID != nil {
+		if *groupID < 0 {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_ID", "group_id must be non-negative")
+		}
+		var target *int64
+		if *groupID > 0 {
+			targetGroup, err = s.groupRepo.GetByID(ctx, *groupID)
+			if err != nil {
+				return nil, err
+			}
+			if targetGroup.Status != StatusActive {
+				return nil, infraerrors.BadRequest("GROUP_NOT_ACTIVE", "target group is not active")
+			}
+			if targetGroup.IsSubscriptionType() {
+				if s.userSubRepo == nil {
+					return nil, infraerrors.InternalServer("SUBSCRIPTION_REPOSITORY_UNAVAILABLE", "subscription repository is not configured")
+				}
+				if _, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, apiKey.UserID, *groupID); err != nil {
+					if errors.Is(err, ErrSubscriptionNotFound) {
+						return nil, infraerrors.BadRequest("SUBSCRIPTION_REQUIRED", "user does not have an active subscription for this group")
+					}
+					return nil, err
+				}
+			}
+			gid := *groupID
+			target = &gid
+		}
+		patch.GroupID = &target
+	}
+
+	result := &AdminUpdateAPIKeyGroupIDResult{}
+	if targetGroup != nil && targetGroup.IsExclusive && !targetGroup.IsSubscriptionType() {
+		if s.entClient == nil {
+			return nil, infraerrors.InternalServer("TRANSACTION_UNAVAILABLE", "atomic API key update requires transaction support")
+		}
+		tx, txErr := s.entClient.Tx(ctx)
+		if txErr != nil {
+			return nil, fmt.Errorf("begin transaction: %w", txErr)
+		}
+		defer func() { _ = tx.Rollback() }()
+		txCtx := dbent.NewTxContext(ctx, tx)
+		if err := s.userRepo.AddGroupToAllowedGroups(txCtx, apiKey.UserID, targetGroup.ID); err != nil {
+			return nil, fmt.Errorf("add group to user allowed groups: %w", err)
+		}
+		updated, err := s.apiKeyRepo.UpdateConfig(txCtx, keyID, apiKey.UserID, patch)
+		if err != nil {
+			return nil, fmt.Errorf("update api key: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit transaction: %w", err)
+		}
+		result.APIKey = updated
+		result.AutoGrantedGroupAccess = true
+		result.GrantedGroupID = &targetGroup.ID
+		result.GrantedGroupName = targetGroup.Name
+		if s.authCacheInvalidator != nil {
+			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, apiKey.UserID)
+		}
+		s.invalidateAPIKeyRateLimitAfterAdminPatch(ctx, updated, resetRateLimitUsage)
+		return result, nil
+	}
+
+	updated, err := s.apiKeyRepo.UpdateConfig(ctx, keyID, apiKey.UserID, patch)
+	if err != nil {
+		return nil, fmt.Errorf("update api key: %w", err)
+	}
+	if targetGroup != nil {
+		updated.Group = targetGroup
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, updated.Key)
+	}
+	s.invalidateAPIKeyRateLimitAfterAdminPatch(ctx, updated, resetRateLimitUsage)
+	result.APIKey = updated
+	return result, nil
+}
+
+func (s *adminServiceImpl) invalidateAPIKeyRateLimitAfterAdminPatch(ctx context.Context, updated *APIKey, reset bool) {
+	if reset && s.billingCacheService != nil {
+		_ = s.billingCacheService.InvalidateAPIKeyRateLimit(ctx, updated.ID)
+	}
 }
 
 // AdminUpdateAPIKeyGroupID 管理员修改 API Key 分组绑定
@@ -2538,8 +2640,88 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 
 // Account management implementations
 func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
+	// 版本失效缓存：外部面板高频全量轮询账号列表，每次全量 ListWithFilters
+	// 都解码所有账号的 extra/credentials JSONB（此前是 CPU/DB 压力主源）。
+	// 以 max(accounts.updated_at) 为失效版本：账号变更 → 版本推进 → 缓存
+	// 立即失效（管理后台操作零延迟）；面板轮询期间版本不变 → 持续命中
+	// （零重算）。版本读取失败时回退短 TTL 兜底。
+	if cache := s.accountsListCache; cache != nil {
+		key := accountsListCacheKey(page, pageSize, filters, sortBy, sortOrder)
+		version := accountsListCacheVersion(ctx, s.accountRepo)
+		if accounts, total, ok := cache.get(key, version); ok {
+			return accounts, total, nil
+		}
+		accounts, total, err := s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+		if err != nil {
+			return nil, 0, err
+		}
+		cache.set(key, accounts, total, version)
+		return accounts, total, nil
+	}
+	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+}
+
+// accountsListCacheVersion 读取列表缓存失效版本（max accounts.updated_at）。
+// 返回字符串便于缓存键比较；版本读取失败时返回空串（缓存退化为 TTL 兜底）。
+func accountsListCacheVersion(ctx context.Context, repo AccountRepository) string {
+	if repo == nil {
+		return ""
+	}
+	reader, ok := repo.(accountsListVersionReader)
+	if !ok {
+		return ""
+	}
+	latest, err := reader.MaxAccountUpdatedAt(ctx)
+	if err != nil || latest == nil {
+		return ""
+	}
+	return latest.Format(time.RFC3339Nano)
+}
+
+// accountsListVersionReader 是可选接口：列表缓存版本（max updated_at）来源。
+type accountsListVersionReader interface {
+	MaxAccountUpdatedAt(ctx context.Context) (*time.Time, error)
+}
+
+// ListAccountsFull 与 ListAccounts 相同但不做 credentials 投影、不经缓存：
+// 供导出等需要完整凭据（id_token/access_token 等）的路径使用。
+// 通过可选接口 accountListFullReader 调用 repo 全量变体，stub 缺失时降级
+// 到投影版（仅测试环境）。
+func (s *adminServiceImpl) ListAccountsFull(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
+	if reader, ok := s.accountRepo.(accountListFullReader); ok {
+		params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+		accounts, result, err := reader.ListWithFiltersFull(ctx, params, AccountListFilters{
+			Platform:    filters.Platform,
+			AccountType: filters.AccountType,
+			Status:      filters.Status,
+			Search:      filters.Search,
+			GroupID:     filters.GroupID,
+			PrivacyMode: filters.PrivacyMode,
+			PlanType:    filters.PlanType,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		return accounts, result.Total, nil
+	}
+	return s.listAccountsUncached(ctx, page, pageSize, filters, sortBy, sortOrder)
+}
+
+// accountListFullReader 是可选接口：导出路径通过它获取全量（非投影）列表。
+type accountListFullReader interface {
+	ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
+}
+
+// accountListProjectedReader 是可选接口：admin 账号列表通过它获取投影版
+// （不含完整 credentials）列表，保持通用 ListWithFilters 契约全量。
+// repo 未实现时降级到全量契约（仅测试 stub 场景，列表仍只暴露子集字段）。
+type accountListProjectedReader interface {
+	ListWithFiltersProjected(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
+}
+
+func (s *adminServiceImpl) listAccountsUncached(ctx context.Context, page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
-	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, AccountListFilters{
+	listFilters := AccountListFilters{
 		Platform:    filters.Platform,
 		AccountType: filters.AccountType,
 		Status:      filters.Status,
@@ -2547,11 +2729,328 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 		GroupID:     filters.GroupID,
 		PrivacyMode: filters.PrivacyMode,
 		PlanType:    filters.PlanType,
-	})
+	}
+	// 通用 ListWithFilters 契约返回完整凭据；admin 列表专用投影变体
+	// （ListWithFiltersProjected）排除 credentials。repo 未实现投影变体时
+	// 降级到全量契约，仅测试环境触发（生产 repo 必然实现投影变体）。
+	// "凭据随后被子集回填覆盖"仅在 repo 同时实现 accountCredentialSubsetReader
+	// 且回填成功时成立。
+	var (
+		accounts []Account
+		result   *pagination.PaginationResult
+		err      error
+	)
+	if reader, ok := s.accountRepo.(accountListProjectedReader); ok {
+		accounts, result, err = reader.ListWithFiltersProjected(ctx, params, listFilters)
+	} else {
+		accounts, result, err = s.accountRepo.ListWithFilters(ctx, params, listFilters)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
+	// 列表查询已投影排除 credentials（降级路径除外）；这里批量回填列表 UI
+	// 需要的少量子字段（email/plan_type/model_mapping 等），避免全量 JSONB
+	// 解码。best-effort：子集查询失败不影响列表主数据。
+	if len(accounts) > 0 {
+		if reader, ok := s.accountRepo.(accountCredentialSubsetReader); ok {
+			ids := make([]int64, 0, len(accounts))
+			for i := range accounts {
+				ids = append(ids, accounts[i].ID)
+			}
+			subsets, err := reader.ListAccountCredentialSubset(ctx, ids)
+			if err == nil {
+				for i := range accounts {
+					if subset, ok := subsets[accounts[i].ID]; ok {
+						accounts[i].Credentials = subset
+					}
+				}
+			} else {
+				slog.Warn("account credential subset fill failed", "error", err)
+			}
+		}
+	}
+	// 列表视图瘦身：groups 只保留列表 UI 消费的字段（id/name/platform/
+	// subscription_type/rate_multiplier），其余字段由 dto.GroupLite 投影
+	// 省略；account_groups 列表不使用，置空后同样经投影从响应消失。
+	// 详情页走 GetByID（全量），不受影响。
+	for i := range accounts {
+		accounts[i].Groups = accountListGroupLite(accounts[i].Groups)
+		accounts[i].AccountGroups = nil
+	}
 	return accounts, result.Total, nil
+}
+
+// accountListGroupLite 把完整 group 对象重建为列表视图（仅保留列表 UI
+// 消费的字段），其余零值字段由 dto.GroupLite 投影省略。
+func accountListGroupLite(groups []*Group) []*Group {
+	if len(groups) == 0 {
+		return groups
+	}
+	out := make([]*Group, 0, len(groups))
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		out = append(out, &Group{
+			ID:               g.ID,
+			Name:             g.Name,
+			Platform:         g.Platform,
+			SubscriptionType: g.SubscriptionType,
+			RateMultiplier:   g.RateMultiplier,
+		})
+	}
+	return out
+}
+
+// accountCredentialSubsetReader 是可选接口：仓库实现 ListWithFiltersProjected
+// 后，通过它批量回填列表 UI 消费的 credentials 子字段。测试 stub 无需实现。
+type accountCredentialSubsetReader interface {
+	ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error)
+}
+
+// accountsListCacheTTL 是列表缓存的时间兜底（版本读取失败时生效）。
+// 正常路径以 max(accounts.updated_at) 版本失效为准（账号变更立即失效），
+// 不依赖 TTL；此兜底防止版本来源异常时缓存无限期停留。
+const accountsListCacheTTL = 60 * time.Second
+
+// accountsListCacheMaxEntries 是缓存条目数上限：分页/筛选/排序组合在面板
+// 轮询下可能持续漂移，无上限时过期 key 会无限累积。超限后淘汰最旧条目
+// （TTL 相同，插入序与 exp 序等价）。
+const accountsListCacheMaxEntries = 512
+
+// accountsListTTLCache 是 admin 账号列表的进程内版本失效缓存。
+// 命中条件：版本与当前一致（账号无变更）且未超过 TTL 兜底。
+// get/set 均深拷贝嵌套结构（Credentials/Extra/Groups），调用方修改返回值
+// 不会污染缓存条目；条目数超过上限时淘汰最旧条目。
+type accountsListTTLCache struct {
+	mu    sync.Mutex
+	items map[string]accountsListCacheEntry
+	// order 维护插入顺序（覆盖写入视为"最近使用"移到队尾）。容量超限时
+	// 按队首淘汰最旧条目：与按 exp 淘汰等价（TTL 相同），且不受时钟分辨率
+	// 限制（并发写入可能落在同一时间刻度上，exp 相等时扫描无确定顺序）。
+	order []string
+}
+
+type accountsListCacheEntry struct {
+	accounts []Account
+	total    int64
+	version  string
+	exp      time.Time
+}
+
+func newAccountsListTTLCache() *accountsListTTLCache {
+	return &accountsListTTLCache{items: make(map[string]accountsListCacheEntry)}
+}
+
+func (c *accountsListTTLCache) get(key, version string) ([]Account, int64, bool) {
+	if c == nil {
+		return nil, 0, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.items[key]
+	// 版本一致（账号无变更）且未超时兜底 → 命中。
+	if !ok || entry.version != version || time.Now().After(entry.exp) {
+		c.deleteKeyLocked(key)
+		return nil, 0, false
+	}
+	return deepCopyAccounts(entry.accounts), entry.total, true
+}
+
+func (c *accountsListTTLCache) set(key string, accounts []Account, total int64, version string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	// 顺带清理已过期条目：过期 key 不应占用容量上限
+	for k, e := range c.items {
+		if now.After(e.exp) {
+			c.deleteKeyLocked(k)
+		}
+	}
+	// 覆盖写入视为"最近使用"：从旧位置移除后追加到队尾
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.items[key] = accountsListCacheEntry{
+		accounts: deepCopyAccounts(accounts),
+		total:    total,
+		version:  version,
+		exp:      now.Add(accountsListCacheTTL),
+	}
+	c.order = append(c.order, key)
+	// 容量超限：淘汰最旧（队首）条目
+	for len(c.order) > accountsListCacheMaxEntries {
+		c.deleteKeyLocked(c.order[0])
+	}
+}
+
+// deleteKeyLocked 从 items 与 order 中同步删除（调用方需持有 mu）。
+func (c *accountsListTTLCache) deleteKeyLocked(key string) {
+	if _, ok := c.items[key]; !ok {
+		return
+	}
+	delete(c.items, key)
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// deepCopyAccounts 深拷贝账号列表（结构复制，避免 JSON 往返解码开销）。
+// 浅拷贝只复制切片头，调用方就地修改返回的嵌套 map/slice 会把修改带进
+// 缓存条目；这里递归复制嵌套的 map/slice。
+func deepCopyAccounts(accounts []Account) []Account {
+	if len(accounts) == 0 {
+		return nil
+	}
+	out := make([]Account, len(accounts))
+	for i := range accounts {
+		out[i] = deepCopyAccount(accounts[i])
+	}
+	return out
+}
+
+func deepCopyAccount(a Account) Account {
+	a.Credentials = deepCopyAnyMap(a.Credentials)
+	a.Extra = deepCopyAnyMap(a.Extra)
+	a.AccountGroups = append([]AccountGroup(nil), a.AccountGroups...)
+	a.GroupIDs = append([]int64(nil), a.GroupIDs...)
+	a.Groups = deepCopyGroups(a.Groups)
+	// 非持久化的 model_mapping 热路径缓存按 Account 实例归属：复制后
+	// Credentials 指针已变化，旧缓存失效，置零避免共享（首次访问重新计算）。
+	// 用全新的 atomic.Value 整体置零（Load 返回 nil 即未就绪）。
+	a.modelMappingCache = atomic.Value{}
+	return a
+}
+
+func deepCopyAnyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCopyReflectValue(reflect.ValueOf(v)).Interface()
+	}
+	return out
+}
+
+// deepCopyReflectValue 深拷贝任意值：map/slice 递归新建（nil map/slice 与
+// nil 接口值保持原样），其余类型直接共享——调用方能借以改写缓存数据的
+// 容器只有 map 与 slice；标量/指针/结构体在接口中按值传递或约定不修改。
+func deepCopyReflectValue(rv reflect.Value) reflect.Value {
+	if rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return rv
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), deepCopyReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(deepCopyReflectValue(rv.Index(i)))
+		}
+		return out
+	default:
+		return rv
+	}
+}
+
+// deepCopyGroups 复制账号关联分组：每个 *Group 重建为新值，嵌套的
+// map/slice 与指针字段所指值一并复制。Group.AccountGroups 内嵌
+// Account/Group 指针（可能回指 Account 构成环），只复制切片本身、共享指针。
+func deepCopyGroups(groups []*Group) []*Group {
+	if len(groups) == 0 {
+		return nil
+	}
+	out := make([]*Group, len(groups))
+	for i, g := range groups {
+		if g == nil {
+			continue
+		}
+		copied := *g
+		copied.ModelRouting = deepCopyModelRouting(g.ModelRouting)
+		copied.SupportedModelScopes = append([]string(nil), g.SupportedModelScopes...)
+		copied.MessagesDispatchModelConfig.ExactModelMappings = copyStringMap(g.MessagesDispatchModelConfig.ExactModelMappings)
+		copied.ModelsListConfig.Models = append([]string(nil), g.ModelsListConfig.Models...)
+		copied.DailyLimitUSD = copyFloat64Ptr(g.DailyLimitUSD)
+		copied.WeeklyLimitUSD = copyFloat64Ptr(g.WeeklyLimitUSD)
+		copied.MonthlyLimitUSD = copyFloat64Ptr(g.MonthlyLimitUSD)
+		copied.ImagePrice1K = copyFloat64Ptr(g.ImagePrice1K)
+		copied.ImagePrice2K = copyFloat64Ptr(g.ImagePrice2K)
+		copied.ImagePrice4K = copyFloat64Ptr(g.ImagePrice4K)
+		copied.WebSearchPricePerCall = copyFloat64Ptr(g.WebSearchPricePerCall)
+		copied.FallbackGroupID = copyInt64Ptr(g.FallbackGroupID)
+		copied.FallbackGroupIDOnInvalidRequest = copyInt64Ptr(g.FallbackGroupIDOnInvalidRequest)
+		copied.AccountGroups = append([]AccountGroup(nil), g.AccountGroups...)
+		out[i] = &copied
+	}
+	return out
+}
+
+func deepCopyModelRouting(routing map[string][]int64) map[string][]int64 {
+	if routing == nil {
+		return nil
+	}
+	out := make(map[string][]int64, len(routing))
+	for k, ids := range routing {
+		out[k] = append([]int64(nil), ids...)
+	}
+	return out
+}
+
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyFloat64Ptr(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func copyInt64Ptr(p *int64) *int64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func accountsListCacheKey(page, pageSize int, filters AccountListFilters, sortBy, sortOrder string) string {
+	return fmt.Sprintf("%d|%d|%s|%s|%s|%s|%d|%s|%s|%s|%s",
+		page, pageSize, filters.Platform, filters.AccountType, filters.Status,
+		filters.Search, filters.GroupID, filters.PrivacyMode, filters.PlanType, sortBy, sortOrder)
 }
 
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {

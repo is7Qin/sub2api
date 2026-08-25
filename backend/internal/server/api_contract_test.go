@@ -236,6 +236,7 @@ func TestAPIContracts(t *testing.T) {
 					"last_used_at": null,
 					"quota": 0,
 					"quota_used": 0,
+					"concurrency": 0,
 					"rate_limit_5h": 0,
 					"rate_limit_1d": 0,
 					"rate_limit_7d": 0,
@@ -286,6 +287,7 @@ func TestAPIContracts(t *testing.T) {
 							"last_used_at": null,
 							"quota": 0,
 							"quota_used": 0,
+							"concurrency": 0,
 							"rate_limit_5h": 0,
 							"rate_limit_1d": 0,
 							"rate_limit_7d": 0,
@@ -366,6 +368,8 @@ func TestAPIContracts(t *testing.T) {
 						"require_oauth_only": false,
 						"require_privacy_set": false,
 						"rpm_limit": 0,
+						"openai_long_context_billing_enabled": false,
+						"web_search_price_per_call": null,
 						"created_at": "2025-01-02T03:04:05Z",
 						"updated_at": "2025-01-02T03:04:05Z"
 					}
@@ -472,7 +476,7 @@ func TestAPIContracts(t *testing.T) {
 						ID:                  1,
 						UserID:              1,
 						APIKeyID:            100,
-						AccountID:           200,
+						AccountID:           ptr(int64(200)),
 						Model:               "claude-3",
 						InputTokens:         10,
 						OutputTokens:        20,
@@ -487,7 +491,7 @@ func TestAPIContracts(t *testing.T) {
 						ID:           2,
 						UserID:       1,
 						APIKeyID:     100,
-						AccountID:    200,
+						AccountID:    ptr(int64(200)),
 						Model:        "claude-3",
 						InputTokens:  5,
 						OutputTokens: 15,
@@ -527,7 +531,7 @@ func TestAPIContracts(t *testing.T) {
 						ID:                    1,
 						UserID:                1,
 						APIKeyID:              100,
-						AccountID:             200,
+						AccountID:             ptr(int64(200)),
 						AccountRateMultiplier: ptr(0.5),
 						RequestID:             "req_123",
 						Model:                 "claude-3",
@@ -851,11 +855,11 @@ func TestAPIContracts(t *testing.T) {
 					"openai_advanced_scheduler_enabled": true,
 					"openai_allow_claude_code_codex_plugin": false,
 					"openai_codex_ua_profile": {
-						"codex_version": "0.136.0",
+						"codex_version": "0.144.1",
 						"originator": "codex-tui",
 						"os_fingerprint": "Mac OS 26.5.0; arm64",
 						"terminal_token": "Apple_Terminal/470.2",
-						"user_agent": "codex-tui/0.136.0 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (codex-tui; 0.136.0)"
+						"user_agent": "codex-tui/0.144.1 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (codex-tui; 0.144.1)"
 					},
 					"openai_codex_user_agent": "",
 					"openai_fast_policy_settings": {
@@ -892,6 +896,9 @@ func TestAPIContracts(t *testing.T) {
 					"account_quota_notify_emails": [],
 					"channel_monitor_enabled": true,
 					"channel_monitor_default_interval_seconds": 60,
+					"channel_monitor_mode": "v1",
+					"channel_monitor_hide_throughput": true,
+
 					"available_channels_enabled": false,
 					"risk_control_enabled": false,
 					"affiliate_enabled": false,
@@ -1096,11 +1103,11 @@ func TestAPIContracts(t *testing.T) {
 					"openai_advanced_scheduler_enabled": false,
 					"openai_allow_claude_code_codex_plugin": false,
 					"openai_codex_ua_profile": {
-						"codex_version": "0.136.0",
+						"codex_version": "0.144.1",
 						"originator": "codex-tui",
 						"os_fingerprint": "Mac OS 26.5.0; arm64",
 						"terminal_token": "Apple_Terminal/470.2",
-						"user_agent": "codex-tui/0.136.0 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (codex-tui; 0.136.0)"
+						"user_agent": "codex-tui/0.144.1 (Mac OS 26.5.0; arm64) Apple_Terminal/470.2 (codex-tui; 0.144.1)"
 					},
 					"openai_codex_user_agent": "",
 					"openai_fast_policy_settings": {
@@ -1135,6 +1142,9 @@ func TestAPIContracts(t *testing.T) {
 					"account_quota_notify_emails": [],
 					"channel_monitor_enabled": true,
 					"channel_monitor_default_interval_seconds": 60,
+					"channel_monitor_mode": "v1",
+					"channel_monitor_hide_throughput": true,
+
 					"available_channels_enabled": false,
 					"risk_control_enabled": false,
 					"affiliate_enabled": false,
@@ -2062,6 +2072,9 @@ func (stubUserSubscriptionRepo) Create(ctx context.Context, sub *service.UserSub
 func (stubUserSubscriptionRepo) GetByID(ctx context.Context, id int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
+func (r stubUserSubscriptionRepo) GetByIDForUpdate(ctx context.Context, id int64) (*service.UserSubscription, error) {
+	return r.GetByID(ctx, id)
+}
 func (stubUserSubscriptionRepo) GetByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
@@ -2104,10 +2117,10 @@ func (stubUserSubscriptionRepo) UpdateStatus(ctx context.Context, subscriptionID
 func (stubUserSubscriptionRepo) UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error {
 	return errors.New("not implemented")
 }
-func (stubUserSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, start time.Time) error {
+func (stubUserSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, dailyStart, periodicStart time.Time) error {
 	return errors.New("not implemented")
 }
-func (stubUserSubscriptionRepo) ResetUsageWindows(ctx context.Context, id int64, resetDaily, resetWeekly, resetMonthly bool, newWindowStart time.Time) error {
+func (stubUserSubscriptionRepo) ResetUsageWindows(ctx context.Context, id int64, resetDaily, resetWeekly, resetMonthly bool, dailyStart, periodicStart time.Time) error {
 	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) ResetDailyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {

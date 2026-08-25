@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -94,6 +95,39 @@ func (r *schedulerOutboxRepository) ListAfterAndReleaseDedup(ctx context.Context
 		return nil, err
 	}
 	return events, nil
+}
+
+// CleanupConsumed 批量删除 id <= watermark 的已消费行。
+// watermark 仅在整批事件全部成功后才推进（scheduler_snapshot_service），
+// 因此这些行已完全消费（含 dedup_key 释放），删除不丢事件；
+// enqueue 的 dedup 冲突子句引用 MAX(id)，不受删除影响。
+func (r *schedulerOutboxRepository) CleanupConsumed(ctx context.Context, watermark int64, limit int) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("scheduler outbox database is nil")
+	}
+	if watermark <= 0 {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = 5000
+	}
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM scheduler_outbox
+		WHERE id IN (
+			SELECT id FROM scheduler_outbox
+			WHERE id <= $1
+			ORDER BY id
+			LIMIT $2
+		)
+	`, watermark, limit)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 func (r *schedulerOutboxRepository) MaxID(ctx context.Context) (int64, error) {

@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/imroc/req/v3"
 	"github.com/tidwall/gjson"
 )
@@ -1116,4 +1118,59 @@ func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {
 			t.Fatalf("expected ResetsAt=nil for expired 7d window, got %v", progress.ResetsAt)
 		}
 	})
+}
+
+type openAIWindowStatsRepoStub struct {
+	UsageLogRepository
+	callCount atomic.Int32
+}
+
+func (s *openAIWindowStatsRepoStub) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
+	s.callCount.Add(1)
+	return &usagestats.AccountStats{Requests: 1, Tokens: 100, Cost: 0.5, StandardCost: 0.5, UserCost: 0.5}, nil
+}
+
+func TestAccountUsageService_OpenAIWindowStatsCache(t *testing.T) {
+	repo := &openAIWindowStatsRepoStub{}
+	svc := &AccountUsageService{
+		usageLogRepo: repo,
+		cache:        NewUsageCache(),
+	}
+	ctx := context.Background()
+	start := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+
+	// 首次查询入库；TTL 内同起点第二次命中缓存
+	if got := svc.openAIAccountWindowStats(ctx, 7, "5h", start, false); got == nil || got.Requests != 1 {
+		t.Fatalf("first call: unexpected result %+v", got)
+	}
+	if got := svc.openAIAccountWindowStats(ctx, 7, "5h", start, false); got == nil || got.Requests != 1 {
+		t.Fatalf("cached call: unexpected result %+v", got)
+	}
+	if got := repo.callCount.Load(); got != 1 {
+		t.Fatalf("DB call count = %d, want 1 (second call must hit cache)", got)
+	}
+
+	// 窗口起点变化 → 缓存失效重查
+	if svc.openAIAccountWindowStats(ctx, 7, "5h", start.Add(6*time.Hour), false) == nil {
+		t.Fatal("window-rolled call returned nil")
+	}
+	if got := repo.callCount.Load(); got != 2 {
+		t.Fatalf("DB call count after window roll = %d, want 2", got)
+	}
+
+	// 不同窗口类型独立缓存
+	if svc.openAIAccountWindowStats(ctx, 7, "7d", start, false) == nil {
+		t.Fatal("7d call returned nil")
+	}
+	if got := repo.callCount.Load(); got != 3 {
+		t.Fatalf("DB call count after 7d = %d, want 3", got)
+	}
+
+	// force=true 绕过缓存
+	if svc.openAIAccountWindowStats(ctx, 7, "5h", start, true) == nil {
+		t.Fatal("force call returned nil")
+	}
+	if got := repo.callCount.Load(); got != 4 {
+		t.Fatalf("DB call count after force = %d, want 4", got)
+	}
 }

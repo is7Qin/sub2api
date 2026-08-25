@@ -16,6 +16,8 @@ import (
 
 const upstreamModelsBodyLimit int64 = 8 << 20
 
+var openAICodexUpstreamModelsURL = "https://chatgpt.com/backend-api/codex/models"
+
 // UpstreamModelSyncErrorKind classifies model sync failures for safe HTTP mapping.
 type UpstreamModelSyncErrorKind string
 
@@ -83,6 +85,9 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 
 	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth {
 		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
+	}
+	if account.IsOpenAI() && account.IsOpenAIOAuthLike() {
+		return s.fetchOpenAIOAuthUpstreamModels(ctx, account)
 	}
 
 	if s.httpUpstream == nil {
@@ -278,6 +283,130 @@ func (s *AccountTestService) buildOpenAIUpstreamModelsRequest(ctx context.Contex
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	return req, nil
+}
+
+func (s *AccountTestService) fetchOpenAIOAuthUpstreamModels(ctx context.Context, account *Account) ([]string, error) {
+	if s.httpUpstream == nil {
+		return nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
+	}
+	usedPersonalAccessToken := false
+	buildRequest := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICodexUpstreamModelsURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		authToken := account.GetOpenAICodexBearerToken()
+		usedPersonalAccessToken = !account.IsOpenAIAgentIdentity() && authToken != "" && authToken == strings.TrimSpace(account.GetOpenAIPersonalAccessToken())
+		headers, err := s.buildOpenAIAccountTestAuthenticationHeaders(ctx, account, authToken)
+		if err != nil {
+			return nil, err
+		}
+		req.Header = headers
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Originator", codexOfficialOriginator)
+		req.Header.Set("User-Agent", codexCLIUserAgent)
+		req.Header.Set("Version", codexCLIVersion)
+		if accountID := account.GetChatGPTAccountID(); accountID != "" {
+			req.Header.Set("chatgpt-account-id", accountID)
+		}
+		applyOpenAIChatGPTFedRAMPHeader(req, account)
+		if _, err := s.ensureOpenAICodexFingerprint(ctx, account, req); err != nil {
+			return nil, err
+		}
+		return req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)), nil
+	}
+
+	request, err := buildRequest()
+	if err != nil {
+		return nil, newUpstreamModelSyncConfigError("Failed to build OpenAI Codex model list request", err)
+	}
+	resp, err := s.doUpstreamModelsRequest(request, upstreamModelsProxyURL(account), account)
+	if err != nil {
+		return nil, newUpstreamModelSyncUpstreamError("Failed to request upstream model list", err)
+	}
+	body, readErr := readUpstreamModelsResponse(resp)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
+		expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
+		if err := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWSInvalidator, &s.agentIdentityTaskMu, account, expectedTaskID); err != nil {
+			return nil, newUpstreamModelSyncUpstreamError("Failed to recover Agent Identity task", err)
+		}
+		request, err = buildRequest()
+		if err != nil {
+			return nil, newUpstreamModelSyncConfigError("Failed to rebuild OpenAI Codex model list request", err)
+		}
+		resp, err = s.doUpstreamModelsRequest(request, upstreamModelsProxyURL(account), account)
+		if err != nil {
+			return nil, newUpstreamModelSyncUpstreamError("Failed to request upstream model list", err)
+		}
+		body, readErr = readUpstreamModelsResponse(resp)
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	// Agent Identity 401s can be task-scoped and belong exclusively to the
+	// bounded task recovery above. Only ordinary OAuth bearer failures are
+	// authoritative enough to enter shared account-state handling.
+	if resp.StatusCode == http.StatusUnauthorized && account.IsOpenAIOAuthLike() && !account.IsOpenAIAgentIdentity() && s.rateLimitService != nil {
+		stateCtx, cancel := openAIAccountStateContext(ctx)
+		defer cancel()
+		s.rateLimitService.HandleOpenAICodexBearerError(stateCtx, account, resp.StatusCode, resp.Header, body, usedPersonalAccessToken)
+	}
+	body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, body)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		// Keep upstream response bodies out of returned errors. Shared state handling
+		// receives the bounded raw body above; callers only need the status code.
+		return nil, newUpstreamModelSyncUpstreamError(
+			fmt.Sprintf("Upstream model list request failed with HTTP %d", resp.StatusCode),
+			fmt.Errorf("upstream model list returned HTTP %d", resp.StatusCode),
+		)
+	}
+	models, err := extractCodexUpstreamModelIDs(body)
+	if err != nil {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream model list response was not valid JSON", err)
+	}
+	if len(models) == 0 {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
+	return models, nil
+}
+
+func readUpstreamModelsResponse(resp *http.Response) ([]byte, error) {
+	if resp == nil {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream model list returned no response", nil)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamModelsBodyLimit+1))
+	if err != nil {
+		return nil, newUpstreamModelSyncUpstreamError("Failed to read upstream model list", err)
+	}
+	if int64(len(body)) > upstreamModelsBodyLimit {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream model list response is too large", fmt.Errorf("response exceeds %d bytes", upstreamModelsBodyLimit))
+	}
+	return body, nil
+}
+
+func extractCodexUpstreamModelIDs(body []byte) ([]string, error) {
+	var response struct {
+		Models []struct {
+			Slug string `json:"slug"`
+			ID   string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(response.Models))
+	for _, entry := range response.Models {
+		model := strings.TrimSpace(entry.Slug)
+		if model == "" {
+			model = strings.TrimSpace(entry.ID)
+		}
+		models = append(models, model)
+	}
+	return dedupeAndSortModelIDs(models), nil
 }
 
 func (s *AccountTestService) buildGeminiUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {

@@ -12,6 +12,7 @@ func TestAPIKeyService_RejectsLegacyAuthSnapshotVersions(t *testing.T) {
 	}{
 		{name: "v10 without models_list_config", version: 10},
 		{name: "v13 without exclusive group auth fields", version: 13},
+		{name: "v15 without OpenAI long-context billing policy", version: 15},
 	}
 
 	for _, tt := range tests {

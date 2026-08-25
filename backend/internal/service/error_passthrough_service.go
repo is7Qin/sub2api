@@ -152,6 +152,20 @@ func (s *ErrorPassthroughService) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// MatchUnknownRule matches only facts that are not recognized by built-in policy.
+// It deliberately uses bounded InternalMatchText instead of the raw upstream body.
+// MatchUnknownRule matches a fact only after built-in recognition has declined it.
+func (s *ErrorPassthroughService) MatchUnknownRule(fact UpstreamErrorFact) *model.ErrorPassthroughRule {
+	if _, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+		return nil
+	}
+	statusCode := 0
+	if fact.HTTPStatusKnown {
+		statusCode = fact.HTTPStatus
+	}
+	return s.MatchRule(fact.Provider, statusCode, []byte(fact.InternalMatchText))
+}
+
 // MatchRule 匹配透传规则
 // 返回第一个匹配的规则，如果没有匹配则返回 nil
 func (s *ErrorPassthroughService) MatchRule(platform string, statusCode int, body []byte) *model.ErrorPassthroughRule {

@@ -148,12 +148,14 @@ func (s *httpUpstreamStub) DoWithTLS(_ *http.Request, _ string, _ int64, _ int, 
 type queuedHTTPUpstreamStub struct {
 	responses     []*http.Response
 	errors        []error
+	requests      []*http.Request
 	requestBodies [][]byte
 	callCount     int
 	onCall        func(*http.Request, *queuedHTTPUpstreamStub)
 }
 
 func (s *queuedHTTPUpstreamStub) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	s.requests = append(s.requests, req)
 	if req != nil && req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		s.requestBodies = append(s.requestBodies, body)
@@ -1195,6 +1197,35 @@ func TestAntigravityGatewayService_Forward_UpstreamAccountIgnoresConfiguredProje
 	require.Contains(t, writer.Body.String(), `"text":"ok"`)
 }
 
+func TestAntigravityGatewayService_Forward_UpstreamAccountPreservesAdmittedAttemptID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":2}}`)),
+	}}}
+	svc := &AntigravityGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID: 106, Name: "acc-forward-upstream-attempt", Platform: PlatformAntigravity,
+		Type: AccountTypeUpstream, Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "upstream-key", "base_url": "https://gateway.example.com/antigravity"},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.NotEmpty(t, HTTPAttemptID(upstream.requests[0].Context()))
+	require.Equal(t, HTTPAttemptID(upstream.requests[0].Context()), result.AttemptID)
+	require.Equal(t, 1, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+}
+
 func TestAntigravityGatewayService_Forward_PromptTooLong(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	writer := httptest.NewRecorder()
@@ -1932,6 +1963,110 @@ func TestStreamUpstreamResponse_NormalComplete(t *testing.T) {
 	require.Contains(t, body, "event: message_start")
 	require.Contains(t, body, "content_block_delta")
 	require.Contains(t, body, "message_delta")
+}
+
+func TestHandleGeminiStreamToNonStreaming_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":17,"candidatesTokenCount":9}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleGeminiStreamToNonStreaming(c, resp, time.Now())
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 17, result.usage.InputTokens)
+	require.Equal(t, 9, result.usage.OutputTokens)
+}
+
+func TestHandleClaudeStreamToNonStreaming_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":19,"candidatesTokenCount":10}}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleClaudeStreamToNonStreaming(c, resp, time.Now(), "claude-sonnet-4-5")
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 19, result.usage.InputTokens)
+	require.Equal(t, 10, result.usage.OutputTokens)
+}
+
+func TestHandleGeminiStreamingResponse_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 11, result.usage.InputTokens)
+	require.Equal(t, 7, result.usage.OutputTokens)
+}
+
+func TestHandleClaudeStreamingResponse_PartialUsageAfterUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+	go func() {
+		_, _ = pw.Write([]byte(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":8}}}` + "\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleClaudeStreamingResponse(c, resp, time.Now(), "claude-sonnet-4-5")
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 13, result.usage.InputTokens)
+	require.Equal(t, 8, result.usage.OutputTokens)
 }
 
 // TestHandleGeminiStreamingResponse_NormalComplete

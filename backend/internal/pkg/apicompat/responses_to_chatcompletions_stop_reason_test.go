@@ -173,6 +173,23 @@ func TestFinalizeAnthropicResponsesStreamChainsMaxTokensToChatLength(t *testing.
 	require.Empty(t, FinalizeResponsesChatStream(chatState), "chained finalizer must not emit a second terminal")
 }
 
+func TestResponsesEventToChatChunksResponseFailedDoesNotSynthesizeStop(t *testing.T) {
+	state := NewResponsesEventToChatState()
+	state.ID = "resp_failed"
+	state.Model = "gpt-5.5"
+
+	chunks := ResponsesEventToChatChunks(&ResponsesStreamEvent{
+		Type: "response.failed",
+		Response: &ResponsesResponse{
+			Status: "failed",
+			Error:  &ResponsesError{Code: "context_length_exceeded", Message: "context window"},
+		},
+	}, state)
+
+	require.Empty(t, chunks)
+	require.False(t, state.Finalized, "the service error boundary owns failed-terminal rendering")
+}
+
 func TestResponsesEventToChatChunksContentFilterWireSemantics(t *testing.T) {
 	state := NewResponsesEventToChatState()
 	state.ID = "resp_test"

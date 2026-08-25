@@ -1,9 +1,12 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
@@ -83,6 +86,36 @@ type codexOAuthTransformOptions struct {
 	IsCompact               bool
 	SkipDefaultInstructions bool
 	PreserveToolCallIDs     bool
+	PreserveNamespaces      bool
+}
+
+const (
+	codexCallIDMaxLength = 64
+	codexCallIDPrefix    = "fc_"
+)
+
+func normalizeCodexCallID(id string) string {
+	candidate := id
+	switch {
+	case id == "":
+		return ""
+	case strings.HasPrefix(id, "fc"):
+	case strings.HasPrefix(id, "call_"):
+		candidate = codexCallIDPrefix + strings.TrimPrefix(id, "call_")
+	default:
+		candidate = codexCallIDPrefix + id
+	}
+	if len(candidate) <= codexCallIDMaxLength {
+		return candidate
+	}
+	return compactCodexCallID(candidate)
+}
+
+func compactCodexCallID(id string) string {
+	// Keep this domain separate from hashes used for unrelated identifiers.
+	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + id))
+	encoded := hex.EncodeToString(digest[:])
+	return codexCallIDPrefix + encoded[:codexCallIDMaxLength-len(codexCallIDPrefix)]
 }
 
 const (
@@ -181,6 +214,15 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		}
 	}
 
+	// Normalize ordinary messages before former system messages are converted to
+	// developer, so retained non-lossless system content remains unchanged.
+	if input, ok := reqBody["input"].([]any); ok {
+		if normalizedInput, modified := normalizeCodexMessageContentText(input); modified {
+			reqBody["input"] = normalizedInput
+			result.Modified = true
+		}
+	}
+
 	// Codex OAuth does not accept role:"system". JSON object mode requires its
 	// guidance in input; other requests retain the established instructions form.
 	if extractSystemMessagesFromInput(reqBody, isJSONObjMode(reqBody)) {
@@ -205,13 +247,10 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 			input = normalizedInput
 			result.Modified = true
 		}
-		if normalizedInput, modified := normalizeCodexMessageContentText(input); modified {
-			input = normalizedInput
-			result.Modified = true
-		}
 		input = filterCodexInputWithOptions(input, codexInputFilterOptions{
 			PreserveReferences: needsToolContinuation,
 			PreserveCallIDs:    opts.PreserveToolCallIDs,
+			PreserveNamespaces: opts.PreserveNamespaces,
 		})
 		reqBody["input"] = input
 		result.Modified = true
@@ -356,7 +395,10 @@ func normalizeCodexToolRoleMessages(input []any) ([]any, bool) {
 			}
 			fallback["role"] = "user"
 			delete(fallback, "tool_call_id")
-			normalized = append(normalized, fallback)
+			// Only the no-ID fallback becomes an ordinary message; normalize it here
+			// without touching valid-ID tool content or retained developer messages.
+			normalizedFallback, _ := normalizeCodexMessageContentText([]any{fallback})
+			normalized = append(normalized, normalizedFallback[0])
 			modified = true
 			continue
 		}
@@ -396,6 +438,12 @@ func normalizeCodexMessageContentText(input []any) ([]any, bool) {
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok || strings.TrimSpace(firstNonEmptyString(m["type"])) != "message" {
+			normalized = append(normalized, item)
+			continue
+		}
+		// Exact system content must be classified before coercion, while tool content
+		// follows the tool-role converter's established trimmed-role recognition.
+		if isExactCodexSystemRole(m) || strings.TrimSpace(firstNonEmptyString(m["role"])) == "tool" {
 			normalized = append(normalized, item)
 			continue
 		}
@@ -524,6 +572,20 @@ func codexModelLookupKey(modelID string) string {
 	if strings.Contains(modelID, "/") {
 		parts := strings.Split(modelID, "/")
 		modelID = parts[len(parts)-1]
+	}
+	// 快速路径：已符合键规范（小写、无空白）时原样返回。热路径判别
+	// （IsModelSupported）每请求调用，慢速路径的 ToLower/Fields/Join 会产生
+	// 分配；逐 rune 对照 unicode.ToLower / unicode.IsSpace 保证与慢速路径
+	// 输出完全一致。
+	canonical := true
+	for _, r := range modelID {
+		if unicode.IsSpace(r) || unicode.ToLower(r) != r {
+			canonical = false
+			break
+		}
+	}
+	if canonical {
+		return modelID
 	}
 	return strings.ToLower(strings.Join(strings.Fields(modelID), "-"))
 }
@@ -1072,9 +1134,15 @@ func extractTextFromContent(content any) string {
 	}
 }
 
+func isExactCodexSystemRole(message map[string]any) bool {
+	role, ok := message["role"].(string)
+	return ok && role == "system"
+}
+
 // extractSystemMessagesFromInput removes OAuth-unsupported system roles. JSON
 // object mode keeps them in place as developer messages because upstream
-// validates JSON guidance in input. Other modes move their text to instructions.
+// validates JSON guidance in input. Other modes move only losslessly text-only
+// content to instructions and keep all other content intact as developer input.
 func extractSystemMessagesFromInput(reqBody map[string]any, preserveInInput bool) bool {
 	input, ok := reqBody["input"].([]any)
 	if !ok || len(input) == 0 {
@@ -1084,23 +1152,28 @@ func extractSystemMessagesFromInput(reqBody map[string]any, preserveInInput bool
 	var systemTexts []string
 	remaining := make([]any, 0, len(input))
 	modified := false
+	promotionBlocked := preserveInInput
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
 			remaining = append(remaining, item)
 			continue
 		}
-		if role, _ := m["role"].(string); role != "system" {
+		if !isExactCodexSystemRole(m) {
 			remaining = append(remaining, item)
 			continue
 		}
 		modified = true
-		if preserveInInput {
+		text, lossless := extractLosslessTextFromContent(m["content"])
+		// Promotion is a leading prefix only: once a system message must remain in
+		// input, retaining all later system messages preserves their effective order.
+		if promotionBlocked || !lossless {
+			promotionBlocked = true
 			m["role"] = "developer"
 			remaining = append(remaining, item)
 			continue
 		}
-		if text := extractTextFromContent(m["content"]); text != "" {
+		if text != "" {
 			systemTexts = append(systemTexts, text)
 		}
 	}
@@ -1119,6 +1192,33 @@ func extractSystemMessagesFromInput(reqBody map[string]any, preserveInInput bool
 		}
 	}
 	return true
+}
+
+func extractLosslessTextFromContent(content any) (string, bool) {
+	switch v := content.(type) {
+	case string:
+		return v, true
+	case []any:
+		var text strings.Builder
+		for _, part := range v {
+			m, ok := part.(map[string]any)
+			if !ok || len(m) != 2 {
+				return "", false
+			}
+			typeName, ok := m["type"].(string)
+			if !ok || (typeName != "text" && typeName != "input_text" && typeName != "output_text") {
+				return "", false
+			}
+			partText, ok := m["text"].(string)
+			if !ok {
+				return "", false
+			}
+			text.WriteString(partText)
+		}
+		return text.String(), true
+	default:
+		return "", false
+	}
 }
 
 func isJSONObjMode(reqBody map[string]any) bool {
@@ -1185,6 +1285,7 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 type codexInputFilterOptions struct {
 	PreserveReferences bool
 	PreserveCallIDs    bool
+	PreserveNamespaces bool
 }
 
 // filterCodexInput 按需过滤 item_reference 与 id。
@@ -1231,16 +1332,13 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		// 仅修正真正的 tool/function call 标识，避免误改普通 message/reasoning id；
 		// 若 item_reference 指向 legacy call_* 标识，则仅修正该引用本身。
 		fixCallIDPrefix := func(id string) string {
-			if opts.PreserveCallIDs {
-				return id
+			if !opts.PreserveCallIDs {
+				return normalizeCodexCallID(id)
 			}
-			if id == "" || strings.HasPrefix(id, "fc") {
-				return id
+			if len(id) > codexCallIDMaxLength {
+				return compactCodexCallID(id)
 			}
-			if strings.HasPrefix(id, "call_") {
-				return "fc_" + strings.TrimPrefix(id, "call_")
-			}
-			return "fc_" + id
+			return id
 		}
 
 		if typ == "item_reference" {
@@ -1272,9 +1370,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			copied = true
 		}
 
-		// `namespace` is client-facing Responses metadata. ChatGPT's Codex
-		// request schema rejects it when a prior tool call is replayed.
-		if (typ == "function_call" || typ == "custom_tool_call") && m["namespace"] != nil {
+		// Compact and compatibility-flattened requests reject replayed namespace
+		// metadata; native Codex Responses requires it for multi-turn tool calls.
+		if !opts.PreserveNamespaces && (typ == "function_call" || typ == "custom_tool_call") && m["namespace"] != nil {
 			ensureCopy()
 			delete(newItem, "namespace")
 		}

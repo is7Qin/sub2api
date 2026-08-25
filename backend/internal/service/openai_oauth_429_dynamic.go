@@ -8,12 +8,16 @@ import (
 
 type openAIOAuth429DynamicWindow struct {
 	startedAt time.Time
+	planType  string
+	policy    OpenAIOAuth429DynamicPolicy
+	usage5h   *float64
+	usage7d   *float64
 	total     int
 	count429  int
 	limiting  bool
 }
 
-func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context, account *Account, statusCode int) {
+func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context, account *Account, statusCode int, snapshots ...*OpenAICodexUsageSnapshot) {
 	if s == nil || s.accountRepo == nil || !isOpenAIOAuthAccount(account) {
 		return
 	}
@@ -22,15 +26,16 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		return
 	}
 
-	settings, ok := s.getOpenAIOAuth429DynamicSettings(ctx, account.ID)
-	if !ok || !settings.Enabled {
+	policy, ok := s.getOpenAIOAuth429DynamicSettings(ctx, account)
+	if !ok || !policy.Enabled {
 		// 禁用后清理已开启的窗口，避免成功请求继续命中动态统计热路径。
 		s.ResetOpenAIOAuth429DynamicStats(account.ID)
 		return
 	}
 
 	now := time.Now()
-	window := time.Duration(settings.WindowSeconds) * time.Second
+	planType := openAIAccountPlanType(account)
+	window := time.Duration(policy.WindowSeconds) * time.Second
 
 	s.openAIOAuth429DynamicMu.Lock()
 	if s.openAIOAuth429DynamicStat == nil {
@@ -43,8 +48,22 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 			s.openAIOAuth429DynamicMu.Unlock()
 			return
 		}
-		stat = &openAIOAuth429DynamicWindow{startedAt: now}
+		stat = &openAIOAuth429DynamicWindow{startedAt: now, planType: planType, policy: *policy}
 		s.openAIOAuth429DynamicStat[account.ID] = stat
+	} else if stat.planType != planType || stat.policy != *policy {
+		if !is429 {
+			delete(s.openAIOAuth429DynamicStat, account.ID)
+			s.openAIOAuth429DynamicMu.Unlock()
+			return
+		}
+		stat.startedAt = now
+		stat.planType = planType
+		stat.policy = *policy
+		stat.usage5h = nil
+		stat.usage7d = nil
+		stat.total = 0
+		stat.count429 = 0
+		stat.limiting = false
 	} else if now.Sub(stat.startedAt) > window {
 		if !is429 {
 			delete(s.openAIOAuth429DynamicStat, account.ID)
@@ -52,6 +71,8 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 			return
 		}
 		stat.startedAt = now
+		stat.usage5h = nil
+		stat.usage7d = nil
 		stat.total = 0
 		stat.count429 = 0
 		stat.limiting = false
@@ -68,7 +89,22 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	total := stat.total
 	count429 := stat.count429
 	ratio := float64(count429) / float64(total)
-	shouldLimit := total >= settings.MinSamples && count429 >= settings.Min429 && ratio >= settings.RatioThreshold
+	if len(snapshots) > 0 {
+		if limits := snapshots[0].Normalize(); limits != nil {
+			if limits.Used5hPercent != nil {
+				value := *limits.Used5hPercent
+				stat.usage5h = &value
+			}
+			if limits.Used7dPercent != nil {
+				value := *limits.Used7dPercent
+				stat.usage7d = &value
+			}
+		}
+	}
+	shouldLimit := total >= policy.MinSamples && count429 >= policy.Min429 && ratio >= policy.RatioThreshold
+	if shouldLimit && policy.UsageWindowCheckEnabled {
+		shouldLimit = openAIOAuth429UsageWindowReached(stat.usage5h, stat.usage7d, account.CreatedAt, now, policy)
+	}
 	if shouldLimit {
 		stat.limiting = true
 	}
@@ -78,7 +114,7 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 		return
 	}
 
-	resetAt := now.Add(time.Duration(settings.BlockSeconds) * time.Second)
+	resetAt := now.Add(time.Duration(policy.BlockSeconds) * time.Second)
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		s.openAIOAuth429DynamicMu.Lock()
 		if current := s.openAIOAuth429DynamicStat[account.ID]; current == stat {
@@ -97,11 +133,24 @@ func (s *RateLimitService) RecordOpenAIOAuthUpstreamOutcome(ctx context.Context,
 	slog.Info("openai_oauth_429_dynamic_rate_limited",
 		"account_id", account.ID,
 		"reset_at", resetAt,
-		"window_seconds", settings.WindowSeconds,
+		"window_seconds", policy.WindowSeconds,
 		"samples", total,
 		"count_429", count429,
 		"ratio", ratio,
 	)
+}
+
+func openAIOAuth429UsageWindowReached(used5h, used7d *float64, createdAt, now time.Time, policy *OpenAIOAuth429DynamicPolicy) bool {
+	if used5h == nil && used7d == nil {
+		// Give newly created accounts time to obtain upstream usage data before
+		// missing data falls back to the original dynamic 429 behavior.
+		if createdAt.IsZero() {
+			return false
+		}
+		return now.After(createdAt.Add(time.Duration(policy.UsageWindowMissingDataFallbackSeconds) * time.Second))
+	}
+	return (used5h != nil && *used5h >= policy.UsageWindow5hThresholdPercent) ||
+		(used7d != nil && *used7d >= policy.UsageWindow7dThresholdPercent)
 }
 
 func (s *RateLimitService) ResetOpenAIOAuth429DynamicStats(accountID int64) {
@@ -123,13 +172,26 @@ func (s *RateLimitService) hasOpenAIOAuth429DynamicStats(accountID int64) bool {
 	return ok
 }
 
-func (s *RateLimitService) getOpenAIOAuth429DynamicSettings(ctx context.Context, accountID int64) (*OpenAIOAuth429DynamicSettings, bool) {
+func (s *RateLimitService) getOpenAIOAuth429DynamicSettings(ctx context.Context, account *Account) (*OpenAIOAuth429DynamicPolicy, bool) {
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	planType := openAIAccountPlanType(account)
 	if s.settingService != nil {
-		settings, err := s.settingService.GetOpenAIOAuth429DynamicSettings(ctx)
-		if err == nil && settings != nil {
-			return settings, true
+		policy, err := s.settingService.GetOpenAIOAuth429DynamicPolicy(ctx, planType)
+		if err == nil {
+			return &policy, true
 		}
 		slog.Warn("openai_oauth_429_dynamic_settings_read_failed", "account_id", accountID, "error", err)
 	}
-	return DefaultOpenAIOAuth429DynamicSettings(), true
+	return DefaultOpenAIOAuth429DynamicSettings().PolicyForPlanType(planType), true
+}
+
+func openAIAccountPlanType(account *Account) string {
+	if account == nil || account.Credentials == nil {
+		return ""
+	}
+	planType, _ := account.Credentials["plan_type"].(string)
+	return normalizeOpenAIOAuth429PlanType(planType)
 }

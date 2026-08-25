@@ -78,6 +78,7 @@ type openAIWSFallbackError struct {
 	Err              error
 	UpstreamURL      string
 	UpstreamEndpoint string
+	upstreamFact     *UpstreamErrorFact
 }
 
 func (e *openAIWSFallbackError) Error() string {
@@ -95,6 +96,25 @@ func (e *openAIWSFallbackError) Unwrap() error {
 		return nil
 	}
 	return e.Err
+}
+
+func (e *openAIWSFallbackError) UpstreamFact() (UpstreamErrorFact, bool) {
+	if e == nil || e.upstreamFact == nil {
+		return UpstreamErrorFact{}, false
+	}
+	return *e.upstreamFact, true
+}
+
+func newOpenAIWSFallbackErrorWithFact(reason string, err error, upstreamURL string, payload []byte, requestID string) *openAIWSFallbackError {
+	fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, payload, requestID)
+	safeURL := safeUpstreamURL(upstreamURL)
+	return &openAIWSFallbackError{
+		Reason:           strings.TrimSpace(reason),
+		Err:              err,
+		UpstreamURL:      safeURL,
+		UpstreamEndpoint: endpointFromSafeUpstreamURL(safeURL),
+		upstreamFact:     &fact,
+	}
 }
 
 func wrapOpenAIWSFallback(reason string, err error) error {
@@ -469,7 +489,7 @@ func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIU
 	if usage == nil || len(message) == 0 {
 		return
 	}
-	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(message); ok {
+	if parsedUsage, ok := extractOpenAIResponsesUsageFromJSONBytes(message); ok {
 		*usage = parsedUsage
 	}
 }
@@ -506,6 +526,47 @@ func sanitizeOpenAIWSErrorEventPayload(message []byte, sanitizedMessage string) 
 		return message
 	}
 	return out
+}
+
+// renderRecognizedOpenAIWSErrorEvent preserves only the stable error envelope
+// required by the client protocol; raw upstream siblings are never forwarded.
+func renderRecognizedOpenAIWSErrorEvent(presentation UpstreamClientPresentation) []byte {
+	payload, err := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]string{
+			"code":    presentation.ErrorCode,
+			"type":    presentation.ErrorType,
+			"message": presentation.Message,
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return payload
+}
+
+// renderRecognizedOpenAIWSResponseFailedEvent reconstructs only the response
+// terminal fields that form the stable client contract.
+func renderRecognizedOpenAIWSResponseFailedEvent(requestErr *OpenAIUpstreamRequestError, upstreamPayload []byte) []byte {
+	if requestErr == nil {
+		return upstreamPayload
+	}
+	response := map[string]any{
+		"status": "failed",
+		"error": map[string]string{
+			"code":    requestErr.Code,
+			"type":    requestErr.Type,
+			"message": requestErr.Message,
+		},
+	}
+	if responseID := extractOpenAIResponseIDFromJSONBytes(upstreamPayload); responseID != "" {
+		response["id"] = responseID
+	}
+	payload, err := json.Marshal(map[string]any{"type": "response.failed", "response": response})
+	if err != nil {
+		return upstreamPayload
+	}
+	return payload
 }
 
 func summarizeOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
@@ -1215,12 +1276,13 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	fallbackSessionID string,
 	windowGenerationHints ...string,
 ) (http.Header, openAIWSSessionHeaderResolution, error) {
-	headers := make(http.Header)
-	headers.Set("authorization", "Bearer "+token)
-
 	requestCtx := context.Background()
 	if c != nil && c.Request != nil {
 		requestCtx = c.Request.Context()
+	}
+	headers, err := s.buildOpenAIAuthenticationHeaders(requestCtx, account, token)
+	if err != nil {
+		return nil, openAIWSSessionHeaderResolution{}, err
 	}
 	var fingerprint OpenAICodexFingerprint
 	if account != nil && account.IsOpenAIOAuthLike() {
@@ -1828,6 +1890,15 @@ func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) (
 	}
 	delete(decoded, "input")
 	delete(decoded, "previous_response_id")
+	// Codex changes transport metadata for every response.create. These fields
+	// do not alter the context referenced by previous_response_id.
+	delete(decoded, "client_metadata")
+	delete(decoded, "stream_options")
+	// Codex prewarms with generate=false, then omits it on the request that
+	// continues from the prewarm response. Preserve an explicit generate=true.
+	if generate, ok := decoded["generate"].(bool); ok && !generate {
+		delete(decoded, "generate")
+	}
 	return json.Marshal(decoded)
 }
 
@@ -2270,7 +2341,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
 	defer acquireCancel()
 
-	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
+	acquireRequest := openAIWSAcquireRequest{
 		Account:         account,
 		WSURL:           wsURL,
 		Headers:         wsHeaders,
@@ -2282,7 +2353,24 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 			return ""
 		}(),
-	})
+	}
+	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, acquireRequest)
+	if err != nil && account.IsOpenAIAgentIdentity() {
+		var dialErr *openAIWSDialError
+		if errors.As(err, &dialErr) && isAgentIdentityTaskInvalidWSDialError(dialErr) {
+			expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
+			if recoverErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoverErr != nil {
+				return nil, wrapFallback("agent_identity_task_recovery", recoverErr)
+			}
+			refreshedHeaders, refreshErr := s.refreshOpenAIAgentIdentityHeaders(ctx, account, wsHeaders)
+			if refreshErr != nil {
+				return nil, wrapFallback("agent_identity_header_refresh", refreshErr)
+			}
+			acquireRequest.Headers = refreshedHeaders
+			acquireRequest.ForceNewConn = true
+			lease, err = s.getOpenAIWSConnPool().Acquire(acquireCtx, acquireRequest)
+		}
+	}
 	if err != nil {
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
 		logOpenAIWSModeInfo(
@@ -2437,6 +2525,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	flushedBufferedEventCount := 0
 	firstEventType := ""
 	lastEventType := ""
+	var requestErr *OpenAIUpstreamRequestError
+	// Keep buffered preamble frames uncommitted for newly recognized direct
+	// failures, so the HTTP handler can own the safe JSON presentation.
+	suppressRecognizedDirectTerminal := false
 
 	var flusher http.Flusher
 	if reqStream {
@@ -2517,6 +2609,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	readTimeout := s.openAIWSReadTimeout()
 	var pendingJSONDocuments [][]byte
+	var terminalFact *UpstreamErrorFact
 
 	for {
 		var message []byte
@@ -2567,9 +2660,19 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
 
+		upstreamMessage := message
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
 		if eventType == "" {
 			continue
+		}
+		if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(message, eventType); changed {
+			if usageValue := gjson.GetBytes(message, "response.usage"); usageValue.Exists() && usageValue.IsObject() {
+				if withUsage, err := sjson.SetRawBytes(sanitized, "response.usage", []byte(usageValue.Raw)); err == nil {
+					sanitized = withUsage
+				}
+			}
+			message = sanitized
+			eventType, eventResponseID, responseField = parseOpenAIWSEventEnvelope(message)
 		}
 		eventCount++
 		if firstEventType == "" {
@@ -2577,7 +2680,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		lastEventType = eventType
 
-		if responseID == "" && eventResponseID != "" {
+		// A top-level error-event ID identifies the event, not a Responses turn.
+		// Do not promote it to responseID before semantic-terminal classification.
+		if eventType != "error" && responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID
 		}
 
@@ -2620,10 +2725,59 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if openAIWSEventShouldParseUsage(eventType) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
 		}
+		if eventType == "response.failed" {
+			fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, upstreamMessage, responseID)
+			terminalFact = &fact
+			contextCandidate := openAIHasContextWindowCandidate(upstreamMessage)
+			if contextCandidate {
+				// Context-window envelopes retain the strict legacy classifier;
+				// malformed or conflicting candidates must not broaden into a
+				// different built-in policy.
+				requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+			} else {
+				requestErr = newRecognizedOpenAIUpstreamRequestError(fact)
+				if requestErr == nil {
+					requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+				}
+			}
+			if requestErr != nil {
+				requestErr.observeTerminal(*usage, wroteDownstream || len(bufferedStreamEvents) > 0)
+				suppressRecognizedDirectTerminal = reqStream &&
+					isNewRecognizedDirectOpenAIError(fact) &&
+					!wroteDownstream && len(bufferedStreamEvents) == 0
+			}
+		}
 		imageCounter.AddSSEData(message)
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, message, "")
+			if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+				lease.MarkBroken()
+				requestErr = newRecognizedOpenAIUpstreamRequestErrorForPolicy(policy, "")
+				requestErr.observeTerminal(*usage, wroteDownstream || len(bufferedStreamEvents) > 0)
+				terminalFact = &fact
+				if reqStream && !clientDisconnected && requestErr.OutputStarted {
+					flushBufferedStreamEvents("recognized_error_event")
+					emitStreamMessage(renderRecognizedOpenAIWSErrorEvent(policy.Presentation), true)
+				}
+				return &OpenAIForwardResult{
+					RequestID:        responseID,
+					Usage:            *usage,
+					Model:            originalModel,
+					UpstreamModel:    mappedModel,
+					ImageCount:       imageCounter.Count(),
+					ImageOutputSizes: imageCounter.Sizes(),
+					ServiceTier:      extractOpenAIServiceTier(reqBody),
+					ReasoningEffort:  ApplyThinkingEnabledFallback(extractOpenAIReasoningEffort(reqBody, originalModel, mappedModel), payloadAsJSONBytes(payload), mappedModel),
+					Stream:           reqStream,
+					OpenAIWSMode:     true,
+					ResponseHeaders:  lease.HandshakeHeaders(),
+					upstreamFact:     terminalFact,
+					Duration:         time.Since(startTime),
+					FirstTokenMs:     firstTokenMs,
+				}, requestErr
+			}
 			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMsg := sanitizeOpenAIWSErrorMessageForDiagnostic(errMsgRaw, "Upstream websocket error")
 			message = sanitizeOpenAIWSErrorEventPayload(message, errMsg)
@@ -2669,7 +2823,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			// error 事件后连接不再可复用，避免回池后污染下一请求。
 			lease.MarkBroken()
 			if !wroteDownstream && canFallback {
-				return nil, wrapFallback(fallbackReason, errors.New(errMsg))
+				return nil, newOpenAIWSFallbackErrorWithFact(
+					fallbackReason,
+					errors.New(errMsg),
+					wsURL,
+					message,
+					responseID,
+				)
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
@@ -2688,7 +2848,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws error event: %s", errMsg)
 		}
 
-		if reqStream {
+		if suppressRecognizedDirectTerminal {
+			// The handler will render this newly recognized pre-output error.
+		} else if reqStream {
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
 			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
@@ -2786,8 +2948,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		clientDisconnected,
 	)
 
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:        responseID,
+		AttemptID:        fmt.Sprintf("openai-ws:%d:%d:%d", account.ID, startTime.UnixNano(), attempt),
 		Usage:            *usage,
 		Model:            originalModel,
 		UpstreamModel:    mappedModel,
@@ -2798,9 +2961,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Stream:           reqStream,
 		OpenAIWSMode:     true,
 		ResponseHeaders:  lease.HandshakeHeaders(),
+		upstreamFact:     terminalFact,
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
-	}, nil
+	}
+	if requestErr != nil {
+		return result, requestErr
+	}
+	return result, nil
 }
 
 func stripCodexSparkImageGenerationToolFromRawPayload(payload []byte, model string, account *Account) ([]byte, bool, error) {
@@ -3473,10 +3641,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			var dialErr *openAIWSDialError
 			if errors.As(acquireErr, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
 				s.persistOpenAIWSRateLimitSignal(ctx, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(sanitizeOpenAIUpstreamDiagnosticText(acquireErr.Error())))
-				return nil, &UpstreamFailoverError{
-					StatusCode:      http.StatusTooManyRequests,
-					ResponseHeaders: cloneHeader(dialErr.ResponseHeaders),
+				resp := &http.Response{
+					StatusCode: dialErr.StatusCode,
+					Header:     dialErr.ResponseHeaders,
 				}
+				return nil, newOpenAIWebSocketHandshakeFailoverError(resp, dialErr.ResponseBody)
 			}
 			if errors.Is(acquireErr, errOpenAIWSPreferredConnUnavailable) {
 				return nil, NewOpenAIWSClientCloseError(
@@ -3583,7 +3752,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 
 			eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
-			if responseID == "" && eventResponseID != "" {
+			if sanitized, changed := sanitizeOpenAIResponseFailedEventForClient(upstreamMessage, eventType); changed {
+				if usageValue := gjson.GetBytes(upstreamMessage, "response.usage"); usageValue.Exists() && usageValue.IsObject() {
+					if withUsage, err := sjson.SetRawBytes(sanitized, "response.usage", []byte(usageValue.Raw)); err == nil {
+						sanitized = withUsage
+					}
+				}
+				upstreamMessage = sanitized
+				eventType, eventResponseID, _ = parseOpenAIWSEventEnvelope(upstreamMessage)
+			}
+			// A top-level error-event ID identifies the event, not a Responses turn.
+			// Do not promote it to responseID before semantic-terminal classification.
+			if eventType != "error" && responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}
 			if eventType != "" {
@@ -3652,11 +3832,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				if !wroteDownstream && isOpenAIWSRateLimitError(errCodeRaw, errTypeRaw, errMsgRaw) {
 					lease.MarkBroken()
-					return nil, &UpstreamFailoverError{
-						StatusCode:      http.StatusTooManyRequests,
-						ResponseBody:    append([]byte(nil), upstreamMessage...),
-						ResponseHeaders: cloneHeader(lease.HandshakeHeaders()),
-					}
+					return nil, newOpenAIWebSocketFailoverError(
+						http.StatusTooManyRequests,
+						append([]byte(nil), upstreamMessage...),
+						lease.HandshakeHeaders(),
+					)
 				}
 			}
 			isTokenEvent := isOpenAIWSTokenEvent(eventType)
@@ -3710,6 +3890,21 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 			}
 			if isTerminalEvent {
+				var requestErr *OpenAIUpstreamRequestError
+				var terminalFact *UpstreamErrorFact
+				if eventType == "response.failed" {
+					fact := ParseOpenAIWebSocketErrorFact(PlatformOpenAI, upstreamMessage, responseID)
+					terminalFact = &fact
+					requestErr = newRecognizedOpenAIUpstreamRequestError(fact)
+					if requestErr == nil {
+						requestErr = newOpenAIUpstreamRequestError(upstreamMessage, responseID)
+					}
+					if requestErr != nil {
+						// This turn's terminal write must not make a terminal-only
+						// failure appear to have started client output.
+						requestErr.observeTerminal(usage, wroteDownstream)
+					}
+				}
 				// 客户端已断连时，上游连接的 session 状态不可信，标记 broken 避免回池复用。
 				if clientDisconnected {
 					lease.MarkBroken()
@@ -3747,6 +3942,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					Stream:          reqStream,
 					OpenAIWSMode:    true,
 					ResponseHeaders: lease.HandshakeHeaders(),
+					upstreamFact:    terminalFact,
 					Duration:        time.Since(turnStart),
 					FirstTokenMs:    firstTokenMs,
 				}
@@ -3760,6 +3956,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					result.ImageInputSize = imageInputSize
 					result.ImageOutputSizes = imageCounter.Sizes()
 					result.BillingModel = imageBillingModel
+				}
+				if requestErr != nil {
+					return result, requestErr
 				}
 				return result, nil
 			}
@@ -4261,6 +4460,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize)
 		if relayErr != nil {
+			var requestErr *OpenAIUpstreamRequestError
+			if errors.As(relayErr, &requestErr) {
+				lastTurnClean = true
+				if hooks != nil && hooks.AfterTurn != nil {
+					hooks.AfterTurn(turn, result, requestErr)
+				}
+				return requestErr
+			}
 			lastTurnClean = false
 			if recoverIngressPrevResponseNotFound(relayErr, turn, connID) {
 				continue

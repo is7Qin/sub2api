@@ -164,6 +164,18 @@ func setGatewayRequestRanges(parsed *ParsedRequest, protocol string, jsonStr str
 	}
 }
 
+const claudeCodeLongContextModelSuffix = "[1m]"
+
+// Claude Code treats [1m] as a client-side context selector and normally removes it
+// before provider requests. Normalize leaked suffixes, including duplicated forms.
+func normalizeClaudeCodeLongContextModel(model string) string {
+	for len(model) > len(claudeCodeLongContextModelSuffix) &&
+		strings.EqualFold(model[len(model)-len(claudeCodeLongContextModelSuffix):], claudeCodeLongContextModelSuffix) {
+		model = model[:len(model)-len(claudeCodeLongContextModelSuffix)]
+	}
+	return model
+}
+
 // parseGatewayRequestCurrentBody 只做标量和 raw range 轻量解析，不恢复 system/messages 对象图。
 func parseGatewayRequestCurrentBody(parsed *ParsedRequest, protocol string) error {
 	if parsed == nil || parsed.Body == nil {
@@ -186,6 +198,19 @@ func parseGatewayRequestCurrentBody(parsed *ParsedRequest, protocol string) erro
 			return fmt.Errorf("invalid model field type")
 		}
 		parsed.Model = modelResult.String()
+		if protocol == domain.PlatformAnthropic {
+			normalizedModel := normalizeClaudeCodeLongContextModel(parsed.Model)
+			if normalizedModel != parsed.Model {
+				normalizedBody, err := sjson.SetBytes(bodyBytes, "model", normalizedModel)
+				if err != nil {
+					return fmt.Errorf("normalize model field: %w", err)
+				}
+				parsed.Body.Replace(normalizedBody)
+				bodyBytes = normalizedBody
+				jsonStr = *(*string)(unsafe.Pointer(&bodyBytes))
+				parsed.Model = normalizedModel
+			}
+		}
 	}
 
 	streamResult := gjson.Get(jsonStr, "stream")
@@ -450,7 +475,7 @@ func stripEmptyTextBlocksFromSlice(blocks []any) ([]any, bool) {
 
 		// Strip empty text blocks
 		if blockType == "text" {
-			if txt, _ := blockMap["text"].(string); txt == "" {
+			if txt, exists := blockMap["text"].(string); exists && txt == "" {
 				if result == nil {
 					result = make([]any, 0, len(blocks))
 					result = append(result, blocks[:i]...)
@@ -490,57 +515,83 @@ func stripEmptyTextBlocksFromSlice(blocks []any) ([]any, bool) {
 	return result, true
 }
 
-// StripEmptyTextBlocks removes empty text blocks from the request body (including nested tool_result content).
-// This is a lightweight pre-filter for the initial request path to prevent upstream 400 errors.
-// Returns the original body unchanged if no empty text blocks are found.
+type emptyTextBlockPath struct {
+	path   string
+	parent string
+	index  int
+	depth  int
+}
+
+func isEmptyTextBlock(item gjson.Result) bool {
+	if !item.IsObject() {
+		return false
+	}
+	blockType := item.Get("type")
+	text := item.Get("text")
+	return blockType.Type == gjson.String && blockType.String() == "text" &&
+		text.Exists() && text.Type == gjson.String && text.String() == ""
+}
+
+func collectEmptyTextBlockPathsInContent(content gjson.Result, basePath string, paths *[]emptyTextBlockPath, depth int) {
+	if !content.IsArray() {
+		return
+	}
+	index := 0
+	content.ForEach(func(_, item gjson.Result) bool {
+		path := fmt.Sprintf("%s.%d", basePath, index)
+		if isEmptyTextBlock(item) {
+			*paths = append(*paths, emptyTextBlockPath{path: path, parent: basePath, index: index, depth: depth})
+		} else if item.Get("type").String() == "tool_result" {
+			collectEmptyTextBlockPathsInContent(item.Get("content"), path+".content", paths, depth+1)
+		}
+		index++
+		return true
+	})
+}
+
+func collectEmptyTextBlockPaths(body []byte) []emptyTextBlockPath {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return nil
+	}
+	var paths []emptyTextBlockPath
+	messageIndex := 0
+	messages.ForEach(func(_, message gjson.Result) bool {
+		collectEmptyTextBlockPathsInContent(message.Get("content"), fmt.Sprintf("messages.%d.content", messageIndex), &paths, 0)
+		messageIndex++
+		return true
+	})
+	return paths
+}
+
+// StripEmptyTextBlocks removes exactly empty text blocks without remarshalizing
+// opaque signed history. Deeper arrays and larger sibling indices are deleted first.
 func StripEmptyTextBlocks(body []byte) []byte {
-	// Fast path: check if body contains empty text patterns
-	hasEmptyTextBlock := bytes.Contains(body, patternEmptyText) ||
-		bytes.Contains(body, patternEmptyTextSpaced) ||
-		bytes.Contains(body, patternEmptyTextSp1) ||
-		bytes.Contains(body, patternEmptyTextSp2)
-	if !hasEmptyTextBlock {
+	if !gjson.ValidBytes(body) {
 		return body
 	}
-
-	jsonStr := *(*string)(unsafe.Pointer(&body))
-	msgsRes := gjson.Get(jsonStr, "messages")
-	if !msgsRes.Exists() || !msgsRes.IsArray() {
+	paths := collectEmptyTextBlockPaths(body)
+	if len(paths) == 0 {
 		return body
 	}
-
-	var messages []any
-	if err := json.Unmarshal(sliceRawFromBody(body, msgsRes), &messages); err != nil {
-		return body
-	}
-
-	modified := false
-	for _, msg := range messages {
-		msgMap, ok := msg.(map[string]any)
-		if !ok {
-			continue
+	sort.SliceStable(paths, func(i, j int) bool {
+		if paths[i].depth != paths[j].depth {
+			return paths[i].depth > paths[j].depth
 		}
-		content, ok := msgMap["content"].([]any)
-		if !ok {
-			continue
+		if paths[i].parent == paths[j].parent {
+			return paths[i].index > paths[j].index
 		}
-		if cleaned, changed := stripEmptyTextBlocksFromSlice(content); changed {
-			modified = true
-			msgMap["content"] = cleaned
+		return paths[i].parent < paths[j].parent
+	})
+
+	original := body
+	out := body
+	for _, candidate := range paths {
+		next, err := sjson.DeleteBytes(out, candidate.path)
+		if err != nil {
+			return original
 		}
-	}
-
-	if !modified {
-		return body
-	}
-
-	msgsBytes, err := json.Marshal(messages)
-	if err != nil {
-		return body
-	}
-	out, err := sjson.SetRawBytes(body, "messages", msgsBytes)
-	if err != nil {
-		return body
+		out = next
 	}
 	return out
 }

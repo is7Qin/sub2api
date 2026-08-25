@@ -48,7 +48,7 @@
           <button type="button" class="btn btn-secondary btn-sm" :disabled="testingS3" @click="testS3">
             {{ testingS3 ? t('common.loading') : t('admin.backup.s3.testConnection') }}
           </button>
-          <button type="button" class="btn btn-primary btn-sm" :disabled="savingS3" @click="saveS3Config">
+          <button data-test="backup-s3-save" type="button" class="btn btn-primary btn-sm" :disabled="savingS3" @click="openS3TotpDialog">
             {{ savingS3 ? t('common.loading') : t('common.save') }}
           </button>
         </div>
@@ -193,6 +193,21 @@
       </div>
     </div>
 
+    <teleport to="body">
+      <div v-if="showS3TotpDialog" data-test="backup-s3-totp-dialog" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div class="fixed inset-0 bg-black/50" @click="cancelS3TotpDialog"></div>
+        <form class="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl dark:bg-dark-800" @submit.prevent="saveS3Config">
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.backup.s3.totpTitle') }}</h3>
+          <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.backup.s3.totpHint') }}</p>
+          <input v-model="s3TotpCode" data-test="backup-s3-totp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="input mt-4 w-full" :disabled="savingS3" />
+          <div class="mt-4 flex justify-end gap-2">
+            <button data-test="backup-s3-totp-cancel" type="button" class="btn btn-secondary" :disabled="savingS3" @click="cancelS3TotpDialog">{{ t('common.cancel') }}</button>
+            <button data-test="backup-s3-totp-submit" type="submit" class="btn btn-primary" :disabled="savingS3 || s3TotpCode.length !== 6">{{ savingS3 ? t('common.loading') : t('common.confirm') }}</button>
+          </div>
+        </form>
+      </div>
+    </teleport>
+
     <!-- Cloudflare R2 Setup Guide Modal -->
     <teleport to="body">
       <transition name="modal">
@@ -301,6 +316,8 @@ const s3Form = ref<BackupS3Config>({
 const s3SecretConfigured = ref(false)
 const savingS3 = ref(false)
 const testingS3 = ref(false)
+const showS3TotpDialog = ref(false)
+const s3TotpCode = ref('')
 
 // Schedule config
 const scheduleForm = ref<BackupScheduleConfig>({
@@ -453,10 +470,25 @@ async function loadS3Config() {
   }
 }
 
+function openS3TotpDialog() {
+  if (savingS3.value) return
+  s3TotpCode.value = ''
+  showS3TotpDialog.value = true
+}
+
+function cancelS3TotpDialog() {
+  if (savingS3.value) return
+  showS3TotpDialog.value = false
+  s3TotpCode.value = ''
+}
+
 async function saveS3Config() {
+  if (savingS3.value || s3TotpCode.value.length !== 6) return
   savingS3.value = true
   try {
-    await adminAPI.backup.updateS3Config(s3Form.value)
+    await adminAPI.backup.updateS3Config({ ...s3Form.value, totp_code: s3TotpCode.value })
+    showS3TotpDialog.value = false
+    s3TotpCode.value = ''
     appStore.showSuccess(t('admin.backup.s3.saved'))
     await loadS3Config()
   } catch (error) {

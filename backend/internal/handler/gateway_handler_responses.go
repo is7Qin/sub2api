@@ -85,12 +85,17 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 	requestCtx := c.Request.Context()
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, body) {
-		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
-	}
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, reqModel)
+	routingModel := channelMapping.EffectiveModel(reqModel)
+	routingBody := body
+	if channelMapping.Mapped {
+		routingBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+	}
+	if service.IsImageGenerationIntent("/v1/responses", routingModel, routingBody) {
+		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
+	}
 
 	// Claude Code only restriction:
 	// /v1/responses is never a Claude Code endpoint.
@@ -118,17 +123,17 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 
-	// 1. Acquire user concurrency slot
-	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	// 1. Acquire logical client concurrency slots
+	clientRelease, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
 	if err != nil {
-		reqLog.Warn("gateway.responses.user_slot_acquire_failed", zap.Error(err))
+		reqLog.Warn("gateway.responses.client_slots_acquire_failed", zap.Error(err))
 		h.responsesConcurrencyErrorResponse(c, err, "user", streamStarted)
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(c.Request.Context())
-	userReleaseFunc = logicalReleases.Add(userReleaseFunc)
-	if userReleaseFunc != nil {
-		defer userReleaseFunc()
+	clientRelease = logicalReleases.Add(clientRelease)
+	if clientRelease != nil {
+		defer clientRelease()
 	}
 
 	// 2. Re-check billing
@@ -161,7 +166,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	selectionCtx := service.WithPublicModelSupportMiss404(requestCtx)
 	for {
 		selection, err, clientGone := selectFailoverAccount(c, func() (*service.AccountSelectionResult, error) {
-			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, sessionHash, routingModel, fs.FailedAccountIDs, "", int64(0))
 		})
 		if clientGone {
 			return
@@ -187,7 +192,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				failoverClientGone(c)
 				return
 			default:
-				if fs.LastFailoverErr != nil {
+				if candidate, ok := fs.FinalCandidate(); ok {
+					h.handleResponsesCandidate(c, candidate, streamStarted)
+				} else if fs.LastFailoverErr != nil {
 					h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 				} else {
 					h.responsesErrorResponse(c, http.StatusBadGateway, "server_error", "All available accounts exhausted")
@@ -238,10 +245,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 		// 5. Forward request
 		writerSizeBeforeForward := c.Writer.Size()
-		forwardBody := body
-		if channelMapping.Mapped {
-			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
-		}
+		forwardBody := routingBody
 		attemptCtx := withHTTPAttemptReleaseAuthority(
 			requestCtx,
 			logicalReleases,
@@ -283,7 +287,16 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverExhausted:
-					h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					if candidate, ok := fs.FinalCandidate(); ok {
+						h.handleResponsesCandidate(c, candidate, streamStarted)
+					} else {
+						h.handleResponsesFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					}
+					return
+				case FailoverDirectReturn:
+					if candidate, ok := directReturnCandidate(failoverErr); ok {
+						h.handleResponsesCandidate(c, candidate, streamStarted)
+					}
 					return
 				case FailoverCanceled:
 					failoverClientGone(c)
@@ -348,19 +361,42 @@ func (h *GatewayHandler) responsesErrorResponse(c *gin.Context, status int, code
 	})
 }
 
-// handleResponsesFailoverExhausted writes a failover-exhausted error in Responses format.
-func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
-	if streamStarted {
-		return // Can't write error after stream started
-	}
-	statusCode := http.StatusBadGateway
-	if lastErr != nil && lastErr.StatusCode > 0 {
-		statusCode = lastErr.StatusCode
-	}
-	if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
-		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
-		h.responsesErrorResponse(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage())
+func (h *GatewayHandler) handleResponsesCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
 		return
 	}
-	h.responsesErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
+	}
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
+	if streamStarted {
+		h.handleStreamingAwareErrorWithCode(c, presentation.HTTPStatus, presentation.ErrorType, presentation.ErrorCode, presentation.Message, true)
+		return
+	}
+	code := presentation.ErrorCode
+	if code == "" {
+		code = presentation.ErrorType
+	}
+	h.responsesErrorResponse(c, presentation.HTTPStatus, code, presentation.Message)
+}
+
+// handleResponsesFailoverExhausted writes a failover-exhausted error in Responses format.
+func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
+	if lastErr == nil {
+		h.handleResponsesCandidate(c, nil, streamStarted)
+		return
+	}
+	if service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
+		service.SetOpsUpstreamError(c, lastErr.StatusCode, service.OpenAISilentRefusalClientMessage(), "")
+		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage(), streamStarted)
+		return
+	}
+	fact, ok := lastErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, lastErr.StatusCode, lastErr.ResponseBody)
+	}
+	h.handleResponsesCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }

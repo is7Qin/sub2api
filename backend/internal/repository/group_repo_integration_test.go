@@ -1138,6 +1138,112 @@ func (s *GroupRepoSuite) TestDeleteAccountGroupsByGroupID_MultipleAccounts() {
 	s.Require().Zero(count)
 }
 
+// --- 版本推进：account_groups 写入必须推进受影响账号的 updated_at ---
+// （账号列表缓存以 max(accounts.updated_at) 为失效版本，绑定/解绑/级联删除
+// 若不同步推进 updated_at，分组列表缓存会返回陈旧数据。）
+
+func (s *GroupRepoSuite) accountUpdatedAt(accountID int64) time.Time {
+	var updatedAt time.Time
+	s.Require().NoError(scanSingleRow(
+		s.ctx, s.tx,
+		"SELECT updated_at FROM accounts WHERE id = $1",
+		[]any{accountID}, &updatedAt,
+	))
+	return updatedAt
+}
+
+func (s *GroupRepoSuite) insertVersionTestAccount(name string) int64 {
+	var id int64
+	s.Require().NoError(scanSingleRow(
+		s.ctx, s.tx,
+		"INSERT INTO accounts (name, platform, type) VALUES ($1, $2, $3) RETURNING id",
+		[]any{name, service.PlatformAnthropic, service.AccountTypeOAuth},
+		&id,
+	))
+	return id
+}
+
+func (s *GroupRepoSuite) TestBindAccountsToGroup_AdvancesAccountUpdatedAt() {
+	g := &service.Group{
+		Name:             "g-ver-bind",
+		Platform:         service.PlatformAnthropic,
+		RateMultiplier:   1.0,
+		IsExclusive:      false,
+		Status:           service.StatusActive,
+		SubscriptionType: service.SubscriptionTypeStandard,
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, g))
+
+	a1 := s.insertVersionTestAccount("ver-bind-a1")
+	a2 := s.insertVersionTestAccount("ver-bind-a2")
+	before1 := s.accountUpdatedAt(a1)
+	before2 := s.accountUpdatedAt(a2)
+
+	s.Require().NoError(s.repo.BindAccountsToGroup(s.ctx, g.ID, []int64{a1, a2}))
+
+	s.Require().True(s.accountUpdatedAt(a1).After(before1), "bind must advance affected accounts' updated_at")
+	s.Require().True(s.accountUpdatedAt(a2).After(before2), "bind must advance affected accounts' updated_at")
+}
+
+func (s *GroupRepoSuite) TestDeleteAccountGroupsByGroupID_AdvancesAccountUpdatedAt() {
+	g := &service.Group{
+		Name:             "g-ver-unbind",
+		Platform:         service.PlatformAnthropic,
+		RateMultiplier:   1.0,
+		IsExclusive:      false,
+		Status:           service.StatusActive,
+		SubscriptionType: service.SubscriptionTypeStandard,
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, g))
+
+	a1 := s.insertVersionTestAccount("ver-unbind-a1")
+	a2 := s.insertVersionTestAccount("ver-unbind-a2")
+	s.Require().NoError(s.repo.BindAccountsToGroup(s.ctx, g.ID, []int64{a1, a2}))
+	before1 := s.accountUpdatedAt(a1)
+	before2 := s.accountUpdatedAt(a2)
+
+	affected, err := s.repo.DeleteAccountGroupsByGroupID(s.ctx, g.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(int64(2), affected)
+
+	s.Require().True(s.accountUpdatedAt(a1).After(before1), "unbind must advance affected accounts' updated_at")
+	s.Require().True(s.accountUpdatedAt(a2).After(before2), "unbind must advance affected accounts' updated_at")
+}
+
+func (s *GroupRepoSuite) TestDeleteCascade_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	name := s.uniqueGroupName("cascade-ver")
+	var groupID, a1, a2 int64
+	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `INSERT INTO groups(name, platform, status) VALUES($1, 'anthropic', 'active') RETURNING id`, name).Scan(&groupID))
+	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `INSERT INTO accounts(name, platform, type) VALUES($1, 'anthropic', 'oauth') RETURNING id`, name+"-a1").Scan(&a1))
+	s.Require().NoError(integrationDB.QueryRowContext(s.ctx, `INSERT INTO accounts(name, platform, type) VALUES($1, 'anthropic', 'oauth') RETURNING id`, name+"-a2").Scan(&a2))
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id IN ($1, $2)", a1, a2)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id IN ($1, $2)", a1, a2)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", groupID)
+	})
+	_, err := integrationDB.ExecContext(s.ctx, "INSERT INTO account_groups(account_id, group_id) VALUES($1, $2), ($3, $4)", a1, groupID, a2, groupID)
+	s.Require().NoError(err)
+	_, err = integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+
+	readUpdatedAt := func(accountID int64) time.Time {
+		var updatedAt time.Time
+		s.Require().NoError(integrationDB.QueryRowContext(s.ctx, "SELECT updated_at FROM accounts WHERE id = $1", accountID).Scan(&updatedAt))
+		return updatedAt
+	}
+	before1 := readUpdatedAt(a1)
+	before2 := readUpdatedAt(a2)
+
+	// 无调用方事务：DeleteCascade 内部自建事务并提交。
+	repo := newGroupRepositoryWithSQL(client, integrationDB)
+	_, err = repo.DeleteCascade(s.ctx, groupID)
+	s.Require().NoError(err)
+
+	s.Require().True(readUpdatedAt(a1).After(before1), "cascade delete must advance affected accounts' updated_at")
+	s.Require().True(readUpdatedAt(a2).After(before2), "cascade delete must advance affected accounts' updated_at")
+}
+
 // --- 软删除过滤测试 ---
 
 func (s *GroupRepoSuite) TestDelete_SoftDelete_NotVisibleInList() {

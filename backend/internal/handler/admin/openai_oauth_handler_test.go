@@ -53,7 +53,7 @@ func (s *openAIOAuthHandlerOAuthClientStub) RefreshTokenWithOptions(ctx context.
 func setupOpenAIOAuthHandlerRouter(oauthSvc *service.OpenAIOAuthService, adminSvc service.AdminService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewOpenAIOAuthHandler(oauthSvc, adminSvc, nil)
+	handler := NewOpenAIOAuthHandler(oauthSvc, adminSvc, nil, nil)
 	router.POST("/api/v1/admin/openai/generate-auth-url", handler.GenerateAuthURL)
 	router.POST("/api/v1/admin/openai/exchange-code", handler.ExchangeCode)
 	router.POST("/api/v1/admin/openai/refresh-token", handler.RefreshToken)
@@ -73,7 +73,6 @@ func performOpenAIOAuthJSONRequest(router *gin.Engine, method string, path strin
 func TestOpenAIOAuthHandler_PublicTokenResponsesOmitCodexFingerprint(t *testing.T) {
 	client := &openAIOAuthHandlerOAuthClientStub{}
 	oauthSvc := service.NewOpenAIOAuthService(nil, client)
-	defer oauthSvc.Stop()
 	router := setupOpenAIOAuthHandlerRouter(oauthSvc, newStubAdminService())
 
 	generateRec := performOpenAIOAuthJSONRequest(router, http.MethodPost, "/api/v1/admin/openai/generate-auth-url", map[string]any{})
@@ -121,7 +120,6 @@ func TestOpenAIOAuthHandler_PublicTokenResponsesOmitCodexFingerprint(t *testing.
 func TestOpenAIOAuthHandler_CreateAccountFromRefreshTokenPersistsServerOwnedFingerprint(t *testing.T) {
 	client := &openAIOAuthHandlerOAuthClientStub{}
 	oauthSvc := service.NewOpenAIOAuthService(nil, client)
-	defer oauthSvc.Stop()
 	adminSvc := newStubAdminService()
 	router := setupOpenAIOAuthHandlerRouter(oauthSvc, adminSvc)
 

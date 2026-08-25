@@ -39,6 +39,7 @@ var (
 type openAIWSDialError struct {
 	StatusCode      int
 	ResponseHeaders http.Header
+	ResponseBody    []byte
 	Err             error
 }
 
@@ -1410,6 +1411,24 @@ func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequ
 	}
 }
 
+func (p *openAIWSConnPool) closeAccountConnections(accountID int64) {
+	ap, ok := p.getAccountPool(accountID)
+	if !ok {
+		return
+	}
+	ap.mu.Lock()
+	conns := make([]*openAIWSConn, 0, len(ap.conns))
+	for _, conn := range ap.conns {
+		conns = append(conns, conn)
+	}
+	ap.conns = make(map[string]*openAIWSConn)
+	ap.pinnedConns = make(map[string]int)
+	ap.mu.Unlock()
+	for _, conn := range conns {
+		conn.close()
+	}
+}
+
 func (p *openAIWSConnPool) evictConn(accountID int64, connID string) {
 	if p == nil || accountID <= 0 || stringsTrim(connID) == "" {
 		return
@@ -1485,11 +1504,23 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if p == nil || p.clientDialer == nil {
 		return nil, errors.New("openai ws client dialer is nil")
 	}
-	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	var (
+		conn             openAIWSClientConn
+		status           int
+		handshakeHeaders http.Header
+		responseBody     []byte
+		err              error
+	)
+	if detailed, ok := p.clientDialer.(openAIWSClientDetailedDialer); ok {
+		conn, status, handshakeHeaders, responseBody, err = detailed.DialDetailed(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	} else {
+		conn, status, handshakeHeaders, err = p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	}
 	if err != nil {
 		return nil, &openAIWSDialError{
 			StatusCode:      status,
 			ResponseHeaders: cloneHeader(handshakeHeaders),
+			ResponseBody:    responseBody,
 			Err:             err,
 		}
 	}

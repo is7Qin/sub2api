@@ -60,6 +60,101 @@ func TestExtractOpenAIEmbeddingsUsage_ParsesImageInputTokens(t *testing.T) {
 	require.Equal(t, 30, usage.ImageInputTokens)
 }
 
+func TestForwardEmbeddings_RejectsSuccessfulResponseWithUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing usage", body: `{"object":"list","data":[],"secret":"sk-upstream-secret"}`},
+		{name: "non-object usage", body: `{"object":"list","data":[],"usage":"hidden https://internal.example"}`},
+		{name: "empty usage", body: `{"object":"list","data":[],"usage":{}}`},
+		{name: "negative tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":-1}}`},
+		{name: "fractional tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":1.5}}`},
+		{name: "string tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":"1"}}`},
+		{name: "null tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":null}}`},
+		{name: "negative nested cache tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":-1}}}`},
+		{name: "fractional nested image tokens", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"input_tokens_details":{"image_tokens":1.5}}}`},
+		{name: "malformed token details", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"input_tokens_details":"malformed"}}`},
+		{name: "string cache alias", body: `{"object":"list","data":[],"usage":{"prompt_tokens":10,"cache_read_tokens":"1"}}`},
+		{name: "malformed json", body: `{"object":"list","data":[],"usage":{"prompt_tokens":3},"secret":"sk-upstream-secret"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			reqBody := []byte(`{"model":"text-embedding-3-small","input":"hello"}`)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(reqBody))
+
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			account := &Account{
+				ID:       42,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key": "sk-test",
+				},
+			}
+
+			result, err := svc.ForwardEmbeddings(context.Background(), c, account, reqBody)
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "api_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.Equal(t, "Upstream returned invalid usage", gjson.Get(rec.Body.String(), "error.message").String())
+			require.NotContains(t, rec.Body.String(), "sk-upstream-secret")
+			require.NotContains(t, rec.Body.String(), "internal.example")
+			require.NotContains(t, err.Error(), "sk-upstream-secret")
+			require.NotContains(t, err.Error(), "internal.example")
+			require.Len(t, upstream.requests, 1)
+		})
+	}
+}
+
+func TestForwardEmbeddings_AcceptsExplicitZeroUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	reqBody := []byte(`{"model":"text-embedding-3-small","input":"hello"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(reqBody))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"object":"list",
+			"data":[],
+			"usage":{"prompt_tokens":0,"total_tokens":0}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-test",
+		},
+	}
+
+	result, err := svc.ForwardEmbeddings(context.Background(), c, account, reqBody)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, result.Usage.InputTokens)
+	require.Zero(t, result.Usage.OutputTokens)
+}
+
 func TestForwardEmbeddings_APIKeyPassthroughRecordsUsageAndBatchInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -113,6 +208,8 @@ func TestForwardEmbeddings_APIKeyPassthroughRecordsUsageAndBatchInput(t *testing
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotNil(t, result)
 	require.Equal(t, "emb-rid", result.RequestID)
+	require.NotEmpty(t, result.AttemptID)
+	require.Equal(t, HTTPAttemptID(upstream.lastReq.Context()), result.AttemptID)
 	require.Equal(t, "nowledge-embedding", result.Model)
 	require.Equal(t, "jina-embeddings-v5-text-small", result.BillingModel)
 	require.Equal(t, "jina-embeddings-v5-text-small", result.UpstreamModel)

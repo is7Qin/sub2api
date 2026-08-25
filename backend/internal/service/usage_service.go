@@ -74,6 +74,10 @@ func NewUsageService(usageRepo UsageLogRepository, userRepo UserRepository, entC
 
 // Create 创建使用日志
 func (s *UsageService) Create(ctx context.Context, req CreateUsageLogRequest) (*UsageLog, error) {
+	if req.AccountID <= 0 {
+		return nil, ErrUsageLogAccountRequired
+	}
+
 	// 使用数据库事务保证「使用日志插入」与「扣费」的原子性，避免重复扣费或漏扣风险。
 	tx, err := s.entClient.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
@@ -96,7 +100,7 @@ func (s *UsageService) Create(ctx context.Context, req CreateUsageLogRequest) (*
 	usageLog := &UsageLog{
 		UserID:                req.UserID,
 		APIKeyID:              req.APIKeyID,
-		AccountID:             req.AccountID,
+		AccountID:             &req.AccountID,
 		RequestID:             req.RequestID,
 		Model:                 req.Model,
 		InputTokens:           req.InputTokens,

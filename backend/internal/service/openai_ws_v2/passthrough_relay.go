@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,13 +43,20 @@ type RelayResult struct {
 	DroppedDownstreamFrames int64
 }
 
+type RelaySemanticTerminal struct {
+	Terminal  bool
+	StopRelay bool
+}
+
 type RelayTurnResult struct {
-	RequestModel      string
-	Usage             Usage
-	RequestID         string
-	TerminalEventType string
-	Duration          time.Duration
-	FirstTokenMs      *int
+	RequestModel         string
+	Usage                Usage
+	RequestID            string
+	TerminalEventType    string
+	TerminalPayload      []byte
+	Duration             time.Duration
+	FirstTokenMs         *int
+	ClientEventDelivered bool
 }
 
 type RelayExit struct {
@@ -66,8 +74,10 @@ type RelayOptions struct {
 	StartClientAfterFirstDownstream bool
 	OnUsageParseFailure             func(eventType string, usageRaw string)
 	OnTurnComplete                  func(turn RelayTurnResult)
+	ClassifySemanticTerminal        func(msgType coderws.MessageType, payload []byte, eventType string) RelaySemanticTerminal
 	BeforeWriteClient               func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
-	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn) (coderws.MessageType, []byte, error)
+	TransformWriteClient            func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error)
+	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn, markActivity func()) (coderws.MessageType, []byte, error)
 	OnTrace                         func(event RelayTraceEvent)
 	Now                             func() time.Time
 }
@@ -89,7 +99,18 @@ type relayState struct {
 	terminalEventType string
 	firstTokenMs      *int
 	turnTimingByID    map[string]*relayTurnTiming
-	activeTurn        *relayTurnTiming
+	// Kept for the full connection: a replay can arrive after its turn timing
+	// is released, so removing IDs with active-turn state would re-enable billing.
+	completedResponseIDs     map[string]struct{}
+	activeTurn               *relayTurnTiming
+	classifySemanticTerminal func(msgType coderws.MessageType, payload []byte, eventType string) RelaySemanticTerminal
+
+	// ID-less terminal events have no response ID to key replay suppression on.
+	// The client turn sequence provides a bounded per-turn key without
+	// conflating two distinct ID-less response.create requests.
+	idlessTurnGeneration     atomic.Uint64
+	idlessTerminalGeneration atomic.Uint64
+	completedTurnGeneration  atomic.Uint64
 }
 
 type relayExitSignal struct {
@@ -99,18 +120,53 @@ type relayExitSignal struct {
 	wroteDownstream bool
 }
 
+type downstreamWriteGate struct {
+	mu   sync.Mutex
+	drop atomic.Bool
+}
+
+func (g *downstreamWriteGate) disable() {
+	if g == nil {
+		return
+	}
+	// Publishing sink loss must not wait for an already admitted transport
+	// write; that write holds the mutex until it returns. The atomic marker
+	// prevents every later admission while allowing terminal drain to start.
+	g.drop.Store(true)
+}
+
+func (g *downstreamWriteGate) withWrite(write func() error) (bool, error) {
+	if g == nil {
+		return true, write()
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.drop.Load() {
+		return false, nil
+	}
+	return true, write()
+}
+
+func (g *downstreamWriteGate) disabled() bool {
+	return g != nil && g.drop.Load()
+}
+
 type observedUpstreamEvent struct {
-	terminal   bool
-	eventType  string
-	responseID string
-	usage      Usage
-	duration   time.Duration
-	firstToken *int
+	terminal             bool
+	eventType            string
+	responseID           string
+	payload              []byte
+	usage                Usage
+	duration             time.Duration
+	firstToken           *int
+	clientEventDelivered bool
+	stopRelay            bool
 }
 
 type relayTurnTiming struct {
 	startAt      time.Time
 	firstTokenMs *int
+	generation   uint64
 }
 
 func Relay(
@@ -138,14 +194,21 @@ func Relay(
 	}
 	drainTimeout := options.UpstreamDrainTimeout
 	if drainTimeout <= 0 {
-		drainTimeout = 1200 * time.Millisecond
+		// This is a hard safety deadline only. Normal accounting ends earlier on
+		// the terminal event or upstream close, so a short write window cannot
+		// become the accounting boundary.
+		drainTimeout = 30 * time.Second
 	}
 	firstMessageType := options.FirstMessageType
 	if firstMessageType != coderws.MessageBinary {
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel}
+	state := &relayState{
+		requestModel:             result.RequestModel,
+		classifySemanticTerminal: options.ClassifySemanticTerminal,
+	}
+	state.idlessTurnGeneration.Store(1)
 	onTrace := options.OnTrace
 
 	relayCtx, relayCancel := context.WithCancel(ctx)
@@ -163,7 +226,9 @@ func Relay(
 		return upstreamConn.WriteFrame(writeCtx, msgType, payload)
 	}
 	writeClient := func(msgType coderws.MessageType, payload []byte) error {
-		writeCtx, cancel := context.WithTimeout(relayCtx, writeTimeout)
+		// Downstream writes must not inherit relay cancellation: an external
+		// cancellation can otherwise abort a pending close frame before it is sent.
+		writeCtx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 		defer cancel()
 		return clientConn.WriteFrame(writeCtx, msgType, payload)
 	}
@@ -206,43 +271,61 @@ func Relay(
 	clientToUpstreamFrames.Add(1)
 	markActivity()
 
-	exitCh := make(chan relayExitSignal, 3)
-	dropDownstreamWrites := atomic.Bool{}
+	exitCh := make(chan relayExitSignal, 8)
+	downstreamWrites := &downstreamWriteGate{}
 	clientReaderStarted := atomic.Bool{}
+	clientReaderDone := make(chan struct{})
+	upstreamDone := make(chan struct{})
+	watchdogDone := make(chan struct{})
 	startClientReader := func() {
 		if !clientReaderStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
+		go func() {
+			defer close(clientReaderDone)
+			runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeUpstream, markActivity, clientToUpstreamFrames, onTrace, state, downstreamWrites, exitCh)
+		}()
 	}
 	if !options.StartClientAfterFirstDownstream {
 		startClientReader()
 	}
-	go runUpstreamToClient(
-		relayCtx,
-		upstreamConn,
-		writeClient,
-		startAt,
-		nowFn,
-		state,
-		options.OnUsageParseFailure,
-		options.OnTurnComplete,
-		options.BeforeWriteClient,
-		func() {
-			if options.StartClientAfterFirstDownstream {
-				startClientReader()
-			}
-		},
-		&dropDownstreamWrites,
-		upstreamToClientFrames,
-		droppedDownstreamFrames,
-		markActivity,
-		onTrace,
-		exitCh,
-	)
-	go runIdleWatchdog(relayCtx, nowFn, options.IdleTimeout, &lastActivity, onTrace, exitCh)
+	go func() {
+		defer close(upstreamDone)
+		runUpstreamToClient(
+			relayCtx,
+			upstreamConn,
+			writeClient,
+			startAt,
+			nowFn,
+			state,
+			options.OnUsageParseFailure,
+			options.OnTurnComplete,
+			options.BeforeWriteClient,
+			options.TransformWriteClient,
+			func() {
+				if options.StartClientAfterFirstDownstream {
+					startClientReader()
+				}
+			},
+			downstreamWrites,
+			upstreamToClientFrames,
+			droppedDownstreamFrames,
+			markActivity,
+			onTrace,
+			exitCh,
+		)
+	}()
+	go func() {
+		defer close(watchdogDone)
+		runIdleWatchdog(relayCtx, nowFn, options.IdleTimeout, &lastActivity, onTrace, exitCh)
+	}()
 
-	firstExit := <-exitCh
+	firstExit, _ := waitRelayExitContext(ctx, exitCh)
+	// A disconnect may already be visible to the client reader when the idle
+	// watchdog publishes concurrently. Prefer the disconnect drain boundary.
+	if firstExit.stage == "idle_timeout" && downstreamWrites.disabled() {
+		firstExit, _ = waitRelayExitContext(ctx, exitCh)
+	}
 	emitRelayTrace(onTrace, RelayTraceEvent{
 		Stage:           "first_exit",
 		Direction:       relayDirectionFromStage(firstExit.stage),
@@ -254,10 +337,13 @@ func Relay(
 	secondExit := relayExitSignal{graceful: true}
 	hasSecondExit := false
 
-	// 客户端断开后尽力继续读取上游短窗口，捕获延迟 usage/terminal 事件用于计费。
-	if firstExit.stage == "read_client" && firstExit.graceful {
-		dropDownstreamWrites.Store(true)
-		secondExit, hasSecondExit = waitRelayExit(exitCh, drainTimeout)
+	// Once the client disconnects or a downstream write fails, continue
+	// observing the admitted upstream turn until terminal, close, or deadline.
+	if (firstExit.stage == "read_client" && firstExit.graceful) || firstExit.stage == "write_client" {
+		downstreamWrites.disable()
+		if state.completedTurnGeneration.Load() < state.idlessTurnGeneration.Load() {
+			secondExit, hasSecondExit = waitTerminalDrainExit(ctx, exitCh, drainTimeout)
+		}
 	} else {
 		relayCancel()
 		_ = upstreamConn.Close()
@@ -278,6 +364,13 @@ func Relay(
 
 	relayCancel()
 	_ = upstreamConn.Close()
+	// Close/cancel unblocks transport reads; join every worker before returning
+	// so no late callback or downstream write can outlive the relay.
+	<-upstreamDone
+	if clientReaderStarted.Load() {
+		<-clientReaderDone
+	}
+	<-watchdogDone
 
 	enrichResult(&result, state, nowFn().Sub(startAt))
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
@@ -294,7 +387,7 @@ func Relay(
 	if firstExit.stage == "read_client" && firstExit.graceful {
 		stage := "client_disconnected"
 		exitErr := firstExit.err
-		if hasSecondExit && !secondExit.graceful {
+		if hasSecondExit && !secondExit.graceful && secondExit.stage != "read_upstream" {
 			stage = secondExit.stage
 			exitErr = secondExit.err
 		}
@@ -371,32 +464,47 @@ func Relay(
 func runClientToUpstream(
 	ctx context.Context,
 	clientConn FrameConn,
-	readClientFrame func(context.Context, FrameConn) (coderws.MessageType, []byte, error),
+	readClientFrame func(context.Context, FrameConn, func()) (coderws.MessageType, []byte, error),
 	writeUpstream func(msgType coderws.MessageType, payload []byte) error,
 	markActivity func(),
 	forwardedFrames *atomic.Int64,
 	onTrace func(event RelayTraceEvent),
+	state *relayState,
+	downstreamWrites *downstreamWriteGate,
 	exitCh chan<- relayExitSignal,
 ) {
 	if readClientFrame == nil {
-		readClientFrame = func(ctx context.Context, conn FrameConn) (coderws.MessageType, []byte, error) {
+		readClientFrame = func(ctx context.Context, conn FrameConn, _ func()) (coderws.MessageType, []byte, error) {
 			return conn.ReadFrame(ctx)
 		}
 	}
 	for {
-		msgType, payload, err := readClientFrame(ctx, clientConn)
+		msgType, payload, err := readClientFrame(ctx, clientConn, markActivity)
 		if err != nil {
+			graceful := isDisconnectError(err)
+			// Publish sink loss before notifying the coordinator so the upstream
+			// reader cannot race one more downstream write through.
+			if graceful && downstreamWrites != nil {
+				downstreamWrites.disable()
+			}
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:     "read_client_failed",
 				Direction: "client_to_upstream",
 				Error:     err.Error(),
-				Graceful:  isDisconnectError(err),
+				Graceful:  graceful,
 			})
-			exitCh <- relayExitSignal{stage: "read_client", err: err, graceful: isDisconnectError(err)}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "read_client", err: err, graceful: graceful})
 			return
 		}
-		markActivity()
+		isResponseCreate := msgType == coderws.MessageText && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create"
+		var turnGeneration uint64
+		if isResponseCreate && state != nil {
+			turnGeneration = state.idlessTurnGeneration.Add(1)
+		}
 		if err := writeUpstream(msgType, payload); err != nil {
+			if turnGeneration != 0 {
+				state.idlessTurnGeneration.CompareAndSwap(turnGeneration, turnGeneration-1)
+			}
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:        "write_upstream_failed",
 				Direction:    "client_to_upstream",
@@ -404,7 +512,7 @@ func runClientToUpstream(
 				PayloadBytes: len(payload),
 				Error:        err.Error(),
 			})
-			exitCh <- relayExitSignal{stage: "write_upstream", err: err}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "write_upstream", err: err})
 			return
 		}
 		if forwardedFrames != nil {
@@ -424,8 +532,9 @@ func runUpstreamToClient(
 	onUsageParseFailure func(eventType string, usageRaw string),
 	onTurnComplete func(turn RelayTurnResult),
 	beforeWriteClient func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error,
+	transformWriteClient func(msgType coderws.MessageType, payload []byte, eventType string) ([]byte, error),
 	afterWriteClient func(),
-	dropDownstreamWrites *atomic.Bool,
+	downstreamWrites *downstreamWriteGate,
 	forwardedFrames *atomic.Int64,
 	droppedFrames *atomic.Int64,
 	markActivity func(),
@@ -443,42 +552,33 @@ func runUpstreamToClient(
 				Graceful:        isDisconnectError(err),
 				WroteDownstream: wroteDownstream,
 			})
-			exitCh <- relayExitSignal{
+			publishRelayExit(ctx, exitCh, relayExitSignal{
 				stage:           "read_upstream",
 				err:             err,
 				graceful:        isDisconnectError(err),
 				wroteDownstream: wroteDownstream,
-			}
+			})
 			return
 		}
 		markActivity()
-		if beforeWriteClient != nil {
-			if err := beforeWriteClient(msgType, payload, wroteDownstream); err != nil {
-				emitRelayTrace(onTrace, RelayTraceEvent{
-					Stage:           "upstream_message_rejected",
-					Direction:       "upstream_to_client",
-					MessageType:     relayMessageTypeString(msgType),
-					PayloadBytes:    len(payload),
-					WroteDownstream: wroteDownstream,
-					Error:           err.Error(),
-				})
-				exitCh <- relayExitSignal{
-					stage:           "upstream_message",
-					err:             err,
-					wroteDownstream: wroteDownstream,
-				}
-				return
-			}
-		}
 		observedEvent := observedUpstreamEvent{}
 		switch msgType {
 		case coderws.MessageText:
-			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
+			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+			semantic := RelaySemanticTerminal{}
+			if state != nil && state.classifySemanticTerminal != nil {
+				semantic = state.classifySemanticTerminal(msgType, payload, eventType)
+			}
+			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure, semantic.Terminal)
+			observedEvent.stopRelay = semantic.StopRelay
 		case coderws.MessageBinary:
 			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
+		// The terminal's own write is deliberately excluded: only an earlier
+		// successful downstream frame establishes client-visible output.
+		observedEvent.clientEventDelivered = wroteDownstream
 		emitTurnComplete(onTurnComplete, state, observedEvent)
-		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
+		if downstreamWrites != nil && downstreamWrites.disabled() {
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
 			}
@@ -490,30 +590,124 @@ func runUpstreamToClient(
 				WroteDownstream: wroteDownstream,
 			})
 			if observedEvent.terminal {
-				exitCh <- relayExitSignal{
+				publishRelayExit(ctx, exitCh, relayExitSignal{
 					stage:           "drain_terminal",
 					graceful:        true,
 					wroteDownstream: wroteDownstream,
-				}
+				})
 				return
 			}
 			markActivity()
 			continue
 		}
+		if beforeWriteClient != nil {
+			if err := beforeWriteClient(msgType, payload, wroteDownstream); err != nil {
+				emitRelayTrace(onTrace, RelayTraceEvent{
+					Stage:           "upstream_message_rejected",
+					Direction:       "upstream_to_client",
+					MessageType:     relayMessageTypeString(msgType),
+					PayloadBytes:    len(payload),
+					WroteDownstream: wroteDownstream,
+					Error:           err.Error(),
+				})
+				if downstreamWrites.disabled() {
+					if droppedFrames != nil {
+						droppedFrames.Add(1)
+					}
+					if observedEvent.terminal {
+						publishRelayExit(ctx, exitCh, relayExitSignal{stage: "drain_terminal", graceful: true, wroteDownstream: wroteDownstream})
+						return
+					}
+					continue
+				}
+				publishRelayExit(ctx, exitCh, relayExitSignal{
+					stage:           "upstream_message",
+					err:             err,
+					wroteDownstream: wroteDownstream,
+				})
+				return
+			}
+		}
 		if (msgType == coderws.MessageText && observedEvent.eventType == "response.failed") || msgType == coderws.MessageBinary {
 			payload, _ = sanitizeResponseFailedMessageForClient(payload)
 		}
-		if err := writeClient(msgType, payload); err != nil {
+		if transformWriteClient != nil {
+			transformed, transformErr := transformWriteClient(msgType, payload, observedEvent.eventType)
+			if transformErr != nil {
+				if downstreamWrites.disabled() {
+					if droppedFrames != nil {
+						droppedFrames.Add(1)
+					}
+					if observedEvent.terminal {
+						publishRelayExit(ctx, exitCh, relayExitSignal{stage: "drain_terminal", graceful: true, wroteDownstream: wroteDownstream})
+						return
+					}
+					continue
+				}
+				publishRelayExit(ctx, exitCh, relayExitSignal{
+					stage:           "upstream_message",
+					err:             transformErr,
+					wroteDownstream: wroteDownstream,
+				})
+				return
+			}
+			payload = transformed
+		}
+		writeStarted, writeErr := downstreamWrites.withWrite(func() error {
+			return writeClient(msgType, payload)
+		})
+		if !writeStarted {
+			if droppedFrames != nil {
+				droppedFrames.Add(1)
+			}
+			if observedEvent.terminal {
+				publishRelayExit(ctx, exitCh, relayExitSignal{stage: "drain_terminal", graceful: true, wroteDownstream: wroteDownstream})
+				return
+			}
+			continue
+		}
+		if observedEvent.stopRelay && writeErr != nil {
+			if downstreamWrites != nil {
+				downstreamWrites.disable()
+			}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "write_client", err: writeErr, wroteDownstream: wroteDownstream})
+			return
+		}
+		if observedEvent.stopRelay && writeErr == nil {
+			wroteDownstream = true
+			if afterWriteClient != nil {
+				afterWriteClient()
+			}
+			if forwardedFrames != nil {
+				forwardedFrames.Add(1)
+			}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "semantic_terminal", graceful: true, wroteDownstream: wroteDownstream})
+			return
+		}
+		if writeErr != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:           "write_client_failed",
 				Direction:       "upstream_to_client",
 				MessageType:     relayMessageTypeString(msgType),
 				PayloadBytes:    len(payload),
 				WroteDownstream: wroteDownstream,
-				Error:           err.Error(),
+				Error:           writeErr.Error(),
 			})
-			exitCh <- relayExitSignal{stage: "write_client", err: err, wroteDownstream: wroteDownstream}
-			return
+			// The client is no longer a usable sink, but the admitted upstream
+			// turn still needs terminal observation for accounting.
+			if downstreamWrites != nil {
+				downstreamWrites.disable()
+			}
+			if afterWriteClient == nil {
+				publishRelayExit(ctx, exitCh, relayExitSignal{stage: "write_client", err: writeErr, wroteDownstream: wroteDownstream})
+				return
+			}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "write_client", err: writeErr, wroteDownstream: wroteDownstream})
+			if observedEvent.terminal {
+				publishRelayExit(ctx, exitCh, relayExitSignal{stage: "drain_terminal", graceful: true, wroteDownstream: wroteDownstream})
+				return
+			}
+			continue
 		}
 		wroteDownstream = true
 		if afterWriteClient != nil {
@@ -558,9 +752,16 @@ func runIdleWatchdog(
 				Direction: "watchdog",
 				Error:     context.DeadlineExceeded.Error(),
 			})
-			exitCh <- relayExitSignal{stage: "idle_timeout", err: context.DeadlineExceeded}
+			publishRelayExit(ctx, exitCh, relayExitSignal{stage: "idle_timeout", err: context.DeadlineExceeded})
 			return
 		}
+	}
+}
+
+func publishRelayExit(ctx context.Context, exitCh chan<- relayExitSignal, signal relayExitSignal) {
+	select {
+	case exitCh <- signal:
+	case <-ctx.Done():
 	}
 }
 
@@ -608,10 +809,12 @@ func observeUpstreamMessage(
 	startAt time.Time,
 	nowFn func() time.Time,
 	onUsageParseFailure func(eventType string, usageRaw string),
+	semanticTerminal ...bool,
 ) observedUpstreamEvent {
 	if state == nil || len(message) == 0 {
 		return observedUpstreamEvent{}
 	}
+	semantic := len(semanticTerminal) > 0 && semanticTerminal[0]
 	values := gjson.GetManyBytes(message, "type", "response.id", "response_id", "id")
 	eventType := strings.TrimSpace(values[0].String())
 	if eventType == "" {
@@ -621,18 +824,32 @@ func observeUpstreamMessage(
 	if responseID == "" {
 		responseID = strings.TrimSpace(values[2].String())
 	}
-	// 仅 terminal 事件兜底读取顶层 id，避免把 event_id 当成 response_id 关联到 turn。
-	if responseID == "" && isTerminalEvent(eventType) {
+	// Only native response terminals may fall back to a top-level ID. A
+	// classifier-only semantic terminal can be an event envelope, not a turn.
+	if responseID == "" && isTerminalEvent(eventType) && !semantic {
 		responseID = strings.TrimSpace(values[3].String())
 	}
 	now := nowFn()
+	// An upstream may replay a terminal frame while closing. Ignore duplicate
+	// bookkeeping so it cannot double-charge or release a later turn's slots.
+	effectiveTerminal := isTerminalEvent(eventType) || semantic
+	if effectiveTerminal {
+		if responseID != "" && !openAIWSRelayMarkResponseCompleted(state, responseID) {
+			return observedUpstreamEvent{eventType: eventType, responseID: responseID}
+		}
+		if responseID == "" && !openAIWSRelayMarkIDLessTerminal(state) {
+			return observedUpstreamEvent{eventType: eventType}
+		}
+	}
 
 	if state.firstTokenMs == nil && isTokenEvent(eventType) {
 		ms := int(now.Sub(startAt).Milliseconds())
 		if ms >= 0 {
 			state.firstTokenMs = &ms
 		}
-		if state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
+		// Identified events exclusively time their own response. Only ID-less
+		// semantic output may fall back to the active turn.
+		if responseID == "" && state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
 			tms := int(now.Sub(state.activeTurn.startAt).Milliseconds())
 			if tms >= 0 {
 				state.activeTurn.firstTokenMs = &tms
@@ -654,14 +871,20 @@ func observeUpstreamMessage(
 			}
 		}
 	}
-	if !isTerminalEvent(eventType) {
+	if !effectiveTerminal {
 		return observed
 	}
 	observed.terminal = true
+	observed.payload = append([]byte(nil), message...)
 	state.terminalEventType = eventType
+	terminalGeneration := state.idlessTurnGeneration.Load()
+	if terminalGeneration == 0 {
+		terminalGeneration = 1
+	}
 	if responseID != "" {
 		state.lastResponseID = responseID
 		if turnTiming, ok := openAIWSRelayDeleteTurnTiming(state, responseID); ok {
+			terminalGeneration = turnTiming.generation
 			duration := now.Sub(turnTiming.startAt)
 			if duration < 0 {
 				duration = 0
@@ -670,6 +893,7 @@ func observeUpstreamMessage(
 			observed.firstToken = openAIWSRelayCloneIntPtr(turnTiming.firstTokenMs)
 		}
 	}
+	openAIWSRelayMarkTurnCompleted(state, terminalGeneration)
 	return observed
 }
 
@@ -681,22 +905,24 @@ func emitTurnComplete(
 	if onTurnComplete == nil || !observed.terminal {
 		return
 	}
-	responseID := strings.TrimSpace(observed.responseID)
-	if responseID == "" {
-		return
-	}
+	onTurnComplete(relayTurnResult(state, observed))
+}
+
+func relayTurnResult(state *relayState, observed observedUpstreamEvent) RelayTurnResult {
 	requestModel := ""
 	if state != nil {
 		requestModel = state.requestModel
 	}
-	onTurnComplete(RelayTurnResult{
-		RequestModel:      requestModel,
-		Usage:             observed.usage,
-		RequestID:         responseID,
-		TerminalEventType: observed.eventType,
-		Duration:          observed.duration,
-		FirstTokenMs:      openAIWSRelayCloneIntPtr(observed.firstToken),
-	})
+	return RelayTurnResult{
+		RequestModel:         requestModel,
+		Usage:                observed.usage,
+		RequestID:            strings.TrimSpace(observed.responseID),
+		TerminalEventType:    observed.eventType,
+		TerminalPayload:      append([]byte(nil), observed.payload...),
+		Duration:             observed.duration,
+		FirstTokenMs:         openAIWSRelayCloneIntPtr(observed.firstToken),
+		ClientEventDelivered: observed.clientEventDelivered,
+	}
 }
 
 func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now time.Time) *relayTurnTiming {
@@ -708,12 +934,61 @@ func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now 
 	}
 	timing, ok := state.turnTimingByID[responseID]
 	if !ok || timing == nil || timing.startAt.IsZero() {
-		timing = &relayTurnTiming{startAt: now}
+		generation := state.idlessTurnGeneration.Load()
+		if generation == 0 {
+			generation = 1
+		}
+		timing = &relayTurnTiming{startAt: now, generation: generation}
 		state.turnTimingByID[responseID] = timing
 		state.activeTurn = timing
 		return timing
 	}
 	return timing
+}
+
+func openAIWSRelayMarkResponseCompleted(state *relayState, responseID string) bool {
+	if state == nil || responseID == "" {
+		return true
+	}
+	if state.completedResponseIDs == nil {
+		state.completedResponseIDs = make(map[string]struct{}, 8)
+	}
+	if _, exists := state.completedResponseIDs[responseID]; exists {
+		return false
+	}
+	state.completedResponseIDs[responseID] = struct{}{}
+	return true
+}
+
+func openAIWSRelayMarkTurnCompleted(state *relayState, generation uint64) {
+	if state == nil || generation == 0 {
+		return
+	}
+	for {
+		completed := state.completedTurnGeneration.Load()
+		if completed >= generation || state.completedTurnGeneration.CompareAndSwap(completed, generation) {
+			return
+		}
+	}
+}
+
+func openAIWSRelayMarkIDLessTerminal(state *relayState) bool {
+	if state == nil {
+		return true
+	}
+	generation := state.idlessTurnGeneration.Load()
+	if generation == 0 {
+		generation = 1
+	}
+	for {
+		completed := state.idlessTerminalGeneration.Load()
+		if completed >= generation {
+			return false
+		}
+		if state.idlessTerminalGeneration.CompareAndSwap(completed, generation) {
+			return true
+		}
+	}
 }
 
 func openAIWSRelayDeleteTurnTiming(state *relayState, responseID string) (relayTurnTiming, bool) {
@@ -934,7 +1209,8 @@ func sanitizeResponseFailedMessageForClient(payload []byte) ([]byte, bool) {
 }
 
 func isTokenEvent(eventType string) bool {
-	if eventType == "" {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" || isTerminalEvent(eventType) {
 		return false
 	}
 	switch eventType {
@@ -950,7 +1226,7 @@ func isTokenEvent(eventType string) bool {
 	if strings.HasPrefix(eventType, "response.output") {
 		return true
 	}
-	return eventType == "response.completed" || eventType == "response.done"
+	return false
 }
 
 func minDuration(a, b time.Duration) time.Duration {
@@ -966,6 +1242,20 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
+func waitRelayExitContext(ctx context.Context, exitCh <-chan relayExitSignal) (relayExitSignal, bool) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return relayExitSignal{stage: "context_canceled", err: err}, false
+		}
+	}
+	select {
+	case signal := <-exitCh:
+		return signal, true
+	case <-ctx.Done():
+		return relayExitSignal{stage: "context_canceled", err: ctx.Err()}, false
+	}
+}
+
 func waitRelayExit(exitCh <-chan relayExitSignal, timeout time.Duration) (relayExitSignal, bool) {
 	if timeout <= 0 {
 		timeout = 200 * time.Millisecond
@@ -975,5 +1265,28 @@ func waitRelayExit(exitCh <-chan relayExitSignal, timeout time.Duration) (relayE
 		return sig, true
 	case <-time.After(timeout):
 		return relayExitSignal{}, false
+	}
+}
+
+func waitTerminalDrainExit(ctx context.Context, exitCh <-chan relayExitSignal, timeout time.Duration) (relayExitSignal, bool) {
+	if timeout <= 0 {
+		timeout = 200 * time.Millisecond
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case sig := <-exitCh:
+			switch sig.stage {
+			case "drain_terminal", "read_upstream":
+				return sig, true
+			default:
+				continue
+			}
+		case <-ctx.Done():
+			return relayExitSignal{stage: "context_canceled", err: ctx.Err()}, false
+		case <-timer.C:
+			return relayExitSignal{}, false
+		}
 	}
 }

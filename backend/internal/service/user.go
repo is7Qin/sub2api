@@ -59,6 +59,11 @@ type User struct {
 	// 避免每请求查 DB。字段不持久化到数据库。
 	UserGroupRPMOverride *int
 
+	// UserGroupRPMOverrideLoaded 表示 UserGroupRPMOverride 已由 snapshot 构建时
+	// 查库并完成负向缓存（nil 也是权威结果）。为 true 时 checkRPM 不再回退 DB；
+	// 为 false（快照构建时查询失败等）时保留原有 DB 回退行为。
+	UserGroupRPMOverrideLoaded bool
+
 	APIKeys       []APIKey
 	Subscriptions []UserSubscription
 }

@@ -187,6 +187,8 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 
 	type receivedPayload struct {
 		MaxCompletionTokensExists bool
+		InputNamespace            string
+		NamespaceToolType         string
 	}
 	receivedCh := make(chan receivedPayload, 1)
 
@@ -205,7 +207,11 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 			return
 		}
 		requestJSON := requestToJSONString(request)
-		receivedCh <- receivedPayload{MaxCompletionTokensExists: gjson.Get(requestJSON, "max_completion_tokens").Exists()}
+		receivedCh <- receivedPayload{
+			MaxCompletionTokensExists: gjson.Get(requestJSON, "max_completion_tokens").Exists(),
+			InputNamespace:            gjson.Get(requestJSON, "input.1.namespace").String(),
+			NamespaceToolType:         gjson.Get(requestJSON, "tools.1.type").String(),
+		}
 
 		if err := conn.WriteJSON(map[string]any{
 			"type": "response.completed",
@@ -257,7 +263,7 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 		Extra: map[string]any{"responses_websockets_v2_enabled": true},
 	}
 
-	body := []byte(`{"model":"gpt-5.4","stream":false,"max_completion_tokens":12,"tools":[{"type":"image_generation"}],"input":[{"type":"input_text","text":"hello"}]}`)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"max_completion_tokens":12,"tools":[{"type":"image_generation"},{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"input_text","text":"hello"},{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -265,6 +271,8 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
 
 	received := <-receivedCh
 	require.False(t, received.MaxCompletionTokensExists)
+	require.Equal(t, "mcp", received.InputNamespace)
+	require.Equal(t, "namespace", received.NamespaceToolType)
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testing.T) {
@@ -479,6 +487,17 @@ func TestOpenAIGatewayService_Forward_WSv2_RewriteModelAndToolCallsOnCompletedEv
 	require.Equal(t, "edit", gjson.GetBytes(rec.Body.Bytes(), "tool_calls.0.function.name").String(), "工具名称应被修正为 OpenCode 规范")
 }
 
+func TestOpenAIWSCompletedEventDoesNotParseUpstreamErrorFact(t *testing.T) {
+	parseCalls := countUpstreamErrorFactParses(t)
+
+	eventType, responseID, response := parseOpenAIWSEventEnvelope([]byte(`{"type":"response.completed","response":{"id":"resp_completed","error":{"code":"context_length_exceeded","message":"context window"}}}`))
+
+	require.Equal(t, "response.completed", eventType)
+	require.Equal(t, "resp_completed", responseID)
+	require.True(t, response.Exists())
+	require.Zero(t, parseCalls.Load())
+}
+
 func TestOpenAIWSPayloadString_OnlyAcceptsStringValues(t *testing.T) {
 	payload := map[string]any{
 		"type":                 nil,
@@ -666,10 +685,10 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 		"model":"gpt-5.1",
 		"stream":false,
 		"store":true,
-		"input":[{"type":"input_text","text":"hello"}],
+		"input":[{"type":"input_text","text":"hello"},{"type":"function_call","namespace":"mcp","name":"read","arguments":"{}"}],
 		"instructions":"be helpful",
 		"reasoning":{"effort":"medium"},
-		"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"nonce":{"const":9007199254740993}}}}],
+		"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"nonce":{"const":9007199254740993}}}},{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"read"}]}],
 		"tool_choice":"auto",
 		"parallel_tool_calls":true,
 		"include":["reasoning.encrypted_content"],
@@ -701,6 +720,9 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	require.Equal(t, "be helpful", gjson.Get(requestJSON, "instructions").String())
 	require.Equal(t, "medium", gjson.Get(requestJSON, "reasoning.effort").String())
 	require.Equal(t, "function", gjson.Get(requestJSON, "tools.0.type").String())
+	require.Equal(t, "namespace", gjson.Get(requestJSON, "tools.1.type").String())
+	require.Equal(t, "mcp", gjson.Get(requestJSON, "tools.1.name").String())
+	require.Equal(t, "mcp", gjson.Get(requestJSON, "input.1.namespace").String())
 	require.Contains(t, requestJSON, "9007199254740993")
 	require.NotContains(t, requestJSON, "9007199254740992")
 	require.Equal(t, "auto", gjson.Get(requestJSON, "tool_choice").String())
@@ -1071,7 +1093,7 @@ func TestOpenAIGatewayService_Forward_WSv2_ResponseDoneUsageParsed(t *testing.T)
 
 	captureConn := &openAIWSCaptureConn{
 		events: [][]byte{
-			[]byte(`{"type":"response.done","response":{"id":"resp_done_usage","model":"gpt-5.1","usage":{"input_tokens":13,"output_tokens":8,"input_tokens_details":{"cached_tokens":5},"cache_creation_input_tokens":2,"output_tokens_details":{"image_tokens":4}}}}`),
+			[]byte(`{"type":"response.completed","response":{"id":"resp_done_usage","model":"gpt-5.1","usage":{"input_tokens":13,"output_tokens":8,"input_tokens_details":{"cached_tokens":5},"cache_creation_input_tokens":2,"output_tokens_details":{"image_tokens":4}}}}`),
 		},
 	}
 	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
@@ -1112,6 +1134,95 @@ func TestOpenAIGatewayService_Forward_WSv2_ResponseDoneUsageParsed(t *testing.T)
 	require.Equal(t, 5, result.Usage.CacheReadInputTokens)
 	require.Equal(t, 2, result.Usage.CacheCreationInputTokens)
 	require.Equal(t, 4, result.Usage.ImageOutputTokens)
+}
+
+func TestOpenAIGatewayService_Forward_WSv2_ContextFailedRelaysSanitizedTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "unit-test-agent/1.0")
+
+	cfg := newOpenAIWSV2TestConfig()
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	captureConn := &openAIWSCaptureConn{events: [][]byte{[]byte(openAIContextFailedTerminalPayload)}}
+	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     &httpUpstreamRecorder{},
+		cache:            &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+		openaiWSPool:     pool,
+	}
+	account := &Account{
+		ID: 33, Name: "openai-ws-context", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra:       map[string]any{"responses_websockets_v2_enabled": true},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":true,"input":[{"type":"input_text","text":"large"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 37, result.Usage.InputTokens)
+	require.NotNil(t, requestErr.Usage)
+	require.Equal(t, 37, requestErr.Usage.InputTokens)
+	require.Contains(t, rec.Body.String(), `"type":"response.failed"`)
+	require.Contains(t, rec.Body.String(), `"code":"context_length_exceeded"`)
+	require.NotContains(t, rec.Body.String(), "sk-private")
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+}
+
+func TestOpenAIGatewayService_Forward_WSv2_ContextFailedAfterOutputRetainsPartialOutputDisposition(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	cfg := newOpenAIWSV2TestConfig()
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	captureConn := &openAIWSCaptureConn{events: [][]byte{
+		[]byte(`{"type":"response.output_text.delta","response_id":"resp_context_partial","delta":"partial"}`),
+		[]byte(openAIContextFailedTerminalPayload),
+	}}
+	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+
+	svc := &OpenAIGatewayService{
+		cfg: cfg, httpUpstream: &httpUpstreamRecorder{}, cache: &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector(), openaiWSPool: pool,
+	}
+	account := &Account{
+		ID: 34, Name: "openai-ws-context-partial", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra:       map[string]any{"responses_websockets_v2_enabled": true},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":true,"input":[{"type":"input_text","text":"large"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.True(t, requestErr.OutputStarted)
+	require.NotNil(t, requestErr.Usage)
+	require.NotNil(t, result)
+	require.Equal(t, 37, result.Usage.InputTokens)
+	require.Contains(t, rec.Body.String(), `"delta":"partial"`)
+	require.Contains(t, rec.Body.String(), `"code":"context_length_exceeded"`)
 }
 
 func TestOpenAIGatewayService_Forward_WSv1_Unsupported(t *testing.T) {

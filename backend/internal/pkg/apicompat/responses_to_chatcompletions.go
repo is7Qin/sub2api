@@ -161,8 +161,12 @@ func ResponsesEventToChatChunks(evt *ResponsesStreamEvent, state *ResponsesEvent
 		return nil
 	// response.done 是 Realtime/WS 与项目透传路径使用的终止别名；
 	// 普通 Responses HTTP SSE 的公开终止事件仍以 response.completed 为主。
-	case "response.completed", "response.done", "response.incomplete", "response.failed":
+	case "response.completed", "response.done", "response.incomplete":
 		return resToChatHandleCompleted(evt, state)
+	case "response.failed":
+		// Failed-terminal rendering belongs to the service error boundary; treating
+		// it as completion would synthesize a misleading finish_reason=stop.
+		return nil
 	default:
 		return nil
 	}

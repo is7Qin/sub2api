@@ -17,6 +17,22 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	imageQualityDiagnosticValues = map[string]struct{}{"auto": {}, "low": {}, "medium": {}, "high": {}, "standard": {}, "hd": {}}
+	imageSizeDiagnosticValues    = map[string]struct{}{"auto": {}, "256x256": {}, "512x512": {}, "1024x1024": {}, "1024x1536": {}, "1536x1024": {}, "1792x1024": {}, "1024x1792": {}}
+)
+
+func boundedImageDiagnosticValue(value string, known map[string]struct{}) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "default"
+	}
+	if _, ok := known[value]; ok {
+		return value
+	}
+	return "other"
+}
+
 // Images handles OpenAI Images API requests.
 // POST /v1/images/generations
 // POST /v1/images/edits
@@ -80,6 +96,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		zap.Bool("stream", parsed.Stream),
 		zap.Bool("multipart", parsed.Multipart),
 		zap.String("capability", string(parsed.RequiredCapability)),
+		zap.String("img_quality", boundedImageDiagnosticValue(parsed.Quality, imageQualityDiagnosticValues)),
+		zap.String("img_size", boundedImageDiagnosticValue(parsed.Size, imageSizeDiagnosticValues)),
 	)
 
 	if !service.GroupAllowsImageGeneration(apiKey.Group) {
@@ -106,6 +124,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsed.Stream, false)))
 
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, requestModel)
+	routingModel := channelMapping.EffectiveModel(requestModel)
 
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
@@ -116,11 +135,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, parsed.Stream, &streamStarted, reqLog)
+	clientRelease, acquired := h.acquireResponsesClientSlots(c, apiKey, subject.UserID, subject.Concurrency, parsed.Stream, &streamStarted, reqLog)
 	if !acquired {
 		return
 	}
-	logicalReleases.Add(userReleaseFunc)
+	logicalReleases.Add(clientRelease)
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		reqLog.Info("openai.images.billing_eligibility_check_failed", zap.Error(err))
@@ -150,7 +169,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
-			requestModel,
+			routingModel,
 			failedAccountIDs,
 			parsed.RequiredCapability,
 		)

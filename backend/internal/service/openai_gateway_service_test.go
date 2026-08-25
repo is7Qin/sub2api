@@ -25,6 +25,33 @@ import (
 var _ AccountRepository = (*stubOpenAIAccountRepo)(nil)
 var _ GatewayCache = (*stubGatewayCache)(nil)
 
+func TestOpenAIForwardResultFromPassthroughNonStreamingResultPreservesAttemptID(t *testing.T) {
+	attemptID := "physical-attempt-19"
+	request, err := http.NewRequestWithContext(
+		context.WithValue(context.Background(), httpAttemptIDKey{}, attemptID),
+		http.MethodPost,
+		"https://upstream.example/v1/responses",
+		nil,
+	)
+	require.NoError(t, err)
+
+	result := openAIForwardResultFromPassthroughNonStreamingResult(
+		&openaiNonStreamingResultPassthrough{responseID: "resp-19", usage: &OpenAIUsage{}},
+		&http.Response{Header: http.Header{"X-Request-Id": []string{"upstream-19"}}, Request: request},
+		time.Now().Add(-time.Second),
+		"gpt-5",
+		"gpt-5",
+		"gpt-5-upstream",
+		nil,
+		nil,
+		"",
+		"",
+		"",
+	)
+
+	require.Equal(t, attemptID, result.AttemptID)
+}
+
 type stubOpenAIAccountRepo struct {
 	AccountRepository
 	accounts []Account
@@ -32,6 +59,16 @@ type stubOpenAIAccountRepo struct {
 
 type openAITestSettingRepo struct {
 	values map[string]string
+}
+
+type openAIStreamRateLimitAccountRepo struct {
+	AccountRepository
+	rateLimitResets []time.Time
+}
+
+func (r *openAIStreamRateLimitAccountRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
+	r.rateLimitResets = append(r.rateLimitResets, resetAt)
+	return nil
 }
 
 func (s *openAITestSettingRepo) Get(ctx context.Context, key string) (*Setting, error) {
@@ -128,6 +165,17 @@ func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account,
 	return nil, errors.New("account not found")
 }
 
+func (r stubOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	// 与生产 GetByIDs 语义一致：缺失 ID 忽略，不报错。
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if acc, err := r.GetByID(ctx, id); err == nil {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
+}
+
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {
@@ -196,6 +244,14 @@ type errReadCloser struct {
 
 func (r errReadCloser) Read([]byte) (int, error) { return 0, r.err }
 func (r errReadCloser) Close() error             { return nil }
+
+func markRemoteCompactionV2Request(t *testing.T, c *gin.Context, ctx context.Context) {
+	t.Helper()
+	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)).WithContext(ctx)
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.136.0")
+	require.True(t, PromoteOpenAICompactBodySignal(c, body, false))
+}
 
 type failingGinWriter struct {
 	gin.ResponseWriter
@@ -1378,7 +1434,7 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	markRemoteCompactionV2Request(t, c, context.Background())
 
 	pr, pw := io.Pipe()
 	resp := &http.Response{
@@ -1398,6 +1454,9 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "stream_timeout") {
 		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {
@@ -1415,7 +1474,7 @@ func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErr
 	c, _ := gin.CreateTestContext(rec)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	markRemoteCompactionV2Request(t, c, ctx)
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -1430,6 +1489,9 @@ func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErr
 	if strings.Contains(rec.Body.String(), "event: error") || strings.Contains(rec.Body.String(), "stream_read_error") {
 		t.Fatalf("expected no injected SSE error event, got %q", rec.Body.String())
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingReadErrorBeforeOutputReturnsFailover(t *testing.T) {
@@ -1498,6 +1560,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
 	require.Contains(t, string(failoverErr.ResponseBody), "An error occurred while processing your request")
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
@@ -1534,17 +1597,193 @@ func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t
 		Header: http.Header{"X-Request-Id": []string{"rid-capacity-failed"}},
 	}
 
-	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "pool-account",
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.Contains(t, string(failoverErr.ResponseBody), "Selected model is at capacity")
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
 }
 
-func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFailover(t *testing.T) {
+func TestOpenAIStreamingResponseFailedBeforeOutputRateLimitUsesPoolRetryPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_rate_limit"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_rate_limit","status":"failed","error":{"code":"rate_limit_exceeded","type":"invalid_request_error","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{
+			"X-Request-Id": []string{"rid-rate-limit-failed"},
+			"Retry-After":  []string{"1"},
+		},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "pool-account",
+		Credentials: map[string]any{
+			"pool_mode":                    true,
+			"pool_mode_retry_status_codes": []any{float64(http.StatusTooManyRequests)},
+		},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, "1", failoverErr.ResponseHeaders.Get("Retry-After"))
+	require.Equal(t, "rate_limit_error", gjson.GetBytes(failoverErr.ResponseBody, "error.type").String())
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.True(t, fact.HTTPStatusKnown)
+	require.Equal(t, http.StatusTooManyRequests, fact.HTTPStatus)
+	require.Equal(t, "1", fact.RetryAfter)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIStreamingResponseFailedRateLimitDoesNotBlockAccountScheduling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_rate_limit"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_rate_limit","status":"failed","error":{"code":"rate_limit_exceeded","type":"invalid_request_error","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{
+			"X-Codex-Primary-Used-Percent":        []string{"12"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"604800"},
+			"Retry-After":                         []string{"1"},
+		},
+	}
+	account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "oauth-account"}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIStreamingResponseFailedRateLimitRecordsOAuthDynamicSignalWithoutSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &modelNotFoundAccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	storeOpenAIOAuth429DynamicSettings(t, settingRepo, OpenAIOAuth429DynamicSettings{
+		Enabled:        true,
+		WindowSeconds:  60,
+		MinSamples:     2,
+		Min429:         1,
+		RatioThreshold: 0.5,
+		BlockSeconds:   12,
+	})
+	rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetSettingService(NewSettingService(settingRepo, &config.Config{}))
+	svc := &OpenAIGatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		rateLimitService: rateLimitSvc,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_rate_limit"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_rate_limit","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{
+			"X-Codex-Primary-Used-Percent":        []string{"100"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"604800"},
+			"Retry-After":                         []string{"1"},
+		},
+	}
+	account := &Account{ID: 12, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "oauth-account"}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+
+	rateLimitSvc.openAIOAuth429DynamicMu.Lock()
+	stat := rateLimitSvc.openAIOAuth429DynamicStat[account.ID]
+	rateLimitSvc.openAIOAuth429DynamicMu.Unlock()
+	require.NotNil(t, stat)
+	require.Equal(t, 1, stat.total)
+	require.Equal(t, 1, stat.count429)
+	require.Nil(t, stat.usage5h)
+	require.Nil(t, stat.usage7d)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIStreamingResponseFailedRateLimitPersistsAPIKeyCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &openAIStreamRateLimitAccountRepo{}
+	svc := &OpenAIGatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded; retry later"}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"Retry-After": []string{"1"}},
+	}
+	account := &Account{ID: 13, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Name: "api-key-account"}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+	require.Error(t, err)
+	require.Len(t, repo.rateLimitResets, 1)
+	require.WithinDuration(t, time.Now().Add(time.Second), repo.rateLimitResets[0], time.Second)
+}
+
+func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsDirectRequestError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1574,10 +1813,11 @@ func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFai
 
 	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
 	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-	require.Contains(t, string(failoverErr.ResponseBody), "Please retry later")
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.Equal(t, http.StatusServiceUnavailable, requestErr.StatusCode)
+	require.Equal(t, "server_is_overloaded", requestErr.Code)
+	require.Equal(t, "Please retry later.", requestErr.Message)
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
 }
@@ -1819,6 +2059,102 @@ func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamingRemoteCompactionClientDisconnectThenCompletedSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	markRemoteCompactionV2Request(t, c, context.Background())
+	c.Writer = &failingGinWriter{ResponseWriter: c.Writer, failAfter: 0}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n\n")),
+		Header: http.Header{},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+
+	require.NoError(t, err)
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeSucceeded, outcome)
+}
+
+func TestOpenAIStreamingPassthroughRemoteCompactionClientDisconnectThenCompletedSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	markRemoteCompactionV2Request(t, c, context.Background())
+	c.Writer = &failingGinWriter{ResponseWriter: c.Writer, failAfter: 0}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n\n")),
+		Header: http.Header{},
+	}
+
+	_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
+
+	require.NoError(t, err)
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeSucceeded, outcome)
+}
+
+func TestOpenAIStreamingRemoteCompactionTerminalOutcomes(t *testing.T) {
+	testOpenAIStreamingRemoteCompactionTerminalOutcomes(t, "adapter", func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response) error {
+		_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+		return err
+	})
+}
+
+func TestOpenAIStreamingPassthroughRemoteCompactionTerminalOutcomes(t *testing.T) {
+	testOpenAIStreamingRemoteCompactionTerminalOutcomes(t, "passthrough", func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response) error {
+		_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
+		return err
+	})
+}
+
+func testOpenAIStreamingRemoteCompactionTerminalOutcomes(
+	t *testing.T,
+	implementation string,
+	forward func(*OpenAIGatewayService, *gin.Context, *http.Response) error,
+) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		eventType   string
+		wantOutcome OpenAIRemoteCompactionSemanticOutcome
+	}{
+		{name: "incomplete fails", eventType: "response.incomplete", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "cancelled fails", eventType: "response.cancelled", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "canceled fails", eventType: "response.canceled", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "failed fails", eventType: "response.failed", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeFailed},
+		{name: "completed succeeds", eventType: "response.completed", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeSucceeded},
+		{name: "done succeeds", eventType: "response.done", wantOutcome: OpenAIRemoteCompactionSemanticOutcomeSucceeded},
+	}
+	for _, tt := range tests {
+		t.Run(implementation+"/"+tt.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			markRemoteCompactionV2Request(t, c, context.Background())
+			payload := fmt.Sprintf("event: %s\ndata: {\"type\":%q,\"response\":{\"id\":\"resp_terminal\"}}\n\n", tt.eventType, tt.eventType)
+			resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: http.Header{}}
+
+			_ = forward(svc, c, resp)
+			outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+			require.True(t, ok)
+			require.Equal(t, tt.wantOutcome, outcome)
+		})
+	}
+}
+
 func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1832,7 +2168,7 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	markRemoteCompactionV2Request(t, c, context.Background())
 
 	pr, pw := io.Pipe()
 	resp := &http.Response{
@@ -1851,6 +2187,9 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "missing terminal event") {
 		t.Fatalf("expected missing terminal event error, got %v", err)
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
 }
 
 func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t *testing.T) {
@@ -1864,7 +2203,7 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	markRemoteCompactionV2Request(t, c, context.Background())
 
 	pr, pw := io.Pipe()
 	resp := &http.Response{
@@ -1883,6 +2222,48 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 	if err == nil || !strings.Contains(err.Error(), "missing terminal event") {
 		t.Fatalf("expected missing terminal event error, got %v", err)
 	}
+	outcome, ok := GetOpenAIRemoteCompactionSemanticOutcome(c)
+	require.True(t, ok)
+	require.Equal(t, OpenAIRemoteCompactionSemanticOutcomeFailed, outcome)
+}
+
+func TestOpenAIStreamingPassthroughRecognizedResponseFailedBeforeOutputReturnsDirectRequestError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_recognized"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_recognized","status":"failed","error":{"code":"server_is_overloaded","type":"response.failed","message":"Bearer sk-private"},"safety_identifier":"user-private"}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-passthrough-recognized"}},
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "", "")
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.Equal(t, http.StatusServiceUnavailable, requestErr.StatusCode)
+	require.Equal(t, "server_is_overloaded", requestErr.Code)
+	require.False(t, requestErr.OutputStarted)
+	require.NotNil(t, result)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
 }
 
 func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *testing.T) {
@@ -2029,6 +2410,172 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "response_too_large") {
 		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
 	}
+}
+
+func TestOpenAIHandleNonStreamingResponse_RejectsSuccessfulUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing usage", body: `{"id":"resp_missing","output":[]}`},
+		{name: "non-object usage", body: `{"id":"resp_invalid","output":[],"usage":"sk-upstream-secret"}`},
+		{name: "empty usage", body: `{"id":"resp_empty","output":[],"usage":{}}`},
+		{name: "string tokens", body: `{"id":"resp_string","output":[],"usage":{"input_tokens":"bad","output_tokens":null}}`},
+		{name: "fractional and negative tokens", body: `{"id":"resp_bad_numbers","output":[],"usage":{"input_tokens":1.5,"output_tokens":-2}}`},
+		{name: "negative nested cache tokens", body: `{"id":"resp_bad_cache","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cached_tokens":-1}}}`},
+		{name: "fractional nested image tokens", body: `{"id":"resp_bad_image","output":[],"usage":{"input_tokens":10,"output_tokens":0,"output_tokens_details":{"image_tokens":1.5}}}`},
+		{name: "string nested cache write tokens", body: `{"id":"resp_bad_cache_write","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cache_write_tokens":"1"}}}`},
+		{name: "malformed token details", body: `{"id":"resp_bad_details","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":"malformed"}}`},
+		{name: "malformed hosted image usage", body: `{"id":"resp_bad_hosted_image","output":[],"usage":{"input_tokens":10,"output_tokens":0},"tool_usage":{"image_gen":"malformed"}}`},
+		{name: "malformed json", body: `{"id":"resp_malformed","output":[],"usage":{"input_tokens":1}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+			result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.NotContains(t, rec.Body.String(), "sk-upstream-secret")
+			require.NotContains(t, err.Error(), "sk-upstream-secret")
+		})
+	}
+}
+
+func TestOpenAISSEToJSON_RejectsSuccessfulUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, passthrough := range []bool{false, true} {
+		name := "native"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			body := []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bad_sse\",\"output\":[],\"usage\":{\"input_tokens\":-1,\"output_tokens\":0}}}\n\ndata: [DONE]\n\n")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+			var err error
+			if passthrough {
+				_, err = svc.handlePassthroughSSEToJSON(resp, c, body, "model", "model")
+			} else {
+				_, err = svc.handleSSEToJSON(resp, c, body, "model", "model")
+			}
+
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+		})
+	}
+}
+
+func TestOpenAISSEToJSON_RejectsMissingTerminalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, passthrough := range []bool{false, true} {
+		name := "native"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			body := []byte("data: not-json\n\ndata: [DONE]\n\n")
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+			var err error
+			if passthrough {
+				_, err = svc.handlePassthroughSSEToJSON(resp, c, body, "model", "model")
+			} else {
+				_, err = svc.handleSSEToJSON(resp, c, body, "model", "model")
+			}
+
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+		})
+	}
+}
+
+func TestOpenAIHandleNonStreamingResponse_PreservesHostedImageUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_image","output":[],"usage":{"input_tokens":10,"output_tokens":0},"tool_usage":{"image_gen":{"input_tokens_details":{"image_tokens":3},"output_tokens_details":{"image_tokens":2}}}}`)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 3, result.usage.ImageInputTokens)
+	require.Equal(t, 2, result.usage.ImageOutputTokens)
+}
+
+func TestOpenAIHandleNonStreamingResponse_RejectsInvalidHostedImageUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_bad_image","output":[],"usage":{"input_tokens":10,"output_tokens":0},"tool_usage":{"image_gen":{"input_tokens_details":{"image_tokens":-1}}}}`)
+	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+func TestOpenAIHandleNonStreamingResponse_AcceptsExplicitZeroUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_zero","output":[],"usage":{"input_tokens":0,"output_tokens":0}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	result, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{}, "model", "model")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Zero(t, result.usage.InputTokens)
+	require.Zero(t, result.usage.OutputTokens)
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestOpenAINonStreamingContentTypePassThrough(t *testing.T) {
@@ -2204,6 +2751,21 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	}
 }
 
+func TestOpenAIValidateUpstreamBaseURLRejectsQueryAndFragment(t *testing.T) {
+	for _, cfg := range []*config.Config{
+		{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+		{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled: true, UpstreamHosts: []string{"api.openai.com"}, AllowPrivateHosts: false,
+		}}},
+	} {
+		svc := &OpenAIGatewayService{cfg: cfg}
+		for _, raw := range []string{"https://api.openai.com?tenant=x", "https://api.openai.com#fragment"} {
+			_, err := svc.validateUpstreamBaseURL(raw)
+			require.Error(t, err, raw)
+		}
+	}
+}
+
 func TestOpenAIValidateUpstreamBaseURLDisabledRequiresHTTPS(t *testing.T) {
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
@@ -2318,8 +2880,10 @@ func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	}{
 		{name: "exact v1 responses", path: "/v1/responses", want: ""},
 		{name: "compact v1 responses", path: "/v1/responses/compact", want: "/compact"},
-		{name: "compact alias responses", path: "/responses/compact/", want: "/compact"},
-		{name: "nested suffix", path: "/openai/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "trailing slash normalized", path: "/responses/compact/", want: "/compact"},
+		{name: "nested suffix", path: "/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "normalized OpenAI prefix", path: "/openai/v1/responses/compact/detail", want: "/compact/detail"},
+		{name: "unknown prefix rejected", path: "/proxy/v1/responses/compact/detail", want: ""},
 		{name: "unrelated path", path: "/v1/chat/completions", want: ""},
 	}
 
@@ -3089,6 +3653,85 @@ func TestExtractCodexFinalResponse_SampleReplay(t *testing.T) {
 	require.Contains(t, string(finalResp), `"input_tokens":11`)
 }
 
+func TestOpenAINonStreamingRemoteCompactionRecordsSuccessfulOutcome(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		passthrough bool
+		contentType string
+		body        string
+		want        OpenAIRemoteCompactionSemanticOutcome
+	}{
+		{
+			name:        "adapter JSON",
+			contentType: "application/json",
+			body:        `{"id":"resp_adapter_json","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+		{
+			name:        "adapter JSON incomplete",
+			contentType: "application/json",
+			body:        `{"id":"resp_adapter_incomplete","object":"response","status":"incomplete","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeFailed,
+		},
+		{
+			name:        "adapter SSE converted to JSON",
+			contentType: "text/event-stream",
+			body:        `data: {"type":"response.completed","response":{"id":"resp_adapter_sse","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+		{
+			name:        "passthrough JSON",
+			passthrough: true,
+			contentType: "application/json",
+			body:        `{"id":"resp_passthrough_json","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+		{
+			name:        "passthrough JSON failed",
+			passthrough: true,
+			contentType: "application/json",
+			body:        `{"id":"resp_passthrough_failed","object":"response","status":"failed","error":{"message":"compaction failed"},"output":[],"usage":{"input_tokens":1,"output_tokens":0}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeFailed,
+		},
+		{
+			name:        "passthrough SSE converted to JSON",
+			passthrough: true,
+			contentType: "text/event-stream",
+			body:        `data: {"type":"response.done","response":{"id":"resp_passthrough_sse","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			want:        OpenAIRemoteCompactionSemanticOutcomeSucceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.136.0")
+			require.True(t, PromoteOpenAICompactBodySignal(c, []byte(`{"input":[{"type":"compaction_trigger"}]}`), false))
+
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{tt.contentType}},
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}
+			if tt.passthrough {
+				_, err := svc.handleNonStreamingResponsePassthrough(c.Request.Context(), resp, c, "gpt-5.5", "gpt-5.5")
+				require.NoError(t, err)
+			} else {
+				_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.5", "gpt-5.5")
+				require.NoError(t, err)
+			}
+
+			outcome, exists := GetOpenAIRemoteCompactionSemanticOutcome(c)
+			require.True(t, exists)
+			require.Equal(t, tt.want, outcome)
+		})
+	}
+}
+
 func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -3345,7 +3988,7 @@ func BenchmarkNormalizeCompletedImageGenerationStatusLargeOutput(b *testing.B) {
 	}
 }
 
-func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
+func TestHandleSSEToJSON_NoFinalResponseReturnsProtocolError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -3362,11 +4005,12 @@ func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 	}, "\n"))
 
 	usage, err := svc.handleSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
-	require.NoError(t, err)
-	require.NotNil(t, usage)
-	require.Equal(t, 0, usage.InputTokens)
-	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
-	require.Contains(t, rec.Body.String(), `data: {"type":"response.in_progress"`)
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "Upstream returned invalid usage", gjson.Get(rec.Body.String(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "data:")
 }
 
 func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {

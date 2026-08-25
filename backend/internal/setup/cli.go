@@ -139,6 +139,14 @@ func RunCLI() error {
 		fmt.Println("  Invalid port. Must be between 1 and 65535.")
 	}
 
+	for {
+		cfg.Redis.Username = promptOptionalCredential(reader, "Redis Username (optional; empty uses default user)")
+		if validateRedisUsername(cfg.Redis.Username) == nil {
+			break
+		}
+		fmt.Println("  Invalid Redis username. Must be at most 128 UTF-8 bytes.")
+	}
+
 	cfg.Redis.Password = promptPassword("Redis Password (optional)")
 
 	for {
@@ -255,6 +263,12 @@ func promptString(reader *bufio.Reader, prompt, defaultVal string) string {
 	return input
 }
 
+func promptOptionalCredential(reader *bufio.Reader, prompt string) string {
+	fmt.Printf("  %s: ", prompt)
+	input, _ := reader.ReadString('\n')
+	return strings.TrimRight(input, "\r\n")
+}
+
 func promptInt(reader *bufio.Reader, prompt string, defaultVal int) int {
 	fmt.Printf("  %s [%d]: ", prompt, defaultVal)
 
@@ -287,7 +301,7 @@ func promptPassword(prompt string) string {
 	// Fallback to regular input
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
-	return strings.TrimSpace(input)
+	return strings.TrimRight(input, "\r\n")
 }
 
 func promptConfirm(reader *bufio.Reader, prompt string) bool {

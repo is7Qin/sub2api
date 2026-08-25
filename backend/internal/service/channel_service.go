@@ -100,6 +100,14 @@ type ChannelMappingResult struct {
 	BillingModelSource string // 计费模型来源（"requested" / "upstream" / "channel_mapped"）
 }
 
+// EffectiveModel returns the model used for upstream capability routing.
+func (r ChannelMappingResult) EffectiveModel(requestedModel string) string {
+	if r.Mapped && strings.TrimSpace(r.MappedModel) != "" {
+		return strings.TrimSpace(r.MappedModel)
+	}
+	return requestedModel
+}
+
 // BuildModelMappingChain 根据映射结果和上游实际模型构建映射链描述。
 // reqModel: 客户端请求的原始模型名。
 // upstreamModel: 上游实际使用的模型名（ForwardResult.UpstreamModel）。
@@ -376,22 +384,70 @@ func (c *channelCache) matchWildcardMapping(groupID int64, platform, modelLower 
 	return ""
 }
 
-// lookupPricingAcrossPlatforms 在分组平台内查找模型定价。
-// 各平台严格独立，只在本平台内查找（先精确匹配，再通配符）。
-func lookupPricingAcrossPlatforms(cache *channelCache, groupID int64, groupPlatform, modelLower string) *ChannelModelPricing {
-	for _, p := range matchingPlatforms(groupPlatform) {
-		key := channelModelKey{groupID: groupID, platform: p, model: modelLower}
+func claudePricingRevisionAlias(model string) string {
+	if !strings.HasPrefix(model, "claude-") {
+		return ""
+	}
+	separator := strings.LastIndexAny(model, ".-")
+	if separator <= len("claude-") || separator == len(model)-1 || model[separator-1] < '0' || model[separator-1] > '9' {
+		return ""
+	}
+	// Decimal Claude revisions use a short numeric minor component (for example
+	// 4.8). Do not reinterpret dated model suffixes such as -20250514.
+	minor := model[separator+1:]
+	if len(minor) > 2 {
+		return ""
+	}
+	for _, ch := range minor {
+		if ch < '0' || ch > '9' {
+			return ""
+		}
+	}
+	if model[separator] == '.' {
+		return model[:separator] + "-" + minor
+	}
+	return model[:separator] + "." + minor
+}
+
+func lookupExactChannelPricing(cache *channelCache, groupID int64, platforms []string, model string) *ChannelModelPricing {
+	for _, platform := range platforms {
+		key := channelModelKey{groupID: groupID, platform: platform, model: model}
 		if pricing, ok := cache.pricingByGroupModel[key]; ok {
 			return pricing
 		}
 	}
-	// 精确查找全部失败，依次尝试通配符匹配
-	for _, p := range matchingPlatforms(groupPlatform) {
-		if pricing := cache.matchWildcard(groupID, p, modelLower); pricing != nil {
-			return pricing
+	return nil
+}
+
+func lookupWildcardChannelPricing(cache *channelCache, groupID int64, platforms []string, model, alias string) *ChannelModelPricing {
+	for _, platform := range platforms {
+		gpKey := channelGroupPlatformKey{groupID: groupID, platform: platform}
+		for _, wildcard := range cache.wildcardByGroupPlatform[gpKey] {
+			if strings.HasPrefix(model, wildcard.prefix) || (alias != "" && strings.HasPrefix(alias, wildcard.prefix)) {
+				return wildcard.pricing
+			}
 		}
 	}
 	return nil
+}
+
+// lookupPricingAcrossPlatforms 在分组平台内查找模型定价。
+// 各平台严格独立；原拼法精确项优先，其次是别名精确项，最后按配置顺序匹配通配符。
+func lookupPricingAcrossPlatforms(cache *channelCache, groupID int64, groupPlatform, modelLower string) *ChannelModelPricing {
+	platforms := matchingPlatforms(groupPlatform)
+	if pricing := lookupExactChannelPricing(cache, groupID, platforms, modelLower); pricing != nil {
+		return pricing
+	}
+
+	// Build the alternate spelling only after an exact miss, keeping the common
+	// lookup allocation-free and explicit configured spellings authoritative.
+	alias := claudePricingRevisionAlias(modelLower)
+	if alias != "" {
+		if pricing := lookupExactChannelPricing(cache, groupID, platforms, alias); pricing != nil {
+			return pricing
+		}
+	}
+	return lookupWildcardChannelPricing(cache, groupID, platforms, modelLower, alias)
 }
 
 // lookupMappingAcrossPlatforms 在分组平台内查找模型映射。

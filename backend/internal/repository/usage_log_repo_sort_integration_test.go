@@ -19,7 +19,7 @@ func (s *UsageLogRepoSuite) TestListWithFilters_SortByModelAsc() {
 	first := &service.UsageLog{
 		UserID:         user.ID,
 		APIKeyID:       apiKey.ID,
-		AccountID:      account.ID,
+		AccountID:      usageLogAccountIDPointer(account.ID),
 		RequestID:      uuid.New().String(),
 		Model:          "z-model",
 		RequestedModel: "z-model",
@@ -35,7 +35,7 @@ func (s *UsageLogRepoSuite) TestListWithFilters_SortByModelAsc() {
 	second := &service.UsageLog{
 		UserID:         user.ID,
 		APIKeyID:       apiKey.ID,
-		AccountID:      account.ID,
+		AccountID:      usageLogAccountIDPointer(account.ID),
 		RequestID:      uuid.New().String(),
 		Model:          "a-model",
 		RequestedModel: "a-model",

@@ -32,7 +32,7 @@ func TestUsageLog_ListWithFilters_ResolvesSoftDeletedUser(t *testing.T) {
 		kid int64
 	}{{deleted.ID, apiKey.ID}, {active.ID, apiKey2.ID}} {
 		_, err := repo.Create(ctx, &service.UsageLog{
-			UserID: u.uid, APIKeyID: u.kid, AccountID: account.ID,
+			UserID: u.uid, APIKeyID: u.kid, AccountID: usageLogAccountIDPointer(account.ID),
 			Model: "claude-3", InputTokens: 1, OutputTokens: 1,
 			TotalCost: 0.1, ActualCost: 0.1, CreatedAt: now,
 		})

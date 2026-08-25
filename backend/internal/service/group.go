@@ -34,6 +34,10 @@ type Group struct {
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
 
+	// Codex alpha/search 网页搜索单次价格（USD/次，仅 openai 平台使用）；
+	// nil 表示使用默认价 defaultWebSearchPricePerCall（官方 $10/1000 次）。
+	WebSearchPricePerCall *float64
+
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool
 	FallbackGroupID *int64
@@ -57,12 +61,13 @@ type Group struct {
 	SortOrder int
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch       bool
-	RequireOAuthOnly            bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
-	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
-	DefaultMappedModel          string
-	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
-	ModelsListConfig            GroupModelsListConfig
+	AllowMessagesDispatch           bool
+	RequireOAuthOnly                bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
+	RequirePrivacySet               bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
+	DefaultMappedModel              string
+	MessagesDispatchModelConfig     OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                GroupModelsListConfig
+	OpenAILongContextBillingEnabled bool
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。

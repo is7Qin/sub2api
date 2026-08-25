@@ -245,8 +245,10 @@ type SystemSettings struct {
 	AccountQuotaNotifyEmails        []NotifyEmailEntry `json:"account_quota_notify_emails"`
 
 	// Channel Monitor feature switch
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
 
 	// Available Channels feature switch (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
@@ -321,8 +323,10 @@ type PublicSettings struct {
 	BalanceLowNotifyThreshold        float64                  `json:"balance_low_notify_threshold"`
 	BalanceLowNotifyRechargeURL      string                   `json:"balance_low_notify_recharge_url"`
 
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
 
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
@@ -351,14 +355,44 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int  `json:"cooldown_seconds"`
 }
 
+// OpenAI403CooldownSettings OpenAI 403临时不可调度配置 DTO
+type OpenAI403CooldownSettings struct {
+	Enabled               bool   `json:"enabled"`
+	Ignore                bool   `json:"ignore"`
+	CooldownSeconds       int    `json:"cooldown_seconds"`
+	ThresholdCount        int    `json:"threshold_count"`
+	CounterWindowSeconds  int    `json:"counter_window_seconds"`
+	ThresholdAction       string `json:"threshold_action"`
+	ThresholdPauseSeconds int    `json:"threshold_pause_seconds"`
+}
+
+type OpenAIOAuth429DynamicPlanTypeSettings struct {
+	PlanType                              string  `json:"plan_type"`
+	Enabled                               bool    `json:"enabled"`
+	WindowSeconds                         int     `json:"window_seconds"`
+	MinSamples                            int     `json:"min_samples"`
+	Min429                                int     `json:"min_429"`
+	RatioThreshold                        float64 `json:"ratio_threshold"`
+	BlockSeconds                          int     `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64 `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int     `json:"usage_window_missing_data_fallback_seconds"`
+}
+
 // OpenAIOAuth429DynamicSettings OpenAI OAuth 429动态调度配置 DTO
 type OpenAIOAuth429DynamicSettings struct {
-	Enabled        bool    `json:"enabled"`
-	WindowSeconds  int     `json:"window_seconds"`
-	MinSamples     int     `json:"min_samples"`
-	Min429         int     `json:"min_429"`
-	RatioThreshold float64 `json:"ratio_threshold"`
-	BlockSeconds   int     `json:"block_seconds"`
+	Enabled                               bool                                    `json:"enabled"`
+	WindowSeconds                         int                                     `json:"window_seconds"`
+	MinSamples                            int                                     `json:"min_samples"`
+	Min429                                int                                     `json:"min_429"`
+	RatioThreshold                        float64                                 `json:"ratio_threshold"`
+	BlockSeconds                          int                                     `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool                                    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64                                 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64                                 `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int                                     `json:"usage_window_missing_data_fallback_seconds"`
+	PlanTypeSettings                      []OpenAIOAuth429DynamicPlanTypeSettings `json:"plan_type_settings"`
 }
 
 // StreamTimeoutSettings 流超时处理配置 DTO

@@ -49,20 +49,22 @@ type AdminUser struct {
 }
 
 type APIKey struct {
-	ID          int64      `json:"id"`
-	UserID      int64      `json:"user_id"`
-	Key         string     `json:"key"`
-	Name        string     `json:"name"`
-	GroupID     *int64     `json:"group_id"`
-	Status      string     `json:"status"`
-	IPWhitelist []string   `json:"ip_whitelist"`
-	IPBlacklist []string   `json:"ip_blacklist"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	Quota       float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
-	QuotaUsed   float64    `json:"quota_used"` // Used quota amount in USD
-	ExpiresAt   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID                 int64      `json:"id"`
+	UserID             int64      `json:"user_id"`
+	Key                string     `json:"key"`
+	Name               string     `json:"name"`
+	GroupID            *int64     `json:"group_id"`
+	Status             string     `json:"status"`
+	IPWhitelist        []string   `json:"ip_whitelist"`
+	IPBlacklist        []string   `json:"ip_blacklist"`
+	Concurrency        int        `json:"concurrency"`
+	CurrentConcurrency *int       `json:"current_concurrency,omitempty"`
+	LastUsedAt         *time.Time `json:"last_used_at"`
+	Quota              float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
+	QuotaUsed          float64    `json:"quota_used"` // Used quota amount in USD
+	ExpiresAt          *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 
 	// Rate limit fields
 	RateLimit5h   float64    `json:"rate_limit_5h"`
@@ -106,6 +108,8 @@ type Group struct {
 	ImagePrice1K         *float64 `json:"image_price_1k"`
 	ImagePrice2K         *float64 `json:"image_price_2k"`
 	ImagePrice4K         *float64 `json:"image_price_4k"`
+	// Codex alpha/search 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
+	WebSearchPricePerCall *float64 `json:"web_search_price_per_call"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`
@@ -117,8 +121,9 @@ type Group struct {
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
-	RequireOAuthOnly  bool `json:"require_oauth_only"`
-	RequirePrivacySet bool `json:"require_privacy_set"`
+	RequireOAuthOnly                bool `json:"require_oauth_only"`
+	RequirePrivacySet               bool `json:"require_privacy_set"`
+	OpenAILongContextBillingEnabled bool `json:"openai_long_context_billing_enabled"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
 	RPMLimit int `json:"rpm_limit"`
@@ -127,25 +132,36 @@ type Group struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// GroupLite 是账号列表/详情响应中 groups 的轻量投影（仅列表 UI 消费的字段）。
+// 与全局 Group DTO 解耦：Group 保持全量序列化契约（非 admin 接口不变），
+// 列表路径经 GroupLite 只输出 5 个字段、零值经 omitempty 省略。
+type GroupLite struct {
+	ID               int64   `json:"id,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	Platform         string  `json:"platform,omitempty"`
+	SubscriptionType string  `json:"subscription_type,omitempty"`
+	RateMultiplier   float64 `json:"rate_multiplier,omitempty"`
+}
+
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
 // 注意：普通用户接口不得返回 model_routing/account_count/account_groups 等内部信息。
 type AdminGroup struct {
 	Group
 
 	// 模型路由配置（仅 anthropic 平台使用）
-	ModelRouting        map[string][]int64 `json:"model_routing"`
-	ModelRoutingEnabled bool               `json:"model_routing_enabled"`
+	ModelRouting        map[string][]int64 `json:"model_routing,omitempty"`
+	ModelRoutingEnabled bool               `json:"model_routing_enabled,omitempty"`
 
 	// MCP XML 协议注入（仅 antigravity 平台使用）
-	MCPXMLInject bool `json:"mcp_xml_inject"`
+	MCPXMLInject bool `json:"mcp_xml_inject,omitempty"`
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	DefaultMappedModel          string                                   `json:"default_mapped_model"`
-	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config"`
+	DefaultMappedModel          string                                   `json:"default_mapped_model,omitempty"`
+	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
+	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config,omitempty"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
-	SupportedModelScopes    []string       `json:"supported_model_scopes"`
+	SupportedModelScopes    []string       `json:"supported_model_scopes,omitempty"`
 	AccountGroups           []AccountGroup `json:"account_groups,omitempty"`
 	AccountCount            int64          `json:"account_count,omitempty"`
 	ActiveAccountCount      int64          `json:"active_account_count,omitempty"`
@@ -257,8 +273,8 @@ type Account struct {
 	Proxy         *Proxy         `json:"proxy,omitempty"`
 	AccountGroups []AccountGroup `json:"account_groups,omitempty"`
 
-	GroupIDs []int64  `json:"group_ids,omitempty"`
-	Groups   []*Group `json:"groups,omitempty"`
+	GroupIDs []int64      `json:"group_ids,omitempty"`
+	Groups   []*GroupLite `json:"groups,omitempty"`
 }
 
 type AccountGroup struct {
@@ -424,7 +440,7 @@ type UsageLog struct {
 	ID        int64  `json:"id"`
 	UserID    int64  `json:"user_id"`
 	APIKeyID  int64  `json:"api_key_id"`
-	AccountID int64  `json:"account_id"`
+	AccountID *int64 `json:"account_id"`
 	RequestID string `json:"request_id"`
 	Model     string `json:"model"`
 	// ServiceTier records the OpenAI service tier used for billing, e.g. "priority" / "flex".

@@ -66,7 +66,7 @@ export async function create(
   quota?: number,
   expiresInDays?: number,
   rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number },
-  extras?: { openai_force_priority_tier?: boolean }
+  extras?: { openai_force_priority_tier?: boolean; concurrency?: number }
 ): Promise<ApiKey> {
   const payload: CreateApiKeyRequest = { name }
   if (groupId !== undefined) {
@@ -98,6 +98,9 @@ export async function create(
   }
   if (extras?.openai_force_priority_tier) {
     payload.openai_force_priority_tier = true
+  }
+  if (extras?.concurrency !== undefined) {
+    payload.concurrency = extras.concurrency
   }
 
   const { data } = await apiClient.post<ApiKey>('/keys', payload)

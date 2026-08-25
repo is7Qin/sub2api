@@ -1,0 +1,10 @@
+services:
+  sub2api:
+    volumes:
+      - ./data:/app/data
+  postgres:
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+  redis:
+    volumes:
+      - ./redis_data:/data

@@ -30,6 +30,33 @@ func (s *openAIRecordUsageLogRepoStub) Create(ctx context.Context, log *UsageLog
 	return s.inserted, s.err
 }
 
+type openAIRecordUsageBillingOutboxStub struct {
+	command *BillingOutboxCommand
+	calls   int
+}
+
+func (s *openAIRecordUsageBillingOutboxStub) Enqueue(_ context.Context, command *BillingOutboxCommand) (*BillingOutboxRecord, error) {
+	s.calls++
+	s.command = command
+	return &BillingOutboxRecord{Command: *command}, nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) Claim(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) ClaimExpiredLeased(context.Context, string, int, time.Duration) ([]BillingOutboxRecord, error) {
+	return nil, nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) Retry(context.Context, int64, string, time.Time, string, bool) error {
+	return nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) Ack(context.Context, int64, string) error { return nil }
+func (s *openAIRecordUsageBillingOutboxStub) Stats(context.Context) (BillingOutboxStats, error) {
+	return BillingOutboxStats{}, nil
+}
+func (s *openAIRecordUsageBillingOutboxStub) CleanupTerminal(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
+}
+
 type openAIRecordUsageBillingRepoStub struct {
 	UsageBillingRepository
 
@@ -156,7 +183,8 @@ func newOpenAIRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo U
 		nil,
 		nil,
 		nil,
-		nil, // userPlatformQuotaRepo
+		nil,      // userPlatformQuotaRepo
+		nil, nil, // usageRecordWorkerPool
 	)
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		rateRepo,
@@ -193,6 +221,54 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestOpenAIGatewayServiceRecordUsage_EnqueuesAttemptScopedCommand(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	outbox := &openAIRecordUsageBillingOutboxStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.SetBillingOutboxRepository(outbox)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "logical-upstream", AttemptID: "openai-attempt-a",
+			Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 4}, Model: "gpt-5.1", Duration: time.Second,
+		},
+		APIKey: &APIKey{ID: 1000, Quota: 100, Group: &Group{RateMultiplier: 1}},
+		User:   &User{ID: 2000}, Account: &Account{ID: 3000, Type: AccountTypeAPIKey},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, outbox.calls)
+	require.Zero(t, billingRepo.calls)
+	require.Equal(t, "openai-attempt-a", outbox.command.AttemptID)
+	require.Equal(t, "attempt:openai-attempt-a", outbox.command.Billing.RequestID)
+	require.Equal(t, "attempt:openai-attempt-a", outbox.command.Billing.UsageLog.RequestID)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_WSModeEnqueuesAdmittedAttemptIdentity(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	outbox := &openAIRecordUsageBillingOutboxStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.SetBillingOutboxRepository(outbox)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_ws_bridge", AttemptID: "ws-physical-attempt", OpenAIWSMode: true,
+			Usage: OpenAIUsage{InputTokens: 10, OutputTokens: 4}, Model: "gpt-5.1", Duration: time.Second,
+		},
+		APIKey: &APIKey{ID: 1000, Quota: 100, Group: &Group{RateMultiplier: 1}},
+		User:   &User{ID: 2000}, Account: &Account{ID: 3000, Type: AccountTypeAPIKey},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, outbox.calls)
+	require.Zero(t, billingRepo.calls)
+	require.Equal(t, "ws-physical-attempt", outbox.command.AttemptID)
+	require.Equal(t, "attempt:ws-physical-attempt", outbox.command.Billing.RequestID)
+	require.Equal(t, "attempt:ws-physical-attempt", outbox.command.Billing.UsageLog.RequestID)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing.T) {
@@ -883,9 +959,10 @@ func TestOpenAIGatewayServiceRecordUsage_GeneratesRequestIDWhenAllSourcesMissing
 	require.Equal(t, billingRepo.lastCmd.RequestID, usageRepo.lastLog.RequestID)
 }
 
-func TestOpenAIGatewayServiceRecordUsage_BillingErrorSkipsUsageLogWrite(t *testing.T) {
+func TestOpenAIGatewayServiceRecordUsage_BillingErrorWritesUnsettledUsageLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
-	billingRepo := &openAIRecordUsageBillingRepoStub{err: errors.New("billing tx failed")}
+	billingErr := errors.New("billing tx failed")
+	billingRepo := &openAIRecordUsageBillingRepoStub{err: billingErr}
 	userRepo := &openAIRecordUsageUserRepoStub{}
 	subRepo := &openAIRecordUsageSubRepoStub{}
 	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
@@ -905,9 +982,14 @@ func TestOpenAIGatewayServiceRecordUsage_BillingErrorSkipsUsageLogWrite(t *testi
 		Account: &Account{ID: 30048},
 	})
 
-	require.Error(t, err)
+	require.ErrorIs(t, err, billingErr)
 	require.Equal(t, 1, billingRepo.calls)
-	require.Equal(t, 0, usageRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 8, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 4, usageRepo.lastLog.OutputTokens)
+	require.Greater(t, usageRepo.lastLog.TotalCost, 0.0)
+	require.Zero(t, usageRepo.lastLog.ActualCost)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_UpdatesAPIKeyQuotaWhenConfigured(t *testing.T) {
@@ -1029,6 +1111,55 @@ func TestOpenAIGatewayServiceRecordUsage_PersistsGPT56CacheCreationCost(t *testi
 	require.InDelta(t, expectedCreationCost, usageRepo.lastLog.CacheCreationCost, 1e-12)
 	require.InDelta(t, usageRepo.lastLog.InputCost+usageRepo.lastLog.OutputCost+expectedCreationCost+usageRepo.lastLog.CacheReadCost, usageRepo.lastLog.TotalCost, 1e-12)
 	require.InDelta(t, usageRepo.lastLog.TotalCost*1.1, usageRepo.lastLog.ActualCost, 1e-12)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_GPT56LongContextUsesGroupPolicy(t *testing.T) {
+	tests := []struct {
+		name         string
+		enabled      bool
+		inputFactor  float64
+		outputFactor float64
+	}{
+		{name: "disabled by default", inputFactor: 1, outputFactor: 1},
+		{name: "enabled for group", enabled: true, inputFactor: 2, outputFactor: 1.5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			subRepo := &openAIRecordUsageSubRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
+			usage := OpenAIUsage{
+				InputTokens:              273001,
+				CacheReadInputTokens:     1000,
+				CacheCreationInputTokens: 1000,
+				OutputTokens:             2000,
+			}
+
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{
+					RequestID: "resp_gpt56_long_context_group_policy",
+					Usage:     usage,
+					Model:     "gpt-5.6-sol",
+					Duration:  time.Second,
+				},
+				APIKey: &APIKey{ID: 1057, Group: &Group{
+					RateMultiplier:                  1,
+					OpenAILongContextBillingEnabled: tt.enabled,
+				}},
+				User:    &User{ID: 2057},
+				Account: &Account{ID: 3057},
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, usageRepo.lastLog)
+			require.InDelta(t, 272001*5e-6*tt.inputFactor, usageRepo.lastLog.InputCost, 1e-12)
+			require.InDelta(t, 1000*6.25e-6*tt.inputFactor, usageRepo.lastLog.CacheCreationCost, 1e-12)
+			require.InDelta(t, 1000*0.5e-6*tt.inputFactor, usageRepo.lastLog.CacheReadCost, 1e-12)
+			require.InDelta(t, 2000*30e-6*tt.outputFactor, usageRepo.lastLog.OutputCost, 1e-12)
+		})
+	}
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ServiceTierPriorityUsesFastPricing(t *testing.T) {

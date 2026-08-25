@@ -54,6 +54,39 @@ func (s *APIKeyRepoSuite) TestCreate() {
 	s.Require().Equal("sk-create-test", got.Key)
 }
 
+func (s *APIKeyRepoSuite) TestCreateDefaultsConcurrencyToZero() {
+	user := s.mustCreateUser("create-concurrency-default@test.com")
+	key := &service.APIKey{UserID: user.ID, Key: "sk-create-concurrency-default", Name: "Default", Status: service.StatusActive}
+
+	s.Require().NoError(s.repo.Create(s.ctx, key))
+	got, err := s.repo.GetByID(s.ctx, key.ID)
+	s.Require().NoError(err)
+	s.Zero(got.Concurrency)
+}
+
+func (s *APIKeyRepoSuite) TestConcurrencyRoundTripsThroughAuthProjectionAndUpdate() {
+	user := s.mustCreateUser("concurrency-roundtrip@test.com")
+	key := &service.APIKey{UserID: user.ID, Key: "sk-concurrency-roundtrip", Name: "Limited", Status: service.StatusActive, Concurrency: 6}
+
+	s.Require().NoError(s.repo.Create(s.ctx, key))
+	authenticated, err := s.repo.GetByKeyForAuth(s.ctx, key.Key)
+	s.Require().NoError(err)
+	s.Equal(6, authenticated.Concurrency)
+
+	zero := 0
+	updated, err := s.repo.UpdateConfig(s.ctx, key.ID, user.ID, service.APIKeyConfigPatch{Concurrency: &zero})
+	s.Require().NoError(err)
+	s.Zero(updated.Concurrency)
+}
+
+func (s *APIKeyRepoSuite) TestCreateRejectsNegativeConcurrency() {
+	user := s.mustCreateUser("negative-concurrency@test.com")
+	key := &service.APIKey{UserID: user.ID, Key: "sk-negative-concurrency", Name: "Invalid", Status: service.StatusActive, Concurrency: -1}
+
+	err := s.repo.Create(s.ctx, key)
+	s.Require().Error(err)
+}
+
 func (s *APIKeyRepoSuite) TestGetByID_NotFound() {
 	_, err := s.repo.GetByID(s.ctx, 999999)
 	s.Require().Error(err, "expected error for non-existent ID")

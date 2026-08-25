@@ -112,9 +112,32 @@ func inputContainsText(input []any, needle string) bool {
 		return false
 	}
 	for _, item := range input {
-		b, err := json.Marshal(item)
-		if err == nil && strings.Contains(string(b), needle) {
+		if openAIValueContainsText(item, needle) {
 			return true
+		}
+	}
+	return false
+}
+
+// openAIValueContainsText 递归扫描解码后的任意 JSON 值中的字符串（含 map 键名），
+// 命中即返回。相比逐项 json.Marshal 后再查找，零分配且能提前退出；同时修正了
+// json.Marshal 默认 HTML 转义（尖括号会被转义）导致 marker 永远匹配不到的问题，
+// 这里直接比较解码后的字符串，语义与调用方意图一致。
+func openAIValueContainsText(value any, needle string) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.Contains(v, needle)
+	case []any:
+		for _, element := range v {
+			if openAIValueContainsText(element, needle) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, element := range v {
+			if strings.Contains(key, needle) || openAIValueContainsText(element, needle) {
+				return true
+			}
 		}
 	}
 	return false

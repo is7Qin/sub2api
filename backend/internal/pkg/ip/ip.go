@@ -3,6 +3,7 @@ package ip
 
 import (
 	"net"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,17 @@ import (
 // 3. X-Forwarded-For (取第一个非私有 IP)
 // 4. c.ClientIP() (Gin 内置方法)
 func GetClientIP(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	settings, installed := requestSettings(c)
+	if !installed || !settings.TrustForwardedIP {
+		return GetSecurityClientIP(c)
+	}
+	if resolved := ResolveLegacyMetadataClientIP(c.Request.Header, settings.Headers); resolved != "" {
+		return resolved
+	}
+
 	// 1. Cloudflare
 	if ip := c.GetHeader("CF-Connecting-IP"); ip != "" {
 		return normalizeIP(ip)
@@ -44,14 +56,73 @@ func GetClientIP(c *gin.Context) string {
 	return normalizeIP(c.ClientIP())
 }
 
-// GetTrustedClientIP 从 Gin 的可信代理解析链提取客户端 IP。
-// 该方法依赖 gin.Engine.SetTrustedProxies 配置，不会优先直接信任原始转发头值。
-// 适用于 ACL / 风控等安全敏感场景。
-func GetTrustedClientIP(c *gin.Context) string {
+const requestSettingsKey = "sub2api.client_ip.request_settings"
+
+// RequestSettings is the request-scoped forwarded-IP mode snapshot.
+type RequestSettings struct {
+	TrustForwardedIP bool
+	Headers          []string
+}
+
+// RequestMiddleware snapshots runtime settings before downstream middleware runs.
+func RequestMiddleware(load func() RequestSettings) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		settings := RequestSettings{}
+		if load != nil {
+			settings = load()
+			settings.Headers = append([]string(nil), settings.Headers...)
+		}
+		c.Set(requestSettingsKey, settings)
+		c.Next()
+	}
+}
+
+func requestSettings(c *gin.Context) (RequestSettings, bool) {
+	if c == nil {
+		return RequestSettings{}, false
+	}
+	value, ok := c.Get(requestSettingsKey)
+	if !ok {
+		return RequestSettings{}, false
+	}
+	settings, ok := value.(RequestSettings)
+	return settings, ok
+}
+
+// GetSecurityClientIP is authoritative for security decisions. Raw headers can
+// never bypass Gin's configured trusted-proxy chain.
+func GetSecurityClientIP(c *gin.Context) string {
 	if c == nil {
 		return ""
 	}
 	return normalizeIP(c.ClientIP())
+}
+
+// ResolveLegacyMetadataClientIP preserves ordered custom-header metadata behavior.
+func ResolveLegacyMetadataClientIP(headers http.Header, orderedHeaders []string) string {
+	firstPrivate := ""
+	for _, header := range orderedHeaders {
+		for _, value := range headers.Values(header) {
+			for _, candidate := range strings.Split(value, ",") {
+				candidate = normalizeIP(candidate)
+				if net.ParseIP(candidate) == nil {
+					continue
+				}
+				if !isPrivateIP(candidate) {
+					return candidate
+				}
+				if firstPrivate == "" {
+					firstPrivate = candidate
+				}
+			}
+		}
+	}
+	return firstPrivate
+}
+
+// GetTrustedClientIP is retained as an alias for security-sensitive callers.
+func GetTrustedClientIP(c *gin.Context) string {
+	return GetSecurityClientIP(c)
 }
 
 // normalizeIP 规范化 IP 地址，去除端口号和空格。

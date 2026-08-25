@@ -4,6 +4,11 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +35,7 @@ func TestSchedulerCacheSetSnapshotSkipsOnlyUnencodableAccounts(t *testing.T) {
 	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	stale := service.Account{ID: 112, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 	require.NoError(t, cache.SetAccount(ctx, &stale))
+	require.NoError(t, cache.rdb.Set(ctx, schedulerLastUsedKey("112"), time.Now().UnixMilli(), 0).Err())
 
 	err := cache.SetSnapshot(ctx, bucket, []service.Account{
 		{ID: 111, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
@@ -45,6 +51,7 @@ func TestSchedulerCacheSetSnapshotSkipsOnlyUnencodableAccounts(t *testing.T) {
 	cachedInvalid, err := cache.GetAccount(ctx, stale.ID)
 	require.NoError(t, err)
 	require.Nil(t, cachedInvalid)
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerAccountKey("112"), schedulerAccountMetaKey("112"), schedulerLastUsedKey("112")).Val())
 }
 
 func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
@@ -72,6 +79,7 @@ func TestSchedulerCacheUpdateLastUsedClearsOnlyUnencodableAccount(t *testing.T) 
 	valid := service.Account{ID: 115, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 	require.NoError(t, cache.SetAccount(ctx, &invalid))
 	require.NoError(t, cache.SetAccount(ctx, &valid))
+	require.NoError(t, cache.rdb.Set(ctx, schedulerLastUsedKey("114"), time.Now().UnixMilli(), 0).Err())
 
 	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	validTime := time.Now().UTC().Truncate(time.Second)
@@ -84,6 +92,9 @@ func TestSchedulerCacheUpdateLastUsedClearsOnlyUnencodableAccount(t *testing.T) 
 	require.NoError(t, err)
 	require.Nil(t, cachedInvalid)
 	exists, err := cache.rdb.Exists(ctx, schedulerAccountMetaKey("114")).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+	exists, err = cache.rdb.Exists(ctx, schedulerLastUsedKey("114")).Result()
 	require.NoError(t, err)
 	require.Zero(t, exists)
 	cachedValid, err := cache.GetAccount(ctx, valid.ID)
@@ -196,6 +207,276 @@ func TestBuildSchedulerMetadataAccount_KeepsQuotaAutoPauseFields(t *testing.T) {
 	require.Equal(t, false, got.Extra["auto_pause_7d_disabled"])
 }
 
+func TestBuildSchedulerMetadataAccount_KeepsQuotaStateForCachedAccounts(t *testing.T) {
+	now := time.Now().UTC()
+	activeStart := now.Add(-time.Hour).Format(time.RFC3339)
+	expiredDailyStart := now.Add(-25 * time.Hour).Format(time.RFC3339)
+	expiredWeeklyStart := now.Add(-8 * 24 * time.Hour).Format(time.RFC3339)
+	weeklyResetDay := float64(now.AddDate(0, 0, 1).Weekday())
+
+	cases := []struct {
+		name          string
+		platform      string
+		typ           string
+		extra         map[string]any
+		quotaExceeded bool
+	}{
+		{name: "anthropic api key total quota exhausted", platform: service.PlatformAnthropic, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_limit": 10.0, "quota_used": 10.0}, quotaExceeded: true},
+		{name: "gemini api key rolling daily quota exhausted", platform: service.PlatformGemini, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_daily_limit": 20.0, "quota_daily_used": 20.0, "quota_daily_start": activeStart, "quota_daily_reset_mode": "rolling"}, quotaExceeded: true},
+		{name: "gemini api key expired rolling daily window", platform: service.PlatformGemini, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_daily_limit": 20.0, "quota_daily_used": 20.0, "quota_daily_start": expiredDailyStart, "quota_daily_reset_mode": "rolling"}},
+		{name: "bedrock fixed weekly quota exhausted", platform: service.PlatformAnthropic, typ: service.AccountTypeBedrock,
+			extra: map[string]any{"quota_weekly_limit": 30.0, "quota_weekly_used": 30.0, "quota_weekly_start": activeStart, "quota_weekly_reset_mode": "fixed", "quota_weekly_reset_day": weeklyResetDay, "quota_weekly_reset_hour": 0.0, "quota_reset_timezone": "UTC"}, quotaExceeded: true},
+		{name: "bedrock expired fixed weekly window", platform: service.PlatformAnthropic, typ: service.AccountTypeBedrock,
+			extra: map[string]any{"quota_weekly_limit": 30.0, "quota_weekly_used": 30.0, "quota_weekly_start": expiredWeeklyStart, "quota_weekly_reset_mode": "fixed", "quota_weekly_reset_day": weeklyResetDay, "quota_weekly_reset_hour": 0.0, "quota_reset_timezone": "UTC"}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := make(map[string]any, len(tc.extra)+1)
+			for key, value := range tc.extra {
+				extra[key] = value
+			}
+			extra["unrelated"] = "drop me"
+			account := service.Account{ID: int64(46690 + i), Platform: tc.platform, Type: tc.typ, Extra: extra, Status: service.StatusActive, Schedulable: true}
+			cache := newSchedulerCacheUnit(t)
+			ctx := context.Background()
+			bucket := service.SchedulerBucket{GroupID: int64(46690 + i), Platform: tc.platform, Mode: service.SchedulerModeSingle}
+			require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{account}))
+
+			snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+			require.NoError(t, err)
+			require.True(t, hit)
+			require.Len(t, snapshot, 1)
+			cached := snapshot[0]
+			require.Equal(t, tc.extra, cached.Extra)
+			require.NotContains(t, cached.Extra, "unrelated")
+			require.Equal(t, tc.quotaExceeded, cached.IsQuotaExceeded())
+			require.Equal(t, !tc.quotaExceeded, cached.IsSchedulable())
+		})
+	}
+}
+
+func TestSchedulerCacheGetSchedulableAccountsByIDs_MixedPresentMissing(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	full := &service.Account{
+		ID: 701, Name: "full", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "secret-701", "project_id": "proj-701"},
+		Extra:       map[string]any{"quota_limit": 100.0, "unused": "drop"},
+	}
+	require.NoError(t, cache.SetAccount(ctx, full))
+	require.NoError(t, cache.SetAccount(ctx, &service.Account{ID: 703, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}))
+
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{701, 999, 703, 0, 701})
+	require.NoError(t, err)
+	// 缺失 ID 跳过、重复 ID 去重：只有快照中存在的账号进入返回 map。
+	require.Len(t, got, 2)
+	require.Equal(t, "full", got[701].Name)
+	// 批量刷新读取 meta payload：调度字段保留、凭据脱敏、extra 走白名单过滤。
+	require.Equal(t, map[string]any{"project_id": "proj-701", "has_api_key": true}, got[701].Credentials)
+	require.Equal(t, map[string]any{"quota_limit": 100.0}, got[701].Extra)
+	require.Equal(t, int64(703), got[703].ID)
+	require.Nil(t, got[999])
+
+	empty, err := cache.GetSchedulableAccountsByIDs(ctx, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty)
+}
+
+// 只写入 meta payload（sched:meta:{id}）时批量刷新即可正常返回调度字段。
+func TestSchedulerCacheGetSchedulableAccountsByIDs_MetaKeysOnly(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	account := service.Account{
+		ID: 801, Name: "meta", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "secret-801", "project_id": "proj-801"},
+		Extra:       map[string]any{"quota_limit": 100.0, "unused": "drop"},
+	}
+	metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+	require.NoError(t, err)
+	require.NoError(t, cache.rdb.Set(ctx, schedulerAccountMetaKey("801"), metaPayload, 0).Err())
+
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{801, 999})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "meta", got[801].Name)
+	require.Equal(t, map[string]any{"project_id": "proj-801", "has_api_key": true}, got[801].Credentials)
+	require.Equal(t, map[string]any{"quota_limit": 100.0}, got[801].Extra)
+	require.Nil(t, got[999])
+}
+
+// 只写入全量 payload（sched:acc:{id}）时批量刷新视为不可调度（空 map）：
+// 读取 meta 键后旧版本残留的全量键不得让已删除账号重新进入候选。
+func TestSchedulerCacheGetSchedulableAccountsByIDs_FullKeysOnly(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	fullPayload, err := json.Marshal(service.Account{ID: 802, Name: "full-only", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey})
+	require.NoError(t, err)
+	require.NoError(t, cache.rdb.Set(ctx, schedulerAccountKey("802"), fullPayload, 0).Err())
+
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{802})
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSchedulerCacheGetSchedulableAccountsByIDs_ChunkBoundary(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	cache.mgetChunkSize = 2
+	var ids []int64
+	for i := int64(1); i <= 5; i++ {
+		ids = append(ids, i)
+		require.NoError(t, cache.SetAccount(ctx, &service.Account{ID: i, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}))
+	}
+
+	// 跨分块混入缺失 ID：分块内和分块之间都要跳过而非报错。
+	got, err := cache.GetSchedulableAccountsByIDs(ctx, []int64{1, 999, 2, 3, 4, 5, 1000})
+	require.NoError(t, err)
+	require.Len(t, got, 5)
+	for _, id := range ids {
+		require.Equal(t, id, got[id].ID)
+	}
+}
+
+type schedulerSnapshotWriteFailureHook struct {
+	zaddCalls atomic.Int32
+}
+
+func (h *schedulerSnapshotWriteFailureHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *schedulerSnapshotWriteFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "zadd" && h.zaddCalls.Add(1) == 2 {
+			return errors.New("injected snapshot zadd failure")
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *schedulerSnapshotWriteFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestSchedulerCacheSetSnapshotPartialFailureDoesNotPublishNewVersion(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	cache.writeChunkSize = 1
+	bucket := service.SchedulerBucket{GroupID: 23, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	oldAccount := service.Account{ID: 731, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{oldAccount}))
+	oldVersion := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+
+	hook := &schedulerSnapshotWriteFailureHook{}
+	cache.rdb.AddHook(hook)
+	err := cache.SetSnapshot(ctx, bucket, []service.Account{
+		{ID: 732, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+		{ID: 733, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	})
+	require.ErrorContains(t, err, "injected snapshot zadd failure")
+	require.Equal(t, oldVersion, cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val())
+	newVersionNumber, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerVersionPrefix, bucket)).Int64()
+	require.NoError(t, err)
+	newVersion := strconv.FormatInt(newVersionNumber, 10)
+	require.NotEqual(t, oldVersion, newVersion)
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerSnapshotKey(bucket, newVersion)).Val())
+	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, snapshot, 1)
+	require.Equal(t, oldAccount.ID, snapshot[0].ID)
+}
+
+func TestSchedulerCacheSetSnapshotPreservesIDMemberSemanticsAndPayloadBytes(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	validOne := service.Account{ID: 721, Name: "first", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": true}}
+	validTwo := service.Account{ID: 722, Name: "second", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	invalid := service.Account{ID: 799, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, ExpiresAt: &invalidTime}
+	bucket := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+
+	fullExpected, metaExpected, err := marshalSchedulerCacheAccount(validOne)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{validOne, invalid, validTwo, validOne}))
+	fullActual, err := cache.rdb.Get(ctx, schedulerAccountKey("721")).Bytes()
+	require.NoError(t, err)
+	metaActual, err := cache.rdb.Get(ctx, schedulerAccountMetaKey("721")).Bytes()
+	require.NoError(t, err)
+	require.Equal(t, fullExpected, fullActual)
+	require.Equal(t, metaExpected, metaActual)
+	version := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+	require.Equal(t, []string{"722", "721"}, cache.rdb.ZRange(ctx, schedulerSnapshotKey(bucket, version), 0, -1).Val())
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerAccountKey("799"), schedulerAccountMetaKey("799"), schedulerLastUsedKey("799")).Val())
+
+	empty := service.SchedulerBucket{GroupID: 22, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	require.NoError(t, cache.SetSnapshot(ctx, empty, nil))
+	snapshot, hit, err := cache.GetSnapshot(ctx, empty)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Nil(t, snapshot)
+}
+
+func TestSchedulerCacheGetSnapshotVersion(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 5, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+
+	// active key 尚未写入：空版本且无错误（此时 GetSnapshot 同样未命中，
+	// 不存在任何本地解码缓存条目可复用）。
+	version, err := cache.GetSnapshotVersion(ctx, bucket)
+	require.NoError(t, err)
+	require.Empty(t, version)
+
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{
+		{ID: 501, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	}))
+	version, err = cache.GetSnapshotVersion(ctx, bucket)
+	require.NoError(t, err)
+	require.Equal(t, "1", version)
+
+	// 二次写入后版本递增，解码缓存据此失效。
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{
+		{ID: 502, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	}))
+	version, err = cache.GetSnapshotVersion(ctx, bucket)
+	require.NoError(t, err)
+	require.Equal(t, "2", version)
+}
+
+func BenchmarkSchedulerSnapshotAccountMemberMaterialization(b *testing.B) {
+	for _, size := range []int{128, 1024, 10000} {
+		accounts := make([]service.Account, size)
+		ids := make([]int64, size)
+		for i := range accounts {
+			accounts[i].ID = int64(i + 1)
+			ids[i] = accounts[i].ID
+		}
+		b.Run(fmt.Sprintf("ids/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				members := make([]redis.Z, 0, len(ids))
+				for idx, id := range ids {
+					members = append(members, redis.Z{Score: float64(idx), Member: strconv.FormatInt(id, 10)})
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("old_accounts/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				temporary := append([]service.Account(nil), accounts...)
+				members := make([]redis.Z, 0, len(temporary))
+				for idx, account := range temporary {
+					members = append(members, redis.Z{Score: float64(idx), Member: strconv.FormatInt(account.ID, 10)})
+				}
+			}
+		})
+	}
+}
+
 func TestBuildSchedulerMetadataAccount_KeepsModelRateLimits(t *testing.T) {
 	account := service.Account{
 		ID:       90,
@@ -277,4 +558,43 @@ func TestBuildSchedulerMetadataAccount_HasAPIKeyRequiresNonEmptyString(t *testin
 			require.NotContains(t, got.Credentials, "has_api_key")
 		})
 	}
+}
+
+func TestSchedulerCacheSetAccountsWritesAllAccountsInOneCall(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+
+	accounts := []service.Account{
+		{ID: 201, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+		{ID: 202, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey},
+		{ID: 203, Platform: service.PlatformGemini, Type: service.AccountTypeAPIKey},
+	}
+	require.NoError(t, cache.SetAccounts(ctx, accounts))
+
+	for _, id := range []int64{201, 202, 203} {
+		got, err := cache.GetAccount(ctx, id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Equal(t, id, got.ID)
+	}
+	// 空输入是幂等空操作。
+	require.NoError(t, cache.SetAccounts(ctx, nil))
+}
+
+func TestSchedulerCacheSetAccountsClearsUnencodablePayload(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	invalidTime := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, cache.SetAccounts(ctx, []service.Account{
+		{ID: 204, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+		{ID: 205, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, ExpiresAt: &invalidTime},
+	}))
+
+	// 不可编码账号被删除（连同 meta/last_used 侧键），其余账号正常写入。
+	got, err := cache.GetAccount(ctx, 204)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, int64(204), got.ID)
+	require.Zero(t, cache.rdb.Exists(ctx, schedulerAccountKey("205"), schedulerAccountMetaKey("205"), schedulerLastUsedKey("205")).Val())
 }

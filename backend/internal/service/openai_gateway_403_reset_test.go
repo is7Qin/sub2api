@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,6 +56,81 @@ func TestOpenAIGatewayServiceRecordUsage_ResetsOpenAI403CounterForZeroUsage(t *t
 	require.NoError(t, err)
 	require.Equal(t, []int64{777}, counter.resetCalls)
 	require.Equal(t, 1, usageRepo.calls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_SimpleModePreserveAccountHealthSkipsResetAndLastUsed(t *testing.T) {
+	counter := &openAI403CounterResetStub{}
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.cfg.RunMode = config.RunModeSimple
+	svc.rateLimitService = NewRateLimitService(nil, nil, nil, nil, nil)
+	svc.rateLimitService.SetOpenAI403CounterCache(counter)
+	deferred := &DeferredService{}
+	svc.deferredService = deferred
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result:                &OpenAIForwardResult{RequestID: "partial_failure_health", Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 5, OutputTokens: 1}},
+		APIKey:                &APIKey{ID: 1004},
+		User:                  &User{ID: 2004},
+		Account:               &Account{ID: 780, Platform: PlatformOpenAI},
+		PreserveAccountHealth: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Empty(t, counter.resetCalls)
+	_, scheduled := deferred.lastUsedUpdates.Load(int64(780))
+	require.False(t, scheduled)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_SimpleModeSuccessResetsHealthAndSchedulesLastUsed(t *testing.T) {
+	counter := &openAI403CounterResetStub{}
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.cfg.RunMode = config.RunModeSimple
+	svc.rateLimitService = NewRateLimitService(nil, nil, nil, nil, nil)
+	svc.rateLimitService.SetOpenAI403CounterCache(counter)
+	deferred := &DeferredService{}
+	svc.deferredService = deferred
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result:  &OpenAIForwardResult{RequestID: "successful_usage_health", Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 5, OutputTokens: 1}},
+		APIKey:  &APIKey{ID: 1005},
+		User:    &User{ID: 2005},
+		Account: &Account{ID: 781, Platform: PlatformOpenAI},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, []int64{781}, counter.resetCalls)
+	_, scheduled := deferred.lastUsedUpdates.Load(int64(781))
+	require.True(t, scheduled)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_BilledModePreserveAccountHealthSkipsHealthMutation(t *testing.T) {
+	counter := &openAI403CounterResetStub{}
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+	svc.rateLimitService = NewRateLimitService(nil, nil, nil, nil, nil)
+	svc.rateLimitService.SetOpenAI403CounterCache(counter)
+	deferred := &DeferredService{}
+	svc.deferredService = deferred
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result:                &OpenAIForwardResult{RequestID: "billed_partial_failure_health", Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 5, OutputTokens: 1}},
+		APIKey:                &APIKey{ID: 1006},
+		User:                  &User{ID: 2006},
+		Account:               &Account{ID: 782, Platform: PlatformOpenAI},
+		PreserveAccountHealth: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Empty(t, counter.resetCalls)
+	_, scheduled := deferred.lastUsedUpdates.Load(int64(782))
+	require.False(t, scheduled)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_InvalidPricingDoesNotResetOpenAI403Counter(t *testing.T) {

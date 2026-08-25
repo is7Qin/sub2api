@@ -11,10 +11,32 @@ import (
 )
 
 type concurrencyCacheMock struct {
+	acquireAPIKeySlotFn  func(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error)
 	acquireUserSlotFn    func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error)
 	acquireAccountSlotFn func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error)
+	releaseAPIKeyCalled  int32
 	releaseUserCalled    int32
 	releaseAccountCalled int32
+}
+
+func (m *concurrencyCacheMock) AcquireAPIKeySlot(ctx context.Context, apiKeyID int64, maxConcurrency int, requestID string) (bool, error) {
+	if m.acquireAPIKeySlotFn != nil {
+		return m.acquireAPIKeySlotFn(ctx, apiKeyID, maxConcurrency, requestID)
+	}
+	return false, nil
+}
+
+func (m *concurrencyCacheMock) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
+	atomic.AddInt32(&m.releaseAPIKeyCalled, 1)
+	return nil
+}
+
+func (m *concurrencyCacheMock) GetAPIKeyConcurrency(context.Context, int64) (int, error) {
+	return 0, nil
+}
+
+func (m *concurrencyCacheMock) GetAPIKeyConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
+	return map[int64]int{}, nil
 }
 
 func (m *concurrencyCacheMock) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -112,6 +134,91 @@ func TestConcurrencyHelper_TryAcquireUserSlot(t *testing.T) {
 
 	release()
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
+}
+
+func TestAcquireClientSlotsWithWait_KeyPrecedesUserAndCombinedReleaseIsOnce(t *testing.T) {
+	var order []string
+	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(context.Context, int64, int, string) (bool, error) {
+			order = append(order, "key")
+			return true, nil
+		},
+		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) {
+			order = append(order, "user")
+			return true, nil
+		},
+	}
+	helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second)
+	c, _ := newHelperTestContext("POST", "/v1/test")
+	streamStarted := false
+
+	release, err := helper.AcquireClientSlotsWithWait(c, 77, 1, 101, 2, false, &streamStarted)
+	require.NoError(t, err)
+	require.Equal(t, []string{"key", "user"}, order)
+
+	release()
+	release()
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+}
+
+func TestAcquireClientSlotsWithWait_KeyFullSkipsUser(t *testing.T) {
+	var userCalls int32
+	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(context.Context, int64, int, string) (bool, error) { return false, nil },
+		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) {
+			atomic.AddInt32(&userCalls, 1)
+			return true, nil
+		},
+	}
+	helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second)
+	c, recorder := newHelperTestContext("POST", "/v1/test")
+	streamStarted := false
+
+	release, err := helper.AcquireClientSlotsWithWait(c, 77, 1, 101, 2, true, &streamStarted)
+	require.Nil(t, release)
+	var concurrencyErr *ConcurrencyError
+	require.ErrorAs(t, err, &concurrencyErr)
+	require.Equal(t, "api_key", concurrencyErr.SlotType)
+	require.False(t, concurrencyErr.IsTimeout)
+	require.Zero(t, atomic.LoadInt32(&userCalls))
+	require.False(t, streamStarted)
+	require.Equal(t, 200, recorder.Code)
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestAcquireClientSlotsWithWait_UserFailureReleasesKey(t *testing.T) {
+	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
+		acquireUserSlotFn:   func(context.Context, int64, int, string) (bool, error) { return false, context.Canceled },
+	}
+	helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second)
+	c, _ := newHelperTestContext("POST", "/v1/test")
+	streamStarted := false
+
+	release, err := helper.AcquireClientSlotsWithWait(c, 77, 1, 101, 2, false, &streamStarted)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, release)
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+}
+
+func TestAcquireClientSlotsWithWait_DisabledKeySkipsKeyCache(t *testing.T) {
+	var keyCalls int32
+	cache := &concurrencyCacheMock{
+		acquireAPIKeySlotFn: func(context.Context, int64, int, string) (bool, error) {
+			atomic.AddInt32(&keyCalls, 1)
+			return true, nil
+		},
+		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
+	}
+	helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second)
+	c, _ := newHelperTestContext("POST", "/v1/test")
+	streamStarted := false
+
+	release, err := helper.AcquireClientSlotsWithWait(c, 77, 0, 101, 2, false, &streamStarted)
+	require.NoError(t, err)
+	require.Zero(t, atomic.LoadInt32(&keyCalls))
+	release()
 }
 
 func TestConcurrencyHelper_TryAcquireAccountSlot_NotAcquired(t *testing.T) {

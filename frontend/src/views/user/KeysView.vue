@@ -150,6 +150,17 @@
             </div>
           </template>
 
+          <template #cell-concurrency="{ row }">
+            <div
+              v-if="row.concurrency > 0 && row.current_concurrency != null"
+              :data-testid="`key-concurrency-usage-${row.id}`"
+              class="text-sm font-medium tabular-nums text-gray-900 dark:text-white"
+              :title="t('keys.concurrencyUsage')"
+            >
+              {{ row.current_concurrency }} / {{ row.concurrency }}
+            </div>
+          </template>
+
           <template #cell-usage="{ row }">
             <div class="text-sm">
               <div class="flex items-center gap-1.5">
@@ -541,6 +552,22 @@
               <p class="input-hint">{{ t('keys.ipBlacklistHint') }}</p>
             </div>
           </div>
+        </div>
+
+        <!-- Per-key concurrency -->
+        <div>
+          <label class="input-label">{{ t('keys.concurrencyLabel') }}</label>
+          <input
+            v-model.number="formData.concurrency"
+            type="number"
+            min="0"
+            :max="MAX_API_KEY_CONCURRENCY"
+            step="1"
+            required
+            class="input"
+            data-testid="key-concurrency"
+          />
+          <p class="input-hint">{{ t('keys.concurrencyHint') }}</p>
         </div>
 
         <!-- Quota Limit Section -->
@@ -1120,6 +1147,8 @@ import {
   type CcSwitchClientType
 } from '@/utils/ccswitchImport'
 
+const MAX_API_KEY_CONCURRENCY = 2147483647
+
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
   const date = new Date(isoDate)
@@ -1141,20 +1170,28 @@ const appStore = useAppStore()
 const onboardingStore = useOnboardingStore()
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
-const columns = computed<Column[]>(() => [
-  { key: 'name', label: t('common.name'), sortable: true },
-  { key: 'key', label: t('keys.apiKey'), sortable: false },
-  { key: 'group', label: t('keys.group'), sortable: false },
-  { key: 'usage', label: t('keys.usage'), sortable: false },
-  { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
-  { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
-  { key: 'status', label: t('common.status'), sortable: true },
-  { key: 'last_used_at', label: t('keys.lastUsedAt'), sortable: true },
-  { key: 'created_at', label: t('keys.created'), sortable: true },
-  { key: 'actions', label: t('common.actions'), sortable: false }
-])
-
 const apiKeys = ref<ApiKey[]>([])
+
+const columns = computed<Column[]>(() => {
+  const result: Column[] = [
+    { key: 'name', label: t('common.name'), sortable: true },
+    { key: 'key', label: t('keys.apiKey'), sortable: false },
+    { key: 'group', label: t('keys.group'), sortable: false }
+  ]
+  if (apiKeys.value.some((key) => key.concurrency > 0)) {
+    result.push({ key: 'concurrency', label: t('keys.concurrencyUsage'), sortable: false })
+  }
+  result.push(
+    { key: 'usage', label: t('keys.usage'), sortable: false },
+    { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
+    { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
+    { key: 'status', label: t('common.status'), sortable: true },
+    { key: 'last_used_at', label: t('keys.lastUsedAt'), sortable: true },
+    { key: 'created_at', label: t('keys.created'), sortable: true },
+    { key: 'actions', label: t('common.actions'), sortable: false }
+  )
+  return result
+})
 
 // Page-scoped status breakdown (server total lives in pagination.total).
 const activeKeyCount = computed(() => apiKeys.value.filter((k) => k.status === 'active').length)
@@ -1224,6 +1261,7 @@ const formData = ref({
   enable_ip_restriction: false,
   ip_whitelist: '',
   ip_blacklist: '',
+  concurrency: 0,
   // Quota settings (empty = unlimited)
   enable_quota: false,
   quota: null as number | null,
@@ -1448,6 +1486,7 @@ const editKey = (key: ApiKey) => {
     enable_ip_restriction: hasIPRestriction,
     ip_whitelist: (key.ip_whitelist || []).join('\n'),
     ip_blacklist: (key.ip_blacklist || []).join('\n'),
+    concurrency: key.concurrency,
     enable_quota: key.quota > 0,
     quota: key.quota > 0 ? key.quota : null,
     enable_rate_limit: (key.rate_limit_5h > 0) || (key.rate_limit_1d > 0) || (key.rate_limit_7d > 0),
@@ -1553,6 +1592,12 @@ const handleSubmit = async () => {
     }
   }
 
+  const concurrency = Number(formData.value.concurrency)
+  if (!Number.isInteger(concurrency) || concurrency < 0 || concurrency > MAX_API_KEY_CONCURRENCY) {
+    appStore.showError(t('keys.concurrencyInvalid'))
+    return
+  }
+
   // Parse IP lists only if IP restriction is enabled
   const parseIPList = (text: string): string[] =>
     text.split('\n').map(ip => ip.trim()).filter(ip => ip.length > 0)
@@ -1596,6 +1641,7 @@ const handleSubmit = async () => {
         group_id: formData.value.group_id,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
+        concurrency,
         quota: quota,
         expires_at: expiresAt,
         rate_limit_5h: rateLimitData.rate_limit_5h,
@@ -1617,7 +1663,10 @@ const handleSubmit = async () => {
         quota,
         expiresInDays,
         rateLimitData,
-        { openai_force_priority_tier: formData.value.openai_force_priority_tier }
+        {
+          openai_force_priority_tier: formData.value.openai_force_priority_tier,
+          concurrency
+        }
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
@@ -1669,6 +1718,7 @@ const closeModals = () => {
     enable_ip_restriction: false,
     ip_whitelist: '',
     ip_blacklist: '',
+    concurrency: 0,
     enable_quota: false,
     quota: null,
     enable_rate_limit: false,

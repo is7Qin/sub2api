@@ -87,6 +87,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	routingModel := channelMapping.EffectiveModel(reqModel)
 
 	// Claude Code only restriction
 	if apiKey.Group != nil && apiKey.Group.ClaudeCodeOnly {
@@ -109,19 +110,19 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 
-	// 1. Acquire user concurrency slot
-	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	// 1. Acquire logical client concurrency slots
+	clientRelease, err := h.concurrencyHelper.AcquireClientSlotsWithWait(c, apiKey.ID, apiKey.Concurrency, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
 	if err != nil {
-		reqLog.Warn("gateway.cc.user_slot_acquire_failed", zap.Error(err))
+		reqLog.Warn("gateway.cc.client_slots_acquire_failed", zap.Error(err))
 		h.chatCompletionsConcurrencyErrorResponse(c, err, "user", streamStarted)
 		return
 	}
 	logicalReleases := newHTTPAttemptReleaseSet(
 		c.Request.Context(),
 	)
-	userReleaseFunc = logicalReleases.Add(userReleaseFunc)
-	if userReleaseFunc != nil {
-		defer userReleaseFunc()
+	clientRelease = logicalReleases.Add(clientRelease)
+	if clientRelease != nil {
+		defer clientRelease()
 	}
 
 	// 2. Re-check billing
@@ -165,7 +166,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	selectionCtx := service.WithPublicModelSupportMiss404(c.Request.Context())
 	for {
 		selection, err, clientGone := selectFailoverAccount(c, func() (*service.AccountSelectionResult, error) {
-			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+			return h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, apiKey.GroupID, selectionSessionHash, routingModel, fs.FailedAccountIDs, "", int64(0))
 		})
 		if clientGone {
 			return
@@ -191,7 +192,9 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				failoverClientGone(c)
 				return
 			default:
-				if fs.LastFailoverErr != nil {
+				if candidate, ok := fs.FinalCandidate(); ok {
+					h.handleCCCandidate(c, candidate, streamStarted)
+				} else if fs.LastFailoverErr != nil {
 					h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
 				} else {
 					h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "server_error", "All available accounts exhausted")
@@ -314,7 +317,16 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverExhausted:
-					h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					if candidate, ok := fs.FinalCandidate(); ok {
+						h.handleCCCandidate(c, candidate, streamStarted)
+					} else {
+						h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+					}
+					return
+				case FailoverDirectReturn:
+					if candidate, ok := directReturnCandidate(failoverErr); ok {
+						h.handleCCCandidate(c, candidate, streamStarted)
+					}
 					return
 				case FailoverCanceled:
 					failoverClientGone(c)
@@ -379,19 +391,50 @@ func (h *GatewayHandler) chatCompletionsErrorResponse(c *gin.Context, status int
 	})
 }
 
-// handleCCFailoverExhausted writes a failover-exhausted error in CC format.
-func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
-	if streamStarted {
+func (h *GatewayHandler) handleCCCandidate(c *gin.Context, candidate *service.UpstreamErrorCandidate, streamStarted bool) {
+	if candidate == nil {
+		if streamStarted {
+			h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", true)
+			return
+		}
+		h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 		return
 	}
-	statusCode := http.StatusBadGateway
-	if lastErr != nil && lastErr.StatusCode > 0 {
-		statusCode = lastErr.StatusCode
+	resolved := service.ResolveFinalUpstreamError(candidate.Fact, h.errorPassthroughService)
+	if resolved.SkipMonitoring {
+		c.Set(service.OpsSkipPassthroughKey, true)
 	}
-	if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
-		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
+	presentation := resolved.Presentation
+	setOpsUpstreamCandidateError(c, candidate.Fact, presentation.Message)
+	if streamStarted {
+		h.handleStreamingAwareError(c, presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true)
+		return
+	}
+	errType := presentation.ErrorType
+	if errType == "" {
+		errType = "server_error"
+	}
+	h.chatCompletionsErrorResponse(c, presentation.HTTPStatus, errType, presentation.Message)
+}
+
+// handleCCFailoverExhausted writes a failover-exhausted error in CC format.
+func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
+	if lastErr == nil {
+		h.handleCCCandidate(c, nil, streamStarted)
+		return
+	}
+	if service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
+		service.SetOpsUpstreamError(c, lastErr.StatusCode, service.OpenAISilentRefusalClientMessage(), "")
+		if streamStarted {
+			h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage(), true)
+			return
+		}
 		h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage())
 		return
 	}
-	h.chatCompletionsErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+	fact, ok := lastErr.UpstreamFact()
+	if !ok {
+		fact = service.NewLegacyUpstreamErrorFact(service.PlatformOpenAI, lastErr.StatusCode, lastErr.ResponseBody)
+	}
+	h.handleCCCandidate(c, service.NewUpstreamErrorCandidate(fact, service.UpstreamCandidateStatusOnly), streamStarted)
 }

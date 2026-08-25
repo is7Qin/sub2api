@@ -2,6 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 
+vi.mock("@/components/admin/ErrorPassthroughRulesModal.vue", () => ({
+  default: {
+    props: ["show"],
+    emits: ["close"],
+    template:
+      '<div data-testid="error-passthrough-rules-modal" :data-show="String(show)" @click="$emit(\'close\')" />',
+  },
+}));
+
 import SettingsView from "../SettingsView.vue";
 
 const {
@@ -13,6 +22,8 @@ const {
   getOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getOpenAI403CooldownSettings,
+  updateOpenAI403CooldownSettings,
   getOpenAIOAuth429DynamicSettings,
   updateOpenAIOAuth429DynamicSettings,
   getStreamTimeoutSettings,
@@ -37,6 +48,8 @@ const {
   getOverloadCooldownSettings: vi.fn(),
   getRateLimit429CooldownSettings: vi.fn(),
   updateRateLimit429CooldownSettings: vi.fn(),
+  getOpenAI403CooldownSettings: vi.fn(),
+  updateOpenAI403CooldownSettings: vi.fn(),
   getOpenAIOAuth429DynamicSettings: vi.fn(),
   updateOpenAIOAuth429DynamicSettings: vi.fn(),
   getStreamTimeoutSettings: vi.fn(),
@@ -67,6 +80,8 @@ vi.mock("@/api", () => ({
       getOverloadCooldownSettings,
       getRateLimit429CooldownSettings,
       updateRateLimit429CooldownSettings,
+      getOpenAI403CooldownSettings,
+      updateOpenAI403CooldownSettings,
       getOpenAIOAuth429DynamicSettings,
       updateOpenAIOAuth429DynamicSettings,
       getStreamTimeoutSettings,
@@ -428,8 +443,9 @@ const baseSettingsResponse = {
   },
 };
 
-function mountView() {
+function mountView(attachTo?: Element) {
   return mount(SettingsView, {
+    attachTo,
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
@@ -479,7 +495,7 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
   await flushPromises();
 }
 
-describe("admin SettingsView payment visible method controls", () => {
+describe("admin SettingsView controls", () => {
   beforeEach(() => {
     getSettings.mockReset();
     updateSettings.mockReset();
@@ -489,6 +505,8 @@ describe("admin SettingsView payment visible method controls", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAI403CooldownSettings.mockReset();
+    updateOpenAI403CooldownSettings.mockReset();
     getOpenAIOAuth429DynamicSettings.mockReset();
     updateOpenAIOAuth429DynamicSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -532,6 +550,16 @@ describe("admin SettingsView payment visible method controls", () => {
       cooldown_seconds: 5,
     });
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
+    getOpenAI403CooldownSettings.mockResolvedValue({
+      enabled: true,
+      ignore: false,
+      cooldown_seconds: 600,
+      threshold_count: 3,
+      counter_window_seconds: 10800,
+      threshold_action: "error",
+      threshold_pause_seconds: 3600,
+    });
+    updateOpenAI403CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAIOAuth429DynamicSettings.mockResolvedValue({
       enabled: false,
       window_seconds: 300,
@@ -567,6 +595,34 @@ describe("admin SettingsView payment visible method controls", () => {
     });
     fetchPublicSettings.mockResolvedValue(undefined);
     adminSettingsFetch.mockResolvedValue(undefined);
+  });
+
+  it("opens and closes global error passthrough rules only from Gateway", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const wrapper = mountView(host);
+
+    try {
+      await flushPromises();
+      const actionSelector = '[data-testid="manage-error-passthrough-rules"]';
+      const modal = wrapper.get('[data-testid="error-passthrough-rules-modal"]');
+      expect(wrapper.get(actionSelector).isVisible()).toBe(false);
+      expect(modal.attributes("data-show")).toBe("false");
+
+      await wrapper.get('[data-testid="settings-tab-gateway"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get(actionSelector).isVisible()).toBe(true);
+
+      await wrapper.get(actionSelector).trigger("click");
+      expect(modal.attributes("data-show")).toBe("true");
+
+      await modal.trigger("click");
+      expect(modal.attributes("data-show")).toBe("false");
+      expect(updateSettings).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
   });
 
   it("does not render legacy visible payment method controls", async () => {
@@ -817,7 +873,79 @@ describe("admin SettingsView payment visible method controls", () => {
       min_429: 2,
       ratio_threshold: 0.01,
       block_seconds: 60,
+      usage_window_check_enabled: false,
+      usage_window_5h_threshold_percent: 100,
+      usage_window_7d_threshold_percent: 100,
+      usage_window_missing_data_fallback_seconds: 0,
+      plan_type_settings: [],
     });
+  });
+
+  it("normalizes configurable OpenAI 403 threshold protection", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="openai-403-cooldown-seconds"]').setValue("2592001");
+    await wrapper.get('[data-testid="openai-403-threshold-count"]').setValue("1");
+    await wrapper.get('[data-testid="openai-403-threshold-action"]').setValue("temp_unsched");
+    await wrapper.get('[data-testid="openai-403-threshold-pause-seconds"]').setValue("2592001");
+    await wrapper.get('[data-testid="openai-403-cooldown-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updateOpenAI403CooldownSettings).toHaveBeenCalledWith({
+      enabled: true,
+      ignore: false,
+      cooldown_seconds: 2592000,
+      threshold_count: 2,
+      counter_window_seconds: 10800,
+      threshold_action: "temp_unsched",
+      threshold_pause_seconds: 2592000,
+    });
+  });
+
+  it("saves ignore mode and hides irrelevant OpenAI 403 controls", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="openai-403-ignore"]').setValue(true);
+    expect(wrapper.find('[data-testid="openai-403-cooldown-seconds"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="openai-403-threshold-action"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="openai-403-cooldown-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updateOpenAI403CooldownSettings).toHaveBeenCalledWith({
+      enabled: true,
+      ignore: true,
+      cooldown_seconds: 600,
+      threshold_count: 3,
+      counter_window_seconds: 10800,
+      threshold_action: "error",
+      threshold_pause_seconds: 3600,
+    });
+  });
+
+  it("caps OpenAI OAuth dynamic 429 pause at thirty days", async () => {
+    getOpenAIOAuth429DynamicSettings.mockResolvedValueOnce({
+      enabled: true,
+      window_seconds: 300,
+      min_samples: 20,
+      min_429: 3,
+      ratio_threshold: 0.5,
+      block_seconds: 60,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    const input = wrapper.get('[data-testid="openai-oauth-429-dynamic-block-seconds"]');
+    expect(input.attributes("max")).toBe("2592000");
+    await input.setValue("2592001");
+    await wrapper.get('[data-testid="openai-oauth-429-dynamic-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updateOpenAIOAuth429DynamicSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ block_seconds: 2592000 }),
+    );
   });
 
   it("does not overwrite OpenAI OAuth dynamic 429 settings when loading fails", async () => {
@@ -923,6 +1051,8 @@ describe("admin SettingsView wechat connect controls", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAI403CooldownSettings.mockReset();
+    updateOpenAI403CooldownSettings.mockReset();
     getOpenAIOAuth429DynamicSettings.mockReset();
     updateOpenAIOAuth429DynamicSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -969,6 +1099,16 @@ describe("admin SettingsView wechat connect controls", () => {
       cooldown_seconds: 5,
     });
     updateRateLimit429CooldownSettings.mockImplementation(async (payload) => payload);
+    getOpenAI403CooldownSettings.mockResolvedValue({
+      enabled: true,
+      ignore: false,
+      cooldown_seconds: 600,
+      threshold_count: 3,
+      counter_window_seconds: 10800,
+      threshold_action: "error",
+      threshold_pause_seconds: 3600,
+    });
+    updateOpenAI403CooldownSettings.mockImplementation(async (payload) => payload);
     getOpenAIOAuth429DynamicSettings.mockResolvedValue({
       enabled: false,
       window_seconds: 300,
@@ -1180,6 +1320,8 @@ describe("admin SettingsView platform quota matrix", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAI403CooldownSettings.mockReset();
+    updateOpenAI403CooldownSettings.mockReset();
     getOpenAIOAuth429DynamicSettings.mockReset();
     updateOpenAIOAuth429DynamicSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
@@ -1325,5 +1467,57 @@ describe("admin SettingsView platform quota matrix", () => {
     const quotas = payload["default_platform_quotas"] as Record<string, Record<string, unknown>>;
     // 不管输入是什么，提交值应为 null（而非 "" 或 NaN）
     expect(quotas["anthropic"]?.["daily"]).toBe(null);
+  });
+
+  it("switches channel monitor mode and gates v1/v2 controls on submit", async () => {
+    const wrapper = mountView();
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="settings-tab-features"]').trigger("click");
+      await flushPromises();
+
+      // 后端未下发时表单默认与本地后端一致：v1 模式 + 隐藏吞吐开。
+      // v1 只显示默认间隔输入框，隐藏吞吐开关不渲染。
+      expect(
+        wrapper.get('[data-testid="channel-monitor-interval"]').isVisible()
+      ).toBe(true);
+      expect(
+        wrapper.find('[data-testid="channel-monitor-hide-throughput"]').exists()
+      ).toBe(false);
+
+      // 切到 v2：间隔输入框消失，隐藏吞吐开关出现。
+      await wrapper.get('[data-testid="channel-monitor-mode-v2"]').trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.find('[data-testid="channel-monitor-interval"]').exists()
+      ).toBe(false);
+      expect(
+        wrapper.get('[data-testid="channel-monitor-hide-throughput"]').isVisible()
+      ).toBe(true);
+
+      // 保存载荷带出模式与隐藏吞吐（显式布尔值）。
+      await wrapper.get('[data-testid="channel-monitor-hide-throughput"]').setValue(false);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+
+      expect(updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel_monitor_mode: "v2",
+          channel_monitor_hide_throughput: false,
+        })
+      );
+
+      // 切回 v1：间隔输入框恢复，隐藏吞吐开关再次隐藏。
+      await wrapper.get('[data-testid="channel-monitor-mode-v1"]').trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.get('[data-testid="channel-monitor-interval"]').isVisible()
+      ).toBe(true);
+      expect(
+        wrapper.find('[data-testid="channel-monitor-hide-throughput"]').exists()
+      ).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
   });
 });

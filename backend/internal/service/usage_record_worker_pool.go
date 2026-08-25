@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	defaultUsageRecordWorkerCount          = 128
-	defaultUsageRecordQueueSize            = 16384
-	defaultUsageRecordTaskTimeoutSeconds   = 5
-	defaultUsageRecordOverflowPolicy       = config.UsageRecordOverflowPolicySample
+	defaultUsageRecordWorkerCount        = 128
+	defaultUsageRecordQueueSize          = 16384
+	defaultUsageRecordTaskTimeoutSeconds = 5
+	// Default to sync so queue overflow cannot silently discard already-billed usage.
+	defaultUsageRecordOverflowPolicy       = config.UsageRecordOverflowPolicySync
 	defaultUsageRecordOverflowSampleRatio  = 10
 	defaultUsageRecordAutoScaleEnabled     = true
 	defaultUsageRecordAutoScaleMinWorkers  = 128
@@ -63,8 +64,16 @@ type UsageRecordWorkerPoolOptions struct {
 	AutoScaleCooldown     time.Duration
 }
 
+type usageRecordWorkerPoolTestHooks struct {
+	beforeStartAccepting   func()
+	beforeSubmit           func()
+	beforeSampleFallback   func()
+	beforeSyncBackpressure func()
+}
+
 // UsageRecordWorkerPoolStats 使用量记录池运行时统计。
 type UsageRecordWorkerPoolStats struct {
+	Accepting          bool
 	MaxConcurrency     int
 	RunningWorkers     int64
 	WaitingTasks       uint64
@@ -84,6 +93,7 @@ type UsageRecordWorkerPool struct {
 	pool                  pond.Pool
 	taskTimeout           time.Duration
 	overflowPolicy        string
+	testHooks             *usageRecordWorkerPoolTestHooks
 	overflowSamplePercent int
 	overflowCounter       atomic.Uint64
 	droppedQueueFull      atomic.Uint64
@@ -102,6 +112,10 @@ type UsageRecordWorkerPool struct {
 	lastScaleNanos        atomic.Int64
 	autoScaleCancel       context.CancelFunc
 	lifecycleWg           sync.WaitGroup
+	lifecycleMu           sync.Mutex
+	accepting             atomic.Bool
+	started               atomic.Bool
+	stopping              atomic.Bool
 	stopOnce              sync.Once
 }
 
@@ -113,11 +127,16 @@ func NewUsageRecordWorkerPool(cfg *config.Config) *UsageRecordWorkerPool {
 
 // NewUsageRecordWorkerPoolWithOptions 根据给定参数构建使用量记录池。
 func NewUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions) *UsageRecordWorkerPool {
+	return newUsageRecordWorkerPoolWithOptions(opts, nil)
+}
+
+func newUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions, testHooks *usageRecordWorkerPoolTestHooks) *UsageRecordWorkerPool {
 	opts = normalizeUsageRecordPoolOptions(opts)
 
 	p := &UsageRecordWorkerPool{
 		taskTimeout:           opts.TaskTimeout,
 		overflowPolicy:        opts.OverflowPolicy,
+		testHooks:             testHooks,
 		overflowSamplePercent: opts.OverflowSamplePercent,
 		autoScaleEnabled:      opts.AutoScaleEnabled,
 		autoScaleMinWorkers:   opts.AutoScaleMinWorkers,
@@ -134,10 +153,46 @@ func NewUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions) *Usa
 		opts.WorkerCount,
 		pond.WithQueueSize(opts.QueueSize),
 	)
+	return p
+}
+
+// Start begins accepting submissions and starts autoscaling when configured.
+func (p *UsageRecordWorkerPool) Start() error {
+	if p == nil || p.pool == nil {
+		return fmt.Errorf("usage record worker pool is not initialized")
+	}
+	if p.pool.Stopped() || p.stopping.Load() {
+		return fmt.Errorf("usage record worker pool is stopped")
+	}
+	if p.started.Load() {
+		return nil
+	}
+
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.started.Load() {
+		return nil
+	}
+	if p.pool.Stopped() || p.stopping.Load() {
+		return fmt.Errorf("usage record worker pool is stopped")
+	}
 	if p.autoScaleEnabled {
 		p.startAutoScaler()
 	}
-	return p
+	if p.testHooks != nil && p.testHooks.beforeStartAccepting != nil {
+		p.testHooks.beforeStartAccepting()
+	}
+	if p.pool.Stopped() || p.stopping.Load() {
+		return fmt.Errorf("usage record worker pool is stopped")
+	}
+	p.started.Store(true)
+	p.accepting.Store(true)
+	return nil
+}
+
+// Accepting reports whether the pool currently accepts asynchronous submissions.
+func (p *UsageRecordWorkerPool) Accepting() bool {
+	return p != nil && p.accepting.Load()
 }
 
 // Submit 提交一个使用量记录任务。
@@ -146,7 +201,10 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 	if p == nil || task == nil {
 		return UsageRecordSubmitModeDropped
 	}
-	if p.pool == nil || p.pool.Stopped() {
+	if p.testHooks != nil && p.testHooks.beforeSubmit != nil {
+		p.testHooks.beforeSubmit()
+	}
+	if !p.Accepting() || p.pool == nil || p.pool.Stopped() {
 		p.droppedPoolStopped.Add(1)
 		p.logDrop("stopped")
 		return UsageRecordSubmitModeDropped
@@ -167,14 +225,13 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 
 	switch p.overflowPolicy {
 	case config.UsageRecordOverflowPolicySync:
-		p.syncFallback.Add(1)
-		p.execute(task)
-		return UsageRecordSubmitModeSync
+		return p.submitWithBackpressure(task)
 	case config.UsageRecordOverflowPolicySample:
 		if p.shouldSyncFallback() {
-			p.syncFallback.Add(1)
-			p.execute(task)
-			return UsageRecordSubmitModeSync
+			if p.testHooks != nil && p.testHooks.beforeSampleFallback != nil {
+				p.testHooks.beforeSampleFallback()
+			}
+			return p.submitWithBackpressure(task)
 		}
 	}
 
@@ -183,12 +240,28 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 	return UsageRecordSubmitModeDropped
 }
 
+func (p *UsageRecordWorkerPool) submitWithBackpressure(task UsageRecordTask) UsageRecordSubmitMode {
+	p.syncFallback.Add(1)
+	if p.testHooks != nil && p.testHooks.beforeSyncBackpressure != nil {
+		p.testHooks.beforeSyncBackpressure()
+	}
+	if err := p.pool.Go(func() {
+		p.execute(task)
+	}); err != nil {
+		p.droppedPoolStopped.Add(1)
+		p.logDrop("stopped")
+		return UsageRecordSubmitModeDropped
+	}
+	return UsageRecordSubmitModeSync
+}
+
 // Stats 返回当前池状态与计数器。
 func (p *UsageRecordWorkerPool) Stats() UsageRecordWorkerPoolStats {
 	if p == nil || p.pool == nil {
 		return UsageRecordWorkerPoolStats{}
 	}
 	return UsageRecordWorkerPoolStats{
+		Accepting:          p.Accepting(),
 		MaxConcurrency:     p.pool.MaxConcurrency(),
 		RunningWorkers:     p.pool.RunningWorkers(),
 		WaitingTasks:       p.pool.WaitingTasks(),
@@ -209,9 +282,13 @@ func (p *UsageRecordWorkerPool) Stop() {
 		return
 	}
 	p.stopOnce.Do(func() {
+		p.stopping.Store(true)
+		p.accepting.Store(false)
+		p.lifecycleMu.Lock()
 		if p.autoScaleCancel != nil {
 			p.autoScaleCancel()
 		}
+		p.lifecycleMu.Unlock()
 		p.lifecycleWg.Wait()
 		p.pool.StopAndWait()
 	})
@@ -312,6 +389,16 @@ func (p *UsageRecordWorkerPool) shouldSyncFallback() bool {
 	}
 	n := p.overflowCounter.Add(1)
 	return int((n-1)%100) < p.overflowSamplePercent
+}
+
+// SubmitMandatory transfers the task to the pool or executes it once when the
+// pool declines ownership. The returned mode describes the initial submission.
+func (p *UsageRecordWorkerPool) SubmitMandatory(task UsageRecordTask) UsageRecordSubmitMode {
+	mode := p.Submit(task)
+	if mode == UsageRecordSubmitModeDropped && p != nil && task != nil {
+		p.execute(task)
+	}
+	return mode
 }
 
 func (p *UsageRecordWorkerPool) execute(task UsageRecordTask) {

@@ -3,15 +3,22 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // testConfig 返回一个用于测试的默认配置
@@ -21,10 +28,15 @@ func testConfig() *config.Config {
 
 // mockAccountRepoForPlatform 单平台测试用的 mock
 type mockAccountRepoForPlatform struct {
-	accounts         []Account
-	accountsByID     map[int64]*Account
-	listPlatformFunc func(ctx context.Context, platform string) ([]Account, error)
-	getByIDCalls     int
+	accounts                        []Account
+	accountsByID                    map[int64]*Account
+	listPlatformFunc                func(ctx context.Context, platform string) ([]Account, error)
+	listModelAvailabilityCandidates func(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error)
+	listPlatformCalls               int
+	listAvailabilityCalls           int
+	getByIDCalls                    int
+	setErrorCalls                   int
+	setSchedulableCalls             int
 }
 
 func (m *mockAccountRepoForPlatform) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -54,6 +66,7 @@ func (m *mockAccountRepoForPlatform) ExistsByID(ctx context.Context, id int64) (
 }
 
 func (m *mockAccountRepoForPlatform) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	m.listPlatformCalls++
 	if m.listPlatformFunc != nil {
 		return m.listPlatformFunc(ctx, platform)
 	}
@@ -68,6 +81,28 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByPlatform(ctx context.Conte
 
 func (m *mockAccountRepoForPlatform) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	return m.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (m *mockAccountRepoForPlatform) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error) {
+	m.listAvailabilityCalls++
+	if m.listModelAvailabilityCandidates != nil {
+		return m.listModelAvailabilityCandidates(ctx, groupID, platforms, includeGrouped)
+	}
+	allowed := make(map[string]struct{}, len(platforms))
+	for _, platform := range platforms {
+		allowed[platform] = struct{}{}
+	}
+	result := make([]Account, 0, len(m.accounts))
+	for _, account := range m.accounts {
+		if account.Status != StatusActive || !account.Schedulable {
+			continue
+		}
+		if _, ok := allowed[account.Platform]; !ok {
+			continue
+		}
+		result = append(result, account)
+	}
+	return result, nil
 }
 
 // Stub methods to implement AccountRepository interface
@@ -117,12 +152,14 @@ func (m *mockAccountRepoForPlatform) BatchUpdateLastUsed(ctx context.Context, up
 	return nil
 }
 func (m *mockAccountRepoForPlatform) SetError(ctx context.Context, id int64, errorMsg string) error {
+	m.setErrorCalls++
 	return nil
 }
 func (m *mockAccountRepoForPlatform) ClearError(ctx context.Context, id int64) error {
 	return nil
 }
 func (m *mockAccountRepoForPlatform) SetSchedulable(ctx context.Context, id int64, schedulable bool) error {
+	m.setSchedulableCalls++
 	return nil
 }
 func (m *mockAccountRepoForPlatform) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
@@ -203,6 +240,407 @@ func (m *mockAccountRepoForPlatform) ResetQuotaUsed(ctx context.Context, id int6
 
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
+
+func TestGatewayTruncateForLogSanitizesPrivateUpstreamBody(t *testing.T) {
+	body := []byte(
+		`{"error":{"message":"token=do-not-leak https://internal.example/secret"},` +
+			`"metadata":{"authorization":"Bearer secret","request_body":"private prompt"}}`,
+	)
+
+	got := truncateForLog(body, 4096)
+
+	require.NotContains(t, got, "do-not-leak")
+	require.NotContains(t, got, "Bearer secret")
+	require.NotContains(t, got, "internal.example")
+	require.NotContains(t, got, "private prompt")
+	require.LessOrEqual(t, len(got), 4096)
+}
+
+func TestGatewayForward_HTTPFailoverCarriersRetainParsedFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newAttempt := func(requestID string) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"X-Request-Id": []string{requestID}},
+			Body: io.NopCloser(bytes.NewReader([]byte(
+				`{"error":{"type":"vendor_failure","message":"token=do-not-leak https://internal.example/secret"},` +
+					`"metadata":{"authorization":"Bearer secret"}}`,
+			))),
+		}
+	}
+
+	for _, test := range []struct {
+		name              string
+		account           *Account
+		responses         []*http.Response
+		expectedCalls     int
+		expectedRequestID string
+	}{
+		{
+			name: "immediate failover",
+			account: &Account{
+				ID: 910, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key":                    "test-key",
+					"custom_error_codes_enabled": true,
+					"custom_error_codes":         []any{float64(http.StatusServiceUnavailable)},
+				},
+			},
+			responses:         []*http.Response{newAttempt("req-immediate")},
+			expectedCalls:     1,
+			expectedRequestID: "req-immediate",
+		},
+		{
+			name: "retry exhausted failover",
+			account: &Account{
+				ID: 911, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key":                    "test-key",
+					"custom_error_codes_enabled": true,
+					"custom_error_codes":         []any{float64(http.StatusUnauthorized)},
+				},
+			},
+			responses: []*http.Response{
+				newAttempt("req-retry-1"),
+				newAttempt("req-retry-2"),
+				newAttempt("req-retry-3"),
+				newAttempt("req-retry-4"),
+				newAttempt("req-retry-5"),
+			},
+			expectedCalls:     maxRetryAttempts,
+			expectedRequestID: "req-retry-5",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{test.account.ID: test.account}}
+			upstream := &queuedHTTPUpstream{responses: test.responses}
+			cfg := testConfig()
+			cfg.Gateway.LogUpstreamErrorBody = true
+			cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 4096
+			svc := &GatewayService{
+				cfg:              cfg,
+				httpUpstream:     upstream,
+				rateLimitService: NewRateLimitService(accountRepo, nil, testConfig(), nil, nil),
+			}
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
+			require.NoError(t, err)
+
+			_, err = svc.Forward(context.Background(), c, test.account, parsed)
+
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			fact, ok := failoverErr.UpstreamFact()
+			require.True(t, ok)
+			require.Equal(t, PlatformAnthropic, fact.Provider)
+			require.Equal(t, http.StatusServiceUnavailable, fact.HTTPStatus)
+			require.Equal(t, "vendor_failure", fact.ProviderType)
+			require.Equal(t, test.expectedRequestID, fact.RequestID)
+			require.Len(t, upstream.requests, test.expectedCalls)
+			rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+			require.True(t, exists)
+			events := rawEvents.([]*OpsUpstreamErrorEvent)
+			require.NotEmpty(t, events)
+			for _, event := range events {
+				require.NotContains(t, event.Detail, "do-not-leak")
+				require.NotContains(t, event.Detail, "internal.example")
+				require.NotContains(t, event.Detail, "Bearer secret")
+			}
+		})
+	}
+}
+
+func TestGatewayHandleErrorResponse_DisablingCarrierRetainsParsedFact(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	account := &Account{
+		ID: 912, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":                    "test-key",
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusPaymentRequired)},
+		},
+	}
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	cfg := testConfig()
+	cfg.Gateway.LogUpstreamErrorBody = true
+	cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 4096
+	svc := &GatewayService{
+		cfg:              cfg,
+		rateLimitService: NewRateLimitService(accountRepo, nil, testConfig(), nil, nil),
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusPaymentRequired,
+		Header:     http.Header{"X-Request-Id": []string{"req-disable"}},
+		Body: io.NopCloser(bytes.NewReader([]byte(
+			`{"error":{"type":"billing_error","code":"billing_required","message":"token=do-not-leak https://internal.example/secret"},` +
+				`"metadata":{"authorization":"Bearer secret"}}`,
+		))),
+	}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, PlatformAnthropic, fact.Provider)
+	require.Equal(t, http.StatusPaymentRequired, fact.HTTPStatus)
+	require.Equal(t, "billing_required", fact.ProviderCode)
+	require.Equal(t, "billing_error", fact.ProviderType)
+	require.Equal(t, "req-disable", fact.RequestID)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotContains(t, events[0].Detail, "do-not-leak")
+	require.NotContains(t, events[0].Detail, "internal.example")
+	require.NotContains(t, events[0].Detail, "Bearer secret")
+}
+
+func TestGatewayForward_RecognizedHTTPErrorBeforeFailoverHealthAndRules(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	conflictingCode := http.StatusTeapot
+	conflictingMessage := "database must not win"
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformAnthropic},
+		Keywords: []string{"cyber_policy"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &conflictingCode, CustomMessage: &conflictingMessage, SkipMonitoring: true,
+	}})
+	BindErrorPassthroughService(c, rules)
+
+	account := &Account{
+		ID: 901, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "test-key"},
+	}
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body: io.NopCloser(bytes.NewReader([]byte(
+			`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"},` +
+				`"metadata":{"authorization":"Bearer secret","token":"do-not-leak","private_url":"https://internal.example/secret"}}`,
+		))),
+	}}}
+	cfg := testConfig()
+	cfg.Gateway.LogUpstreamErrorBody = true
+	cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 4096
+	svc := &GatewayService{cfg: cfg, httpUpstream: upstream, rateLimitService: rateLimits}
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
+	require.NoError(t, err)
+
+	_, err = svc.Forward(context.Background(), c, account, parsed)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Len(t, upstream.requests, 1)
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), conflictingMessage)
+	_, skip := c.Get(OpsSkipPassthroughKey)
+	require.False(t, skip)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].UpstreamFact)
+	require.Equal(t, "cyber_policy", events[0].UpstreamFact.ProviderCode)
+	require.NotContains(t, events[0].Detail, "do-not-leak")
+	require.NotContains(t, events[0].Detail, "internal.example")
+	require.NotContains(t, events[0].Detail, "Bearer secret")
+	require.True(t, IsResponseCommitted(c))
+}
+
+func TestGatewayForward_SignatureRetryRecognizedErrorBeforeFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	account := &Account{
+		ID: 902, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "test-key"},
+	}
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyRectifierSettings: `{"enabled":true,"thinking_signature_enabled":true,"thinking_budget_enabled":true,"apikey_signature_enabled":true}`,
+	}}, testConfig())
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{
+		newJSONResponse(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"Invalid signature in thinking block"}}`),
+		newJSONResponse(http.StatusUnauthorized, `{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`),
+	}}
+	svc := &GatewayService{
+		cfg: testConfig(), httpUpstream: upstream, rateLimitService: rateLimits,
+		settingService: settings,
+	}
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-3-5-sonnet-latest","max_tokens":1024,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"x","signature":"bad"}]},{"role":"user","content":"hi"}]}`)), PlatformAnthropic)
+	require.NoError(t, err)
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Len(t, upstream.requests, 2)
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
+
+func TestGatewayForwardAnthropicAPIKeyPassthrough_RecognizedErrorBeforeFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	account := newAnthropicAPIKeyAccountForTest()
+	account.ID = 902
+	accountRepo := &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	upstream := &anthropicQueuedHTTPUpstream{responses: []*http.Response{{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`))),
+	}}}
+	svc := &GatewayService{cfg: testConfig(), httpUpstream: upstream, rateLimitService: rateLimits}
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(), c, account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest", "claude-3-5-sonnet-latest", false, time.Now(),
+	)
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Equal(t, 1, upstream.calls)
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.True(t, IsResponseCommitted(c))
+}
+
+type prefixErrorReader struct {
+	prefix []byte
+	read   bool
+}
+
+func (r *prefixErrorReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, errors.New("prefix reader exhausted")
+	}
+	r.read = true
+	n := copy(p, r.prefix)
+	return n, errors.New("upstream body read failed")
+}
+
+func (r *prefixErrorReader) Close() error { return nil }
+
+func TestHandleRecognizedHTTPErrorResponse_RestoresPartialBodyOnReadError(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       &prefixErrorReader{prefix: []byte(`{"error":{"message":"partial"}}`)},
+	}
+	account := &Account{ID: 904, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, _, handled := (&GatewayService{cfg: testConfig()}).handleRecognizedHTTPErrorResponse(resp, nil, account)
+
+	require.False(t, handled)
+	restored, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, `{"error":{"message":"partial"}}`, string(restored))
+}
+
+func TestHandleRecognizedHTTPErrorResponse_CommittedStreamReturnsTypedError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	_, err := c.Writer.WriteString(": ping\n\n")
+	require.NoError(t, err)
+
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`))),
+	}
+	account := &Account{ID: 903, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, err, handled := (&GatewayService{cfg: testConfig()}).handleRecognizedHTTPErrorResponse(resp, c, account)
+
+	require.True(t, handled)
+	var recognizedErr *RecognizedUpstreamError
+	require.ErrorAs(t, err, &recognizedErr)
+	require.True(t, recognizedErr.OutputStarted)
+	require.Equal(t, ": ping\n\n", rec.Body.String())
+	require.False(t, IsResponseCommitted(c))
+}
+
+func TestGatewayHandleErrorResponse_RecognizedDirectBeforeHealthAndRules(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	body := []byte(`{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"policy rejected"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"x-request-id": []string{"req-policy"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	conflictingCode := http.StatusTeapot
+	conflictingMessage := "database must not win"
+	rules := &ErrorPassthroughService{}
+	rules.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformAnthropic},
+		Keywords: []string{"cyber_policy"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &conflictingCode, CustomMessage: &conflictingMessage, SkipMonitoring: true,
+	}})
+	BindErrorPassthroughService(c, rules)
+	account := &Account{ID: 901, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+	accountRepo := &mockAccountRepoForPlatform{
+		accountsByID: map[int64]*Account{account.ID: account},
+	}
+	rateLimits := NewRateLimitService(accountRepo, nil, testConfig(), nil, nil)
+	svc := &GatewayService{rateLimitService: rateLimits}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	require.Zero(t, accountRepo.setErrorCalls)
+	require.Zero(t, accountRepo.setSchedulableCalls)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "policy rejected", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), conflictingMessage)
+	_, skip := c.Get(OpsSkipPassthroughKey)
+	require.False(t, skip)
+	rawEvents, exists := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, exists)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].UpstreamFact)
+	require.Equal(t, "cyber_policy", events[0].UpstreamFact.ProviderCode)
+	require.True(t, IsResponseCommitted(c))
+}
 
 // mockGatewayCacheForPlatform 单平台测试用的 cache mock
 type mockGatewayCacheForPlatform struct {
@@ -454,7 +892,7 @@ func TestGatewayService_SelectAccountForModelWithPlatform_NoAvailableAccounts(t 
 }
 
 func TestGatewayService_SelectAccountForModelWithPlatform_ModelRateLimitedNotUnsupportedModel(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithPublicModelSupportMiss404(context.Background())
 	resetAt := time.Now().Add(time.Hour)
 
 	repo := &mockAccountRepoForPlatform{
@@ -488,6 +926,37 @@ func TestGatewayService_SelectAccountForModelWithPlatform_ModelRateLimitedNotUns
 	require.Nil(t, acc)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+}
+
+func TestGatewayService_SelectAccountForModelWithPlatform_AvailabilityLookupFailureStaysRetryable(t *testing.T) {
+	repo := &mockAccountRepoForPlatform{
+		accounts: []Account{{
+			ID:          1,
+			Platform:    PlatformAnthropic,
+			Status:      StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{"model_mapping": map[string]any{"claude-haiku": "claude-haiku"}},
+		}},
+		accountsByID: map[int64]*Account{},
+		listModelAvailabilityCandidates: func(context.Context, *int64, []string, bool) ([]Account, error) {
+			return nil, errors.New("database unavailable")
+		},
+	}
+	svc := &GatewayService{accountRepo: repo, cache: &mockGatewayCacheForPlatform{}, cfg: testConfig()}
+
+	acc, err := svc.selectAccountForModelWithPlatform(WithPublicModelSupportMiss404(context.Background()), nil, "", "claude-sonnet", nil, PlatformAnthropic)
+	require.Error(t, err)
+	require.Nil(t, acc)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+}
+
+func TestGatewayService_IsPureModelSupportMiss_MixedSchedulingScope(t *testing.T) {
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{cfg: testConfig(), supportDecisionReader: reader}
+	miss := svc.isPureModelSupportMiss(WithPublicModelSupportMiss404(context.Background()), nil, "claude-sonnet-4-5", PlatformAnthropic, nil, true, nil, nil)
+	require.True(t, miss)
+	require.Equal(t, SupportDecisionScope{Platform: PlatformAnthropic, AllowMixedScheduling: true}, reader.queries[0].Scope)
 }
 
 // TestGatewayService_SelectAccountForModelWithPlatform_AllExcluded 测试所有账户被排除
@@ -747,6 +1216,285 @@ func TestGatewayService_SelectAccountForModelWithExclusions_ForcePlatform(t *tes
 	require.Equal(t, PlatformAntigravity, acc.Platform)
 }
 
+func TestGatewayService_SelectAccountWithLoadAwareness_EmptyPoolSupportDecision(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  SupportDecisionResult
+		want404 bool
+	}{
+		{name: "pure_miss", result: SupportDecisionPureMiss, want404: true},
+		{name: "unknown", result: SupportDecisionUnknown},
+		{name: "not_pure_miss", result: SupportDecisionNotPureMiss},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockAccountRepoForPlatform{}
+			reader := &recordingSupportDecisionReader{result: tt.result}
+			cfg := testConfig()
+			cfg.Gateway.Scheduling.LoadBatchEnabled = true
+			svc := &GatewayService{
+				accountRepo:           repo,
+				cache:                 &mockGatewayCacheForPlatform{},
+				cfg:                   cfg,
+				concurrencyService:    NewConcurrencyService(&mockConcurrencyCache{}),
+				supportDecisionReader: reader,
+			}
+			ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.ForcePlatform, PlatformAntigravity)
+
+			selection, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "  claude-empty-pool  ", nil, "", 0)
+
+			require.Nil(t, selection)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			if tt.want404 {
+				require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			} else {
+				require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			}
+			require.Equal(t, 1, repo.listPlatformCalls, "candidate listing should execute once")
+			require.Zero(t, repo.listAvailabilityCalls, "classification must not fall back to repository availability queries")
+			require.Equal(t, []SupportDecisionQuery{{
+				Scope:          SupportDecisionScope{Platform: PlatformAntigravity},
+				RequestedModel: "claude-empty-pool",
+			}}, reader.queries)
+		})
+	}
+}
+
+func TestGatewayService_SelectAccountForModelWithExclusions_ForcedAntigravityGroupedSupportMiss(t *testing.T) {
+	groupID := int64(101206)
+	group := &Group{
+		ID:                groupID,
+		Name:              "anthropic-api-key",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.ForcePlatform, PlatformAntigravity)
+	ctx = context.WithValue(ctx, ctxkey.Group, group)
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{
+		accountRepo:           &mockAccountRepoForPlatform{},
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: reader,
+	}
+
+	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-forced-miss", nil)
+
+	require.Nil(t, account)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope:           SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID},
+		RequestedModel:  "claude-forced-miss",
+		RequiresPrivacy: true,
+	}}, reader.queries)
+}
+
+func TestGatewayService_SelectAccountForModelWithExclusions_UsesRepositoryGroupForPrivacyAndContextGroupForForcedClassifier(t *testing.T) {
+	groupID := int64(101209)
+	contextGroup := &Group{
+		ID:                groupID,
+		Name:              "trusted-request-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: false,
+	}
+	repositoryGroup := &Group{
+		ID:                groupID,
+		Name:              "current-repository-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	account := Account{
+		ID:          9,
+		Platform:    PlatformAntigravity,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+	accountRepo := &mockAccountRepoForPlatform{
+		accounts:     []Account{account},
+		accountsByID: map[int64]*Account{account.ID: &account},
+	}
+	groupRepo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: repositoryGroup}}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{
+		accountRepo:           accountRepo,
+		groupRepo:             groupRepo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: reader,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.Group, contextGroup)
+	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, PlatformAntigravity)
+
+	selected, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-forced-privacy-miss", nil)
+
+	require.Nil(t, selected, "repository privacy requirement must continue to reject the candidate")
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate selection should keep its existing repository fetch")
+	require.Equal(t, 1, accountRepo.setErrorCalls)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope:           SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID},
+		RequestedModel:  "claude-forced-privacy-miss",
+		RequiresPrivacy: false,
+	}}, reader.queries, "classification must use only the trusted request group")
+}
+
+func TestGatewayService_SelectAccountWithMixedScheduling_UsesRepositoryGroupForPrivacyAndContextGroupForClassifier(t *testing.T) {
+	groupID := int64(101210)
+	contextGroup := &Group{
+		ID:                groupID,
+		Name:              "trusted-request-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: false,
+	}
+	repositoryGroup := &Group{
+		ID:                groupID,
+		Name:              "current-repository-group",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	account := Account{
+		ID:          10,
+		Platform:    PlatformAntigravity,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{"mixed_scheduling": true},
+	}
+	accountRepo := &mockAccountRepoForPlatform{
+		accounts:     []Account{account},
+		accountsByID: map[int64]*Account{account.ID: &account},
+	}
+	groupRepo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: repositoryGroup}}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	svc := &GatewayService{
+		accountRepo:           accountRepo,
+		groupRepo:             groupRepo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: reader,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.Group, contextGroup)
+
+	selected, err := svc.selectAccountWithMixedScheduling(ctx, &groupID, "", "claude-mixed-privacy-miss", nil, PlatformAnthropic)
+
+	require.Nil(t, selected, "repository privacy requirement must continue to reject the candidate")
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate selection should keep its existing repository fetch")
+	require.Equal(t, 1, accountRepo.setErrorCalls)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope: SupportDecisionScope{
+			Platform:             PlatformAnthropic,
+			GroupID:              groupID,
+			AllowMixedScheduling: true,
+		},
+		RequestedModel:  "claude-mixed-privacy-miss",
+		RequiresPrivacy: false,
+	}}, reader.queries, "classification must use only the trusted request group")
+}
+
+func TestGatewayService_SelectAccountWithLoadAwareness_ForcedAntigravityGroupedSupportMiss(t *testing.T) {
+	groupID := int64(101207)
+	group := &Group{
+		ID:                groupID,
+		Name:              "anthropic-private",
+		Platform:          PlatformAnthropic,
+		Status:            StatusActive,
+		Hydrated:          true,
+		RequirePrivacySet: true,
+	}
+	account := Account{
+		ID:          7,
+		Platform:    PlatformAntigravity,
+		Status:      StatusActive,
+		Schedulable: false,
+		Concurrency: 1,
+	}
+	repo := &mockAccountRepoForPlatform{
+		accounts:     []Account{account},
+		accountsByID: map[int64]*Account{account.ID: &account},
+	}
+	reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+	cfg := testConfig()
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &GatewayService{
+		accountRepo:           repo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   cfg,
+		concurrencyService:    NewConcurrencyService(&mockConcurrencyCache{}),
+		supportDecisionReader: reader,
+	}
+	ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.Group, group)
+	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, PlatformAntigravity)
+
+	selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "claude-load-aware-forced-miss", nil, "", 0)
+
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.ErrorIs(t, err, ErrModelNotSupportedByAccounts)
+	require.Equal(t, 1, repo.listPlatformCalls)
+	require.Zero(t, repo.listAvailabilityCalls)
+	require.Equal(t, []SupportDecisionQuery{{
+		Scope:           SupportDecisionScope{Platform: PlatformAntigravity, GroupID: groupID},
+		RequestedModel:  "claude-load-aware-forced-miss",
+		RequiresPrivacy: true,
+	}}, reader.queries)
+}
+
+func TestGatewayService_SelectAccountWithLoadAwareness_ForcedGroupedSupportMissRequiresMatchingTrustedGroup(t *testing.T) {
+	groupID := int64(101208)
+	cfg := testConfig()
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+
+	for _, tt := range []struct {
+		name  string
+		group *Group
+	}{
+		{name: "absent"},
+		{name: "mismatched", group: &Group{ID: groupID + 1, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true, RequirePrivacySet: true}},
+		{name: "unhydrated", group: &Group{ID: groupID, Platform: PlatformAnthropic, Status: StatusActive, RequirePrivacySet: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockAccountRepoForPlatform{accounts: []Account{{
+				ID:          8,
+				Platform:    PlatformAntigravity,
+				Status:      StatusActive,
+				Schedulable: false,
+			}}}
+			reader := &recordingSupportDecisionReader{result: SupportDecisionPureMiss}
+			svc := &GatewayService{
+				accountRepo:           repo,
+				cache:                 &mockGatewayCacheForPlatform{},
+				cfg:                   cfg,
+				concurrencyService:    NewConcurrencyService(&mockConcurrencyCache{}),
+				supportDecisionReader: reader,
+			}
+			ctx := context.WithValue(WithPublicModelSupportMiss404(context.Background()), ctxkey.ForcePlatform, PlatformAntigravity)
+			if tt.group != nil {
+				ctx = context.WithValue(ctx, ctxkey.Group, tt.group)
+			}
+
+			selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "", "claude-untrusted-group", nil, "", 0)
+
+			require.Nil(t, selection)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			require.NotErrorIs(t, err, ErrModelNotSupportedByAccounts)
+			require.Empty(t, reader.queries)
+			require.Equal(t, 1, repo.listPlatformCalls)
+			require.Zero(t, repo.listAvailabilityCalls)
+		})
+	}
+}
+
 func TestGatewayService_SelectAccountForModelWithPlatform_RoutedStickySessionClears(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10)
@@ -949,9 +1697,10 @@ func TestGatewayService_SelectAccountForModelWithPlatform_BedrockSupportMissRequ
 		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
 	}
 	svc := &GatewayService{
-		accountRepo: repo,
-		cache:       &mockGatewayCacheForPlatform{},
-		cfg:         testConfig(),
+		accountRepo:           repo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: fixedSupportDecisionReader(SupportDecisionPureMiss),
 	}
 
 	acc, err := svc.selectAccountForModelWithPlatform(context.Background(), nil, "", "claude-3-5-sonnet-20241022", nil, PlatformAnthropic)
@@ -989,9 +1738,10 @@ func TestGatewayService_SelectAccountForModelWithPlatform_AntigravitySupportMiss
 		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
 	}
 	svc := &GatewayService{
-		accountRepo: repo,
-		cache:       &mockGatewayCacheForPlatform{},
-		cfg:         testConfig(),
+		accountRepo:           repo,
+		cache:                 &mockGatewayCacheForPlatform{},
+		cfg:                   testConfig(),
+		supportDecisionReader: fixedSupportDecisionReader(SupportDecisionPureMiss),
 	}
 
 	acc, err := svc.selectAccountForModelWithPlatform(context.Background(), nil, "", "gpt-4", nil, PlatformAntigravity)
@@ -3373,7 +4123,7 @@ func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate privacy selection must keep the repository-backed group lookup")
 	require.Equal(t, 0, groupRepo.getByIDLiteCalls)
 }
 
@@ -3416,7 +4166,7 @@ func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T)
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate privacy selection must still read the current repository group")
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 
@@ -3486,7 +4236,7 @@ func TestGatewayService_GroupResolution_FallbackUsesLiteOnce(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
+	require.Equal(t, 1, groupRepo.getByIDCalls, "candidate privacy selection must read the current fallback group")
 	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
 }
 

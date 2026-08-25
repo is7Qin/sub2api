@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -106,6 +107,100 @@ func TestOpenAIRequestBodyMayContainAdditionalImageTooling(t *testing.T) {
 	require.True(t, openAIRequestBodyMayContainAdditionalImageTooling(
 		[]byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"}]}]}`),
 	))
+}
+
+// openAIRequestBodyMayContainAdditionalImageToolingBruteForce 是旧逐字节实现的副本，仅用于差分验证。
+func openAIRequestBodyMayContainAdditionalImageToolingBruteForce(body []byte) bool {
+	const (
+		additionalToolsMarker = "additional_tools"
+		imageGenerationMarker = "image_generation"
+		imageGenMarker        = "image_gen"
+		namespaceMarker       = "namespace"
+	)
+
+	seenAdditionalTools := false
+	seenImageMarker := false
+	for i := 0; i < len(body); i++ {
+		if !seenAdditionalTools && hasMarkerAt(body, i, additionalToolsMarker) {
+			seenAdditionalTools = true
+		}
+		if !seenImageMarker &&
+			(hasMarkerAt(body, i, imageGenerationMarker) ||
+				hasMarkerAt(body, i, imageGenMarker) ||
+				hasMarkerAt(body, i, namespaceMarker)) {
+			seenImageMarker = true
+		}
+		if seenAdditionalTools && seenImageMarker {
+			return true
+		}
+	}
+	return false
+}
+
+func TestOpenAIRequestBodyMayContainAdditionalImageToolingMatchesReference(t *testing.T) {
+	table := []struct {
+		name string
+		body []byte
+	}{
+		{name: "empty nil", body: nil},
+		{name: "empty slice", body: []byte{}},
+		{name: "single byte", body: []byte("a")},
+		{name: "additional_tools at start", body: []byte(`additional_tools{"input":[]}`)},
+		{name: "additional_tools at end", body: []byte(`{"input":[]}additional_tools`)},
+		{name: "image marker at start", body: []byte(`image_generation{"type":"additional_tools"}`)},
+		{name: "image_gen at boundary", body: []byte(`{"type":"additional_tools"image_gen`)},
+		{name: "marker truncated at end", body: []byte(`{"type":"additional_too`)},
+		{name: "partial marker only", body: []byte(`additional_tool`)},
+		{name: "namespace only", body: []byte(`{"namespace":true}`)},
+		{name: "additional_tools only", body: []byte(`{"type":"additional_tools"}`)},
+		{name: "both categories", body: []byte(`{"type":"additional_tools","tools":[{"type":"image_generation"}]}`)},
+		{name: "namespace plus additional_tools", body: []byte(`{"type":"additional_tools","x":"namespace"}`)},
+		{name: "marker in json key", body: []byte(`{"additional_tools":1,"image_gen":2}`)},
+		{name: "marker in string value", body: []byte(`{"x":"additional_tools","y":"namespace"}`)},
+		{name: "overlapping markers", body: []byte(`additional_toolsimage_generation`)},
+		{name: "image_generation subsumes image_gen", body: []byte(`image_generation`)},
+		{name: "marker inside larger word", body: []byte(`xadditional_toolsy namespacez`)},
+		{name: "mutated marker", body: []byte(`additional_toolS`)},
+		{name: "quoted marker", body: []byte(`"additional_tools"`)},
+	}
+	for _, tt := range table {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, openAIRequestBodyMayContainAdditionalImageToolingBruteForce(tt.body), openAIRequestBodyMayContainAdditionalImageTooling(tt.body))
+		})
+	}
+
+	// 随机差分：种子固定，字母表偏向标记及其残缺片段，覆盖边界、重叠、跨键值等位置。
+	rng := rand.New(rand.NewPCG(0x9e3779b97f4a7c15, 0xdeadbeefcafef00d))
+	fragments := []string{
+		"additional_tools", "additional_tool", "additional_toolz",
+		"image_generation", "image_generatio", "image_gen", "image_ge",
+		"namespace", "namespa", "namespacee",
+	}
+	alphabet := []byte(`{"input":[],"type":"tools":"` + "abcdefghijklmnopqrstuvwxyz_0123456789")
+	for i := 0; i < 5000; i++ {
+		n := rng.IntN(400)
+		body := make([]byte, 0, n)
+		for len(body) < n {
+			if rng.IntN(3) == 0 {
+				body = append(body, fragments[rng.IntN(len(fragments))]...)
+			} else {
+				body = append(body, alphabet[rng.IntN(len(alphabet))])
+			}
+		}
+		want := openAIRequestBodyMayContainAdditionalImageToolingBruteForce(body)
+		if got := openAIRequestBodyMayContainAdditionalImageTooling(body); want != got {
+			t.Fatalf("body %q: reference=%v new=%v", body, want, got)
+		}
+	}
+}
+
+func TestClassifyOpenAIForwardImageIntentSelectsCurrentRequestRepresentation(t *testing.T) {
+	rawImageBody := []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation"}]}`)
+	textOnlyMap := map[string]any{"model": "gpt-5.5", "input": "write code"}
+
+	require.True(t, classifyOpenAIForwardImageIntent("gpt-5.5", "gpt-5.5", rawImageBody, nil))
+	require.False(t, classifyOpenAIForwardImageIntent("gpt-5.5", "gpt-5.5", rawImageBody, textOnlyMap))
+	require.True(t, classifyOpenAIForwardImageIntent("gpt-5.5", "gpt-image-2", nil, textOnlyMap))
 }
 
 func TestIsImageGenerationIntentMapDetectsCodexImageGenNamespace(t *testing.T) {

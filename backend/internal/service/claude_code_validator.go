@@ -57,7 +57,23 @@ const (
 	// （cli / claude-vscode / jetbrains / sdk 等都是真实入口）：入口值会随新增 IDE 漂移，
 	// 且伪造者同样可填任意值、不构成防伪边界，故仅要求该字段存在即可。
 	claudeCodeEntrypointMarker = "cc_entrypoint="
+
+	// The fixed prefix, minimum length, and all markers jointly identify the
+	// security-monitor classifier prompt.
+	claudeCodeSecurityMonitorPromptPrefix = "You are a security monitor for autonomous AI coding agents."
+	claudeCodeSecurityMonitorPromptMinLen = 10_000
 )
+
+var claudeCodeSecurityMonitorMarkers = []string{
+	"## Threat Model",
+	"- `<transcript>`:",
+	"## HARD BLOCK",
+	"## SOFT BLOCK",
+	"## Classification Process",
+	"## Output Format",
+	"<block>yes</block>",
+	"<block>no</block>",
+}
 
 // NewClaudeCodeValidator 创建验证器实例
 func NewClaudeCodeValidator() *ClaudeCodeValidator {
@@ -186,6 +202,11 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 			return true
 		}
 
+		if entryType, _ := entryMap["type"].(string); entryType == "text" &&
+			isClaudeCodeSecurityMonitorPrompt(text) {
+			return true
+		}
+
 		// 计算与所有模板的最佳相似度
 		bestScore := v.bestSimilarityScore(text)
 		if bestScore >= systemPromptThreshold {
@@ -196,7 +217,21 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 	return false
 }
 
-// bestSimilarityScore 计算文本与所有 Claude Code 模板的最佳相似度
+// isClaudeCodeSecurityMonitorPrompt recognizes the long-form Claude Code auto-mode
+// classifier without coupling validation to every wording change in the prompt.
+func isClaudeCodeSecurityMonitorPrompt(text string) bool {
+	if len(text) < claudeCodeSecurityMonitorPromptMinLen ||
+		!strings.HasPrefix(text, claudeCodeSecurityMonitorPromptPrefix) {
+		return false
+	}
+	for _, marker := range claudeCodeSecurityMonitorMarkers {
+		if !strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 func (v *ClaudeCodeValidator) bestSimilarityScore(text string) float64 {
 	normalizedText := normalizePrompt(text)
 	bestScore := 0.0

@@ -1,15 +1,15 @@
 [Unit]
 Description=Sub2API - AI API Gateway Platform
 Documentation=https://github.com/is7Qin/sub2api
-After=network.target postgresql.service redis.service
-Wants=postgresql.service redis.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=sub2api
-Group=sub2api
-WorkingDirectory=/opt/sub2api
-ExecStart=/opt/sub2api/sub2api
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory="@INSTALL_DIR@"
+ExecStart="@INSTALL_DIR@/sub2api"
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -21,13 +21,12 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/sub2api
+ReadWritePaths="@INSTALL_DIR@"
 
 # Environment - Server configuration
-# Modify these values to change listen address and port
-Environment=GIN_MODE=release
-Environment=SERVER_HOST=0.0.0.0
-Environment=SERVER_PORT=8080
+Environment="GIN_MODE=release"
+Environment="SERVER_HOST=@SERVER_HOST@"
+Environment="SERVER_PORT=@SERVER_PORT@"
 
 [Install]
 WantedBy=multi-user.target

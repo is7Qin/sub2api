@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+
+	"github.com/shopspring/decimal"
 )
 
 var ErrUsageBillingRequestIDRequired = errors.New("usage billing request_id is required")
@@ -39,6 +42,9 @@ type UsageBillingCommand struct {
 	APIKeyQuotaCost     float64
 	APIKeyRateLimitCost float64
 	AccountQuotaCost    float64
+
+	// UsageLog is persisted in the same transaction as billing effects.
+	UsageLog *UsageLog
 }
 
 func (c *UsageBillingCommand) Normalize() {
@@ -49,6 +55,44 @@ func (c *UsageBillingCommand) Normalize() {
 	if strings.TrimSpace(c.RequestFingerprint) == "" {
 		c.RequestFingerprint = buildUsageBillingFingerprint(c)
 	}
+	// Keep the idempotency fingerprint derived from the original amounts, then
+	// normalize every SQL-bound value to the database's NUMERIC(20,8) scale.
+	c.quantizeMonetaryFields()
+}
+
+const UsageBillingMonetaryScale = 8
+
+func (c *UsageBillingCommand) quantizeMonetaryFields() {
+	c.BalanceCost = QuantizeUsageBillingAmount(c.BalanceCost)
+	c.SubscriptionCost = QuantizeUsageBillingAmount(c.SubscriptionCost)
+	c.APIKeyQuotaCost = QuantizeUsageBillingAmount(c.APIKeyQuotaCost)
+	c.APIKeyRateLimitCost = QuantizeUsageBillingAmount(c.APIKeyRateLimitCost)
+	c.AccountQuotaCost = QuantizeUsageBillingAmount(c.AccountQuotaCost)
+}
+
+// QuantizeUsageBillingAmount matches PostgreSQL NUMERIC half-away-from-zero
+// rounding without introducing an extra binary multiplication boundary.
+func QuantizeUsageBillingAmount(v float64) float64 {
+	if v == 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return v
+	}
+	return decimal.NewFromFloat(v).Round(UsageBillingMonetaryScale).InexactFloat64()
+}
+
+func (c *UsageBillingCommand) Validate() error {
+	if c == nil || c.AccountID <= 0 {
+		return ErrUsageLogAccountRequired
+	}
+	if c.UsageLog == nil {
+		return nil
+	}
+	if err := c.UsageLog.ValidateForCreate(); err != nil {
+		return err
+	}
+	if *c.UsageLog.AccountID != c.AccountID {
+		return ErrUsageLogAccountRequired
+	}
+	return nil
 }
 
 func buildUsageBillingFingerprint(c *UsageBillingCommand) string {
@@ -103,22 +147,59 @@ func valueOrZero(v *int64) int64 {
 // AccountQuotaState holds the post-increment quota state returned by the DB transaction.
 // All values are post-update (i.e., already include the increment).
 type AccountQuotaState struct {
-	TotalUsed   float64
-	TotalLimit  float64
-	DailyUsed   float64
-	DailyLimit  float64
-	WeeklyUsed  float64
-	WeeklyLimit float64
+	TotalUsed   float64 `json:"total_used"`
+	TotalLimit  float64 `json:"total_limit"`
+	DailyUsed   float64 `json:"daily_used"`
+	DailyLimit  float64 `json:"daily_limit"`
+	WeeklyUsed  float64 `json:"weekly_used"`
+	WeeklyLimit float64 `json:"weekly_limit"`
+}
+
+type UsageBillingOutboxBinding struct {
+	OutboxID int64
+	WorkerID string
 }
 
 type UsageBillingApplyResult struct {
-	Applied              bool
-	APIKeyQuotaExhausted bool
-	BalanceOverdrafted   bool
-	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
-	QuotaState           *AccountQuotaState // post-increment quota state (nil = no quota increment)
+	Applied              bool               `json:"applied"`
+	UsageLogPersisted    bool               `json:"usage_log_persisted"`
+	APIKeyQuotaExhausted bool               `json:"api_key_quota_exhausted"`
+	BalanceOverdrafted   bool               `json:"balance_overdrafted"`
+	NewBalance           *float64           `json:"new_balance,omitempty"` // post-deduction balance (nil = no balance deduction)
+	QuotaState           *AccountQuotaState `json:"quota_state,omitempty"` // post-increment quota state (nil = no quota increment)
 }
 
 type UsageBillingRepository interface {
 	Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error)
+}
+
+// UsageBillingFinalizationRepository atomically commits a newly applied billing
+// command with the durable outbox marker needed to replay post-effects.
+type UsageBillingFinalizationRepository interface {
+	UsageBillingRepository
+	ApplyAndStageOutboxFinalization(ctx context.Context, cmd *UsageBillingCommand, binding UsageBillingOutboxBinding) (*UsageBillingApplyResult, error)
+}
+
+// UsageBillingBatchItem is one outbox record handed to a batch apply transaction.
+type UsageBillingBatchItem struct {
+	Command UsageBillingCommand
+	Binding UsageBillingOutboxBinding
+}
+
+// UsageBillingBatchOutcome reports one item's outcome inside a batch apply
+// transaction. Err is non-nil when the item failed and was rolled back to its
+// own savepoint; the remaining items still committed. A non-nil Err means
+// Result is nil (nothing of this item persisted).
+type UsageBillingBatchOutcome struct {
+	Result *UsageBillingApplyResult
+	Err    error
+}
+
+// UsageBillingBatchFinalizationRepository applies a whole worker round in ONE
+// transaction. Per-record savepoints isolate failures: one failed record never
+// drags the rest of the round. Same-user records inside one batch run serially
+// within the transaction, preserving the per-user shard serialization contract
+// of the worker.
+type UsageBillingBatchFinalizationRepository interface {
+	ApplyBatchAndStageOutboxFinalizations(ctx context.Context, items []UsageBillingBatchItem) ([]UsageBillingBatchOutcome, error)
 }

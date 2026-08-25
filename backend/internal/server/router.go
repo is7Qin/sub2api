@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"log"
+	"net/http/pprof"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	ippkg "github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -50,6 +52,12 @@ func SetupRouter(
 	}
 	refreshFrameOrigins() // 启动时初始化
 
+	// Snapshot client-IP mode before logging, auth, or route middleware consume it.
+	r.Use(ippkg.RequestMiddleware(func() ippkg.RequestSettings {
+		settings := cfg.ForwardedClientIPSettings()
+		return ippkg.RequestSettings{TrustForwardedIP: settings.TrustForwardedIP, Headers: settings.Headers}
+	}))
+
 	// 应用中间件
 	r.Use(middleware2.RequestLogger())
 	r.Use(middleware2.Logger())
@@ -83,7 +91,25 @@ func SetupRouter(
 	// 注册路由
 	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
 
+	// /debug/pprof：默认关闭；开启后仅 admin 鉴权可访问。
+	// 用于抓取生产 heap/goroutine profile 定位内存去向与 GC 压力。
+	if cfg != nil && cfg.Server.PprofEnabled {
+		registerPprofRoutes(r, adminAuth)
+	}
+
 	return r
+}
+
+// registerPprofRoutes 注册受 admin 鉴权保护的 pprof 端点。
+// pprof 会暴露内部符号与堆/goroutine 快照，绝不能无鉴权暴露。
+func registerPprofRoutes(r *gin.Engine, adminAuth middleware2.AdminAuthMiddleware) {
+	group := r.Group("/debug/pprof", gin.HandlerFunc(adminAuth))
+	group.GET("/", gin.WrapF(pprof.Index))
+	group.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+	group.GET("/profile", gin.WrapF(pprof.Profile))
+	group.GET("/symbol", gin.WrapF(pprof.Symbol))
+	group.GET("/trace", gin.WrapF(pprof.Trace))
+	group.GET("/:profile", gin.WrapF(pprof.Index))
 }
 
 // registerRoutes 注册所有 HTTP 路由
@@ -109,7 +135,7 @@ func registerRoutes(
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, redisClient, settingService)
 	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
-	routes.RegisterAdminRoutes(v1, h, adminAuth)
+	routes.RegisterAdminRoutes(v1, h, adminAuth, settingService)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, settingService)
 

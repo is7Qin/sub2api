@@ -18,6 +18,7 @@ const (
 	EndpointMessages          = "/v1/messages"
 	EndpointChatCompletions   = "/v1/chat/completions"
 	EndpointEmbeddings        = "/v1/embeddings"
+	EndpointAlphaSearch       = "/v1/alpha/search"
 	EndpointResponses         = "/v1/responses"
 	EndpointResponsesCompact  = "/v1/responses/compact"
 	EndpointImagesGenerations = "/v1/images/generations"
@@ -68,6 +69,9 @@ func NormalizeInboundEndpoint(path string) string {
 	consider(EndpointEmbeddings, EndpointEmbeddings)
 	consider(EndpointChatCompletions, EndpointChatCompletions)
 	consider(EndpointMessages, EndpointMessages)
+	considerBoundary(EndpointAlphaSearch, EndpointAlphaSearch)
+	considerBoundary(EndpointAlphaSearch, "/alpha/search")
+	considerBoundary(EndpointAlphaSearch, "/backend-api/codex/alpha/search")
 	consider(EndpointImagesGenerations, EndpointImagesGenerations)
 	consider(EndpointImagesGenerations, "/images/generations")
 	consider(EndpointImagesEdits, EndpointImagesEdits)
@@ -119,7 +123,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	switch platform {
 	case service.PlatformOpenAI:
-		if inbound == EndpointEmbeddings || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
+		if inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
 			return inbound
 		}
 		// OpenAI forwards everything to the Responses API.

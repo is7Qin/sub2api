@@ -616,7 +616,9 @@ export interface SystemSettings {
 
   // Channel Monitor feature switch
   channel_monitor_enabled: boolean;
+  channel_monitor_mode?: 'v1' | 'v2';
   channel_monitor_default_interval_seconds: number;
+  channel_monitor_hide_throughput?: boolean;
 
   // Available Channels feature switch
   available_channels_enabled: boolean;
@@ -850,7 +852,9 @@ export interface UpdateSettingsRequest {
 
   // Channel Monitor feature switch
   channel_monitor_enabled?: boolean;
+  channel_monitor_mode?: 'v1' | 'v2';
   channel_monitor_default_interval_seconds?: number;
+  channel_monitor_hide_throughput?: boolean;
 
   // Available Channels feature switch
   available_channels_enabled?: boolean;
@@ -1136,15 +1140,56 @@ export async function updateRateLimit429CooldownSettings(
   return data;
 }
 
+// ==================== OpenAI 403 Cooldown Settings ====================
+
+export interface OpenAI403CooldownSettings {
+  enabled: boolean;
+  ignore: boolean;
+  cooldown_seconds: number;
+  threshold_count: number;
+  counter_window_seconds: number;
+  threshold_action: "error" | "temp_unsched";
+  threshold_pause_seconds: number;
+}
+
+export async function getOpenAI403CooldownSettings(): Promise<OpenAI403CooldownSettings> {
+  const { data } = await apiClient.get<OpenAI403CooldownSettings>(
+    "/admin/settings/openai-403-cooldown",
+  );
+  return data;
+}
+
+export async function updateOpenAI403CooldownSettings(
+  settings: OpenAI403CooldownSettings,
+): Promise<OpenAI403CooldownSettings> {
+  const { data } = await apiClient.put<OpenAI403CooldownSettings>(
+    "/admin/settings/openai-403-cooldown",
+    settings,
+  );
+  return data;
+}
+
 // ==================== OpenAI OAuth 429 Dynamic Scheduling Settings ====================
 
-export interface OpenAIOAuth429DynamicSettings {
+export interface OpenAIOAuth429DynamicPolicy {
   enabled: boolean;
   window_seconds: number;
   min_samples: number;
   min_429: number;
   ratio_threshold: number;
   block_seconds: number;
+  usage_window_check_enabled: boolean;
+  usage_window_5h_threshold_percent: number;
+  usage_window_7d_threshold_percent: number;
+  usage_window_missing_data_fallback_seconds: number;
+}
+
+export interface OpenAIOAuth429DynamicPlanTypeSettings extends OpenAIOAuth429DynamicPolicy {
+  plan_type: string;
+}
+
+export interface OpenAIOAuth429DynamicSettings extends OpenAIOAuth429DynamicPolicy {
+  plan_type_settings: OpenAIOAuth429DynamicPlanTypeSettings[];
 }
 
 export async function getOpenAIOAuth429DynamicSettings(): Promise<OpenAIOAuth429DynamicSettings> {
@@ -1390,6 +1435,8 @@ export const settingsAPI = {
   updateOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getOpenAI403CooldownSettings,
+  updateOpenAI403CooldownSettings,
   getOpenAIOAuth429DynamicSettings,
   updateOpenAIOAuth429DynamicSettings,
   getStreamTimeoutSettings,

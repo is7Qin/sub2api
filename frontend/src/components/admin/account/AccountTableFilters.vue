@@ -42,6 +42,7 @@ const planTypeOpts = computed(() => [
   { value: 'free', label: 'Free' },
   { value: 'plus', label: 'Plus' },
   { value: 'pro', label: 'Pro' },
+  { value: 'k12', label: 'K12' },
   { value: 'team', label: 'Team' },
   { value: 'enterprise', label: 'Enterprise' },
   { value: 'abnormal', label: t('admin.accounts.planTypeAbnormal') }

@@ -104,6 +104,45 @@ func TestExecuteBedrockUpstreamLaterCancellationPreservesCompletedResponse(t *te
 	require.Equal(t, 1, upstream.calls)
 }
 
+func TestForwardBedrockPreservesFinalAttemptIDAfterRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"X-Amzn-Requestid": []string{"retry-request"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"temporarily unavailable"}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"X-Amzn-Requestid": []string{"success-request"}},
+			Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":2}}`)),
+		},
+	}}
+	svc := &GatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID: 1, Name: "bedrock-test", Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Concurrency: 1,
+		Credentials: map[string]any{
+			"aws_access_key_id": "test-key", "aws_secret_access_key": "test-secret", "aws_region": "us-east-1",
+			"custom_error_codes_enabled": true, "custom_error_codes": []any{float64(http.StatusBadRequest)},
+		},
+	}
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}`)
+	parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-5"}
+
+	result, err := svc.forwardBedrock(withHTTPAttemptAuthority(context.Background()), c, account, parsed, time.Now())
+
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.NotEmpty(t, HTTPAttemptID(upstream.requests[0].Context()))
+	require.NotEmpty(t, HTTPAttemptID(upstream.requests[1].Context()))
+	require.NotEqual(t, HTTPAttemptID(upstream.requests[0].Context()), HTTPAttemptID(upstream.requests[1].Context()))
+	require.Equal(t, HTTPAttemptID(upstream.requests[1].Context()), result.AttemptID)
+	require.Equal(t, "success-request", result.RequestID)
+}
+
 func TestPrepareBedrockRequestBody_BasicFields(t *testing.T) {
 	input := `{"model":"claude-opus-4-6","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`
 	result, err := PrepareBedrockRequestBody([]byte(input), "us.anthropic.claude-opus-4-6-v1", "")

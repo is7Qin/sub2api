@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,8 @@ const (
 	BillingTypeBalance      int8 = 0 // 钱包余额
 	BillingTypeSubscription int8 = 1 // 订阅套餐
 )
+
+var ErrUsageLogAccountRequired = errors.New("usage log account_id must be positive")
 
 type RequestType int16
 
@@ -95,7 +98,7 @@ type UsageLog struct {
 	ID        int64
 	UserID    int64
 	APIKeyID  int64
-	AccountID int64
+	AccountID *int64
 	RequestID string
 	Model     string
 	// RequestedModel is the client-requested model name recorded for stable user/admin display.
@@ -177,6 +180,13 @@ type UsageLog struct {
 	Account      *Account
 	Group        *Group
 	Subscription *UserSubscription
+}
+
+func (u *UsageLog) ValidateForCreate() error {
+	if u == nil || u.AccountID == nil || *u.AccountID <= 0 {
+		return ErrUsageLogAccountRequired
+	}
+	return nil
 }
 
 func (u *UsageLog) TotalTokens() int {

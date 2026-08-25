@@ -66,18 +66,22 @@ func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL st
 }
 
 type anthropicQueuedHTTPUpstream struct {
-	responses []*http.Response
-	onDo      func(int)
-	calls     int
+	responses  []*http.Response
+	attemptIDs []string
+	onDo       func(int)
+	calls      int
 }
 
 func (u *anthropicQueuedHTTPUpstream) Do(
-	_ *http.Request,
+	req *http.Request,
 	_ string,
 	_ int64,
 	_ int,
 ) (*http.Response, error) {
 	u.calls++
+	if req != nil {
+		u.attemptIDs = append(u.attemptIDs, HTTPAttemptID(req.Context()))
+	}
 	if u.onDo != nil {
 		u.onDo(u.calls)
 	}
@@ -95,6 +99,126 @@ func (u *anthropicQueuedHTTPUpstream) DoWithTLS(
 	_ *tlsfingerprint.Profile,
 ) (*http.Response, error) {
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_RetryUsesDistinctAttemptIdentities(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	upstream := &anthropicQueuedHTTPUpstream{responses: []*http.Response{
+		{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"X-Request-Id": []string{"retryable"}},
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"retryable"}}`)),
+		},
+
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"X-Request-Id": []string{"retried"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_retried","type":"message","model":"claude-3-5-sonnet-latest","role":"assistant","content":[],"usage":{"input_tokens":7,"output_tokens":2}}`)),
+		},
+	}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["custom_error_codes_enabled"] = true
+	account.Credentials["custom_error_codes"] = []any{float64(http.StatusServiceUnavailable)}
+	account.Credentials["pool_mode"] = true
+	account.Credentials["pool_mode_retry_count"] = float64(4)
+	account.Credentials["pool_mode_retry_status_codes"] = []any{float64(http.StatusTooManyRequests)}
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest",
+		"claude-3-5-sonnet-latest",
+		false,
+		time.Now(),
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.attemptIDs, 2)
+	require.NotEmpty(t, upstream.attemptIDs[0])
+	require.NotEmpty(t, upstream.attemptIDs[1])
+	require.NotEqual(t, upstream.attemptIDs[0], upstream.attemptIDs[1])
+	require.Equal(t, upstream.attemptIDs[1], result.AttemptID)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_RecognizedOverloadReturnsBeforeRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	upstream := &anthropicQueuedHTTPUpstream{responses: []*http.Response{{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{"X-Request-Id": []string{"overloaded"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Please retry later"}}`)),
+	}}}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["custom_error_codes_enabled"] = true
+	account.Credentials["custom_error_codes"] = []any{float64(http.StatusServiceUnavailable)}
+
+	_, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest",
+		"claude-3-5-sonnet-latest",
+		false,
+		time.Now(),
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.NotErrorAs(t, err, &failoverErr)
+	require.Equal(t, 1, upstream.calls)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Equal(t, "Please retry later", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_StructuredRateLimitUsesPolicyRetryBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	responses := make([]*http.Response, maxRetryAttempts)
+	for i := range responses {
+		responses[i] = &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"X-Request-Id": []string{"rate-limited"}},
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"quota exceeded"}}`)),
+		}
+	}
+	upstream := &anthropicQueuedHTTPUpstream{responses: responses}
+	svc := &GatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["custom_error_codes_enabled"] = true
+	account.Credentials["custom_error_codes"] = []any{float64(http.StatusServiceUnavailable)}
+	account.Credentials["pool_mode"] = true
+	account.Credentials["pool_mode_retry_count"] = float64(4)
+	account.Credentials["pool_mode_retry_status_codes"] = []any{float64(http.StatusTooManyRequests)}
+
+	_, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"claude-3-5-sonnet-latest","messages":[]}`),
+		"claude-3-5-sonnet-latest",
+		"claude-3-5-sonnet-latest",
+		false,
+		time.Now(),
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 2, upstream.calls, "one initial attempt plus the semantic same-account retry")
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, "rate_limit_exceeded", fact.ProviderCode)
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_RetryCancellationPreservesCompletedError(
@@ -672,7 +796,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFie
 	require.Equal(t, "hello world", gjson.GetBytes(sentBody, "messages.0.content.0.text").String(), "messages 字段不应被修改")
 	require.Equal(t, "enabled", gjson.GetBytes(sentBody, "thinking.type").String(), "thinking 字段不应被修改")
 	require.Equal(t, int64(5000), gjson.GetBytes(sentBody, "thinking.budget_tokens").Int(), "thinking.budget_tokens 不应被修改")
-	require.Equal(t, int64(1024), gjson.GetBytes(sentBody, "max_tokens").Int(), "max_tokens 不应被修改")
+	require.False(t, gjson.GetBytes(sentBody, "max_tokens").Exists(), "count_tokens 请求应移除生成参数 max_tokens")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_CountTokensFiltersGenerationFields(t *testing.T) {
@@ -731,7 +855,8 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_CountTokensFiltersGenerationF
 	require.Equal(t, "sys", gjson.GetBytes(sentBody, "system.0.text").String())
 	require.Equal(t, "hello", gjson.GetBytes(sentBody, "messages.0.content").String())
 	require.Equal(t, "tool", gjson.GetBytes(sentBody, "tools.0.name").String())
-	require.Equal(t, int64(1024), gjson.GetBytes(sentBody, "max_tokens").Int())
+	require.False(t, gjson.GetBytes(sentBody, "max_tokens").Exists(),
+		"count_tokens requests must not include the max_tokens generation parameter")
 	require.Equal(t, "enabled", gjson.GetBytes(sentBody, "thinking.type").String())
 }
 
@@ -1081,6 +1206,53 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingStillCollectsUsageAf
 	require.Equal(t, 5, result.usage.OutputTokens)
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_PartialUsageAfterMissingTerminal_RetainsResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n")),
+	}
+
+	result, err := svc.handleStreamingResponseAnthropicAPIKeyPassthrough(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "claude-3-7-sonnet-20250219")
+
+	require.ErrorContains(t, err, "missing terminal event")
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 10, result.usage.InputTokens)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_PartialUsageAfterUnexpectedEOF_RetainsResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+	}
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.handleStreamingResponseAnthropicAPIKeyPassthrough(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "claude-3-7-sonnet-20250219")
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 11, result.usage.InputTokens)
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_MissingTerminalEventReturnsError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1112,6 +1284,41 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_MissingTerminalEventReturnsEr
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing terminal event")
 	require.NotNil(t, result)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_PartialUsageReturnsResultAndError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	pr, pw := io.Pipe()
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"X-Request-Id": []string{"rid-partial-passthrough"},
+		},
+		Body: pr,
+	}}
+	svc := &GatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n"))
+		_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+	}()
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, newAnthropicAPIKeyAccountForTest(), []byte(`{"model":"claude-3-5-sonnet-latest","stream":true,"messages":[]}`), "claude-3-5-sonnet-latest", "claude-3-5-sonnet-latest", true, time.Now())
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.Equal(t, 12, result.Usage.InputTokens)
+	require.Equal(t, "rid-partial-passthrough", result.RequestID)
+	require.NotEmpty(t, result.AttemptID)
+	require.Equal(t, HTTPAttemptID(upstream.lastReq.Context()), result.AttemptID)
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_NonStreamingSuccess(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -20,6 +21,9 @@ var (
 		"prompt_cache_key",
 		"session_id",
 		"conversation_id",
+		"request_body",
+		"request-body",
+		"raw_request_body",
 		"raw_user_agent",
 		"user_agent",
 		"user-agent",
@@ -58,6 +62,68 @@ const (
 	openAISensitiveDiagnosticJSONBodyMaxParse     = 512 << 10
 	openAISensitiveDiagnosticEmbeddedJSONMaxParse = 64 << 10
 )
+
+const openAIAuthenticationDiagnosticFallback = "account authentication failed"
+
+// sanitizeOpenAIAccountDiagnosticText applies structural redaction first, then
+// removes known account credential values that an upstream may echo as plain text.
+// Short credentials are too ambiguous for value replacement, so an echoed one
+// fails closed to a fixed diagnostic instead of corrupting unrelated prose.
+func sanitizeOpenAIAccountDiagnosticText(account *Account, text string) string {
+	text = sanitizeOpenAIUpstreamDiagnosticText(text)
+	if account == nil || text == "" {
+		return text
+	}
+
+	credentialKeys := make([]string, 0, len(SensitiveCredentialKeys)+1)
+	credentialKeys = append(credentialKeys, SensitiveCredentialKeys...)
+	credentialKeys = append(credentialKeys, "setup_token")
+	values := make([]string, 0, len(credentialKeys))
+	for _, key := range credentialKeys {
+		value := strings.TrimSpace(account.GetCredential(key))
+		if value == "" {
+			continue
+		}
+		if len(value) < 4 {
+			if containsOpenAIShortCredentialToken(text, value) {
+				return openAIAuthenticationDiagnosticFallback
+			}
+			continue
+		}
+		values = append(values, value)
+	}
+	// Replace longer overlapping values first so no credential suffix survives.
+	slices.SortFunc(values, func(a, b string) int { return len(b) - len(a) })
+	for _, value := range values {
+		text = strings.ReplaceAll(text, value, "[redacted]")
+	}
+	return text
+}
+
+// containsOpenAIShortCredentialToken rejects only a credibly echoed short
+// credential. ASCII letters, digits, underscores, and hyphens make a larger
+// credential-like token, so matching within ordinary prose or identifiers is
+// deliberately not enough to discard the entire diagnostic.
+func containsOpenAIShortCredentialToken(text, credential string) bool {
+	start := 0
+	for {
+		index := strings.Index(text[start:], credential)
+		if index < 0 {
+			return false
+		}
+		index += start
+		end := index + len(credential)
+		if (index == 0 || !isOpenAIShortCredentialTokenChar(text[index-1])) &&
+			(end == len(text) || !isOpenAIShortCredentialTokenChar(text[end])) {
+			return true
+		}
+		start = end
+	}
+}
+
+func isOpenAIShortCredentialTokenChar(ch byte) bool {
+	return openAISensitiveDiagnosticIsRegexWordChar(ch) || ch == '-'
+}
 
 func sanitizeOpenAIUpstreamDiagnosticText(text string) string {
 	if text == "" {
@@ -644,6 +710,16 @@ func sanitizeOpenAIUpstreamDiagnosticBodyForLog(body []byte, maxBytes int) strin
 	// Keep diagnostic bodies single-line for logs/support details after redaction.
 	text = strings.ReplaceAll(text, "\r", " ")
 	text = strings.ReplaceAll(text, "\n", " ")
+	return truncateString(text, maxBytes)
+}
+
+func sanitizeUpstreamDiagnosticBody(body []byte, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = 2048
+	}
+	text := sanitizeOpenAIUpstreamDiagnosticBodyForLog(body, maxBytes)
+	text = upstreamErrorFactURLPattern.ReplaceAllString(text, "[url-redacted]")
+	text = upstreamErrorFactNetworkPattern.ReplaceAllString(text, "[network-redacted]")
 	return truncateString(text, maxBytes)
 }
 

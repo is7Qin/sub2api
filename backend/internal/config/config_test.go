@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,11 +16,359 @@ import (
 func resetViperWithJWTSecret(t *testing.T) {
 	t.Helper()
 	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+}
+
+func TestLoadRedisUsernameCompatibilityAndPreservation(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		env      *string
+		expected string
+	}{
+		{name: "omitted", yaml: "redis:\n  password: password-only\n"},
+		{name: "explicit empty", yaml: "redis:\n  username: \"\"\n"},
+		{name: "yaml preserves special characters", yaml: "redis:\n  username: \" acl:user/@% \"\n", expected: " acl:user/@% "},
+		{name: "explicit empty environment overrides yaml", yaml: "redis:\n  username: yaml-user\n", env: stringPtr("")},
+		{name: "environment preserves special characters", env: stringPtr(" env:user/@% "), expected: " env:user/@% "},
+		{name: "environment overrides yaml", yaml: "redis:\n  username: yaml-user\n", env: stringPtr(" env:user/@% "), expected: " env:user/@% "},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			unsetEnvForTest(t, "REDIS_USERNAME")
+			if tc.yaml != "" {
+				configFile := filepath.Join(t.TempDir(), "config.yaml")
+				require.NoError(t, os.WriteFile(configFile, []byte(tc.yaml), 0o600))
+				t.Setenv("CONFIG_FILE", configFile)
+			}
+			if tc.env != nil {
+				t.Setenv("REDIS_USERNAME", *tc.env)
+			}
+
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, cfg.Redis.Username)
+		})
+	}
+}
+
+func TestValidateRedisUsernameUTF8ByteLimitWithoutCredentialLeak(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Redis.Username = strings.Repeat("é", 64)
+	require.NoError(t, cfg.Validate())
+
+	const password = "password-must-not-leak/@%"
+	username := strings.Repeat("a", 127) + "é"
+	cfg.Redis.Username = username
+	cfg.Redis.Password = password
+	err = cfg.Validate()
+	require.ErrorContains(t, err, "redis.username must be at most 128 bytes")
+	require.NotContains(t, err.Error(), username)
+	require.NotContains(t, err.Error(), password)
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	value, ok := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if ok {
+			require.NoError(t, os.Setenv(key, value))
+			return
+		}
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
+
+func TestLoadForwardedClientIPDefaultsSecurely(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.TrustForwardedIPForAPIKeyACL())
+	require.Empty(t, cfg.ForwardedClientIPSettings().Headers)
+	require.Empty(t, cfg.Server.TrustedProxies)
+	require.False(t, cfg.Server.TrustedProxiesConfigured)
+}
+
+func TestNormalizeForwardedClientIPHeaders(t *testing.T) {
+	headers, err := NormalizeForwardedClientIPHeaders([]string{
+		" x-cdn-client-ip ",
+		"X-CDN-CLIENT-IP",
+		"true-client-ip",
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"X-Cdn-Client-Ip", "True-Client-Ip"}, headers)
+
+	_, err = NormalizeForwardedClientIPHeaders([]string{"X Invalid"})
+	require.ErrorContains(t, err, "invalid HTTP header field name")
+}
+
+func TestNormalizeForwardedClientIPHeadersLimit(t *testing.T) {
+	headers := make([]string, 0, MaxForwardedClientIPHeaders+1)
+	for i := 0; i <= MaxForwardedClientIPHeaders; i++ {
+		headers = append(headers, fmt.Sprintf("X-CDN-IP-%d", i))
+	}
+
+	_, err := NormalizeForwardedClientIPHeaders(headers)
+	require.ErrorContains(t, err, "at most 16 unique names")
+}
+
+func TestForwardedClientIPSettingsSnapshotsAndPublishesAtomically(t *testing.T) {
+	cfg := &Config{}
+	cfg.SetForwardedClientIPSettings(true, []string{"X-Public-A"})
+
+	snapshot := cfg.ForwardedClientIPSettings()
+	snapshot.Headers[0] = "X-Mutated"
+	require.Equal(t, []string{"X-Public-A"}, cfg.ForwardedClientIPSettings().Headers)
+
+	const iterations = 2000
+	start := make(chan struct{})
+	errCh := make(chan error, 8)
+	var wg sync.WaitGroup
+	for _, settings := range []ForwardedClientIPSettings{
+		{TrustForwardedIP: true, Headers: []string{"X-Public-A"}},
+		{TrustForwardedIP: false, Headers: []string{"X-Public-B"}},
+	} {
+		settings := settings
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				cfg.SetForwardedClientIPSettings(settings.TrustForwardedIP, settings.Headers)
+			}
+		}()
+	}
+	for i := 0; i < cap(errCh); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				snapshot := cfg.ForwardedClientIPSettings()
+				validA := snapshot.TrustForwardedIP && len(snapshot.Headers) == 1 && snapshot.Headers[0] == "X-Public-A"
+				validB := !snapshot.TrustForwardedIP && len(snapshot.Headers) == 1 && snapshot.Headers[0] == "X-Public-B"
+				if !validA && !validB {
+					errCh <- fmt.Errorf("observed inconsistent forwarded IP settings: %+v", snapshot)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+}
+
+func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", " x-cdn-ip , X-CDN-IP, true-client-ip ")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []string{"X-Cdn-Ip", "True-Client-Ip"}, cfg.ForwardedClientIPSettings().Headers)
+}
+
+func TestLoadExplicitEmptyForwardedClientIPHeadersFromEnvironment(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Empty(t, cfg.ForwardedClientIPSettings().Headers)
+}
+
+func TestLoadRejectsInvalidForwardedClientIPHeader(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", "X Invalid")
+
+	_, err := Load()
+	require.ErrorContains(t, err, "security.forwarded_client_ip_headers")
+}
+
+func TestValidateRejectsInvalidForwardedClientIPHeader(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Security.ForwardedClientIPHeaders = []string{"X Invalid"}
+
+	err = cfg.Validate()
+	require.ErrorContains(t, err, "security.forwarded_client_ip_headers")
+}
+
+func TestLoadTrustedProxiesPresenceAndEnvironmentLists(t *testing.T) {
+	t.Run("explicit empty via yaml", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		configFile := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(configFile, []byte("server:\n  trusted_proxies: []\n"), 0o600))
+		t.Setenv("CONFIG_FILE", configFile)
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Empty(t, cfg.Server.TrustedProxies)
+		require.True(t, cfg.Server.TrustedProxiesConfigured)
+	})
+
+	t.Run("populated environment", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("SERVER_TRUSTED_PROXIES", "127.0.0.1/32, ::1/128")
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Equal(t, []string{"127.0.0.1/32", "::1/128"}, cfg.Server.TrustedProxies)
+		require.True(t, cfg.Server.TrustedProxiesConfigured)
+	})
+
+	t.Run("explicit empty environment", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("SERVER_TRUSTED_PROXIES", "")
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Empty(t, cfg.Server.TrustedProxies)
+		require.True(t, cfg.Server.TrustedProxiesConfigured)
+	})
+}
+
+func TestLoadTrustedProxiesPresenceFromYAML(t *testing.T) {
+	tests := []struct {
+		name       string
+		yaml       string
+		configured bool
+	}{
+		{name: "absent", yaml: "server:\n  mode: debug\n", configured: false},
+		{name: "explicit empty", yaml: "server:\n  trusted_proxies: []\n", configured: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			configDir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(test.yaml), 0o600))
+			t.Setenv("DATA_DIR", configDir)
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, test.configured, cfg.Server.TrustedProxiesConfigured)
+		})
+	}
+}
+
+func TestLoadUsesExplicitConfigFileAndEnvironmentOverridesFields(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configFile := filepath.Join(t.TempDir(), "nonstandard-name.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.10\n  port: 8181\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	t.Setenv("SERVER_HOST", "192.0.2.11")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.11", cfg.Server.Host)
+	require.Equal(t, 8181, cfg.Server.Port)
+}
+
+func TestConfigFileTakesPrecedenceOverDataDir(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("server:\n  host: 192.0.2.20\n"), 0o600))
+	configFile := filepath.Join(t.TempDir(), "explicit.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.30\n"), 0o600))
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("CONFIG_FILE", configFile)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.30", cfg.Server.Host)
+}
+
+func TestLoadReturnsErrorForMissingConfigFile(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("CONFIG_FILE", filepath.Join(t.TempDir(), "missing.yaml"))
+
+	_, err := Load()
+	require.ErrorContains(t, err, "read config error")
+}
+
+func TestBlankConfigFileFallsBackToSearchPaths(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("server:\n  host: 192.0.2.35\n"), 0o600))
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("CONFIG_FILE", "  \t ")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.35", cfg.Server.Host)
+}
+
+func TestRepeatedLoadDoesNotReusePreviousExplicitConfigFile(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	explicitFile := filepath.Join(t.TempDir(), "first.yaml")
+	require.NoError(t, os.WriteFile(explicitFile, []byte("server:\n  host: 192.0.2.50\n"), 0o600))
+	t.Setenv("CONFIG_FILE", explicitFile)
+
+	first, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.50", first.Server.Host)
+
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("server:\n  host: 192.0.2.51\n"), 0o600))
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", dataDir)
+
+	second, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.51", second.Server.Host)
+}
+
+func TestRepeatedLoadSwitchesExplicitConfigFiles(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	firstFile := filepath.Join(t.TempDir(), "first.yaml")
+	secondFile := filepath.Join(t.TempDir(), "second.yaml")
+	require.NoError(t, os.WriteFile(firstFile, []byte("server:\n  port: 8181\n"), 0o600))
+	require.NoError(t, os.WriteFile(secondFile, []byte("server:\n  port: 8282\n"), 0o600))
+
+	t.Setenv("CONFIG_FILE", firstFile)
+	first, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 8181, first.Server.Port)
+
+	t.Setenv("CONFIG_FILE", secondFile)
+	second, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 8282, second.Server.Port)
+}
+
+func TestLoadForBootstrapUsesExplicitConfigFile(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("JWT_SECRET", "")
+	configFile := filepath.Join(t.TempDir(), "bootstrap.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  port: 8282\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	t.Setenv("DATA_DIR", "")
+
+	cfg, err := LoadForBootstrap()
+	require.NoError(t, err)
+	require.Equal(t, 8282, cfg.Server.Port)
 }
 
 func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
 	t.Setenv("JWT_SECRET", "")
 
 	cfg, err := LoadForBootstrap()
@@ -79,6 +429,38 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	if cfg.Gateway.Scheduling.SlotCleanupInterval != 30*time.Second {
 		t.Fatalf("SlotCleanupInterval = %v, want 30s", cfg.Gateway.Scheduling.SlotCleanupInterval)
 	}
+}
+
+func TestLoadDefaultSchedulingConfigIncludesSupportDecisionHotModels(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.OpenAI)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.Anthropic)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.Gemini)
+	require.Empty(t, cfg.Gateway.Scheduling.SupportDecisionHotModels.Antigravity)
+}
+
+func TestLoadSupportDecisionHotModels(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`gateway:
+  scheduling:
+    support_decision_hot_models:
+      openai: [" gpt-b ", "gpt-a", "gpt-b", ""]
+      anthropic: ["claude-b", "claude-a"]
+      gemini: ["gemini-b"]
+      antigravity: ["antigravity-b"]
+`), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-b", "gpt-a"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.OpenAI)
+	require.Equal(t, []string{"claude-b", "claude-a"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.Anthropic)
+	require.Equal(t, []string{"gemini-b"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.Gemini)
+	require.Equal(t, []string{"antigravity-b"}, cfg.Gateway.Scheduling.SupportDecisionHotModels.Antigravity)
 }
 
 func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
@@ -804,6 +1186,8 @@ func TestNormalizeStringSlice(t *testing.T) {
 }
 
 func TestGetServerAddressFromEnv(t *testing.T) {
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
 	t.Setenv("SERVER_HOST", "127.0.0.1")
 	t.Setenv("SERVER_PORT", "9090")
 
@@ -811,6 +1195,36 @@ func TestGetServerAddressFromEnv(t *testing.T) {
 	if address != "127.0.0.1:9090" {
 		t.Fatalf("GetServerAddress() = %q", address)
 	}
+}
+
+func TestLoadUsesRelativeExplicitConfigFile(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	workingDir := t.TempDir()
+	configFile := filepath.Join(workingDir, "relative.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  port: 9393\n"), 0o600))
+	oldWorkingDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workingDir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldWorkingDir)) })
+	t.Setenv("CONFIG_FILE", "relative.yaml")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 9393, cfg.Server.Port)
+}
+
+func TestGetServerAddressUsesExplicitConfigFileAndEnvOverride(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "setup.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("server:\n  host: 192.0.2.40\n  port: 9191\n"), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+	t.Setenv("DATA_DIR", "")
+	t.Setenv("SERVER_HOST", "")
+	t.Setenv("SERVER_PORT", "")
+
+	require.Equal(t, "192.0.2.40:9191", GetServerAddress())
+
+	t.Setenv("SERVER_PORT", "9292")
+	require.Equal(t, "192.0.2.40:9292", GetServerAddress())
 }
 
 func TestValidateAbsoluteHTTPURL(t *testing.T) {
@@ -1907,8 +2321,8 @@ func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
 	if cfg.Gateway.UsageRecord.TaskTimeoutSeconds != 5 {
 		t.Fatalf("task_timeout_seconds = %d, want 5", cfg.Gateway.UsageRecord.TaskTimeoutSeconds)
 	}
-	if cfg.Gateway.UsageRecord.OverflowPolicy != UsageRecordOverflowPolicySample {
-		t.Fatalf("overflow_policy = %s, want %s", cfg.Gateway.UsageRecord.OverflowPolicy, UsageRecordOverflowPolicySample)
+	if cfg.Gateway.UsageRecord.OverflowPolicy != UsageRecordOverflowPolicySync {
+		t.Fatalf("overflow_policy = %s, want %s", cfg.Gateway.UsageRecord.OverflowPolicy, UsageRecordOverflowPolicySync)
 	}
 	if cfg.Gateway.UsageRecord.OverflowSamplePercent != 10 {
 		t.Fatalf("overflow_sample_percent = %d, want 10", cfg.Gateway.UsageRecord.OverflowSamplePercent)

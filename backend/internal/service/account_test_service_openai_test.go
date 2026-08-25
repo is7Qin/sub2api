@@ -466,6 +466,60 @@ func TestAccountTestService_OpenAIErrorSanitizesOAuthUpstreamBody(t *testing.T) 
 	require.Contains(t, repo.setErrorMsg, `"x-openai-fedramp":"[redacted]"`)
 }
 
+func TestAccountTestService_OpenAIOAuthDeactivatedWorkspace402MarksError(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "top-level code", body: `{"code":"deactivated_workspace"}`},
+		{name: "detail code", body: `{"detail":{"code":"deactivated_workspace"}}`},
+		{name: "error code", body: `{"error":{"code":"deactivated_workspace"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newTestContext()
+			repo := &openAIAccountTestRepo{}
+			upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(http.StatusPaymentRequired, tt.body)}}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+			account := &Account{
+				ID:          895,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Concurrency: 1,
+				Credentials: map[string]any{"access_token": "oauth-test"},
+			}
+
+			err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+
+			require.Error(t, err)
+			require.Contains(t, recorder.Body.String(), "API returned 402")
+			require.Equal(t, account.ID, repo.setErrorID)
+			require.Contains(t, repo.setErrorMsg, "Workspace deactivated (402)")
+		})
+	}
+}
+
+func TestAccountTestService_OpenAIOAuthOther402DoesNotMarkError(t *testing.T) {
+	ctx, _ := newTestContext()
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(http.StatusPaymentRequired, `{"code":"billing_required"}`)}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:          896,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-test"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+
+	require.Error(t, err)
+	require.Zero(t, repo.setErrorID)
+	require.Empty(t, repo.setErrorMsg)
+}
+
 func TestAccountTestService_OpenAIPATWorkspace403MarksError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newTestContext()

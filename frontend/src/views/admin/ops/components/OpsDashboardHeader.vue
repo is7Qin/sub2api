@@ -7,6 +7,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api'
 import { opsAPI, type OpsDashboardOverview, type OpsMetricThresholds, type OpsRealtimeTrafficSummary } from '@/api/admin/ops'
+import type { OpsBillingOutboxHealth } from '@/api/admin/ops'
 import type { OpsRequestDetailsPreset } from './OpsRequestDetailsModal.vue'
 import { useAdminSettingsStore } from '@/stores'
 import { formatNumber } from '@/utils/format'
@@ -27,6 +28,7 @@ interface Props {
   fullscreen?: boolean
   customStartTime?: string | null
   customEndTime?: string | null
+  billingHealth?: OpsBillingOutboxHealth | null
 }
 
 interface Emits {
@@ -542,6 +544,36 @@ const diagnosisReport = computed<DiagnosisItem[]>(() => {
     }
   }
 
+  // Billing outbox worker 诊断（异常才显示；health 未拉到时无此诊断）
+  const bh = props.billingHealth ?? null
+  if (bh) {
+    if (bh.circuit_open) {
+      report.push({
+        type: 'critical',
+        message: t('admin.ops.diagnosis.circuitBreakerOpen'),
+        impact: t('admin.ops.diagnosis.circuitBreakerOpenImpact'),
+        action: t('admin.ops.diagnosis.circuitBreakerOpenAction')
+      })
+    }
+    if (bh.terminal_alert) {
+      report.push({
+        type: 'critical',
+        message: t('admin.ops.diagnosis.terminalAlert'),
+        impact: t('admin.ops.diagnosis.terminalAlertImpact'),
+        action: t('admin.ops.diagnosis.terminalAlertAction')
+      })
+    }
+    const lagSec = (bh.oldest_lag ?? 0) / 1e9
+    if (lagSec > 3600) {
+      report.push({
+        type: 'warning',
+        message: t('admin.ops.diagnosis.billingLagCritical', { lag: Math.floor(lagSec / 3600) }),
+        impact: t('admin.ops.diagnosis.billingLagCriticalImpact'),
+        action: t('admin.ops.diagnosis.billingLagCriticalAction')
+      })
+    }
+  }
+
   const ttftP99 = ov.ttft?.p99_ms ?? 0
   if (ttftP99 > 500) {
     report.push({
@@ -792,6 +824,62 @@ const goroutineStatusLabel = computed(() => {
 
 const goroutineStatusClass = computed(() => {
   switch (goroutineStatus.value) {
+    case 'ok':
+      return 'text-emerald-600 dark:text-emerald-400'
+    case 'warning':
+      return 'text-yellow-600 dark:text-yellow-400'
+    case 'critical':
+      return 'text-rose-600 dark:text-rose-400'
+    default:
+      return 'text-gray-900 dark:text-white'
+  }
+})
+
+// Go runtime memory / GC（进程内口径）：堆分配 + GC CPU 占比 + 分配速率。
+const heapAllocMBValue = computed<number | null>(() => {
+  const v = systemMetrics.value?.heap_alloc_mb
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+})
+const heapSysMBValue = computed<number | null>(() => {
+  const v = systemMetrics.value?.heap_sys_mb
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+})
+const gcCyclesValue = computed<number | null>(() => {
+  const v = systemMetrics.value?.gc_num_cycles
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+})
+const gcCpuPercentValue = computed<number | null>(() => {
+  const v = systemMetrics.value?.gc_cpu_fraction
+  return typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 1000) / 10 : null
+})
+const allocRateMBPerSecValue = computed<number | null>(() => {
+  const v = systemMetrics.value?.alloc_bytes_per_sec
+  return typeof v === 'number' && Number.isFinite(v) ? Math.round((v / (1024 * 1024)) * 10) / 10 : null
+})
+
+const gcStatus = computed<'ok' | 'warning' | 'critical' | 'unknown'>(() => {
+  const pct = gcCpuPercentValue.value
+  if (pct == null) return 'unknown'
+  if (pct >= 60) return 'critical'
+  if (pct >= 30) return 'warning'
+  return 'ok'
+})
+
+const gcStatusLabel = computed(() => {
+  switch (gcStatus.value) {
+    case 'ok':
+      return t('admin.ops.ok')
+    case 'warning':
+      return t('common.warning')
+    case 'critical':
+      return t('common.critical')
+    default:
+      return t('admin.ops.noData')
+  }
+})
+
+const gcStatusClass = computed(() => {
+  switch (gcStatus.value) {
     case 'ok':
       return 'text-emerald-600 dark:text-emerald-400'
     case 'warning':
@@ -1514,6 +1602,31 @@ function handleToolbarRefresh() {
             · {{ t('common.critical') }} <span class="font-mono">{{ goroutinesCriticalThreshold }}</span>
             <span v-if="systemMetrics?.concurrency_queue_depth != null">
               · {{ t('admin.ops.queue') }} <span class="font-mono">{{ systemMetrics.concurrency_queue_depth }}</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Go runtime memory / GC -->
+        <div class="rounded-xl border border-gray-200 bg-white/40 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+          <div class="flex items-center gap-1">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-gray-400">{{ t('admin.ops.goRuntime') }}</div>
+          </div>
+          <div class="mt-1 text-lg font-black" :class="gcStatusClass">
+            <span v-if="heapAllocMBValue != null" class="font-mono">{{ formatNumber(heapAllocMBValue) }}</span><span v-else>—</span>
+            <span v-if="heapAllocMBValue != null" class="text-xs font-normal text-gray-500 dark:text-gray-400"> MB · {{ gcStatusLabel }}</span>
+          </div>
+          <div v-if="!props.fullscreen" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+            <span v-if="heapSysMBValue != null">
+              {{ t('admin.ops.heapSys') }} <span class="font-mono">{{ formatNumber(heapSysMBValue) }}</span> MB
+            </span>
+            <span v-if="gcCpuPercentValue != null">
+              · {{ t('admin.ops.gcCpu') }} <span class="font-mono">{{ gcCpuPercentValue }}</span>%
+            </span>
+            <span v-if="allocRateMBPerSecValue != null">
+              · {{ t('admin.ops.allocRate') }} <span class="font-mono">{{ allocRateMBPerSecValue }}</span> MB/s
+            </span>
+            <span v-if="gcCyclesValue != null">
+              · {{ t('admin.ops.gcCycles') }} <span class="font-mono">{{ gcCyclesValue }}</span>
             </span>
           </div>
         </div>

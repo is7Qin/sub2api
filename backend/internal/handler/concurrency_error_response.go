@@ -5,9 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
 const statusClientClosedRequest = 499
+
+func geminiConcurrencyErrorResponse(c *gin.Context, err error, slotType string) {
+	status, _, message := concurrencyErrorResponse(err, slotType)
+	googleError(c, status, message)
+}
 
 func concurrencyErrorResponse(err error, slotType string) (int, string, string) {
 	var waitQueueFullErr *WaitQueueFullError

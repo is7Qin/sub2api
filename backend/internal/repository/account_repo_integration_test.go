@@ -881,6 +881,124 @@ func (s *AccountRepoSuite) TestBindGroups_EmptyList() {
 	s.Require().Empty(groups, "expected 0 groups after binding empty list")
 }
 
+// --- 版本推进：ent 侧 membership 写入必须推进受影响账号的 updated_at ---
+// 账号列表缓存以 max(accounts.updated_at) 为失效版本（Task 2），而 ent 生成的
+// account_groups 写入（BindGroups/AddToGroup/RemoveFromGroup）只改关联表：
+// 批量编辑仅改分组时（BulkUpdate 无字段变更提前返回）不会推进版本，分组过滤的
+// 列表缓存会返回陈旧成员。这些测试先于修复存在（TDD 红），确保三条路径都推进
+// 受影响账号的 updated_at。
+
+func (s *AccountRepoSuite) accountUpdatedAtCommitted(accountID int64) time.Time {
+	var updatedAt time.Time
+	s.Require().NoError(scanSingleRow(s.ctx, integrationDB, "SELECT updated_at FROM accounts WHERE id = $1", []any{accountID}, &updatedAt))
+	return updatedAt
+}
+
+// TestBindGroups_AdvancesAccountUpdatedAt 复现审查发现的主路径：批量编辑仅改
+// 分组（BulkUpdate 无字段变更提前返回）→ BindGroups 替换成员 → 版本必须推进。
+func (s *AccountRepoSuite) TestBindGroups_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	g1 := mustCreateGroup(s.T(), client, &service.Group{Name: "bind-ver-g1-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	g2 := mustCreateGroup(s.T(), client, &service.Group{Name: "bind-ver-g2-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "bind-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = ANY($1)", []int64{g1.ID, g2.ID})
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	// 提交路径会写入共享 scheduler_outbox，先清空避免污染后续断言 outbox 空表的测试。
+	_, err := integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+
+	// 批量编辑仅改分组：BulkUpdate 无字段变更，提前返回，不推进版本。
+	rows, err := repo.BulkUpdate(s.ctx, []int64{account.ID}, service.AccountBulkUpdate{})
+	s.Require().NoError(err)
+	s.Require().Zero(rows)
+	before := s.accountUpdatedAtCommitted(account.ID)
+
+	s.Require().NoError(repo.BindGroups(s.ctx, account.ID, []int64{g1.ID, g2.ID}))
+
+	s.Require().True(s.accountUpdatedAtCommitted(account.ID).After(before), "BindGroups must advance affected account's updated_at")
+	latest, err := repo.MaxAccountUpdatedAt(s.ctx)
+	s.Require().NoError(err)
+	s.Require().NotNil(latest)
+	s.Require().True(latest.After(before), "BindGroups must advance the list cache version (max accounts.updated_at)")
+}
+
+func (s *AccountRepoSuite) TestAddToGroup_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	group := mustCreateGroup(s.T(), client, &service.Group{Name: "add-ver-g-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "add-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	// 提交路径会写入共享 scheduler_outbox，先清空避免污染后续断言 outbox 空表的测试。
+	_, err := integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+	before := s.accountUpdatedAtCommitted(account.ID)
+
+	s.Require().NoError(repo.AddToGroup(s.ctx, account.ID, group.ID, 10))
+
+	s.Require().True(s.accountUpdatedAtCommitted(account.ID).After(before), "AddToGroup must advance affected account's updated_at")
+}
+
+func (s *AccountRepoSuite) TestRemoveFromGroup_AdvancesAccountUpdatedAt() {
+	client := testEntClient(s.T())
+	group := mustCreateGroup(s.T(), client, &service.Group{Name: "rm-ver-g-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "rm-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	// 提交路径会写入共享 scheduler_outbox，先清空避免污染后续断言 outbox 空表的测试。
+	_, err := integrationDB.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+	s.Require().NoError(repo.AddToGroup(s.ctx, account.ID, group.ID, 10))
+	before := s.accountUpdatedAtCommitted(account.ID)
+
+	s.Require().NoError(repo.RemoveFromGroup(s.ctx, account.ID, group.ID))
+
+	s.Require().True(s.accountUpdatedAtCommitted(account.ID).After(before), "RemoveFromGroup must advance affected account's updated_at")
+}
+
+// TestBindGroups_UpdatedAtBumpJoinsCallerTx 验证 bump 复用调用方事务：事务内
+// 可见，回滚时与成员替换一起撤销（不会误推进已提交的缓存版本）。
+func (s *AccountRepoSuite) TestBindGroups_UpdatedAtBumpJoinsCallerTx() {
+	client := testEntClient(s.T())
+	group := mustCreateGroup(s.T(), client, &service.Group{Name: "bind-tx-ver-g-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	account := mustCreateAccount(s.T(), client, &service.Account{Name: "bind-tx-ver-acc-" + strconv.FormatInt(time.Now().UnixNano(), 10)})
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	beforeCommitted := s.accountUpdatedAtCommitted(account.ID)
+
+	tx, err := client.Tx(s.ctx)
+	s.Require().NoError(err)
+	txCtx := dbent.NewTxContext(s.ctx, tx)
+
+	s.Require().NoError(repo.BindGroups(txCtx, account.ID, []int64{group.ID}))
+
+	var updatedAtInTx time.Time
+	s.Require().NoError(scanSingleRow(txCtx, tx, "SELECT updated_at FROM accounts WHERE id = $1", []any{account.ID}, &updatedAtInTx))
+	s.Require().True(updatedAtInTx.After(beforeCommitted), "bump must be visible inside the caller tx")
+
+	s.Require().NoError(tx.Rollback())
+
+	s.Require().Equal(beforeCommitted, s.accountUpdatedAtCommitted(account.ID), "rolled-back tx must not advance committed updated_at")
+	groups, err := repo.GetGroups(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Empty(groups, "rolled-back membership replacement must not be visible")
+}
+
 // --- Schedulable ---
 
 func (s *AccountRepoSuite) TestListSchedulable() {
@@ -1084,6 +1202,19 @@ func (s *AccountRepoSuite) requireNoSchedulerOutbox() {
 	var count int
 	s.Require().NoError(scanSingleRow(s.ctx, s.repo.sql, "SELECT COUNT(*) FROM scheduler_outbox", nil, &count))
 	s.Require().Zero(count)
+}
+
+func (s *AccountRepoSuite) requireAccountChangedOutbox(accountID int64) {
+	s.T().Helper()
+	var count int
+	s.Require().NoError(scanSingleRow(
+		s.ctx,
+		s.repo.sql,
+		"SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1 AND account_id = $2",
+		[]any{service.SchedulerOutboxEventAccountChanged, accountID},
+		&count,
+	))
+	s.Require().Equal(1, count)
 }
 
 func (s *AccountRepoSuite) TestUpdateSessionWindow_SyncsSchedulerSnapshot() {
@@ -1920,51 +2051,106 @@ func (s *AccountRepoSuite) lastUsedOutboxPayload() map[string]int64 {
 
 // --- SetError ---
 
-func (s *AccountRepoSuite) TestSetError() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-err", Status: service.StatusActive, Schedulable: true})
+func (s *AccountRepoSuite) TestSetErrorPreservesSchedulingIntent() {
+	for _, schedulable := range []bool{true, false} {
+		s.Run(strconv.FormatBool(schedulable), func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name:   "acc-err-" + strconv.FormatBool(schedulable),
+				Status: service.StatusActive,
+			})
+			if !schedulable {
+				s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
+			_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
 
-	s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "something went wrong"))
+			s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "something went wrong"))
 
-	got, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusError, got.Status)
-	s.Require().Equal("something went wrong", got.ErrorMessage)
-	s.Require().False(got.Schedulable)
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusError, got.Status)
+			s.Require().Equal("something went wrong", got.ErrorMessage)
+			s.Require().Equal(schedulable, got.Schedulable)
+			s.Require().False(got.IsSchedulable(), "error status must still block effective scheduling")
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal(service.StatusError, cacheRecorder.setAccounts[0].Status)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].Schedulable)
+			s.Require().False(cacheRecorder.setAccounts[0].IsSchedulable())
+			s.requireAccountChangedOutbox(account.ID)
+		})
+	}
 }
 
-func (s *AccountRepoSuite) TestUpdateErrorStatusUnschedulesAccount() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-update-err", Status: service.StatusActive, Schedulable: true})
-	account.Status = service.StatusError
-	account.ErrorMessage = "token revoked"
-	account.Schedulable = true
+func (s *AccountRepoSuite) TestUpdateErrorStatusPreservesSchedulingIntent() {
+	for _, schedulable := range []bool{true, false} {
+		s.Run(strconv.FormatBool(schedulable), func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name:   "acc-update-err-" + strconv.FormatBool(schedulable),
+				Status: service.StatusActive,
+			})
+			if !schedulable {
+				s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
+			_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
+			account.Schedulable = schedulable
+			account.Status = service.StatusError
+			account.ErrorMessage = "token revoked"
 
-	s.Require().NoError(s.repo.Update(s.ctx, account))
+			s.Require().NoError(s.repo.Update(s.ctx, account))
 
-	got, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusError, got.Status)
-	s.Require().Equal("token revoked", got.ErrorMessage)
-	s.Require().False(got.Schedulable)
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusError, got.Status)
+			s.Require().Equal("token revoked", got.ErrorMessage)
+			s.Require().Equal(schedulable, got.Schedulable)
+			s.Require().False(got.IsSchedulable(), "error status must still block effective scheduling")
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal(service.StatusError, cacheRecorder.setAccounts[0].Status)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].Schedulable)
+			s.Require().False(cacheRecorder.setAccounts[0].IsSchedulable())
+			s.requireAccountChangedOutbox(account.ID)
+		})
+	}
 }
 
 func (s *AccountRepoSuite) TestClearError_SyncSchedulerSnapshotOnRecovery() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{
-		Name:         "acc-clear-err",
-		Status:       service.StatusError,
-		ErrorMessage: "temporary error",
-	})
-	cacheRecorder := &schedulerCacheRecorder{}
-	s.repo.schedulerCache = cacheRecorder
+	for _, schedulable := range []bool{true, false} {
+		s.Run(strconv.FormatBool(schedulable), func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name:   "acc-clear-err-" + strconv.FormatBool(schedulable),
+				Status: service.StatusActive,
+			})
+			if !schedulable {
+				s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
 
-	s.Require().NoError(s.repo.ClearError(s.ctx, account.ID))
+			s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "temporary error"))
+			cacheRecorder.setAccounts = nil
+			_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
+			s.Require().NoError(s.repo.ClearError(s.ctx, account.ID))
 
-	got, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusActive, got.Status)
-	s.Require().Empty(got.ErrorMessage)
-	s.Require().Len(cacheRecorder.setAccounts, 1)
-	s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
-	s.Require().Equal(service.StatusActive, cacheRecorder.setAccounts[0].Status)
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusActive, got.Status)
+			s.Require().Empty(got.ErrorMessage)
+			s.Require().Equal(schedulable, got.Schedulable)
+			s.Require().Equal(schedulable, got.IsSchedulable())
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
+			s.Require().Equal(service.StatusActive, cacheRecorder.setAccounts[0].Status)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].Schedulable)
+			s.Require().Equal(schedulable, cacheRecorder.setAccounts[0].IsSchedulable())
+			s.requireAccountChangedOutbox(account.ID)
+		})
+	}
 }
 
 func (s *AccountRepoSuite) TestClearError_UnchangedAvoidsRedundantEffects() {
@@ -2864,4 +3050,100 @@ func idsOfAccounts(accounts []service.Account) []int64 {
 		out = append(out, accounts[i].ID)
 	}
 	return out
+}
+
+func (s *AccountRepoSuite) TestListAccountCredentialSubset() {
+	client := testEntClient(s.T())
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	ctx := s.ctx
+
+	account := &service.Account{
+		Name:     "cred-subset-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email":         "subset@example.com",
+			"plan_type":     "plus",
+			"model_mapping": map[string]any{"gpt-5": "gpt-5-upstream"},
+			"access_token":  "secret-token-must-not-leak",
+		},
+	}
+	s.Require().NoError(repo.Create(ctx, account))
+	s.T().Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, "DELETE FROM accounts WHERE id = $1", account.ID)
+	})
+
+	subsets, err := repo.ListAccountCredentialSubset(ctx, []int64{account.ID})
+	s.Require().NoError(err)
+	subset := subsets[account.ID]
+	s.Require().NotNil(subset)
+	s.Require().Equal("subset@example.com", subset["email"])
+	s.Require().Equal("plus", subset["plan_type"])
+	s.Require().Equal(map[string]any{"gpt-5": "gpt-5-upstream"}, subset["model_mapping"])
+	// 安全关键：真实凭据不得出现在列表子集里。
+	s.Require().NotContains(subset, "access_token")
+	s.Require().NotContains(subset, "refresh_token")
+}
+
+// TestListAccountCredentialSubset_RespectsTxContext 验证子集查询在事务上下文下
+// 走事务连接（sqlFromContext），而不是基础连接 r.sql：事务内未提交的账号行
+// 必须可见，否则事务内先建号再读取子集的路径会拿到空结果。
+func (s *AccountRepoSuite) TestListAccountCredentialSubset_RespectsTxContext() {
+	client := testEntClient(s.T())
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	tx, err := client.Tx(s.ctx)
+	s.Require().NoError(err)
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(s.ctx, tx)
+
+	account := &service.Account{
+		Name:     "cred-subset-tx-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"email":     "tx-subset@example.com",
+			"plan_type": "pro",
+		},
+	}
+	s.Require().NoError(repo.Create(txCtx, account))
+	s.Require().Positive(account.ID)
+
+	// 行尚未提交：只有事务感知的执行器（sqlFromContext -> tx.Client()）能看到它。
+	subsets, err := repo.ListAccountCredentialSubset(txCtx, []int64{account.ID})
+	s.Require().NoError(err)
+	subset := subsets[account.ID]
+	s.Require().NotNil(subset)
+	s.Require().Equal("tx-subset@example.com", subset["email"])
+	s.Require().Equal("pro", subset["plan_type"])
+}
+
+// TestMaxAccountUpdatedAt_RespectsTxContext 验证缓存版本查询在事务上下文下走
+// 事务连接：事务内推进的 updated_at 必须立即可见，否则同一事务内先写后读
+// 会得到陈旧缓存版本。
+func (s *AccountRepoSuite) TestMaxAccountUpdatedAt_RespectsTxContext() {
+	client := testEntClient(s.T())
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	tx, err := client.Tx(s.ctx)
+	s.Require().NoError(err)
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(s.ctx, tx)
+
+	account := &service.Account{
+		Name:     "max-updated-at-tx-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	}
+	s.Require().NoError(repo.Create(txCtx, account))
+	s.Require().Positive(account.ID)
+
+	// 把该账号 updated_at 推进到远超任何已提交行的值（仍未提交）。
+	bump := time.Now().UTC().Add(24 * time.Hour)
+	_, err = tx.Client().ExecContext(txCtx, `UPDATE accounts SET updated_at = $1 WHERE id = $2`, bump, account.ID)
+	s.Require().NoError(err)
+
+	latest, err := repo.MaxAccountUpdatedAt(txCtx)
+	s.Require().NoError(err)
+	s.Require().NotNil(latest)
+	// PG timestamptz 微秒精度，返回值与 bump 允许 1ms 容差。
+	s.Require().WithinDuration(bump, *latest, time.Millisecond)
 }

@@ -26,6 +26,7 @@ server:
   frontend_url: ""
   # Trusted proxies for X-Forwarded-For parsing (CIDR/IP). Empty disables trusted proxies.
   # 信任的代理地址（CIDR/IP 格式），用于解析 X-Forwarded-For 头。留空则禁用代理信任。
+  # Environment: SERVER_TRUSTED_PROXIES="127.0.0.1/32,10.0.0.0/8"
   trusted_proxies: []
   # Global max request body size in bytes (default: 256MB)
   # 全局最大请求体大小（字节，默认 256MB）
@@ -83,6 +84,11 @@ cors:
 # 安全配置
 # =============================================================================
 security:
+  # Optional ordered headers for legacy/telemetry client-IP metadata only.
+  # Security-sensitive ACL and Turnstile checks always use Gin's trusted proxy chain.
+  # Environment: SECURITY_FORWARDED_CLIENT_IP_HEADERS="CF-Connecting-IP,X-Real-IP"
+  # 可选的旧版/遥测客户端 IP 请求头优先级；安全校验始终使用 Gin 可信代理链。
+  forwarded_client_ip_headers: []
   url_allowlist:
     # Enable URL allowlist validation (disable to skip all URL checks)
     # 启用 URL 白名单验证（禁用则跳过所有 URL 检查）
@@ -401,6 +407,13 @@ gateway:
   # Scheduling configuration
   # 调度配置
   scheduling:
+    # Optional support-decision hot catalogs; empty lists use platform defaults
+    # 可选的支持决策热模型目录；空列表使用平台默认目录
+    support_decision_hot_models:
+      openai: []
+      anthropic: []
+      gemini: []
+      antigravity: []
     # Sticky session max waiting queue size
     # 粘性会话最大排队长度
     sticky_session_max_waiting: 3
@@ -696,6 +709,9 @@ dashboard_aggregation:
     # Raw usage_logs retention
     # 原始 usage_logs 保留天数
     usage_logs_days: 90
+    # Billing deduplication retention; must be >= usage_logs_days
+    # 计费去重记录保留天数；必须大于等于 usage_logs_days
+    usage_billing_dedup_days: 365
     # Hourly aggregation retention
     # 小时聚合保留天数
     hourly_days: 180
@@ -805,6 +821,9 @@ redis:
   # Redis port
   # Redis 端口
   port: 6379
+  # Optional Redis ACL username. Empty uses the default user (including bundled Redis).
+  # 可选 Redis ACL 用户名。留空使用默认用户（包括内置 Redis）。
+  username: ""
   # Redis password (leave empty if no password is set)
   # Redis 密码（如果未设置密码则留空）
   password: ""

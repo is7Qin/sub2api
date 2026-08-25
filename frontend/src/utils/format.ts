@@ -150,6 +150,27 @@ export function formatDateTime(
 }
 
 /**
+ * 格式化日期时间（精确到分钟）
+ */
+export function formatDateTimeToMinute(
+  date: string | Date | null | undefined,
+  localeOverride?: string
+): string {
+  return formatDate(
+    date,
+    {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    },
+    localeOverride
+  )
+}
+
+/**
  * 格式化为 datetime-local 控件值（YYYY-MM-DDTHH:mm，使用本地时间）
  */
 export function formatDateTimeLocalInput(timestampSeconds: number | null): string {

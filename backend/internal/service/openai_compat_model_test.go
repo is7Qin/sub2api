@@ -343,7 +343,7 @@ func TestForwardAsAnthropic_BufferedResponseFailedTriggersFailover(t *testing.T)
 	}, "\n")
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_failed"}},
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"rid_failed"}},
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 
@@ -369,6 +369,14 @@ func TestForwardAsAnthropic_BufferedResponseFailedTriggersFailover(t *testing.T)
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.Equal(t, "bad upstream", gjson.GetBytes(failoverErr.ResponseBody, "error.message").String())
+	fact, ok := failoverErr.UpstreamFact()
+	require.True(t, ok)
+	require.Equal(t, UpstreamErrorSourceSSE, fact.Source)
+	require.True(t, fact.HTTPStatusKnown)
+	require.Equal(t, http.StatusBadGateway, fact.HTTPStatus)
+	require.Equal(t, "server_error", fact.ProviderCode)
+	require.Equal(t, "bad upstream", fact.SafeMessage)
+	require.Equal(t, "rid_failed", fact.RequestID)
 }
 
 func TestForwardAsAnthropic_StreamingResponseFailedBeforeOutputTriggersFailover(t *testing.T) {
@@ -950,13 +958,20 @@ func TestOpenAIStreamFailoverErrorHonorsPoolModeRetryStatusPolicy(t *testing.T) 
 		},
 	}
 	svc := &OpenAIGatewayService{}
-	payload := []byte(`{"type":"response.failed","response":{"error":{"code":"server_error","message":"server overloaded"}}}`)
+	payload := []byte(`{"type":"response.failed","response":{"error":{"code":"server_error","message":"bad upstream"}}}`)
 
-	err := svc.newOpenAIStreamFailoverError(nil, account, false, "rid", payload, "server overloaded")
+	err := svc.newOpenAIStreamFailoverError(nil, account, false, "rid", payload, "bad upstream")
 	require.False(t, err.RetryableOnSameAccount)
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	fact, ok := err.UpstreamFact()
+	require.True(t, ok)
+	require.True(t, fact.HTTPStatusKnown)
+	require.Equal(t, http.StatusBadGateway, fact.HTTPStatus)
+	require.Equal(t, "server_error", fact.ProviderCode)
+	require.Equal(t, "bad upstream", fact.SafeMessage)
 
 	account.Credentials["pool_mode_retry_status_codes"] = []any{502}
-	err = svc.newOpenAIStreamFailoverError(nil, account, false, "rid", payload, "server overloaded")
+	err = svc.newOpenAIStreamFailoverError(nil, account, false, "rid", payload, "bad upstream")
 	require.True(t, err.RetryableOnSameAccount)
 }
 
@@ -1938,7 +1953,8 @@ func TestForwardAsAnthropic_OAuthPreservesClaudeCodeToolCallID(t *testing.T) {
 		},
 	}
 
-	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"list files"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"Bash","input":{"command":"ls"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_123","content":"ok"}]}],"tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],"stream":false}`)
+	toolCallID := "toolu_01JZY8M4D7YAHG9N3Q5R6T2V1W" + strings.Repeat("A", 40)
+	body := []byte(fmt.Sprintf(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"list files"},{"role":"assistant","content":[{"type":"tool_use","id":%q,"name":"Bash","input":{"command":"ls"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":"ok"}]}],"tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],"stream":false}`, toolCallID, toolCallID))
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
@@ -1947,8 +1963,12 @@ func TestForwardAsAnthropic_OAuthPreservesClaudeCodeToolCallID(t *testing.T) {
 	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "stable-cache-key", "gpt-5.4")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, "toolu_123", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call").call_id`).String())
-	require.Equal(t, "toolu_123", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call_output").call_id`).String())
+	upstreamCallID := gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call").call_id`).String()
+	require.Equal(t, upstreamCallID, gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call_output").call_id`).String())
+	require.Equal(t, "fc_64930a78b4d188754f5bdcf020e9b5f0b434890cf7987680e959e92183c0f", upstreamCallID)
+	require.Len(t, upstreamCallID, codexCallIDMaxLength)
+	require.True(t, strings.HasPrefix(upstreamCallID, codexCallIDPrefix))
+	require.NotEqual(t, toolCallID, upstreamCallID)
 	require.True(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
 	require.Equal(t, "medium", gjson.GetBytes(upstream.lastBody, "text.verbosity").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "tools.0.strict").Bool())

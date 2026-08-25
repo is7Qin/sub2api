@@ -34,10 +34,26 @@ type stubConcurrencyCacheForTest struct {
 	// 记录调用
 	releasedAccountIDs []int64
 	releasedRequestIDs []string
+	releasedAPIKeyIDs  []int64
+	apiKeyAcquireCalls atomic.Int64
 	loadBatchCalls     atomic.Int64
 }
 
 var _ ConcurrencyCache = (*stubConcurrencyCacheForTest)(nil)
+var _ APIKeyConcurrencyCache = (*stubConcurrencyCacheForTest)(nil)
+
+func TestConcurrencyService_GetAPIKeyConcurrencyBatch(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{concurrency: 3}
+	svc := NewConcurrencyService(cache)
+
+	counts, err := svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{4, 8})
+	require.NoError(t, err)
+	require.Equal(t, map[int64]int{4: 3, 8: 3}, counts)
+
+	cache.concurrencyErr = errors.New("read failed")
+	_, err = svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{4})
+	require.ErrorContains(t, err, "read failed")
+}
 
 func (c *stubConcurrencyCacheForTest) AcquireAccountSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
 	return c.acquireResult, c.acquireErr
@@ -57,6 +73,27 @@ func (c *stubConcurrencyCacheForTest) GetAccountConcurrencyBatch(_ context.Conte
 			return nil, c.concurrencyErr
 		}
 		result[accountID] = c.concurrency
+	}
+	return result, nil
+}
+func (c *stubConcurrencyCacheForTest) AcquireAPIKeySlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
+	c.apiKeyAcquireCalls.Add(1)
+	return c.acquireResult, c.acquireErr
+}
+func (c *stubConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, apiKeyID int64, _ string) error {
+	c.releasedAPIKeyIDs = append(c.releasedAPIKeyIDs, apiKeyID)
+	return c.releaseErr
+}
+func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrency(_ context.Context, _ int64) (int, error) {
+	return c.concurrency, c.concurrencyErr
+}
+func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	if c.concurrencyErr != nil {
+		return nil, c.concurrencyErr
+	}
+	result := make(map[int64]int, len(apiKeyIDs))
+	for _, id := range apiKeyIDs {
+		result[id] = c.concurrency
 	}
 	return result, nil
 }
@@ -179,6 +216,51 @@ func TestAcquireAccountSlot_ReleaseDecrements(t *testing.T) {
 	require.Equal(t, int64(42), cache.releasedAccountIDs[0])
 	require.Len(t, cache.releasedRequestIDs, 1)
 	require.NotEmpty(t, cache.releasedRequestIDs[0], "requestID 不应为空")
+}
+
+func TestAcquireAPIKeySlot_DisabledDoesNotCallCache(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireAPIKeySlot(context.Background(), 77, 0)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.NotNil(t, result.ReleaseFunc)
+	require.Zero(t, cache.apiKeyAcquireCalls.Load())
+}
+
+func TestAcquireAPIKeySlot_SuccessReleases(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{acquireResult: true}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireAPIKeySlot(context.Background(), 77, 2)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.NotNil(t, result.ReleaseFunc)
+
+	result.ReleaseFunc()
+	require.Equal(t, []int64{77}, cache.releasedAPIKeyIDs)
+}
+
+func TestAcquireAPIKeySlot_FullReturnsImmediately(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{acquireResult: false}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireAPIKeySlot(context.Background(), 77, 2)
+	require.NoError(t, err)
+	require.False(t, result.Acquired)
+	require.Nil(t, result.ReleaseFunc)
+	require.Equal(t, int64(1), cache.apiKeyAcquireCalls.Load())
+}
+
+func TestAcquireAPIKeySlot_ReleaseErrorContained(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{acquireResult: true, releaseErr: errors.New("redis down")}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireAPIKeySlot(context.Background(), 77, 2)
+	require.NoError(t, err)
+	require.NotPanics(t, result.ReleaseFunc)
+	require.Equal(t, []int64{77}, cache.releasedAPIKeyIDs)
 }
 
 func TestAcquireUserSlot_IndependentFromAccount(t *testing.T) {

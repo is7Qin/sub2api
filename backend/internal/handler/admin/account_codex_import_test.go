@@ -408,6 +408,56 @@ func TestCodexAccountIndexMatchesSameWorkspaceAndUser(t *testing.T) {
 	}
 }
 
+func TestCodexAccountIndexMatchesRepeatedAgentIdentityImport(t *testing.T) {
+	index := buildCodexAccountIndex([]service.Account{{
+		ID: 1,
+		Credentials: map[string]any{
+			"auth_mode":          service.OpenAIAuthModeAgentIdentity,
+			"chatgpt_account_id": "acct-agent",
+			"chatgpt_user_id":    "user-agent",
+			"agent_runtime_id":   "runtime-agent",
+		},
+	}})
+
+	keys := buildCodexAgentIdentityKeys("acct-agent", "user-agent")
+	if existing := index.Find(keys); existing == nil || existing.ID != 1 {
+		t.Fatalf("repeated agent identity import did not match account 1: %#v", existing)
+	}
+}
+
+func TestCodexAccountIndexUpdateRemovesStaleIdentityKeys(t *testing.T) {
+	index := buildCodexAccountIndex([]service.Account{{
+		ID: 1,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "acct-old",
+			"chatgpt_user_id":    "user-old",
+			"email":              "old@example.com",
+			"access_token":       "token-old",
+		},
+	}})
+
+	index.Add(service.Account{
+		ID: 1,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "acct-new",
+			"chatgpt_user_id":    "user-new",
+			"email":              "new@example.com",
+			"access_token":       "token-new",
+		},
+	})
+
+	for _, key := range buildCodexIdentityKeys("acct-old", "user-old", "old@example.com", "token-old") {
+		if existing := index.Find([]string{key}); existing != nil {
+			t.Fatalf("stale identity key %q matched account %d after update", key, existing.ID)
+		}
+	}
+	for _, key := range buildCodexIdentityKeys("acct-new", "user-new", "new@example.com", "token-new") {
+		if existing := index.Find([]string{key}); existing == nil || existing.ID != 1 {
+			t.Fatalf("updated identity key %q did not match account 1: %#v", key, existing)
+		}
+	}
+}
+
 func codexTestHasIdentityKey(keys []string, want string) bool {
 	for _, key := range keys {
 		if key == want {

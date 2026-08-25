@@ -51,6 +51,9 @@ export interface RollbackVersionInfo {
   html_url: string
 }
 
+// Binary update and versioned rollback may download a full release over a slow link.
+const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+
 /**
  * Get versions available for rollback (up to 3 versions older than current)
  */
@@ -66,7 +69,9 @@ export async function getRollbackVersions(): Promise<{ versions: RollbackVersion
  * Downloads and applies the latest version
  */
 export async function performUpdate(): Promise<UpdateResult> {
-  const { data } = await apiClient.post<UpdateResult>('/admin/system/update')
+  const { data } = await apiClient.post<UpdateResult>('/admin/system/update', undefined, {
+    timeout: UPDATE_REQUEST_TIMEOUT_MS
+  })
   return data
 }
 
@@ -77,7 +82,8 @@ export async function performUpdate(): Promise<UpdateResult> {
 export async function rollback(version?: string): Promise<UpdateResult> {
   const { data } = await apiClient.post<UpdateResult>(
     '/admin/system/rollback',
-    version ? { version } : undefined
+    version ? { version } : undefined,
+    { timeout: UPDATE_REQUEST_TIMEOUT_MS }
   )
   return data
 }

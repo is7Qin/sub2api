@@ -194,6 +194,9 @@ func (s *quotaUpdateAPIKeyRepoStub) UpdateConfig(_ context.Context, _ int64, _ i
 	if p.Quota != nil {
 		out.Quota = *p.Quota
 	}
+	if p.Concurrency != nil {
+		out.Concurrency = *p.Concurrency
+	}
 	if p.ExpiresAt != nil {
 		out.ExpiresAt = *p.ExpiresAt
 	}
@@ -220,6 +223,106 @@ func TestAPIKeyService_UpdateEscapesNameInConfigPatch(t *testing.T) {
 	require.NotNil(t, repo.patch.Name)
 	require.Equal(t, `&lt;script&gt;alert(&#34;xss&#34;)&lt;/script&gt;`, *repo.patch.Name)
 	require.Equal(t, *repo.patch.Name, updated.Name)
+}
+
+func TestAPIKeyService_UpdatePreservesConcurrencyWhenOmitted(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive, Concurrency: 7,
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+
+	updated, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{})
+	require.NoError(t, err)
+	require.Nil(t, repo.patch.Concurrency)
+	require.Equal(t, 7, updated.Concurrency)
+}
+
+func TestAPIKeyService_UpdateCanDisableConcurrency(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive, Concurrency: 7,
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	concurrency := 0
+
+	updated, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{Concurrency: &concurrency})
+	require.NoError(t, err)
+	require.NotNil(t, repo.patch.Concurrency)
+	require.Zero(t, *repo.patch.Concurrency)
+	require.Zero(t, updated.Concurrency)
+}
+
+func TestAPIKeyService_UpdateRejectsNegativeConcurrency(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive, Concurrency: 7,
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	concurrency := -1
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{Concurrency: &concurrency})
+	require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+	require.Nil(t, repo.patch.Concurrency)
+}
+
+func TestAPIKeyService_UpdateRejectsConcurrencyAboveDatabaseInteger(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	concurrency := int(^uint32(0)>>1) + 1
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{Concurrency: &concurrency})
+	require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+	require.Nil(t, repo.patch.Concurrency)
+}
+
+func TestAPIKeyService_UpdatePreservesIPRulesWhenOmitted(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID:          1,
+		UserID:      2,
+		Key:         "sk-test",
+		Status:      StatusAPIKeyActive,
+		IPWhitelist: []string{"192.0.2.1"},
+		IPBlacklist: []string{"198.51.100.1"},
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{})
+	require.NoError(t, err)
+	require.Nil(t, repo.patch.IPWhitelist)
+	require.Nil(t, repo.patch.IPBlacklist)
+}
+
+func TestAPIKeyService_UpdateCanClearIPRules(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID:          1,
+		UserID:      2,
+		Key:         "sk-test",
+		Status:      StatusAPIKeyActive,
+		IPWhitelist: []string{"192.0.2.1"},
+		IPBlacklist: []string{"198.51.100.1"},
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	emptyWhitelist := []string{}
+	emptyBlacklist := []string{}
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{
+		IPWhitelist: &emptyWhitelist,
+		IPBlacklist: &emptyBlacklist,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, repo.patch.IPWhitelist)
+	require.NotNil(t, repo.patch.IPBlacklist)
+	require.Empty(t, *repo.patch.IPWhitelist)
+	require.Empty(t, *repo.patch.IPBlacklist)
+}
+
+func TestAPIKeyService_UpdateValidatesProvidedIPRules(t *testing.T) {
+	repo := &quotaUpdateAPIKeyRepoStub{apiKey: &APIKey{
+		ID: 1, UserID: 2, Key: "sk-test", Status: StatusAPIKeyActive,
+	}}
+	svc := &APIKeyService{apiKeyRepo: repo}
+	invalid := []string{"not-an-ip"}
+
+	_, err := svc.Update(context.Background(), 1, 2, UpdateAPIKeyRequest{IPWhitelist: &invalid})
+	require.ErrorIs(t, err, ErrInvalidIPPattern)
 }
 
 func TestAPIKeyService_UpdateQuotaUsed_UsesAtomicStatePath(t *testing.T) {

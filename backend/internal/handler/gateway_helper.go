@@ -324,6 +324,44 @@ func (h *ConcurrencyHelper) DecrementAccountWaitCount(ctx context.Context, accou
 	h.concurrencyService.DecrementAccountWaitCount(ctx, accountID)
 }
 
+// TryAcquireAPIKeySlot attempts one immediate API key admission.
+func (h *ConcurrencyHelper) TryAcquireAPIKeySlot(ctx context.Context, apiKeyID int64, maxConcurrency int) (func(), bool, error) {
+	result, err := h.concurrencyService.AcquireAPIKeySlot(ctx, apiKeyID, maxConcurrency)
+	if err != nil {
+		return nil, false, err
+	}
+	if !result.Acquired {
+		return nil, false, nil
+	}
+	return result.ReleaseFunc, true, nil
+}
+
+// AcquireClientSlotsWithWait acquires the logical request's key slot before its
+// user slot. Key admission never waits, so SSE remains uncommitted on key-full.
+func (h *ConcurrencyHelper) AcquireClientSlotsWithWait(c *gin.Context, apiKeyID int64, apiKeyConcurrency int, userID int64, userConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
+	keyRelease, acquired, err := h.TryAcquireAPIKeySlot(c.Request.Context(), apiKeyID, apiKeyConcurrency)
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return nil, &ConcurrencyError{SlotType: "api_key"}
+	}
+
+	userRelease, err := h.AcquireUserSlotWithWait(c, userID, userConcurrency, isStream, streamStarted)
+	if err != nil {
+		keyRelease()
+		return nil, err
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			userRelease()
+			keyRelease()
+		})
+	}, nil
+}
+
 // TryAcquireUserSlot 尝试立即获取用户并发槽位。
 // 返回值: (releaseFunc, acquired, error)
 func (h *ConcurrencyHelper) TryAcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int) (func(), bool, error) {

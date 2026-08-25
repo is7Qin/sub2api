@@ -51,7 +51,7 @@ func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func setupFakeAnthropic(t *testing.T, handler *captureHandler) string {
+func setupFakeAnthropic(t *testing.T, handler http.Handler) string {
 	t.Helper()
 	swapMonitorHTTPClient(t)
 	srv := httptest.NewServer(handler)
@@ -360,5 +360,50 @@ func TestRunCheckForModel_ReplaceMode_EmptyResponseIsFailed(t *testing.T) {
 	}
 	if !strings.Contains(res.Message, "replace-mode") {
 		t.Errorf("failure message should hint replace-mode, got %q", res.Message)
+	}
+}
+
+// anthropicThinkingCaptureHandler 模拟 Anthropic 思考模型响应：thinking block 排在
+// content[0]，中间还穿插 tool_use block，文本在最后。真实返回中思考模型的 content
+// 顺序即如此，旧实现只取 content.0.text 会落空。
+type anthropicThinkingCaptureHandler struct {
+	captureHandler
+}
+
+func (h *anthropicThinkingCaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.lastHeaders = r.Header.Clone()
+	defer func() { _ = r.Body.Close() }()
+	var parsed map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&parsed)
+	h.lastBody = parsed
+
+	prompt := ""
+	if messages, ok := parsed["messages"].([]any); ok && len(messages) > 0 {
+		if msg, ok := messages[0].(map[string]any); ok {
+			prompt, _ = msg["content"].(string)
+		}
+	}
+	answer := answerFromChallengePrompt(prompt)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"content": []map[string]any{
+			{"type": "thinking", "thinking": "let me compute this step by step"},
+			{"type": "tool_use", "id": "toolu_x", "name": "web_search", "input": map[string]any{}},
+			{"type": "text", "text": "the answer is " + answer},
+		},
+	})
+}
+
+func TestRunCheckForModel_Anthropic_AggregatesTextAcrossContentBlocks(t *testing.T) {
+	h := &anthropicThinkingCaptureHandler{}
+	endpoint := setupFakeAnthropic(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", nil)
+
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("thinking-leading response should be operational, got status=%s message=%q",
+			res.Status, res.Message)
 	}
 }

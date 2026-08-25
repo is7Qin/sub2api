@@ -337,6 +337,8 @@ func (s *BillingService) initFallbackPricing() {
 
 	// ---- 国产 LLM 兜底价格 ----
 	// 仅白名单匹配公开可核验 SKU，避免未知国产模型 alias 被宽泛误计价。
+	// GLM-5.2 与 GLM-5.1 在 z.ai 上同价。
+	s.fallbackPrices["glm-5.2"] = &ModelPricing{InputPricePerToken: 1.4e-6, OutputPricePerToken: 4.4e-6, CacheReadPricePerToken: 0.26e-6, SupportsCacheBreakdown: false}
 	s.fallbackPrices["glm-5.1"] = &ModelPricing{InputPricePerToken: 1.4e-6, OutputPricePerToken: 4.4e-6, CacheReadPricePerToken: 0.26e-6, SupportsCacheBreakdown: false}
 	s.fallbackPrices["glm-5"] = &ModelPricing{InputPricePerToken: 1e-6, OutputPricePerToken: 3.2e-6, CacheReadPricePerToken: 0.2e-6, SupportsCacheBreakdown: false}
 	s.fallbackPrices["glm-5-turbo"] = &ModelPricing{InputPricePerToken: 1.2e-6, OutputPricePerToken: 4e-6, CacheReadPricePerToken: 0.24e-6, SupportsCacheBreakdown: false}
@@ -421,6 +423,10 @@ func fallbackPricingKey(model string) string {
 	}
 
 	// 国产 LLM 兜底采用白名单语义：长 key 优先，未知 alias 不回退。
+	// 带小数点的型号必须排在裸 "glm-5" 之前，否则会被 strings.Contains 抢走。
+	if strings.Contains(modelLower, "glm-5.2") {
+		return "glm-5.2"
+	}
 	if strings.Contains(modelLower, "glm-5.1") {
 		return "glm-5.1"
 	}
@@ -629,16 +635,17 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 
 // CostInput 统一计费输入
 type CostInput struct {
-	Ctx            context.Context
-	Model          string
-	GroupID        *int64 // 用于渠道定价查找
-	Tokens         UsageTokens
-	RequestCount   int    // 按次计费时使用
-	SizeTier       string // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
-	RateMultiplier float64
-	ServiceTier    string                // "priority","flex","" 等
-	Resolver       *ModelPricingResolver // 定价解析器
-	Resolved       *ResolvedPricing      // 可选：预解析的定价结果（避免重复 Resolve 调用）
+	Ctx                             context.Context
+	Model                           string
+	GroupID                         *int64 // 用于渠道定价查找
+	Tokens                          UsageTokens
+	RequestCount                    int    // 按次计费时使用
+	SizeTier                        string // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
+	RateMultiplier                  float64
+	ServiceTier                     string                // "priority","flex","" 等
+	Resolver                        *ModelPricingResolver // 定价解析器
+	Resolved                        *ResolvedPricing      // 可选：预解析的定价结果（避免重复 Resolve 调用）
+	OpenAILongContextBillingEnabled bool                  // GPT-5.6 超 272k 长上下文倍率，由 OpenAI 分组显式开启
 }
 
 // CalculateCostUnified 统一计费入口，支持三种计费模式。
@@ -648,8 +655,15 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 		return nil, err
 	}
 	if input.Resolver == nil {
-		// 无 Resolver，回退到旧路径
-		return s.calculateCostInternal(input.Model, input.Tokens, input.RateMultiplier, input.ServiceTier, nil)
+		// 无 Resolver 时仍需保留调用方传入的 GPT-5.6 分组计费策略。
+		return s.calculateCostInternalWithPolicy(
+			input.Model,
+			input.Tokens,
+			input.RateMultiplier,
+			input.ServiceTier,
+			nil,
+			input.OpenAILongContextBillingEnabled,
+		)
 	}
 
 	// 优先使用预解析结果，避免重复 Resolve 调用
@@ -764,8 +778,11 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 
 	pricing = s.applyModelSpecificPricingPolicy(input.Model, pricing)
 
-	// 长上下文定价仅在无区间定价时应用（区间定价已包含上下文分层）
+	// 区间定价已包含上下文分层；GPT-5.6 的整次会话倍率还需由 OpenAI 分组显式开启。
 	applyLongCtx := len(resolved.Intervals) == 0
+	if isOpenAIGPT56Model(input.Model) {
+		applyLongCtx = applyLongCtx && input.OpenAILongContextBillingEnabled
+	}
 
 	return s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
 }
@@ -944,6 +961,10 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 }
 
 func (s *BillingService) calculateCostInternal(model string, tokens UsageTokens, rateMultiplier float64, serviceTier string, channelPricing *ChannelModelPricing) (*CostBreakdown, error) {
+	return s.calculateCostInternalWithPolicy(model, tokens, rateMultiplier, serviceTier, channelPricing, true)
+}
+
+func (s *BillingService) calculateCostInternalWithPolicy(model string, tokens UsageTokens, rateMultiplier float64, serviceTier string, channelPricing *ChannelModelPricing, openAILongContextBillingEnabled bool) (*CostBreakdown, error) {
 	if err := validateUsageTokensForBilling(tokens); err != nil {
 		return nil, err
 	}
@@ -958,8 +979,12 @@ func (s *BillingService) calculateCostInternal(model string, tokens UsageTokens,
 		return nil, err
 	}
 
-	// 旧路径始终检查长上下文定价（无区间定价概念）
-	breakdown, err := s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, true)
+	// 旧路径没有区间定价；GPT-5.6 仍须遵循调用方传入的分组策略。
+	applyLongContext := true
+	if isOpenAIGPT56Model(model) {
+		applyLongContext = openAILongContextBillingEnabled
+	}
+	breakdown, err := s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, applyLongContext)
 	if err != nil {
 		return nil, err
 	}
@@ -1172,6 +1197,43 @@ type ImagePriceConfig struct {
 	Price1K *float64 // 1K 尺寸价格（nil 表示使用默认值）
 	Price2K *float64 // 2K 尺寸价格（nil 表示使用默认值）
 	Price4K *float64 // 4K 尺寸价格（nil 表示使用默认值）
+}
+
+// Codex alpha/search 网页搜索单次默认价：OpenAI 官方 web search 定价 $10/1000 次。
+const defaultWebSearchPricePerCall = 0.01
+
+// CalculateWebSearchCost 计算 Codex alpha/search 网页搜索按次费用。
+// callCount: 搜索调用次数（每次请求为 1）
+// groupPrice: 分组配置的单次价格（nil 表示使用默认价 0.01；0 表示免费）
+// rateMultiplier: 分组费率倍数
+func (s *BillingService) CalculateWebSearchCost(callCount int, groupPrice *float64, rateMultiplier float64) *CostBreakdown {
+	if callCount <= 0 {
+		return &CostBreakdown{}
+	}
+	unitPrice := defaultWebSearchPricePerCall
+	if groupPrice != nil && *groupPrice >= 0 {
+		unitPrice = *groupPrice
+	}
+	totalCost := unitPrice * float64(callCount)
+
+	// 应用倍率（保存时强制 > 0；负数按 0 处理避免按 1x 误扣）
+	if rateMultiplier < 0 {
+		rateMultiplier = 0
+	}
+	return &CostBreakdown{
+		TotalCost:   totalCost,
+		ActualCost:  totalCost * rateMultiplier,
+		BillingMode: string(BillingModePerRequest),
+	}
+}
+
+// webSearchPricePerCallFromAPIKey 从 APIKey 已缓存的 Group 读取按次价格，
+// 避免在热路径上产生 DB 查询。
+func webSearchPricePerCallFromAPIKey(apiKey *APIKey) *float64 {
+	if apiKey == nil || apiKey.Group == nil {
+		return nil
+	}
+	return apiKey.Group.WebSearchPricePerCall
 }
 
 // CalculateImageCost 计算图片生成费用

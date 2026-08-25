@@ -21,7 +21,7 @@ func TestPaymentChannelRouteBoundaries(t *testing.T) {
 	}
 
 	RegisterUserRoutes(v1, handlers, middleware.JWTAuthMiddleware(pass), nil)
-	RegisterAdminRoutes(v1, handlers, middleware.AdminAuthMiddleware(pass))
+	RegisterAdminRoutes(v1, handlers, middleware.AdminAuthMiddleware(pass), nil)
 	RegisterPaymentRoutes(
 		v1,
 		&handler.PaymentHandler{},

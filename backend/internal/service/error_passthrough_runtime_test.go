@@ -14,7 +14,71 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestApplyErrorPassthroughRule_PassthroughBodyUsesFactSafeMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"vendor_failure"}, MatchMode: model.MatchModeAny,
+		PassthroughCode: true, PassthroughBody: true,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+	body := []byte(`{"error":{"code":"vendor_failure","message":"Authorization: Bearer sk-private https://internal.example/path"}}`)
+
+	status, errType, message, matched := applyErrorPassthroughRule(
+		c, PlatformOpenAI, http.StatusBadRequest, body,
+		http.StatusBadGateway, "upstream_error", "Upstream request failed",
+	)
+
+	require.True(t, matched)
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, "upstream_error", errType)
+	require.NotContains(t, message, "sk-private")
+	require.NotContains(t, message, "internal.example")
+	require.LessOrEqual(t, len(message), upstreamErrorFactMaxScalarBytes)
+}
+
+func TestErrorPassthroughService_MatchUnknownRuleUsesBoundedFactText(t *testing.T) {
+	responseCode := http.StatusTeapot
+	customMessage := "safe unknown message"
+	svc := &ErrorPassthroughService{}
+	svc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"vendor_failure"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &responseCode, CustomMessage: &customMessage,
+	}})
+
+	matched := svc.MatchUnknownRule(UpstreamErrorFact{
+		Provider: PlatformOpenAI, Source: UpstreamErrorSourceHTTP,
+		HTTPStatusKnown: true, HTTPStatus: http.StatusBadGateway,
+		ProviderCode: "vendor_failure", InternalMatchText: "openai vendor_failure",
+	})
+
+	require.NotNil(t, matched)
+	require.Equal(t, responseCode, *matched.ResponseCode)
+}
+
+func TestErrorPassthroughService_MatchUnknownRuleRejectsRecognizedFact(t *testing.T) {
+	responseCode := http.StatusTeapot
+	svc := &ErrorPassthroughService{}
+	svc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled: true, Priority: 1, Platforms: []string{PlatformOpenAI},
+		Keywords: []string{"server_is_overloaded"}, MatchMode: model.MatchModeAny,
+		ResponseCode: &responseCode,
+	}})
+
+	matched := svc.MatchUnknownRule(UpstreamErrorFact{
+		Provider: PlatformOpenAI, Source: UpstreamErrorSourceSSE,
+		ProviderCode: "server_is_overloaded", InternalMatchText: "openai server_is_overloaded",
+	})
+
+	require.Nil(t, matched)
+}
 
 func TestApplyErrorPassthroughRule_NoBoundService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -53,7 +117,7 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 
 	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
@@ -61,6 +125,95 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "upstream_error", errField["type"])
 	assert.Equal(t, "Upstream request failed", errField["message"])
+}
+
+func TestOpenAIForward_RecognizedOverloadBypassesFailoverAndConflictingRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	conflictingMessage := "database rule must not win"
+	responseCode := http.StatusTeapot
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled:         true,
+		Priority:        1,
+		Platforms:       []string{PlatformOpenAI},
+		Keywords:        []string{"server_is_overloaded"},
+		MatchMode:       model.MatchModeAll,
+		PassthroughCode: false,
+		ResponseCode:    &responseCode,
+		CustomMessage:   &conflictingMessage,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	respBody := []byte(`{"error":{"code":"server_is_overloaded","type":"response.failed","message":"Bearer sk-private"}}`)
+	svc := &OpenAIGatewayService{
+		httpUpstream: &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+			Header:     http.Header{},
+		}},
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	account := &Account{
+		ID:          120,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.4","input":"hello"}`))
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "server_is_overloaded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	assert.Equal(t, "service_unavailable_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	assert.NotContains(t, rec.Body.String(), "sk-private")
+	assert.NotContains(t, rec.Body.String(), conflictingMessage)
+}
+
+func TestOpenAIHandleErrorResponse_RecognizedOverloadBypassesConflictingRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	conflictingMessage := "database rule must not win"
+	responseCode := http.StatusTeapot
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		Enabled:         true,
+		Priority:        1,
+		Platforms:       []string{PlatformOpenAI},
+		Keywords:        []string{"server_is_overloaded"},
+		MatchMode:       model.MatchModeAll,
+		PassthroughCode: false,
+		ResponseCode:    &responseCode,
+		CustomMessage:   &conflictingMessage,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	svc := &OpenAIGatewayService{}
+	respBody := []byte(`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Please retry later"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+		Header:     http.Header{},
+	}
+	account := &Account{ID: 120, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account, nil)
+
+	require.Error(t, err)
+	require.NotErrorAs(t, err, new(*UpstreamFailoverError))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "server_is_overloaded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	assert.Equal(t, "service_unavailable_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	assert.Equal(t, "Please retry later", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	_, skipMonitoring := c.Get(OpsSkipPassthroughKey)
+	assert.False(t, skipMonitoring)
 }
 
 func TestOpenAIHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
@@ -207,7 +360,7 @@ func TestOpenAIHandleErrorResponse_RedactsOpsDiagnostics(t *testing.T) {
 	require.Contains(t, combined, "[codex-user-agent-redacted]")
 }
 
-func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
+func TestGeminiWriteGeminiMappedError_RecognizedInvalidArgumentPrecedesRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -222,14 +375,14 @@ func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
 
 	err := svc.writeGeminiMappedError(c, account, http.StatusUnprocessableEntity, "req-1", respBody)
 	require.Error(t, err)
-	assert.Equal(t, http.StatusTeapot, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "upstream_error", errField["type"])
-	assert.Equal(t, "Gemini上游失败", errField["message"])
+	assert.Equal(t, "invalid_request_error", errField["type"])
+	assert.Equal(t, "Invalid schema for field messages", errField["message"])
 }
 
 func TestApplyErrorPassthroughRule_SkipMonitoringSetsContextKey(t *testing.T) {
@@ -287,6 +440,53 @@ func TestApplyErrorPassthroughRule_NoSkipMonitoringDoesNotSetContextKey(t *testi
 	assert.True(t, matched)
 	_, exists := c.Get(OpsSkipPassthroughKey)
 	assert.False(t, exists, "OpsSkipPassthroughKey should NOT be set when skip_monitoring=false")
+}
+
+func TestGatewayHandleErrorResponse_Unknown400UsesSafeEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"error":{"message":"bad request"},"access_token":"secret-token","debug":"internal"}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, err := (&GatewayService{}).handleErrorResponse(
+		context.Background(), resp, c,
+		&Account{ID: 902, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "secret-token")
+	require.NotContains(t, rec.Body.String(), "debug")
+	require.True(t, IsResponseCommitted(c))
+}
+
+func TestGatewayHandleErrorResponse_Unknown503UsesGeneric502(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"error":{"code":"vendor_failure","message":"private vendor detail"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, err := (&GatewayService{}).handleErrorResponse(
+		context.Background(), resp, c,
+		&Account{ID: 903, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "private vendor detail")
+	require.True(t, IsResponseCommitted(c))
 }
 
 func TestGatewayHandleErrorResponse_SetsResponseCommitted(t *testing.T) {

@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
@@ -50,7 +52,7 @@ func (s *UsageLogRepoSuite) createUsageLog(user *service.User, apiKey *service.A
 	log := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.New().String(), // Generate unique RequestID for each log
 		Model:        "claude-3",
 		InputTokens:  inputTokens,
@@ -74,7 +76,7 @@ func (s *UsageLogRepoSuite) TestCreate() {
 	log := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3",
 		InputTokens:  10,
 		OutputTokens: 20,
@@ -85,6 +87,90 @@ func (s *UsageLogRepoSuite) TestCreate() {
 	_, err := s.repo.Create(s.ctx, log)
 	s.Require().NoError(err, "Create")
 	s.Require().NotZero(log.ID)
+}
+
+func TestAccountDeleteUsageLogRetention_SoftAndHardDelete(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	client := tx.Client()
+	usageRepo := newUsageLogRepositoryWithSQL(client, tx)
+	accountRepo := newAccountRepositoryWithSQL(client, tx, nil)
+
+	user := mustCreateUser(t, client, &service.User{Email: "account-retention-" + uuid.NewString() + "@example.com"})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-account-retention-" + uuid.NewString(), Name: "retention"})
+
+	softAccount := mustCreateAccount(t, client, &service.Account{Name: "soft-retention-" + uuid.NewString()})
+	softLog := createAccountRetentionUsageLog(t, ctx, usageRepo, user.ID, apiKey.ID, softAccount.ID, "soft-"+uuid.NewString())
+	require.NoError(t, accountRepo.Delete(ctx, softAccount.ID))
+	_, err := client.Account.Query().Where(dbaccount.IDEQ(softAccount.ID)).Only(ctx)
+	require.True(t, dbent.IsNotFound(err), "default account query must hide the soft-deleted row")
+	softDeletedAccount, err := client.Account.Query().Where(dbaccount.IDEQ(softAccount.ID)).Only(mixins.SkipSoftDelete(ctx))
+	require.NoError(t, err)
+	require.NotNil(t, softDeletedAccount.DeletedAt, "account repository delete must set deleted_at")
+
+	softRetained, err := usageRepo.GetByID(ctx, softLog.ID)
+	require.NoError(t, err)
+	require.NotNil(t, softRetained.AccountID)
+	require.Equal(t, softAccount.ID, *softRetained.AccountID)
+
+	hardAccount := mustCreateAccount(t, client, &service.Account{Name: "hard-retention-" + uuid.NewString()})
+	hardLog := createAccountRetentionUsageLog(t, ctx, usageRepo, user.ID, apiKey.ID, hardAccount.ID, "hard-"+uuid.NewString())
+	_, err = client.Account.Delete().Where(dbaccount.IDEQ(hardAccount.ID)).Exec(mixins.SkipSoftDelete(ctx))
+	require.NoError(t, err)
+
+	retained, err := usageRepo.GetByID(ctx, hardLog.ID)
+	require.NoError(t, err, "nullable account_id must scan through the normal repository query")
+	require.Nil(t, retained.AccountID)
+	require.Equal(t, hardLog.UserID, retained.UserID)
+	require.Equal(t, hardLog.APIKeyID, retained.APIKeyID)
+	require.Equal(t, hardLog.RequestID, retained.RequestID)
+	require.Equal(t, hardLog.InputTokens, retained.InputTokens)
+	require.Equal(t, hardLog.OutputTokens, retained.OutputTokens)
+	require.Equal(t, hardLog.CacheCreationTokens, retained.CacheCreationTokens)
+	require.Equal(t, hardLog.CacheReadTokens, retained.CacheReadTokens)
+	require.Equal(t, hardLog.CacheCreation5mTokens, retained.CacheCreation5mTokens)
+	require.Equal(t, hardLog.CacheCreation1hTokens, retained.CacheCreation1hTokens)
+	require.InDelta(t, hardLog.InputCost, retained.InputCost, 1e-9)
+	require.InDelta(t, hardLog.OutputCost, retained.OutputCost, 1e-9)
+	require.InDelta(t, hardLog.CacheCreationCost, retained.CacheCreationCost, 1e-9)
+	require.InDelta(t, hardLog.CacheReadCost, retained.CacheReadCost, 1e-9)
+	require.InDelta(t, hardLog.TotalCost, retained.TotalCost, 1e-9)
+	require.InDelta(t, hardLog.ActualCost, retained.ActualCost, 1e-9)
+
+	logs, page, err := usageRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, usagestats.UsageLogFilters{UserID: user.ID})
+	require.NoError(t, err)
+	require.Len(t, logs, 2, "unfiltered-by-account user list must retain both rows")
+	require.Equal(t, int64(2), page.Total)
+
+	accountLogs, accountPage, err := usageRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, usagestats.UsageLogFilters{UserID: user.ID, AccountID: hardAccount.ID})
+	require.NoError(t, err)
+	require.Empty(t, accountLogs, "NULL historical account must not match a positive account filter")
+	require.Zero(t, accountPage.Total)
+
+	stats, err := usageRepo.GetStatsWithFilters(ctx, usagestats.UsageLogFilters{UserID: user.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stats.TotalRequests)
+	require.Equal(t, int64(34), stats.TotalInputTokens)
+	require.Equal(t, int64(46), stats.TotalOutputTokens)
+
+	accountStats, err := usageRepo.GetStatsWithFilters(ctx, usagestats.UsageLogFilters{UserID: user.ID, AccountID: hardAccount.ID})
+	require.NoError(t, err)
+	require.Zero(t, accountStats.TotalRequests)
+}
+
+func createAccountRetentionUsageLog(t *testing.T, ctx context.Context, repo *usageLogRepository, userID, apiKeyID, accountID int64, requestID string) *service.UsageLog {
+	t.Helper()
+	log := &service.UsageLog{
+		UserID: userID, APIKeyID: apiKeyID, AccountID: usageLogAccountIDPointer(accountID),
+		RequestID: requestID, Model: "retention-model", InputTokens: 17, OutputTokens: 23,
+		CacheCreationTokens: 5, CacheReadTokens: 7, CacheCreation5mTokens: 3, CacheCreation1hTokens: 2,
+		InputCost: 0.11, OutputCost: 0.22, CacheCreationCost: 0.03, CacheReadCost: 0.04,
+		TotalCost: 0.40, ActualCost: 0.35, CreatedAt: time.Now().UTC(),
+	}
+	inserted, err := repo.Create(ctx, log)
+	require.NoError(t, err)
+	require.True(t, inserted)
+	return log
 }
 
 func TestUsageLogRepositoryCreate_BatchPathConcurrent(t *testing.T) {
@@ -108,7 +194,7 @@ func TestUsageLogRepositoryCreate_BatchPathConcurrent(t *testing.T) {
 		logs[i] = &service.UsageLog{
 			UserID:       user.ID,
 			APIKeyID:     apiKey.ID,
-			AccountID:    account.ID,
+			AccountID:    usageLogAccountIDPointer(account.ID),
 			RequestID:    uuid.NewString(),
 			Model:        "claude-3",
 			InputTokens:  10 + i,
@@ -148,7 +234,7 @@ func TestUsageLogRepositoryCreate_BatchPathDuplicateRequestID(t *testing.T) {
 	log1 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    requestID,
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -160,7 +246,7 @@ func TestUsageLogRepositoryCreate_BatchPathDuplicateRequestID(t *testing.T) {
 	log2 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    requestID,
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -201,7 +287,7 @@ func TestUsageLogRepositoryFlushCreateBatch_DeduplicatesSameKeyInMemory(t *testi
 		log := &service.UsageLog{
 			UserID:       user.ID,
 			APIKeyID:     apiKey.ID,
-			AccountID:    account.ID,
+			AccountID:    usageLogAccountIDPointer(account.ID),
 			RequestID:    requestID,
 			Model:        "claude-3",
 			InputTokens:  10 + i,
@@ -211,9 +297,11 @@ func TestUsageLogRepositoryFlushCreateBatch_DeduplicatesSameKeyInMemory(t *testi
 			CreatedAt:    time.Now().UTC(),
 		}
 		logs = append(logs, log)
+		prepared, err := prepareUsageLogInsert(log)
+		require.NoError(t, err)
 		batch = append(batch, usageLogCreateRequest{
 			log:      log,
-			prepared: prepareUsageLogInsert(log),
+			prepared: prepared,
 			resultCh: make(chan usageLogCreateResult, 1),
 		})
 	}
@@ -256,7 +344,7 @@ func TestUsageLogRepositoryCreateBestEffort_BatchPathDuplicateRequestID(t *testi
 	log1 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    requestID,
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -268,7 +356,7 @@ func TestUsageLogRepositoryCreateBestEffort_BatchPathDuplicateRequestID(t *testi
 	log2 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    requestID,
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -289,7 +377,6 @@ func TestUsageLogRepositoryCreateBestEffort_BatchPathDuplicateRequestID(t *testi
 }
 
 func TestUsageLogRepositoryCreateBestEffort_QueueFullReturnsDropped(t *testing.T) {
-	ctx := context.Background()
 	client := testEntClient(t)
 	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
 	repo.bestEffortBatchCh = make(chan usageLogBestEffortRequest, 1)
@@ -299,10 +386,10 @@ func TestUsageLogRepositoryCreateBestEffort_QueueFullReturnsDropped(t *testing.T
 	apiKey := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-usage-best-effort-full-" + uuid.NewString(), Name: "k"})
 	account := mustCreateAccount(t, client, &service.Account{Name: "acc-usage-best-effort-full-" + uuid.NewString()})
 
-	err := repo.CreateBestEffort(ctx, &service.UsageLog{
+	err := repo.CreateBestEffort(context.Background(), &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.NewString(),
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -330,7 +417,7 @@ func TestUsageLogRepositoryCreate_BatchPathCanceledContextMarksNotPersisted(t *t
 	inserted, err := repo.Create(ctx, &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.NewString(),
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -359,7 +446,7 @@ func TestUsageLogRepositoryCreate_BatchPathQueueFullMarksNotPersisted(t *testing
 	inserted, err := repo.Create(ctx, &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.NewString(),
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -390,7 +477,7 @@ func TestUsageLogRepositoryCreate_BatchPathCanceledAfterQueueMarksNotPersisted(t
 		_, err := repo.createBatched(ctx, &service.UsageLog{
 			UserID:       user.ID,
 			APIKeyID:     apiKey.ID,
-			AccountID:    account.ID,
+			AccountID:    usageLogAccountIDPointer(account.ID),
 			RequestID:    uuid.NewString(),
 			Model:        "claude-3",
 			InputTokens:  10,
@@ -423,7 +510,7 @@ func TestUsageLogRepositoryFlushCreateBatch_CanceledRequestReturnsNotPersisted(t
 	log := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.NewString(),
 		Model:        "claude-3",
 		InputTokens:  10,
@@ -432,9 +519,11 @@ func TestUsageLogRepositoryFlushCreateBatch_CanceledRequestReturnsNotPersisted(t
 		ActualCost:   0.5,
 		CreatedAt:    time.Now().UTC(),
 	}
+	prepared, err := prepareUsageLogInsert(log)
+	require.NoError(t, err)
 	req := usageLogCreateRequest{
 		log:      log,
-		prepared: prepareUsageLogInsert(log),
+		prepared: prepared,
 		shared:   &usageLogCreateShared{},
 		resultCh: make(chan usageLogCreateResult, 1),
 	}
@@ -475,7 +564,7 @@ func (s *UsageLogRepoSuite) TestGetByID_ReturnsAccountRateMultiplier() {
 	log := &service.UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
-		AccountID:             account.ID,
+		AccountID:             usageLogAccountIDPointer(account.ID),
 		RequestID:             uuid.New().String(),
 		Model:                 "claude-3",
 		InputTokens:           10,
@@ -502,7 +591,7 @@ func (s *UsageLogRepoSuite) TestGetByID_ReturnsOpenAIWSMode() {
 	log := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.New().String(),
 		Model:        "gpt-5.3-codex",
 		InputTokens:  10,
@@ -528,7 +617,7 @@ func (s *UsageLogRepoSuite) TestGetByID_ReturnsRequestTypeAndLegacyFallback() {
 	log := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		RequestID:    uuid.New().String(),
 		Model:        "gpt-5.3-codex",
 		RequestType:  service.RequestTypeWSV2,
@@ -682,7 +771,7 @@ func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {
 	logToday := &service.UsageLog{
 		UserID:              userToday.ID,
 		APIKeyID:            apiKey1.ID,
-		AccountID:           accNormal.ID,
+		AccountID:           usageLogAccountIDPointer(accNormal.ID),
 		Model:               "claude-3",
 		GroupID:             &group.ID,
 		InputTokens:         10,
@@ -700,7 +789,7 @@ func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {
 	logOld := &service.UsageLog{
 		UserID:       userOld.ID,
 		APIKeyID:     apiKey1.ID,
-		AccountID:    accNormal.ID,
+		AccountID:    usageLogAccountIDPointer(accNormal.ID),
 		Model:        "claude-3",
 		InputTokens:  5,
 		OutputTokens: 6,
@@ -715,7 +804,7 @@ func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {
 	logPerf := &service.UsageLog{
 		UserID:       userToday.ID,
 		APIKeyID:     apiKey1.ID,
-		AccountID:    accNormal.ID,
+		AccountID:    usageLogAccountIDPointer(accNormal.ID),
 		Model:        "claude-3",
 		InputTokens:  1,
 		OutputTokens: 2,
@@ -781,7 +870,7 @@ func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {
 	logOutside := &service.UsageLog{
 		UserID:       user1.ID,
 		APIKeyID:     apiKey1.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3",
 		InputTokens:  7,
 		OutputTokens: 8,
@@ -796,7 +885,7 @@ func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {
 	logRange := &service.UsageLog{
 		UserID:              user1.ID,
 		APIKeyID:            apiKey1.ID,
-		AccountID:           account.ID,
+		AccountID:           usageLogAccountIDPointer(account.ID),
 		Model:               "claude-3",
 		InputTokens:         10,
 		OutputTokens:        20,
@@ -813,7 +902,7 @@ func (s *UsageLogRepoSuite) TestDashboardStatsWithRange_Fallback() {
 	logToday := &service.UsageLog{
 		UserID:          user2.ID,
 		APIKeyID:        apiKey2.ID,
-		AccountID:       account.ID,
+		AccountID:       usageLogAccountIDPointer(account.ID),
 		Model:           "claude-3",
 		InputTokens:     5,
 		OutputTokens:    6,
@@ -870,7 +959,7 @@ func (s *UsageLogRepoSuite) TestGetAccountTodayStats() {
 	_, err := s.repo.Create(s.ctx, &service.UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
-		AccountID:             account.ID,
+		AccountID:             usageLogAccountIDPointer(account.ID),
 		RequestID:             uuid.New().String(),
 		Model:                 "claude-3",
 		InputTokens:           10,
@@ -884,7 +973,7 @@ func (s *UsageLogRepoSuite) TestGetAccountTodayStats() {
 	_, err = s.repo.Create(s.ctx, &service.UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
-		AccountID:             account.ID,
+		AccountID:             usageLogAccountIDPointer(account.ID),
 		RequestID:             uuid.New().String(),
 		Model:                 "claude-3",
 		InputTokens:           5,
@@ -932,7 +1021,7 @@ func (s *UsageLogRepoSuite) TestDashboardAggregationConsistency() {
 	log1 := &service.UsageLog{
 		UserID:              user1.ID,
 		APIKeyID:            apiKey1.ID,
-		AccountID:           account.ID,
+		AccountID:           usageLogAccountIDPointer(account.ID),
 		Model:               "claude-3",
 		InputTokens:         10,
 		OutputTokens:        20,
@@ -949,7 +1038,7 @@ func (s *UsageLogRepoSuite) TestDashboardAggregationConsistency() {
 	log2 := &service.UsageLog{
 		UserID:       user1.ID,
 		APIKeyID:     apiKey1.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3",
 		InputTokens:  5,
 		OutputTokens: 5,
@@ -964,7 +1053,7 @@ func (s *UsageLogRepoSuite) TestDashboardAggregationConsistency() {
 	log3 := &service.UsageLog{
 		UserID:       user2.ID,
 		APIKeyID:     apiKey2.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3",
 		InputTokens:  7,
 		OutputTokens: 8,
@@ -1203,7 +1292,7 @@ func (s *UsageLogRepoSuite) TestListByModelAndTimeRange() {
 	log1 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-opus",
 		InputTokens:  10,
 		OutputTokens: 20,
@@ -1217,7 +1306,7 @@ func (s *UsageLogRepoSuite) TestListByModelAndTimeRange() {
 	log2 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-opus",
 		InputTokens:  15,
 		OutputTokens: 25,
@@ -1231,7 +1320,7 @@ func (s *UsageLogRepoSuite) TestListByModelAndTimeRange() {
 	log3 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-sonnet",
 		InputTokens:  20,
 		OutputTokens: 30,
@@ -1318,7 +1407,7 @@ func (s *UsageLogRepoSuite) TestGetUserModelStats() {
 	log1 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-opus",
 		InputTokens:  100,
 		OutputTokens: 200,
@@ -1332,7 +1421,7 @@ func (s *UsageLogRepoSuite) TestGetUserModelStats() {
 	log2 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-sonnet",
 		InputTokens:  50,
 		OutputTokens: 100,
@@ -1413,7 +1502,7 @@ func (s *UsageLogRepoSuite) TestGetModelStatsWithFilters() {
 	log1 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-opus",
 		InputTokens:  100,
 		OutputTokens: 200,
@@ -1427,7 +1516,7 @@ func (s *UsageLogRepoSuite) TestGetModelStatsWithFilters() {
 	log2 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-sonnet",
 		InputTokens:  50,
 		OutputTokens: 100,
@@ -1470,7 +1559,7 @@ func (s *UsageLogRepoSuite) TestGetAccountUsageStats() {
 	log1 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-opus",
 		InputTokens:  100,
 		OutputTokens: 200,
@@ -1484,7 +1573,7 @@ func (s *UsageLogRepoSuite) TestGetAccountUsageStats() {
 	log2 := &service.UsageLog{
 		UserID:       user.ID,
 		APIKeyID:     apiKey.ID,
-		AccountID:    account.ID,
+		AccountID:    usageLogAccountIDPointer(account.ID),
 		Model:        "claude-3-sonnet",
 		InputTokens:  50,
 		OutputTokens: 100,

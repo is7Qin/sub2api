@@ -60,7 +60,7 @@ func ProvideOpenAIOAuthService(
 	return svc
 }
 
-// ProvideTokenRefreshService creates and starts TokenRefreshService
+// ProvideTokenRefreshService constructs TokenRefreshService. Its lifecycle is owned by the server worker runtime.
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
 	oauthService *OAuthService,
@@ -84,7 +84,6 @@ func ProvideTokenRefreshService(
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
-	svc.Start()
 	return svc
 }
 
@@ -124,8 +123,9 @@ func ProvideOpenAIQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *OpenAITokenProvider,
 	privacyClientFactory PrivacyClientFactory,
+	agentIdentityWSInvalidator agentIdentityWSConnectionInvalidator,
 ) *OpenAIQuotaService {
-	return NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory)
+	return NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory, agentIdentityWSInvalidator)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -173,20 +173,35 @@ func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *Timing
 	return svc
 }
 
-// ProvideAccountExpiryService creates and starts AccountExpiryService.
-func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
-	svc := NewAccountExpiryService(accountRepo, time.Minute)
-	svc.Start()
+// ProvideOutboxCleanupService 构造 outbox 保留期清理服务。
+// 生命周期由 server worker runtime 统一管理（见 NewOutboxCleanupWorker）；
+// Run 内部按周期选举 leader，避免多副本同时删除 outbox 行。
+func ProvideOutboxCleanupService(
+	billingRepo BillingOutboxRepository,
+	schedulerRepo SchedulerOutboxRepository,
+	schedulerCache SchedulerCache,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+	cfg *config.Config,
+) *OutboxCleanupService {
+	svc := NewOutboxCleanupService(billingRepo, schedulerRepo, schedulerCache,
+		time.Duration(cfg.OutboxCleanup.TerminalRetentionDays)*24*time.Hour)
+	svc.SetLeaderLock(lockCache, db)
 	return svc
 }
 
-// ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
+// ProvideAccountExpiryService constructs AccountExpiryService.
+// Its lifecycle is owned by the server worker runtime.
+func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
+	return NewAccountExpiryService(accountRepo, time.Minute)
+}
+
+// ProvideSubscriptionExpiryService configures SubscriptionExpiryService.
 func ProvideSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
 	svc.SetSettingRepository(settingRepo)
 	svc.SetNotificationEmailService(notificationEmailService)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
 	return svc
 }
 
@@ -207,25 +222,36 @@ func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWh
 	return svc
 }
 
-// ProvideConcurrencyService creates ConcurrencyService and starts slot cleanup worker.
-func ProvideConcurrencyService(cache ConcurrencyCache, accountRepo AccountRepository, cfg *config.Config, _ *OpenAIOAuthStartupConfigValidation) *ConcurrencyService {
+// ProvideConcurrencyService creates and configures ConcurrencyService.
+func ProvideConcurrencyService(cache ConcurrencyCache, cfg *config.Config, _ *OpenAIOAuthStartupConfigValidation) *ConcurrencyService {
 	svc := NewConcurrencyService(cache)
 	if err := svc.CleanupStaleProcessSlots(context.Background()); err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: startup cleanup stale process slots failed: %v", err)
 	}
 	if cfg != nil {
 		svc.SetAccountLoadBatchCacheTTL(time.Duration(cfg.Gateway.Scheduling.LoadBatchCacheTTLMS) * time.Millisecond)
-		svc.StartSlotCleanupWorker(accountRepo, cfg.Gateway.Scheduling.SlotCleanupInterval)
+		svc.ConfigureSlotCleanup(cfg.Gateway.Scheduling.SlotCleanupInterval)
 	}
 	return svc
 }
 
-// ProvideUserMessageQueueService 创建用户消息串行队列服务并启动清理 worker
+// ProvideUserMessageQueueService constructs the user-message queue service.
 func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg *config.Config) *UserMessageQueueService {
-	svc := NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
-	if cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds > 0 {
-		svc.StartCleanupWorker(time.Duration(cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds) * time.Second)
-	}
+	return NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
+}
+
+const supportDecisionReplicaMaxStale = 30 * time.Second
+
+func ProvideSupportDecisionAtomicReader() *SupportDecisionAtomicReader {
+	return NewSupportDecisionAtomicReader(supportDecisionReplicaMaxStale)
+}
+
+func ProvideSupportDecisionReader(reader *SupportDecisionAtomicReader) SupportDecisionReader {
+	return reader
+}
+
+// ProvideSchedulerSnapshotDirtyProcessor exposes snapshot effects without dirty ownership.
+func ProvideSchedulerSnapshotDirtyProcessor(svc *SchedulerSnapshotService) SchedulerSnapshotDirtyProcessor {
 	return svc
 }
 
@@ -332,7 +358,6 @@ func ProvideOpsCleanupService(
 
 func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
-	sink.Start()
 	logger.SetSink(sink)
 	return sink
 }
@@ -370,10 +395,10 @@ func ProvideSystemOperationLockService(repo IdempotencyRepository, cfg *config.C
 	return NewSystemOperationLockService(repo, buildIdempotencyConfig(cfg))
 }
 
+// ProvideIdempotencyCleanupService constructs the cleanup service.
+// Its lifecycle is owned by the server worker runtime.
 func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
-	svc := NewIdempotencyCleanupService(repo, cfg)
-	svc.Start()
-	return svc
+	return NewIdempotencyCleanupService(repo, cfg)
 }
 
 // ProvideScheduledTestService creates ScheduledTestService.
@@ -482,6 +507,32 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	return svc
 }
 
+// ProvideBillingOutboxWorker constructs the durable billing replay worker and
+// injects its repository into both gateway implementations before starting it.
+func ProvideBillingOutboxWorker(
+	repo BillingOutboxRepository,
+	usageBillingRepo UsageBillingRepository,
+	apiKeyService *APIKeyService,
+	gatewayService *GatewayService,
+	openAIGatewayService *OpenAIGatewayService,
+) *BillingOutboxWorker {
+	if gatewayService != nil {
+		gatewayService.SetBillingOutboxRepository(repo)
+	}
+	if openAIGatewayService != nil {
+		openAIGatewayService.SetBillingOutboxRepository(repo)
+	}
+	var deps *billingDeps
+	if gatewayService != nil {
+		deps = gatewayService.billingDeps()
+	} else if openAIGatewayService != nil {
+		deps = openAIGatewayService.billingDeps()
+	}
+	worker := NewBillingOutboxWorker(repo, usageBillingRepo, NewBillingOutboxPostProcessor(deps, apiKeyService))
+	worker.Start()
+	return worker
+}
+
 // ProvideBillingCacheService wires BillingCacheService with its RPM dependencies.
 func ProvideBillingCacheService(
 	cache BillingCache,
@@ -507,9 +558,11 @@ func ProvideAPIKeyService(
 	cache APIKeyCache,
 	cfg *config.Config,
 	billingCacheService *BillingCacheService,
+	concurrencyService *ConcurrencyService,
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
+	svc.SetAPIKeyConcurrencyBatchReader(concurrencyService)
 	return svc
 }
 
@@ -520,6 +573,7 @@ var ProviderSet = wire.NewSet(
 	NewUserService,
 	ProvideAPIKeyService,
 	ProvideAPIKeyAuthCacheInvalidator,
+	ProvideAuthCacheInvalidationWorker,
 	NewGroupService,
 	NewAccountService,
 	NewProxyService,
@@ -530,12 +584,14 @@ var ProviderSet = wire.NewSet(
 	ProvidePricingService,
 	NewBillingService,
 	ProvideBillingCacheService,
+	ProvideBillingOutboxWorker,
 	NewAnnouncementService,
 	NewAdminService,
 	ProvideOpenAIOAuthStartupConfigValidation,
 	NewGatewayService,
 	NewOpenAIGatewayService,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
+	wire.Bind(new(agentIdentityWSConnectionInvalidator), new(*OpenAIGatewayService)),
 	NewOAuthService,
 	ProvideOpenAIOAuthService,
 	NewGeminiOAuthService,
@@ -574,6 +630,13 @@ var ProviderSet = wire.NewSet(
 	ProvideUserMessageQueueService,
 	NewUsageRecordWorkerPool,
 	ProvideSchedulerSnapshotService,
+	ProvideSchedulerSnapshotDirtyProcessor,
+	ProvideSupportDecisionAtomicReader,
+	ProvideSupportDecisionReader,
+	NewSupportDecisionPublisher,
+	NewSchedulerSupportPublisherWorker,
+	NewSupportDecisionReplica,
+	NewSupportDecisionReplicaWorker,
 	NewIdentityService,
 	NewCRSSyncService,
 	ProvideUpdateService,
@@ -583,6 +646,7 @@ var ProviderSet = wire.NewSet(
 	ProvideTimingWheelService,
 	ProvideDashboardAggregationService,
 	ProvideUsageCleanupService,
+	ProvideOutboxCleanupService,
 	ProvideDeferredService,
 	NewAntigravityQuotaFetcher,
 	NewUserAttributeService,
@@ -607,6 +671,8 @@ var ProviderSet = wire.NewSet(
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
+	ProvideChannelMonitorV2Service,
+	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
@@ -638,11 +704,10 @@ func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, 
 	return svc
 }
 
-// ProvidePaymentOrderExpiryService creates and starts PaymentOrderExpiryService.
+// ProvidePaymentOrderExpiryService configures PaymentOrderExpiryService.
 func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache LeaderLockCache, db *sql.DB) *PaymentOrderExpiryService {
 	svc := NewPaymentOrderExpiryService(paymentSvc, 60*time.Second)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
 	return svc
 }
 
@@ -664,4 +729,20 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settings *SettingService) *ChannelMonitorV2Service {
+	svc := NewChannelMonitorV2Service(repo)
+	svc.SetRuntimeReader(settings)
+	return svc
+}
+
+// ProvideChannelMonitorV2Aggregator constructs state only; the worker runtime owns its lifecycle.
+func ProvideChannelMonitorV2Aggregator(
+	repo ChannelMonitorV2Repository,
+	settings *SettingService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+) *ChannelMonitorV2Aggregator {
+	return NewChannelMonitorV2Aggregator(repo, settings, lockCache, db)
 }

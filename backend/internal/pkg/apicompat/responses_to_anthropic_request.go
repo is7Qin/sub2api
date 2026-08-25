@@ -11,7 +11,7 @@ import (
 // enables Anthropic platform groups to accept OpenAI Responses API requests
 // by converting them to the native /v1/messages format before forwarding upstream.
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
-	system, messages, err := convertResponsesInputToAnthropic(req.Input)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +100,17 @@ func mapResponsesEffortToAnthropic(effort string) string {
 // convertResponsesInputToAnthropic extracts system prompt and messages from
 // a Responses API input array. Returns the system as raw JSON (for Anthropic's
 // polymorphic system field) and a list of Anthropic messages.
-func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage, []AnthropicMessage, error) {
+func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage) (json.RawMessage, []AnthropicMessage, error) {
+	var directives []string
+	if strings.TrimSpace(instructions) != "" {
+		directives = append(directives, instructions)
+	}
+
 	// Try as plain string input.
 	var inputStr string
 	if err := json.Unmarshal(inputRaw, &inputStr); err == nil {
 		content, _ := json.Marshal(inputStr)
-		return nil, []AnthropicMessage{{Role: "user", Content: content}}, nil
+		return marshalAnthropicSystemDirectives(directives), []AnthropicMessage{{Role: "user", Content: content}}, nil
 	}
 
 	var items []ResponsesInputItem
@@ -113,16 +118,14 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 		return nil, nil, fmt.Errorf("parse responses input: %w", err)
 	}
 
-	var system json.RawMessage
 	var messages []AnthropicMessage
 
 	for itemIndex, item := range items {
 		switch {
-		case item.Role == "system":
-			// System prompt → Anthropic system field
+		case item.Role == "system" || item.Role == "developer":
 			text := extractTextFromContent(item.Content)
-			if text != "" {
-				system, _ = json.Marshal(text)
+			if strings.TrimSpace(text) != "" {
+				directives = append(directives, text)
 			}
 
 		case item.Type == "function_call":
@@ -145,11 +148,7 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 
 		case item.Type == "function_call_output":
 			// function_call_output → user message with tool_result block
-			outputContent := item.Output
-			if outputContent == "" {
-				outputContent = "(empty)"
-			}
-			contentJSON, _ := json.Marshal(outputContent)
+			contentJSON := responsesFunctionOutputToAnthropicContent(item)
 			block := AnthropicContentBlock{
 				Type:      "tool_result",
 				ToolUseID: fromResponsesCallIDToAnthropic(item.CallID),
@@ -161,10 +160,17 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 				Content: blockJSON,
 			})
 
+		case item.Type == "reasoning":
+			// OpenAI reasoning blocks cannot be replayed to Anthropic: valid thinking
+			// blocks require an Anthropic-issued signature.
+
 		case item.Role == "user":
 			content, err := convertResponsesUserToAnthropicContent(item.Content)
 			if err != nil {
 				return nil, nil, err
+			}
+			if anthropicContentIsEmpty(content) {
+				continue
 			}
 			messages = append(messages, AnthropicMessage{
 				Role:    "user",
@@ -176,19 +182,31 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 			if err != nil {
 				return nil, nil, err
 			}
+			if anthropicContentIsEmpty(content) || anthropicContentIsOnlyBlankText(content) {
+				continue
+			}
 			messages = append(messages, AnthropicMessage{
 				Role:    "assistant",
 				Content: content,
 			})
 
 		default:
-			// Unknown role/type — attempt as user message
-			if item.Content != nil {
-				messages = append(messages, AnthropicMessage{
-					Role:    "user",
-					Content: item.Content,
-				})
+			// Unknown item types still use the user-content allowlist so Responses-only
+			// blocks are never forwarded verbatim to Anthropic.
+			if item.Content == nil {
+				continue
 			}
+			content, err := convertResponsesUserToAnthropicContent(item.Content)
+			if err != nil {
+				return nil, nil, err
+			}
+			if anthropicContentIsEmpty(content) {
+				continue
+			}
+			messages = append(messages, AnthropicMessage{
+				Role:    "user",
+				Content: content,
+			})
 		}
 	}
 
@@ -201,12 +219,76 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 	messages = normalizeAnthropicToolPairing(messages)
 	messages = mergeConsecutiveMessages(messages)
 
-	return system, messages, nil
+	return marshalAnthropicSystemDirectives(directives), messages, nil
+}
+
+func marshalAnthropicSystemDirectives(directives []string) json.RawMessage {
+	if len(directives) == 0 {
+		return nil
+	}
+	blocks := make([]AnthropicContentBlock, 0, len(directives))
+	for _, directive := range directives {
+		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: directive})
+	}
+	raw, _ := json.Marshal(blocks)
+	return raw
 }
 
 // functionCallArgumentsObject validates the Responses string field before it
 // becomes Anthropic's object-valued tool_use.input. Keep the original bytes so
 // arbitrary nested values pass through without lossy type conversion.
+func responsesFunctionOutputToAnthropicContent(item ResponsesInputItem) json.RawMessage {
+	if len(item.outputRaw) == 0 {
+		output := item.Output
+		if output == "" {
+			output = "(empty)"
+		}
+		content, _ := json.Marshal(output)
+		return content
+	}
+
+	var rawParts []json.RawMessage
+	if err := json.Unmarshal(item.outputRaw, &rawParts); err == nil {
+		blocks := make([]AnthropicContentBlock, 0, len(rawParts))
+		for _, rawPart := range rawParts {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(rawPart, &fields); err != nil {
+				continue
+			}
+			var partType string
+			if err := json.Unmarshal(fields["type"], &partType); err != nil {
+				continue
+			}
+			switch partType {
+			case "input_text", "output_text", "text":
+				var text string
+				if err := json.Unmarshal(fields["text"], &text); err == nil && text != "" {
+					blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: text})
+				}
+			case "input_image":
+				var imageURL string
+				if err := json.Unmarshal(fields["image_url"], &imageURL); err == nil {
+					if source := dataURIToAnthropicImageSource(imageURL); source != nil {
+						blocks = append(blocks, AnthropicContentBlock{Type: "image", Source: source})
+					}
+				}
+			}
+		}
+		if len(blocks) > 0 {
+			content, _ := json.Marshal(blocks)
+			return content
+		}
+		if len(rawParts) == 0 {
+			content, _ := json.Marshal("(empty)")
+			return content
+		}
+	}
+
+	// Preserve the prior textual fallback for malformed or unsupported output.
+	content, _ := json.Marshal(item.Output)
+	return content
+}
+
 func functionCallArgumentsObject(arguments string) (json.RawMessage, error) {
 	if arguments == "" {
 		return json.RawMessage("{}"), nil
@@ -402,6 +484,28 @@ func extractTextFromContent(raw json.RawMessage) string {
 		return strings.Join(texts, "\n\n")
 	}
 	return ""
+}
+
+func anthropicContentIsEmpty(content json.RawMessage) bool {
+	switch strings.TrimSpace(string(content)) {
+	case "", "null", `""`, "[]":
+		return true
+	default:
+		return false
+	}
+}
+
+func anthropicContentIsOnlyBlankText(content json.RawMessage) bool {
+	blocks := parseContentBlocks(content)
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type != "text" || strings.TrimSpace(block.Text) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // convertResponsesUserToAnthropicContent converts a Responses user message

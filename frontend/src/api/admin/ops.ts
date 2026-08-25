@@ -271,6 +271,14 @@ export interface OpsSystemMetricsSnapshot {
   goroutine_count?: number | null
   concurrency_queue_depth?: number | null
   account_switch_count?: number | null
+
+  // Go runtime memory / GC (process-internal, not cgroup).
+  heap_alloc_mb?: number | null
+  heap_sys_mb?: number | null
+  gc_num_cycles?: number | null
+  gc_total_pause_ms?: number | null
+  gc_cpu_fraction?: number | null
+  alloc_bytes_per_sec?: number | null
 }
 
 export interface OpsJobHeartbeat {
@@ -884,6 +892,28 @@ export interface OpsSystemLogSinkHealth {
   last_error?: string
 }
 
+// Billing outbox worker 健康（对齐后端 BillingOutboxHealth JSON；
+// oldest_lag 为 Go time.Duration 的纳秒整数，无自定义 MarshalJSON）
+export interface OpsBillingOutboxHealth {
+  running: boolean
+  processed: number
+  failures: number
+  pending: number
+  processing: number
+  terminal: number
+  oldest_lag: number
+  last_error?: string
+  stats_error?: string
+  max_attempts: number
+  circuit_open: boolean
+  circuit_error?: string
+  circuit_opened_at?: string | null
+  permanent_failures: number
+  backlogged_rounds: number
+  round_timeouts: number
+  terminal_alert?: string
+}
+
 export interface OpsErrorLog {
   id: number
   created_at: string
@@ -1277,6 +1307,11 @@ export async function getSystemLogSinkHealth(): Promise<OpsSystemLogSinkHealth> 
   return data
 }
 
+export async function getBillingOutboxHealth(): Promise<OpsBillingOutboxHealth> {
+  const { data } = await apiClient.get<OpsBillingOutboxHealth>('/admin/ops/billing-outbox/health')
+  return data
+}
+
 // Advanced settings (DB-backed)
 export async function getAdvancedSettings(): Promise<OpsAdvancedSettings> {
   const { data } = await apiClient.get<OpsAdvancedSettings>('/admin/ops/advanced-settings')
@@ -1349,7 +1384,8 @@ export const opsAPI = {
   updateMetricThresholds,
   listSystemLogs,
   cleanupSystemLogs,
-  getSystemLogSinkHealth
+  getSystemLogSinkHealth,
+  getBillingOutboxHealth
 }
 
 export default opsAPI

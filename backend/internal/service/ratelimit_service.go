@@ -90,12 +90,7 @@ const (
 
 var openAIImageTryAgainPattern = regexp.MustCompile(`(?i)try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)`)
 
-const (
-	openAI403CooldownMinutesDefault = 10
-	openAI403DisableThreshold       = 3
-	openAI403CounterWindowMinutes   = 180
-	openAIPAT401WhoamiCacheTTL      = 15 * time.Minute
-)
+const openAIPAT401WhoamiCacheTTL = 15 * time.Minute
 
 // NewRateLimitService 创建RateLimitService实例
 func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogRepository, cfg *config.Config, geminiQuotaService *GeminiQuotaService, tempUnschedCache TempUnschedCache) *RateLimitService {
@@ -165,7 +160,7 @@ const (
 
 // CheckErrorPolicy 检查自定义错误码和临时不可调度规则。
 // 自定义错误码开启时覆盖后续所有逻辑（包括临时不可调度）。
-func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte) ErrorPolicyResult {
+func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) ErrorPolicyResult {
 	if account.IsCustomErrorCodesEnabled() {
 		if account.ShouldHandleErrorCode(statusCode) {
 			return ErrorPolicyMatched
@@ -174,9 +169,13 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 		return ErrorPolicySkipped
 	}
 	if account.IsPoolMode() {
+		// Pool mode skips default account penalties, not explicit admin rules.
+		if statusCode != http.StatusUnauthorized && s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
+			return ErrorPolicyTempUnscheduled
+		}
 		return ErrorPolicySkipped
 	}
-	if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
+	if s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
 		return ErrorPolicyTempUnscheduled
 	}
 	return ErrorPolicyNone
@@ -185,10 +184,28 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	// Existing generic callers do not expose their selected bearer, so retain the
+	// established PAT policy there. Codex model sync uses the explicit method below.
+	usesConfiguredPAT := account != nil && account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIPersonalAccessToken()) != ""
+	return s.handleUpstreamError(ctx, account, statusCode, headers, responseBody, usesConfiguredPAT, requestedModel...)
+}
+
+// HandleOpenAICodexBearerError preserves the actual bearer selected for a Codex
+// request. A configured PAT must not affect classification when another bearer
+// was sent.
+func (s *RateLimitService) HandleOpenAICodexBearerError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, usedPersonalAccessToken bool) (shouldDisable bool) {
+	return s.handleUpstreamError(ctx, account, statusCode, headers, responseBody, usedPersonalAccessToken)
+}
+
+func (s *RateLimitService) handleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, usedPersonalAccessToken bool, requestedModel ...string) (shouldDisable bool) {
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
-	// 池模式默认不标记本地账号状态；仅当用户显式配置自定义错误码时按本地策略处理。
+	// Pool mode skips default account penalties, but explicit temporary rules still apply.
+	// Keep 401 on the existing authentication path rather than changing escalation semantics.
 	if account.IsPoolMode() && !customErrorCodesEnabled {
+		if statusCode != http.StatusUnauthorized && s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
+			return true
+		}
 		slog.Info("pool_mode_error_skipped", "account_id", account.ID, "status_code", statusCode)
 		return false
 	}
@@ -222,14 +239,14 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// 先尝试临时不可调度规则（401除外）
 	// 如果匹配成功，直接返回，不执行后续禁用逻辑
 	if statusCode != 401 {
-		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
+		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...) {
 			return true
 		}
 	}
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
 	if account.Platform == PlatformOpenAI {
-		upstreamMsg = sanitizeOpenAIUpstreamDiagnosticText(upstreamMsg)
+		upstreamMsg = sanitizeOpenAIAccountDiagnosticText(account, upstreamMsg)
 	} else {
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	}
@@ -257,6 +274,18 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
+		// Agent Identity 401s are task-scoped and remain owned by their bounded
+		// recovery caller rather than ordinary OAuth account classification.
+		if account.Platform == PlatformOpenAI && account.IsOpenAIAgentIdentity() {
+			break
+		}
+		// Codex requests preferentially use a PAT. Any 401 from that actual bearer
+		// must be verified independently before provider response text can disable
+		// the account; the response may be model/session-specific.
+		if account.Platform == PlatformOpenAI && usedPersonalAccessToken {
+			shouldDisable = s.handleOpenAIPersonalAccessToken401(ctx, account, upstreamMsg)
+			break
+		}
 		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
 		openai401Code := extractUpstreamErrorCode(responseBody)
 		if account.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
@@ -264,27 +293,44 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			if upstreamMsg != "" {
 				msg = "Token revoked (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, account, msg)
+			if account.IsOpenAIOAuthLike() {
+				s.handleOpenAIOAuthLike401(ctx, account, msg, true)
+			} else {
+				s.handleAuthError(ctx, account, msg)
+			}
 			shouldDisable = true
 			break
 		}
 		// OpenAI PAT 的 401 先用 whoami 复核；只有 whoami 也 401/403 才永久禁用。
-		if account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIPersonalAccessToken()) != "" {
-			shouldDisable = s.handleOpenAIPersonalAccessToken401(ctx, account, upstreamMsg)
-			break
-		}
 		// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
 		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" {
 			msg := "Unauthorized (401): account authentication failed permanently"
 			if upstreamMsg != "" {
 				msg = "Unauthorized (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, account, msg)
+			if account.IsOpenAIOAuthLike() {
+				s.handleOpenAIOAuthLike401(ctx, account, msg, true)
+			} else {
+				s.handleAuthError(ctx, account, msg)
+			}
 			shouldDisable = true
 			break
 		}
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
 		// Antigravity 除外：其 401 由 applyErrorPolicy 的 temp_unschedulable_rules 自行控制。
+		if account.Platform == PlatformOpenAI && account.IsOpenAIOAuthLike() && !account.IsOpenAIAgentIdentity() {
+			msg := "Authentication failed (401): invalid or expired credentials"
+			permanent := account.Type == AccountTypeSetupToken || strings.TrimSpace(account.GetCredential("refresh_token")) == ""
+			if permanent {
+				msg = "Authentication failed (401): refresh_token missing, cannot recover"
+			}
+			if upstreamMsg != "" {
+				msg = "OAuth 401: " + upstreamMsg
+			}
+			s.handleOpenAIOAuthLike401(ctx, account, msg, permanent)
+			shouldDisable = true
+			break
+		}
 		if account.Type == AccountTypeOAuth && account.Platform != PlatformAntigravity {
 			if account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIPersonalAccessToken()) != "" {
 				shouldDisable = s.handleOpenAIPersonalAccessToken401(ctx, account, upstreamMsg)
@@ -357,7 +403,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	case 403:
 		rawBodyForLog := truncateForLog(responseBody, 1024)
 		if account.Platform == PlatformOpenAI {
-			rawBodyForLog = sanitizeOpenAIUpstreamDiagnosticBodyForLog(responseBody, 1024)
+			rawBodyForLog = sanitizeUpstreamDiagnosticBody(responseBody, 1024)
 		}
 		logger.LegacyPrintf(
 			"service.ratelimit",
@@ -831,7 +877,39 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
 		return
 	}
-	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+	slog.Warn(
+		"account_disabled_auth_error",
+		"account_id", account.ID,
+		"error", sanitizeUpstreamDiagnosticBody(
+			[]byte(errorMsg),
+			upstreamErrorFactMaxMatchTextBytes,
+		),
+	)
+}
+
+// handleOpenAIOAuthLike401 keeps durable account state independent from best-effort
+// bearer-cache eviction. Setup tokens are non-refreshable and therefore permanent.
+func (s *RateLimitService) handleOpenAIOAuthLike401(ctx context.Context, account *Account, msg string, permanent bool) {
+	if !permanent && account.Type == AccountTypeOAuth && strings.TrimSpace(account.GetCredential("refresh_token")) != "" {
+		cooldownMinutes := s.cfg.RateLimit.OAuth401CooldownMinutes
+		if cooldownMinutes <= 0 {
+			cooldownMinutes = 10
+		}
+		until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+		s.notifyAccountSchedulingBlocked(account, until, "oauth_401")
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+			slog.Warn("oauth_401_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		}
+	} else {
+		s.handleAuthError(ctx, account, msg)
+	}
+	if s.tokenCacheInvalidator != nil {
+		invalidateCtx, cancel := openAITokenCacheInvalidationContext(ctx)
+		defer cancel()
+		if err := s.tokenCacheInvalidator.InvalidateToken(invalidateCtx, account); err != nil {
+			slog.Warn("oauth_401_invalidate_cache_failed", "account_id", account.ID, "error", err)
+		}
+	}
 }
 
 func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody []byte, fallback string) string {
@@ -868,7 +946,7 @@ func buildOpenAIForbiddenErrorMessage(prefix string, upstreamMsg string, respons
 		return prefix + msg
 	}
 
-	if body := sanitizeOpenAIUpstreamDiagnosticBodyForLog(responseBody, 512); strings.TrimSpace(body) != "" {
+	if body := sanitizeUpstreamDiagnosticBody(responseBody, 512); strings.TrimSpace(body) != "" {
 		return prefix + body
 	}
 
@@ -896,7 +974,34 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 	return true
 }
 
+// isHTMLResponse 判断响应体是否为 HTML 页面。
+// 上游代理 / CDN 在请求到达 API 之前拦下时，回的是 HTML 页面而不是结构化错误。
+func isHTMLResponse(body []byte) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(string(body)))
+	return strings.HasPrefix(trimmed, "<!doctype html") ||
+		strings.HasPrefix(trimmed, "<html")
+}
+
 func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
+	// 上游代理 / CDN 在请求到达 OpenAI API 之前就拦下时，回的是 HTML 403 页面而不是
+	// {"error":{...}} 结构化错误。这类响应描述的是「这条链路 / 这个端点被挡了」，
+	// 不构成账号凭据或权限失效的证据——例如无效的 /v1/responses 子路径（#5334）。
+	//
+	// 据此写账号状态会把请求级错误放大成账号级处罚：首次即 temp-unschedulable，
+	// 连续 ThresholdCount 次直接永久禁用；而 403 又在 failover 状态集里，
+	// 同一个坏请求会被逐个账号重放，足以把整组账号打下线。
+	//
+	// 这里只跳过账号处罚（不递增连续 403 计数、不设临时不可调度、不永久禁用），
+	// 不改变 failover 行为——换个走不同代理的账号仍有可能成功。
+	if isHTMLResponse(responseBody) {
+		slog.Warn(
+			"openai_403_html_body_skips_account_penalty",
+			"account_id", account.ID,
+			"upstream_message", upstreamMsg,
+		)
+		return false
+	}
+
 	msg := buildOpenAIForbiddenErrorMessage(
 		"Access forbidden (403):",
 		upstreamMsg,
@@ -909,41 +1014,65 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		return true
 	}
 
+	settings := s.getOpenAI403CooldownSettings(ctx, account.ID)
+	if !settings.Enabled {
+		s.handleAuthError(ctx, account, msg)
+		return true
+	}
+	if settings.Ignore {
+		slog.Debug("openai_403_ignored", "account_id", account.ID)
+		return false
+	}
+
 	if s.openAI403CounterCache == nil {
 		s.handleAuthError(ctx, account, msg)
 		return true
 	}
 
-	count, err := s.openAI403CounterCache.IncrementOpenAI403Count(ctx, account.ID, openAI403CounterWindowMinutes)
+	count, err := s.openAI403CounterCache.IncrementOpenAI403Count(ctx, account.ID, settings.CounterWindowSeconds)
 	if err != nil {
 		slog.Warn("openai_403_increment_failed", "account_id", account.ID, "error", err)
 		s.handleAuthError(ctx, account, msg)
 		return true
 	}
 
-	if count >= openAI403DisableThreshold {
-		msg = fmt.Sprintf("%s | consecutive_403=%d/%d", msg, count, openAI403DisableThreshold)
-		s.handleAuthError(ctx, account, msg)
+	if count >= int64(settings.ThresholdCount) {
+		msg = fmt.Sprintf("%s | consecutive_403=%d/%d", msg, count, settings.ThresholdCount)
+		if settings.ThresholdAction == OpenAI403ThresholdActionError {
+			s.handleAuthError(ctx, account, msg)
+			return true
+		}
+		until := time.Now().Add(time.Duration(settings.ThresholdPauseSeconds) * time.Second)
+		reason := fmt.Sprintf("OpenAI 403 threshold cooldown (%d/%d): %s", count, settings.ThresholdCount, msg)
+		s.setOpenAI403TempUnschedulable(ctx, account, until, reason, "openai_403_threshold")
 		return true
 	}
 
-	until := time.Now().Add(time.Duration(openAI403CooldownMinutesDefault) * time.Minute)
-	reason := fmt.Sprintf("OpenAI 403 temporary cooldown (%d/%d): %s", count, openAI403DisableThreshold, msg)
-	s.notifyAccountSchedulingBlocked(account, until, "openai_403_temp")
+	until := time.Now().Add(time.Duration(settings.CooldownSeconds) * time.Second)
+	reason := fmt.Sprintf("OpenAI 403 temporary cooldown (%d/%d): %s", count, settings.ThresholdCount, msg)
+	s.setOpenAI403TempUnschedulable(ctx, account, until, reason, "openai_403_temp")
+	return true
+}
+
+func (s *RateLimitService) getOpenAI403CooldownSettings(ctx context.Context, accountID int64) *OpenAI403CooldownSettings {
+	if s.settingService != nil {
+		settings, err := s.settingService.GetOpenAI403CooldownSettings(ctx)
+		if err == nil && settings != nil {
+			return settings
+		}
+		slog.Warn("openai_403_settings_read_failed", "account_id", accountID, "error", err)
+	}
+	return DefaultOpenAI403CooldownSettings()
+}
+
+func (s *RateLimitService) setOpenAI403TempUnschedulable(ctx context.Context, account *Account, until time.Time, reason, blockReason string) {
+	s.notifyAccountSchedulingBlocked(account, until, blockReason)
 	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
 		slog.Warn("openai_403_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
-		s.handleAuthError(ctx, account, msg)
-		return true
+		s.handleAuthError(ctx, account, reason)
+		return
 	}
-
-	slog.Warn(
-		"openai_403_temp_unschedulable",
-		"account_id", account.ID,
-		"until", until,
-		"count", count,
-		"threshold", openAI403DisableThreshold,
-	)
-	return true
+	slog.Warn("openai_403_temp_unschedulable", "account_id", account.ID, "until", until, "reason", blockReason)
 }
 
 func isOpenAIPersonalAccessTokenOwner403(account *Account, upstreamMsg string, responseBody []byte) bool {
@@ -954,11 +1083,17 @@ func isOpenAIPersonalAccessTokenOwner403(account *Account, upstreamMsg string, r
 	if msg == "" {
 		msg = strings.ToLower(extractUpstreamErrorMessage(responseBody))
 	}
-	if !strings.Contains(msg, "personal access token owner") {
+	// 门禁放宽为 "personal access token"：既覆盖 "personal access token owner ..."，
+	// 也覆盖被撤销 PAT 的 "This personal access token has been revoked"。
+	if !strings.Contains(msg, "personal access token") {
 		return false
 	}
+	// PAT 被撤销（has been revoked / is revoked）是永久失效，等同 401 token_revoked，直接 SetError。
+	// 只匹配精确措辞，不用裸 "revoked" 子串，避免命中其他含 "revoked" 的非 PAT 上下文。
 	return strings.Contains(msg, "owner is inactive") ||
-		(strings.Contains(msg, "not an active member") && strings.Contains(msg, "selected workspace"))
+		(strings.Contains(msg, "not an active member") && strings.Contains(msg, "selected workspace")) ||
+		strings.Contains(msg, "has been revoked") ||
+		strings.Contains(msg, "is revoked")
 }
 
 // handleAntigravity403 处理 Antigravity 平台的 403 错误
@@ -1015,7 +1150,15 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "status_code", statusCode, "error", err)
 		return
 	}
-	slog.Warn("account_disabled_custom_error", "account_id", account.ID, "status_code", statusCode, "error", errorMsg)
+	slog.Warn(
+		"account_disabled_custom_error",
+		"account_id", account.ID,
+		"status_code", statusCode,
+		"error", sanitizeUpstreamDiagnosticBody(
+			[]byte(errorMsg),
+			upstreamErrorFactMaxMatchTextBytes,
+		),
+	)
 }
 
 // handle429 处理429限流错误
@@ -1024,9 +1167,9 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	// 1. OpenAI OAuth-like：429 只作为动态统计信号，达阈值后再统一 SetRateLimited。
 	if account.Platform == PlatformOpenAI {
 		persistOpenAI429PlanType(ctx, s.accountRepo, account, responseBody)
-		s.persistOpenAICodexSnapshot(ctx, account, headers)
+		usageSnapshot := s.persistOpenAICodexSnapshot(ctx, account, headers)
 		if account.IsOpenAIOAuthLike() {
-			s.RecordOpenAIOAuthUpstreamOutcome(ctx, account, http.StatusTooManyRequests)
+			s.RecordOpenAIOAuthUpstreamOutcome(ctx, account, http.StatusTooManyRequests, usageSnapshot)
 			return
 		}
 		if resetAt := s.calculateOpenAI429ResetTime(headers); resetAt != nil {
@@ -1185,6 +1328,11 @@ func clampRateLimit429CooldownSeconds(seconds int) int {
 // calculateOpenAI429ResetTime 从 OpenAI 429 响应头计算正确的重置时间
 // 返回 nil 表示无法从响应头中确定重置时间
 func calculateOpenAI429ResetTime(headers http.Header) *time.Time {
+	now := time.Now()
+	if retryAfter := parseRetryAfterResetTime(headers, now); retryAfter != nil && retryAfter.After(now) {
+		return retryAfter
+	}
+
 	snapshot := ParseCodexRateLimitHeaders(headers)
 	if snapshot == nil {
 		return nil
@@ -1194,8 +1342,6 @@ func calculateOpenAI429ResetTime(headers http.Header) *time.Time {
 	if normalized == nil {
 		return nil
 	}
-
-	now := time.Now()
 
 	// 判断哪个限制被触发（used_percent >= 100）
 	is7dExhausted := normalized.Used7dPercent != nil && *normalized.Used7dPercent >= 100
@@ -1524,31 +1670,32 @@ func pickSooner(a, b *time.Time) *time.Time {
 	}
 }
 
-func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, account *Account, headers http.Header) {
+func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, account *Account, headers http.Header) *OpenAICodexUsageSnapshot {
 	if s == nil || s.accountRepo == nil || account == nil || headers == nil {
-		return
+		return nil
 	}
 	snapshot := ParseCodexRateLimitHeaders(headers)
 	if snapshot == nil {
-		return
+		return nil
 	}
 	updates := buildCodexUsageExtraUpdates(snapshot, time.Now())
 	if len(updates) == 0 {
-		return
+		return snapshot
 	}
 	observedAt, err := runtimeExtraObservedAt(updates, "codex_usage_updated_at")
 	if err != nil {
 		slog.Warn("openai_codex_snapshot_observation_invalid", "account_id", account.ID, "error", err)
-		return
+		return snapshot
 	}
 	updated, err := updateRuntimeExtra(ctx, s.accountRepo, account.ID, updates, "codex_usage_updated_at", observedAt)
 	if err != nil {
 		slog.Warn("openai_codex_snapshot_persist_failed", "account_id", account.ID, "error", err)
-		return
+		return snapshot
 	}
 	if updated {
 		syncCodexFiveHourSessionWindowEnd(ctx, s.accountRepo, account.ID, updates, "rate_limit_headers")
 	}
+	return snapshot
 }
 
 // parseOpenAIRateLimitResetTime 解析 OpenAI 格式的 429 响应，返回重置时间的 Unix 时间戳
@@ -1997,14 +2144,14 @@ func (s *RateLimitService) GetTempUnschedStatus(ctx context.Context, accountID i
 	return state, nil
 }
 
-func (s *RateLimitService) HandleTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+func (s *RateLimitService) HandleTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) bool {
 	if account == nil {
 		return false
 	}
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return false
 	}
-	return s.tryTempUnschedulable(ctx, account, statusCode, responseBody)
+	return s.tryTempUnschedulable(ctx, account, statusCode, responseBody, requestedModel...)
 }
 
 func (s *RateLimitService) HandleOpenAIImageRateLimit(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) bool {
@@ -2159,6 +2306,13 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	return true
 }
 
+func firstRequestedModel(requestedModel []string) string {
+	if len(requestedModel) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(requestedModel[0])
+}
+
 func modelRateLimitKeyForUpstreamModelNotFound(ctx context.Context, account *Account, requestedModel string) string {
 	modelKey := strings.TrimSpace(requestedModel)
 	if account == nil || modelKey == "" {
@@ -2176,7 +2330,7 @@ func modelRateLimitKeyForUpstreamModelNotFound(ctx context.Context, account *Acc
 	return modelKey
 }
 
-func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) bool {
 	if account == nil {
 		return false
 	}
@@ -2223,7 +2377,7 @@ func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Ac
 			continue
 		}
 
-		if s.triggerTempUnschedulable(ctx, account, rule, idx, statusCode, matchedKeyword, responseBody) {
+		if s.triggerTempUnschedulable(ctx, account, rule, idx, statusCode, matchedKeyword, responseBody, requestedModel...) {
 			return true
 		}
 	}
@@ -2263,7 +2417,7 @@ func matchTempUnschedKeyword(bodyLower string, keywords []string) string {
 	return ""
 }
 
-func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account *Account, rule TempUnschedulableRule, ruleIndex int, statusCode int, matchedKeyword string, responseBody []byte) bool {
+func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account *Account, rule TempUnschedulableRule, ruleIndex int, statusCode int, matchedKeyword string, responseBody []byte, requestedModel ...string) bool {
 	if account == nil {
 		return false
 	}
@@ -2289,6 +2443,18 @@ func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account
 	}
 	if reason == "" {
 		reason = strings.TrimSpace(state.ErrorMessage)
+	}
+
+	// Keep a known model failure scoped to the (account, model) pair. A failed
+	// persistence still fails over this request, but must not widen the penalty.
+	modelKey := firstRequestedModel(requestedModel)
+	if modelKey != "" && statusCode != http.StatusUnauthorized {
+		if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, until, reason); err != nil {
+			slog.Warn("temp_unsched_model_rate_limit_set_failed", "account_id", account.ID, "model", modelKey, "error", err)
+			return true
+		}
+		slog.Info("account_model_temp_unschedulable", "account_id", account.ID, "model", modelKey, "until", until, "rule_index", ruleIndex, "status_code", statusCode)
+		return true
 	}
 
 	s.notifyAccountSchedulingBlocked(account, until, "temp_unschedulable")
@@ -2319,7 +2485,7 @@ func truncateTempUnschedMessage(body []byte, maxBytes int) string {
 
 func truncateTempUnschedMessageForAccount(account *Account, body []byte, maxBytes int) string {
 	if account != nil && account.Platform == PlatformOpenAI {
-		return strings.TrimSpace(sanitizeOpenAIUpstreamDiagnosticBodyForLog(body, maxBytes))
+		return strings.TrimSpace(sanitizeUpstreamDiagnosticBody(body, maxBytes))
 	}
 	return truncateTempUnschedMessage(body, maxBytes)
 }

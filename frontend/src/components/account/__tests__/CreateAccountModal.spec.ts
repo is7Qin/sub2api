@@ -242,6 +242,30 @@ describe('CreateAccountModal', () => {
     expect(payload.extra).not.toHaveProperty('openai_apikey_responses_websockets_v2_enabled')
   })
 
+  it('shows and submits the Codex namespace flatten toggle only for OpenAI OAuth', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('OpenAI OAuth')
+    await wrapper.get('[data-testid="create-platform-openai"]').trigger('click')
+    await wrapper.get('[data-testid="create-openai-oauth-type"]').trigger('click')
+    await flushPromises()
+
+    const toggle = wrapper.get('[data-testid="create-openai-flatten-namespaces-toggle"]')
+    await toggle.trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    await wrapper.get('[data-testid="emit-refresh-token"]').trigger('click')
+    await flushPromises()
+
+    const payload = createOpenAIAccountFromRefreshTokenMock.mock.calls[0]?.[0]
+    expect(payload.extra?.openai_responses_flatten_namespaces).toBe(true)
+
+    const apiKeyWrapper = mountModal()
+    await apiKeyWrapper.get('[data-testid="create-platform-openai"]').trigger('click')
+    await apiKeyWrapper.get('[data-testid="create-openai-apikey-type"]').trigger('click')
+    expect(apiKeyWrapper.find('[data-testid="create-openai-flatten-namespaces-toggle"]').exists()).toBe(false)
+  })
+
   it('imports OpenAI Codex PAT JSON through the backend import endpoint', async () => {
     const wrapper = mountModal()
 

@@ -42,7 +42,9 @@ func TestOpenAIStreamingResponseFailedSanitizesVerboseResponseForClientAndKeepsU
 
 	svc := &OpenAIGatewayService{cfg: passthroughPrivacyTestConfig(), toolCorrector: NewCodexToolCorrector()}
 	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "gpt-5.4", "gpt-5.4")
-	require.Error(t, err)
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.True(t, requestErr.OutputStarted)
+	require.NotNil(t, requestErr.Usage)
 	require.NotNil(t, result)
 	require.NotNil(t, result.usage)
 	require.Equal(t, 123, result.usage.InputTokens)
@@ -51,7 +53,7 @@ func TestOpenAIStreamingResponseFailedSanitizesVerboseResponseForClientAndKeepsU
 	passthroughPrivacyRequireSanitizedFailedBody(t, rec.Body.String())
 }
 
-func TestOpenAIStreamingResponseFailedSanitizesBeforeFailoverDiagnostics(t *testing.T) {
+func TestOpenAIStreamingContextFailedReturnsSanitizedRequestError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -71,12 +73,13 @@ func TestOpenAIStreamingResponseFailedSanitizesBeforeFailoverDiagnostics(t *test
 
 	svc := &OpenAIGatewayService{cfg: passthroughPrivacyTestConfig(), toolCorrector: NewCodexToolCorrector()}
 	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "gpt-5.4", "gpt-5.4")
-	require.Error(t, err)
+	requestErr := requireOpenAIContextRequestError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.usage)
 	require.Equal(t, 123, result.usage.InputTokens)
-
-	passthroughPrivacyRequireSanitizedOpsDetail(t, c)
+	require.NotNil(t, requestErr.Usage)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
+	passthroughPrivacyRequireSanitizedFailedBody(t, rec.Body.String())
 }
 
 func TestOpenAIStreamingPassthroughResponseFailedSanitizesVerboseResponseForClientAndKeepsUsage(t *testing.T) {
@@ -141,6 +144,69 @@ func TestOpenAIStreamingPassthroughDeduplicatesFunctionCallArguments(t *testing.
 	require.Contains(t, body, `\"cmd\":\"pwd\"`)
 	require.NotContains(t, body, `{\"cmd\":\"pwd\"}{\"cmd\":\"pwd\"}`)
 	require.NotContains(t, body, `"name":"edit"`)
+}
+
+func TestOpenAINonStreamingPassthroughRejectsSuccessfulUnusableUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing usage", body: `{"id":"resp_missing","output":[]}`},
+		{name: "non-object usage", body: `{"id":"resp_invalid","output":[],"usage":"sk-upstream-secret"}`},
+		{name: "empty usage", body: `{"id":"resp_empty","output":[],"usage":{}}`},
+		{name: "invalid numeric usage", body: `{"id":"resp_bad_numbers","output":[],"usage":{"input_tokens":1.5,"output_tokens":-2}}`},
+		{name: "negative nested cache usage", body: `{"id":"resp_bad_cache","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":{"cached_tokens":-1}}}`},
+		{name: "malformed token details", body: `{"id":"resp_bad_details","output":[],"usage":{"input_tokens":10,"output_tokens":0,"input_tokens_details":"malformed"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}
+			svc := &OpenAIGatewayService{cfg: passthroughPrivacyTestConfig()}
+
+			result, err := svc.handleNonStreamingResponsePassthrough(c.Request.Context(), resp, c, "client-model", "upstream-model")
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusBadGateway, rec.Code)
+			require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.NotContains(t, rec.Body.String(), "sk-upstream-secret")
+			require.NotContains(t, err.Error(), "sk-upstream-secret")
+		})
+	}
+}
+
+func TestOpenAINonStreamingPassthroughAcceptsExplicitZeroUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := `{"id":"resp_zero","output":[],"usage":{"input_tokens":0,"output_tokens":0}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	svc := &OpenAIGatewayService{cfg: passthroughPrivacyTestConfig()}
+
+	result, err := svc.handleNonStreamingResponsePassthrough(c.Request.Context(), resp, c, "client-model", "upstream-model")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Zero(t, result.usage.InputTokens)
+	require.Zero(t, result.usage.OutputTokens)
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestOpenAINonStreamingPassthroughDeduplicatesFunctionCallOutputArguments(t *testing.T) {
@@ -273,7 +339,7 @@ func TestOpenAIForwardStreamingResponseFailedAsyncBufferedOutputDataReturnsUsage
 	passthroughPrivacyRequireNoVerboseFailedText(t, clientBody)
 }
 
-func TestOpenAIForwardStreamingResponseFailedOutputEventOnlyReturnsFailoverWithoutUsageResult(t *testing.T) {
+func TestOpenAIForwardStreamingContextFailedOutputEventOnlyReturnsRequestErrorWithUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -292,14 +358,12 @@ func TestOpenAIForwardStreamingResponseFailedOutputEventOnlyReturnsFailoverWitho
 	}
 
 	result, err := svc.Forward(context.Background(), c, passthroughPrivacyNativeAccount(), body)
-	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Nil(t, result)
-	require.Empty(t, rec.Body.String())
-
-	detail := passthroughPrivacyOpsDetail(t, c)
-	passthroughPrivacyRequireSanitizedFailedText(t, detail)
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 123, result.Usage.InputTokens)
+	require.NotNil(t, requestErr.Usage)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
+	passthroughPrivacyRequireSanitizedFailedBody(t, rec.Body.String())
 }
 
 func TestOpenAIAPIKeyPassthroughPreservesImageGenNamespaceBytes(t *testing.T) {
@@ -319,7 +383,7 @@ func TestOpenAIAPIKeyPassthroughPreservesImageGenNamespaceBytes(t *testing.T) {
 	require.Equal(t, body, upstream.lastBody)
 }
 
-func TestOpenAIForwardStreamingResponseFailedOutputEventOnlyPassthroughReturnsFailoverWithoutUsageResult(t *testing.T) {
+func TestOpenAIForwardStreamingContextFailedOutputEventOnlyPassthroughReturnsRequestErrorWithUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -335,15 +399,14 @@ func TestOpenAIForwardStreamingResponseFailedOutputEventOnlyPassthroughReturnsFa
 	}
 
 	result, err := svc.Forward(context.Background(), c, passthroughPrivacyAPIKeyPassthroughAccount(), body)
-	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Nil(t, result)
-	require.Empty(t, rec.Body.String())
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 123, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
+	require.Contains(t, rec.Body.String(), "event: response.failed")
 	require.Equal(t, body, upstream.lastBody)
-
-	detail := passthroughPrivacyOpsDetail(t, c)
-	passthroughPrivacyRequireSanitizedFailedText(t, detail)
+	passthroughPrivacyRequireSanitizedFailedText(t, rec.Body.String())
 }
 
 func TestOpenAIForwardStreamingResponseFailedAsyncOnlyReturnsNoBillableResult(t *testing.T) {
@@ -413,7 +476,7 @@ func TestOpenAIForwardStreamingResponseFailedAfterOutputPassthroughReturnsUsageW
 	passthroughPrivacyRequireNoVerboseFailedText(t, clientBody)
 }
 
-func TestOpenAIForwardStreamingResponseFailedBeforeOutputReturnsFailoverWithoutUsageResult(t *testing.T) {
+func TestOpenAIForwardStreamingContextFailedBeforeOutputReturnsRequestErrorWithUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -431,17 +494,15 @@ func TestOpenAIForwardStreamingResponseFailedBeforeOutputReturnsFailoverWithoutU
 	account := passthroughPrivacyNativeAccount()
 
 	result, err := svc.Forward(context.Background(), c, account, body)
-	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Nil(t, result)
-	require.Empty(t, rec.Body.String())
-
-	detail := passthroughPrivacyOpsDetail(t, c)
-	passthroughPrivacyRequireSanitizedFailedText(t, detail)
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 123, result.Usage.InputTokens)
+	require.NotNil(t, requestErr.Usage)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
+	passthroughPrivacyRequireSanitizedFailedBody(t, rec.Body.String())
 }
 
-func TestOpenAIForwardStreamingResponseFailedBeforeOutputPassthroughReturnsFailoverWithoutUsageResult(t *testing.T) {
+func TestOpenAIForwardStreamingContextFailedBeforeOutputPassthroughReturnsRequestErrorWithUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -458,14 +519,13 @@ func TestOpenAIForwardStreamingResponseFailedBeforeOutputPassthroughReturnsFailo
 	account := passthroughPrivacyAPIKeyPassthroughAccount()
 
 	result, err := svc.Forward(context.Background(), c, account, body)
-	require.Error(t, err)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Nil(t, result)
-	require.Empty(t, rec.Body.String())
-
-	detail := passthroughPrivacyOpsDetail(t, c)
-	passthroughPrivacyRequireSanitizedFailedText(t, detail)
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 123, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
+	require.Contains(t, rec.Body.String(), "event: response.failed")
+	passthroughPrivacyRequireSanitizedFailedText(t, rec.Body.String())
 }
 
 func TestOpenAIForwardStreamingResponseFailedBeforeOutputNonRetryableReturnsNoBillableResult(t *testing.T) {
@@ -543,17 +603,17 @@ func TestOpenAIForwardNonStreamingSSEResponseFailedEventLineSanitizesNative(t *t
 	}
 
 	result, err := svc.Forward(context.Background(), c, passthroughPrivacyNativeAccount(), body)
-	require.Error(t, err)
-	require.Nil(t, result)
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 123, result.Usage.InputTokens)
+	require.NotNil(t, requestErr.Usage)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
 	require.NotNil(t, upstream.lastReq)
 
 	clientBody := rec.Body.String()
 	require.NotContains(t, clientBody, "event: response.failed")
 	require.Contains(t, clientBody, "Your input exceeds the context window")
 	passthroughPrivacyRequireNoVerboseFailedText(t, clientBody)
-
-	detail := passthroughPrivacyOpsDetailValue(t, c)
-	passthroughPrivacyRequireSanitizedFailedText(t, detail)
 }
 
 func TestOpenAIForwardNonStreamingSSEResponseFailedEventLineSanitizesAPIKeyPassthrough(t *testing.T) {
@@ -572,8 +632,11 @@ func TestOpenAIForwardNonStreamingSSEResponseFailedEventLineSanitizesAPIKeyPasst
 	}
 
 	result, err := svc.Forward(context.Background(), c, passthroughPrivacyAPIKeyPassthroughAccount(), body)
-	require.Error(t, err)
-	require.Nil(t, result)
+	requestErr := requireOpenAIContextRequestError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 123, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+	require.Equal(t, 123, requestErr.Usage.InputTokens)
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, body, upstream.lastBody)
 
@@ -581,9 +644,6 @@ func TestOpenAIForwardNonStreamingSSEResponseFailedEventLineSanitizesAPIKeyPasst
 	require.NotContains(t, clientBody, "event: response.failed")
 	require.Contains(t, clientBody, "Your input exceeds the context window")
 	passthroughPrivacyRequireNoVerboseFailedText(t, clientBody)
-
-	detail := passthroughPrivacyOpsDetailValue(t, c)
-	passthroughPrivacyRequireSanitizedFailedText(t, detail)
 }
 
 func TestOpenAIPassthroughDoesNotStripSparkImageGenerationTooling(t *testing.T) {

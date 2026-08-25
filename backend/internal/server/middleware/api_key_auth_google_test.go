@@ -131,6 +131,9 @@ func (f fakeGoogleSubscriptionRepo) GetByID(ctx context.Context, id int64) (*ser
 	}
 	return nil, errors.New("not implemented")
 }
+func (f fakeGoogleSubscriptionRepo) GetByIDForUpdate(ctx context.Context, id int64) (*service.UserSubscription, error) {
+	return f.GetByID(ctx, id)
+}
 func (f fakeGoogleSubscriptionRepo) GetByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
@@ -173,13 +176,13 @@ func (f fakeGoogleSubscriptionRepo) UpdateStatus(ctx context.Context, subscripti
 func (f fakeGoogleSubscriptionRepo) UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error {
 	return errors.New("not implemented")
 }
-func (f fakeGoogleSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, start time.Time) error {
+func (f fakeGoogleSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, dailyStart, _ time.Time) error {
 	if f.activateWindow != nil {
-		return f.activateWindow(ctx, id, start)
+		return f.activateWindow(ctx, id, dailyStart)
 	}
 	return errors.New("not implemented")
 }
-func (f fakeGoogleSubscriptionRepo) ResetUsageWindows(context.Context, int64, bool, bool, bool, time.Time) error {
+func (f fakeGoogleSubscriptionRepo) ResetUsageWindows(context.Context, int64, bool, bool, bool, time.Time, time.Time) error {
 	return errors.New("not implemented")
 }
 func (f fakeGoogleSubscriptionRepo) ResetDailyUsage(ctx context.Context, id int64, _ *time.Time, start time.Time) error {
@@ -888,10 +891,10 @@ func TestAPIKeyAuthWithSubscriptionGoogle_SecurityMatrix(t *testing.T) {
 			k.IPWhitelist = []string{"203.0.113.1"}
 			k.CompiledIPWhitelist = ip.CompileIPRules(k.IPWhitelist)
 		}, false, false, nil, "198.51.100.1:1", "", 403, service.OpsClientBusinessLimitedReasonIPRestriction, true},
-		{"spoofed forwarded ignored", func(k *service.APIKey) {
+		{"toggle cannot trust forged forwarded header from direct client", func(k *service.APIKey) {
 			k.IPWhitelist = []string{"198.51.100.1"}
 			k.CompiledIPWhitelist = ip.CompileIPRules(k.IPWhitelist)
-		}, false, false, nil, "198.51.100.1:1", "203.0.113.9", 200, "", true},
+		}, false, true, nil, "198.51.100.1:1", "203.0.113.9", 200, "", true},
 		{"trusted forwarded used", func(k *service.APIKey) {
 			k.IPWhitelist = []string{"203.0.113.9"}
 			k.CompiledIPWhitelist = ip.CompileIPRules(k.IPWhitelist)

@@ -22,6 +22,20 @@ if [ "$BASH_MAJOR_VERSION" -lt 4 ]; then
     exit 1
 fi
 
+# This public installer manages Linux users and systemd. Keep the kernel boundary
+# ahead of all command parsing, privilege checks, downloads, and lifecycle work.
+require_linux_kernel() {
+    local kernel="$1"
+    if [ "$kernel" != "Linux" ]; then
+        printf 'Error: deploy/install.sh supports Linux only (detected: %s).\n' "$kernel" >&2
+        return 1
+    fi
+}
+
+installer_kernel=$(uname -s 2>/dev/null || printf 'unknown')
+require_linux_kernel "$installer_kernel" || exit 1
+unset installer_kernel
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -32,14 +46,15 @@ NC='\033[0m' # No Color
 
 # Configuration
 GITHUB_REPO="is7Qin/sub2api"
-INSTALL_DIR="/opt/sub2api"
+INSTALL_DIR="${INSTALL_DIR:-/opt/sub2api}"
 SERVICE_NAME="sub2api"
-SERVICE_USER="sub2api"
+SERVICE_USER="${SERVICE_USER:-sub2api}"
 CONFIG_DIR="/etc/sub2api"
+SYSTEMD_UNIT_PATH="/etc/systemd/system/sub2api.service"
 
-# Server configuration (will be set by user)
-SERVER_HOST="0.0.0.0"
-SERVER_PORT="8080"
+# Server configuration (may be supplied by the caller or selected interactively).
+SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
+SERVER_PORT="${SERVER_PORT:-8080}"
 
 # Language (default: zh = Chinese)
 LANG_CHOICE="zh"
@@ -363,6 +378,105 @@ select_language() {
     echo ""
 }
 
+# SERVER_HOST supports IPv4, DNS hostnames, and unbracketed IPv6 literals only.
+# Keeping this grammar narrow prevents configured values from becoming unit syntax.
+validate_server_host() {
+    local host="$1"
+    local label octet
+    local -a parts
+
+    [ -n "$host" ] || return 1
+    case "$host" in
+        *[!A-Za-z0-9.:_-]*|*_*|.*|*.) return 1 ;;
+    esac
+
+    if [[ "$host" == *:* ]]; then
+        [[ "$host" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+        [[ "$host" != *:::* ]] || return 1
+        local compressed=false
+        local left=$host right=''
+        if [[ "$host" == *::* ]]; then
+            compressed=true
+            left=${host%%::*}
+            right=${host#*::}
+            [[ "$right" != *::* ]] || return 1
+        fi
+
+        local groups=0
+        if [ -n "$left" ]; then
+            IFS=: read -r -a parts <<< "$left"
+            for label in "${parts[@]}"; do
+                [[ "$label" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+                groups=$((groups + 1))
+            done
+        fi
+        if [ -n "$right" ]; then
+            IFS=: read -r -a parts <<< "$right"
+            for label in "${parts[@]}"; do
+                [[ "$label" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+                groups=$((groups + 1))
+            done
+        fi
+        if [ "$compressed" = true ]; then
+            [ "$groups" -lt 8 ]
+        else
+            [ "$groups" -eq 8 ]
+        fi
+        return
+    fi
+
+    if [[ "$host" =~ ^[0-9.]+$ ]]; then
+        IFS=. read -r -a parts <<< "$host"
+        [ "${#parts[@]}" -eq 4 ] || return 1
+        for octet in "${parts[@]}"; do
+            [[ "$octet" =~ ^[0-9]{1,3}$ ]] && [ "$octet" -le 255 ] || return 1
+        done
+        return 0
+    fi
+
+    [ "${#host}" -le 253 ] || return 1
+    IFS=. read -r -a parts <<< "$host"
+    for label in "${parts[@]}"; do
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 1
+    done
+}
+
+# Linux account names accepted by this installer. Deliberately excludes systemd
+# specifiers, quoting characters, slashes, whitespace, and option-like values.
+validate_service_user() {
+    [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]]
+}
+
+# Absolute, normalized POSIX paths with conservative portable components only.
+# Quotes, backslashes, percent specifiers, whitespace, dot segments, and options
+# are intentionally unsupported so unit rendering remains exact and auditable.
+validate_install_dir() {
+    local path="$1"
+    [[ "$path" =~ ^/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$ ]] || return 1
+    case "$path" in
+        */.|*/..|*/./*|*/../*|*//*) return 1 ;;
+    esac
+}
+
+validate_service_configuration() {
+    validate_server_host "$SERVER_HOST" || {
+        print_error "Invalid SERVER_HOST. Use an IPv4 address, DNS hostname, or unbracketed IPv6 literal."
+        return 1
+    }
+    validate_port "$SERVER_PORT" || {
+        print_error "$(msg 'invalid_port')"
+        return 1
+    }
+    validate_service_user "$SERVICE_USER" || {
+        print_error "Invalid SERVICE_USER. Use 1-32 letters, digits, underscores, or hyphens, beginning with a letter or underscore."
+        return 1
+    }
+    validate_install_dir "$INSTALL_DIR" || {
+        print_error "Invalid INSTALL_DIR. Use a normalized absolute path containing only letters, digits, dots, underscores, hyphens, and slashes."
+        return 1
+    }
+}
+
 # Validate port number
 validate_port() {
     local port="$1"
@@ -376,6 +490,7 @@ validate_port() {
 configure_server() {
     # If not interactive (piped), use default settings
     if ! is_interactive; then
+        validate_service_configuration || return 1
         print_info "$(msg 'server_config_summary'): ${SERVER_HOST}:${SERVER_PORT} (default)"
         return
     fi
@@ -390,10 +505,17 @@ configure_server() {
 
     # Server host
     echo -e "${YELLOW}$(msg 'server_host_hint')${NC}"
-    read -p "$(msg 'server_host_prompt') [${SERVER_HOST}]: " input_host < /dev/tty
-    if [ -n "$input_host" ]; then
-        SERVER_HOST="$input_host"
-    fi
+    while true; do
+        read -p "$(msg 'server_host_prompt') [${SERVER_HOST}]: " input_host < /dev/tty
+        if [ -z "$input_host" ]; then
+            break
+        elif validate_server_host "$input_host"; then
+            SERVER_HOST="$input_host"
+            break
+        else
+            print_error "Invalid host. Use an IPv4 address, DNS hostname, or unbracketed IPv6 literal."
+        fi
+    done
 
     echo ""
 
@@ -413,6 +535,8 @@ configure_server() {
     done
 
     echo ""
+    validate_service_configuration || return 1
+
     print_info "$(msg 'server_config_summary'): ${SERVER_HOST}:${SERVER_PORT}"
     echo ""
 }
@@ -427,9 +551,9 @@ check_root() {
     fi
 }
 
-# Detect OS and architecture
+# Detect Linux architecture for release archive selection.
 detect_platform() {
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    OS="linux"
     ARCH=$(uname -m)
 
     case "$ARCH" in
@@ -441,19 +565,6 @@ detect_platform() {
             ;;
         *)
             print_error "$(msg 'unsupported_arch'): $ARCH"
-            exit 1
-            ;;
-    esac
-
-    case "$OS" in
-        linux)
-            OS="linux"
-            ;;
-        darwin)
-            OS="darwin"
-            ;;
-        *)
-            print_error "$(msg 'unsupported_os'): $OS"
             exit 1
             ;;
     esac
@@ -480,17 +591,35 @@ check_dependencies() {
     fi
 }
 
-# Get latest release version
+# Get latest release version. This helper is called inside lifecycle recovery
+# branches, so every request or parse failure must return to its caller, never exit.
 get_latest_version() {
-    print_info "$(msg 'fetching_version')"
-    LATEST_VERSION=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    local response
+    local latest_version
 
-    if [ -z "$LATEST_VERSION" ]; then
+    print_info "$(msg 'fetching_version')"
+    LATEST_VERSION=''
+    if ! response=$(curl -fsS --connect-timeout 10 --max-time 30 \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null); then
         print_error "$(msg 'failed_get_version')"
         print_info "Please check your network connection or try again later."
-        exit 1
+        return 1
     fi
 
+    if ! latest_version=$(printf '%s\n' "$response" |
+        sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' |
+        head -1); then
+        print_error "$(msg 'failed_get_version')"
+        print_info "Please check your network connection or try again later."
+        return 1
+    fi
+    if [ -z "$latest_version" ]; then
+        print_error "$(msg 'failed_get_version')"
+        print_info "Please check your network connection or try again later."
+        return 1
+    fi
+
+    LATEST_VERSION=$latest_version
     print_info "$(msg 'latest_version'): $LATEST_VERSION"
 }
 
@@ -558,11 +687,182 @@ validate_version() {
 # Get current installed version
 get_current_version() {
     if [ -f "$INSTALL_DIR/sub2api" ]; then
-        # Use grep -E for better compatibility (works on macOS and Linux)
+        # Use grep -E for broad Linux distribution compatibility.
         "$INSTALL_DIR/sub2api" --version 2>/dev/null | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown"
     else
         echo "not_installed"
     fi
+}
+
+# Restore only trap definitions emitted by Bash itself. eval is deliberately scoped
+# to trusted `trap -p` output; caller-controlled configuration never reaches it.
+restore_trap_definition() {
+    local definition="$1"
+    local signal="$2"
+    if [ -n "$definition" ]; then
+        eval "$definition"
+    else
+        trap - "$signal"
+    fi
+}
+
+# Every staging trap carries an immutable context ID. Associative-array entries
+# keep restoration and cleanup state attached to the frame that installed the trap,
+# including when the other staging function is called recursively.
+declare -Ag STAGING_CONTEXT_KIND=()
+declare -Ag STAGING_CONTEXT_PRIMARY=()
+declare -Ag STAGING_CONTEXT_SECONDARY=()
+declare -Ag STAGING_CONTEXT_HUP=()
+declare -Ag STAGING_CONTEXT_INT=()
+declare -Ag STAGING_CONTEXT_TERM=()
+STAGING_CONTEXT_NEXT_ID=0
+STAGING_CONTEXT_ID=''
+
+# Populate a context only from immutable definitions captured before setup began.
+# Live caller dispositions must not be consulted after signal protection is active.
+begin_staging_context() {
+    local kind="$1"
+    local saved_hup_trap="$2"
+    local saved_int_trap="$3"
+    local saved_term_trap="$4"
+    STAGING_CONTEXT_NEXT_ID=$((STAGING_CONTEXT_NEXT_ID + 1)) || return 1
+    STAGING_CONTEXT_ID=$STAGING_CONTEXT_NEXT_ID || return 1
+    STAGING_CONTEXT_KIND[$STAGING_CONTEXT_ID]="setup-$kind" || return 1
+    STAGING_CONTEXT_PRIMARY[$STAGING_CONTEXT_ID]='' || return 1
+    STAGING_CONTEXT_SECONDARY[$STAGING_CONTEXT_ID]='' || return 1
+    STAGING_CONTEXT_HUP[$STAGING_CONTEXT_ID]="$saved_hup_trap" || return 1
+    STAGING_CONTEXT_INT[$STAGING_CONTEXT_ID]="$saved_int_trap" || return 1
+    STAGING_CONTEXT_TERM[$STAGING_CONTEXT_ID]="$saved_term_trap" || return 1
+}
+
+restore_staging_signal_traps() {
+    local -r saved_hup_trap="$1"
+    local -r saved_int_trap="$2"
+    local -r saved_term_trap="$3"
+    restore_trap_definition "$saved_hup_trap" HUP
+    restore_trap_definition "$saved_int_trap" INT
+    restore_trap_definition "$saved_term_trap" TERM
+}
+
+cleanup_staging_context() {
+    local context_id="$1"
+    case "${STAGING_CONTEXT_KIND[$context_id]-}" in
+        setup-*)
+            ;;
+        download)
+            if [ -n "${STAGING_CONTEXT_SECONDARY[$context_id]-}" ]; then
+                rm -f -- "${STAGING_CONTEXT_SECONDARY[$context_id]}"
+                STAGING_CONTEXT_SECONDARY[$context_id]=''
+            fi
+            if [ -n "${STAGING_CONTEXT_PRIMARY[$context_id]-}" ]; then
+                rm -rf -- "${STAGING_CONTEXT_PRIMARY[$context_id]}"
+                STAGING_CONTEXT_PRIMARY[$context_id]=''
+            fi
+            ;;
+        service)
+            if [ -n "${STAGING_CONTEXT_PRIMARY[$context_id]-}" ]; then
+                rm -f -- "${STAGING_CONTEXT_PRIMARY[$context_id]}"
+                STAGING_CONTEXT_PRIMARY[$context_id]=''
+            fi
+            ;;
+    esac
+}
+
+release_staging_context() {
+    local context_id="$1"
+    unset 'STAGING_CONTEXT_KIND[$context_id]'
+    unset 'STAGING_CONTEXT_PRIMARY[$context_id]'
+    unset 'STAGING_CONTEXT_SECONDARY[$context_id]'
+    unset 'STAGING_CONTEXT_HUP[$context_id]'
+    unset 'STAGING_CONTEXT_INT[$context_id]'
+    unset 'STAGING_CONTEXT_TERM[$context_id]'
+}
+
+# Capture caller state before any owned entry exists, then make setup indivisible:
+# signals delivered while ignored are discarded by Bash, and allocation/handler
+# failures release only this context before the immutable caller state is restored.
+setup_staging_context() {
+    local kind="$1"
+    local saved_hup_trap saved_int_trap saved_term_trap
+    local previous_context_id="${STAGING_CONTEXT_ID:-}"
+    local context_id=''
+
+    saved_hup_trap=$(trap -p HUP)
+    saved_int_trap=$(trap -p INT)
+    saved_term_trap=$(trap -p TERM)
+    trap '' HUP INT TERM
+    readonly saved_hup_trap saved_int_trap saved_term_trap previous_context_id
+    STAGING_CONTEXT_ID=''
+    if ! begin_staging_context "$kind" \
+        "$saved_hup_trap" "$saved_int_trap" "$saved_term_trap"; then
+        context_id=${STAGING_CONTEXT_ID:-}
+        if [ -n "$context_id" ]; then
+            cleanup_staging_context "$context_id"
+            release_staging_context "$context_id"
+        fi
+        STAGING_CONTEXT_ID=$previous_context_id
+        restore_staging_signal_traps \
+            "$saved_hup_trap" "$saved_int_trap" "$saved_term_trap"
+        return 1
+    fi
+    context_id=$STAGING_CONTEXT_ID
+
+    if ! trap "handle_staging_signal $context_id HUP" HUP ||
+       ! trap "handle_staging_signal $context_id INT" INT ||
+       ! trap "handle_staging_signal $context_id TERM" TERM; then
+        trap '' HUP INT TERM
+        cleanup_staging_context "$context_id"
+        release_staging_context "$context_id"
+        STAGING_CONTEXT_ID=$previous_context_id
+        restore_staging_signal_traps \
+            "$saved_hup_trap" "$saved_int_trap" "$saved_term_trap"
+        return 1
+    fi
+    STAGING_CONTEXT_KIND[$context_id]="$kind"
+}
+
+# Keep staging signals ignored until cleanup and context release are complete.
+# Saved trap definitions are copied before release so restoration needs no live map.
+teardown_staging_context() {
+    local context_id="$1"
+
+    trap '' HUP INT TERM
+    local -r saved_hup_trap="${STAGING_CONTEXT_HUP[$context_id]-}"
+    local -r saved_int_trap="${STAGING_CONTEXT_INT[$context_id]-}"
+    local -r saved_term_trap="${STAGING_CONTEXT_TERM[$context_id]-}"
+    cleanup_staging_context "$context_id"
+    release_staging_context "$context_id"
+    restore_staging_signal_traps \
+        "$saved_hup_trap" "$saved_int_trap" "$saved_term_trap"
+}
+
+# Restore the owning frame before chaining. If its prior handler returns (or no
+# handler existed), re-raise once under the default disposition.
+handle_staging_signal() {
+    local context_id="$1"
+    local signal="$2"
+    local prior_trap=''
+
+    # Bash applies trap definitions one signal at a time. Keep setup semantically
+    # ignored until every context-bound definition is installed and setup commits.
+    case "${STAGING_CONTEXT_KIND[$context_id]-}" in
+        setup-*) return 0 ;;
+    esac
+
+    trap '' HUP INT TERM
+    case "$signal" in
+        HUP) prior_trap="${STAGING_CONTEXT_HUP[$context_id]-}" ;;
+        INT) prior_trap="${STAGING_CONTEXT_INT[$context_id]-}" ;;
+        TERM) prior_trap="${STAGING_CONTEXT_TERM[$context_id]-}" ;;
+    esac
+    teardown_staging_context "$context_id"
+
+    if [ -n "$prior_trap" ] && [[ "$prior_trap" != "trap -- '' "* ]]; then
+        kill -s "$signal" "$BASHPID"
+    fi
+    trap - "$signal"
+    kill -s "$signal" "$BASHPID"
+    exit 1
 }
 
 # Download and extract
@@ -571,52 +871,93 @@ download_and_extract() {
     local archive_name="sub2api_${version_num}_${OS}_${ARCH}.tar.gz"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/${archive_name}"
     local checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/checksums.txt"
+    local TEMP_DIR=''
+    local staged_binary=''
+    local context_id
+    local status=0
 
     print_info "$(msg 'downloading') ${archive_name}..."
 
-    # Create temp directory
-    TEMP_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_DIR" EXIT
+    if ! setup_staging_context download; then
+        return 1
+    fi
+    context_id=$STAGING_CONTEXT_ID
+    if ! TEMP_DIR=$(mktemp -d); then
+        teardown_staging_context "$context_id"
+        return 1
+    fi
+    STAGING_CONTEXT_PRIMARY[$context_id]="$TEMP_DIR"
 
     # Download archive
     if ! curl -sL "$download_url" -o "$TEMP_DIR/$archive_name"; then
         print_error "$(msg 'download_failed')"
-        exit 1
+        status=1
     fi
 
-    # Download and verify checksum
-    print_info "$(msg 'verifying_checksum')"
-    if curl -sL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
-        local expected_checksum=$(grep "$archive_name" "$TEMP_DIR/checksums.txt" | awk '{print $1}')
-        local actual_checksum=$(sha256sum "$TEMP_DIR/$archive_name" | awk '{print $1}')
+    # Download and verify checksum.
+    if [ "$status" -eq 0 ]; then
+        print_info "$(msg 'verifying_checksum')"
+        if curl -sL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
+            local expected_checksum
+            local actual_checksum
+            expected_checksum=$(grep "$archive_name" "$TEMP_DIR/checksums.txt" | awk '{print $1}')
+            actual_checksum=$(sha256sum "$TEMP_DIR/$archive_name" | awk '{print $1}')
 
-        if [ "$expected_checksum" != "$actual_checksum" ]; then
-            print_error "$(msg 'checksum_failed')"
-            print_error "Expected: $expected_checksum"
-            print_error "Actual: $actual_checksum"
-            exit 1
+            if [ "$expected_checksum" != "$actual_checksum" ]; then
+                print_error "$(msg 'checksum_failed')"
+                print_error "Expected: $expected_checksum"
+                print_error "Actual: $actual_checksum"
+                status=1
+            else
+                print_success "$(msg 'checksum_verified')"
+            fi
+        else
+            print_warning "$(msg 'checksum_not_found')"
         fi
-        print_success "$(msg 'checksum_verified')"
-    else
-        print_warning "$(msg 'checksum_not_found')"
     fi
 
-    # Extract
-    print_info "$(msg 'extracting')"
-    tar -xzf "$TEMP_DIR/$archive_name" -C "$TEMP_DIR"
-
-    # Create install directory
-    mkdir -p "$INSTALL_DIR"
-
-    # Copy binary
-    cp "$TEMP_DIR/sub2api" "$INSTALL_DIR/sub2api"
-    chmod +x "$INSTALL_DIR/sub2api"
-
-    # Copy deploy files if they exist in the archive
-    if [ -d "$TEMP_DIR/deploy" ]; then
-        cp -r "$TEMP_DIR/deploy/"* "$INSTALL_DIR/" 2>/dev/null || true
+    # Extract and validate before touching the installed binary.
+    if [ "$status" -eq 0 ]; then
+        print_info "$(msg 'extracting')"
+        if ! tar -xzf "$TEMP_DIR/$archive_name" -C "$TEMP_DIR" || [ ! -f "$TEMP_DIR/sub2api" ]; then
+            status=1
+        fi
     fi
 
+    if [ "$status" -eq 0 ]; then
+        if ! mkdir -p "$INSTALL_DIR"; then
+            status=1
+        else
+            if staged_binary=$(mktemp "$INSTALL_DIR/.sub2api.tmp.XXXXXX"); then
+                STAGING_CONTEXT_SECONDARY[$context_id]="$staged_binary"
+            else
+                status=1
+            fi
+        fi
+    fi
+    if [ "$status" -eq 0 ] &&
+       { ! cp "$TEMP_DIR/sub2api" "$staged_binary" || ! chmod 0755 "$staged_binary"; }; then
+        status=1
+    fi
+
+    # Release-owned deploy files are prepared before the atomic binary rename.
+    if [ "$status" -eq 0 ] && [ -d "$TEMP_DIR/deploy" ] &&
+       ! cp -r "$TEMP_DIR/deploy/"* "$INSTALL_DIR/"; then
+        status=1
+    fi
+    if [ "$status" -eq 0 ]; then
+        if mv -f -- "$staged_binary" "$INSTALL_DIR/sub2api"; then
+            staged_binary=''
+            STAGING_CONTEXT_SECONDARY[$context_id]=''
+        else
+            status=1
+        fi
+    fi
+
+    teardown_staging_context "$context_id"
+    if [ "$status" -ne 0 ]; then
+        return "$status"
+    fi
     print_success "$(msg 'binary_installed') $INSTALL_DIR/sub2api"
 }
 
@@ -662,49 +1003,94 @@ setup_directories() {
     print_success "$(msg 'dirs_configured')"
 }
 
-# Install systemd service
+# Render the shipped unit template to stdout. Bounded configuration validation
+# makes exact quoted rendering sufficient; unsupported metacharacters never reach it.
+render_service() {
+    local service_template="$1"
+    local line
+
+    validate_service_configuration || return 1
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%$'\r'}
+        case "$line" in
+            'User=@SERVICE_USER@') printf 'User=%s\n' "$SERVICE_USER" || return 1 ;;
+            'Group=@SERVICE_USER@') printf 'Group=%s\n' "$SERVICE_USER" || return 1 ;;
+            'WorkingDirectory="@INSTALL_DIR@"') printf 'WorkingDirectory="%s"\n' "$INSTALL_DIR" || return 1 ;;
+            'ExecStart="@INSTALL_DIR@/sub2api"') printf 'ExecStart="%s/sub2api"\n' "$INSTALL_DIR" || return 1 ;;
+            'ReadWritePaths="@INSTALL_DIR@"') printf 'ReadWritePaths="%s"\n' "$INSTALL_DIR" || return 1 ;;
+            'Environment="SERVER_HOST=@SERVER_HOST@"') printf 'Environment="SERVER_HOST=%s"\n' "$SERVER_HOST" || return 1 ;;
+            'Environment="SERVER_PORT=@SERVER_PORT@"') printf 'Environment="SERVER_PORT=%s"\n' "$SERVER_PORT" || return 1 ;;
+            *) printf '%s\n' "$line" || return 1 ;;
+        esac
+    done < "$service_template"
+}
+
+# Install through a private same-directory file and rename only after rendering,
+# mode, and required root ownership are complete. Existing special files are never
+# followed, and the previous regular unit remains intact on every pre-rename error.
 install_service() {
     print_info "$(msg 'installing_service')"
 
-    # Create service file with configured host and port
-    cat > /etc/systemd/system/sub2api.service << EOF
-[Unit]
-Description=Sub2API - AI API Gateway Platform
-Documentation=https://github.com/is7Qin/sub2api
-After=network.target postgresql.service redis.service
-Wants=postgresql.service redis.service
+    local service_template="$INSTALL_DIR/sub2api.service"
+    local service_dir service_base current_uid
+    local service_temp_path=''
+    local context_id
+    local status=0
+    if [ ! -f "$service_template" ] || [ -L "$service_template" ]; then
+        print_error "Missing or unsafe systemd service template: $service_template"
+        return 1
+    fi
 
-[Service]
-Type=simple
-User=sub2api
-Group=sub2api
-WorkingDirectory=/opt/sub2api
-ExecStart=/opt/sub2api/sub2api
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=sub2api
+    validate_service_configuration || return 1
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=/opt/sub2api
+    if [ -e "$SYSTEMD_UNIT_PATH" ] || [ -L "$SYSTEMD_UNIT_PATH" ]; then
+        if [ -L "$SYSTEMD_UNIT_PATH" ] || [ ! -f "$SYSTEMD_UNIT_PATH" ]; then
+            print_error "Unsafe systemd service destination: $SYSTEMD_UNIT_PATH"
+            return 1
+        fi
+    fi
 
-# Environment - Server configuration
-Environment=GIN_MODE=release
-Environment=SERVER_HOST=${SERVER_HOST}
-Environment=SERVER_PORT=${SERVER_PORT}
+    service_dir=$(dirname -- "$SYSTEMD_UNIT_PATH")
+    service_base=$(basename -- "$SYSTEMD_UNIT_PATH")
+    [ -d "$service_dir" ] || {
+        print_error "Missing systemd service directory: $service_dir"
+        return 1
+    }
 
-[Install]
-WantedBy=multi-user.target
-EOF
+    if ! setup_staging_context service; then
+        return 1
+    fi
+    context_id=$STAGING_CONTEXT_ID
+    if ! service_temp_path=$(mktemp "$service_dir/.${service_base}.tmp.XXXXXX"); then
+        teardown_staging_context "$context_id"
+        return 1
+    fi
+    STAGING_CONTEXT_PRIMARY[$context_id]="$service_temp_path"
 
-    # Reload systemd
+    if ! render_service "$service_template" > "$service_temp_path"; then
+        status=1
+    elif ! chmod 0644 "$service_temp_path"; then
+        status=1
+    else
+        current_uid=$(id -u)
+        if [ "$current_uid" -eq 0 ] && ! chown 0:0 "$service_temp_path"; then
+            print_error "Failed to set root ownership on staged systemd unit"
+            status=1
+        elif mv -f -- "$service_temp_path" "$SYSTEMD_UNIT_PATH"; then
+            service_temp_path=''
+            STAGING_CONTEXT_PRIMARY[$context_id]=''
+        else
+            status=1
+        fi
+    fi
+
+    teardown_staging_context "$context_id"
+    if [ "$status" -ne 0 ]; then
+        return "$status"
+    fi
+
     systemctl daemon-reload
-
     print_success "$(msg 'service_installed')"
 }
 
@@ -803,13 +1189,34 @@ print_completion() {
     echo "=============================================="
 }
 
+# Fresh install lifecycle shared by the default and explicit-version entrypoints.
+fresh_install() {
+    local target_version="${1:-}"
+
+    configure_server || return 1
+    if [ -n "$target_version" ]; then
+        LATEST_VERSION=$(validate_version "$target_version") || return 1
+    else
+        get_latest_version || return 1
+    fi
+    download_and_extract || return 1
+    create_user || return 1
+    setup_directories || return 1
+    install_service || return 1
+    prepare_for_setup || return 1
+    get_public_ip || true
+    start_service || return 1
+    enable_autostart || return 1
+    print_completion
+}
+
 # Upgrade function
 upgrade() {
     # Check if Sub2API is installed
     if [ ! -f "$INSTALL_DIR/sub2api" ]; then
         print_error "$(msg 'not_installed')"
         print_info "$(msg 'fresh_install_hint'): $0 install"
-        exit 1
+        return 1
     fi
 
     print_info "$(msg 'upgrading')"
@@ -818,26 +1225,51 @@ upgrade() {
     CURRENT_VERSION=$("$INSTALL_DIR/sub2api" --version 2>/dev/null | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
     print_info "$(msg 'current_version'): $CURRENT_VERSION"
 
-    # Stop service
+    local was_active=false
     if systemctl is-active --quiet sub2api; then
+        was_active=true
         print_info "$(msg 'stopping_service')"
-        systemctl stop sub2api
+        systemctl stop sub2api || return 1
     fi
 
-    # Backup current binary
-    cp "$INSTALL_DIR/sub2api" "$INSTALL_DIR/sub2api.backup"
+    if ! cp "$INSTALL_DIR/sub2api" "$INSTALL_DIR/sub2api.backup"; then
+        if [ "$was_active" = true ]; then
+            systemctl start sub2api || true
+        fi
+        return 1
+    fi
     print_info "$(msg 'backup_created'): $INSTALL_DIR/sub2api.backup"
 
-    # Download and install new version
-    get_latest_version
-    download_and_extract
+    if ! get_latest_version; then
+        if [ "$was_active" = true ]; then
+            systemctl start sub2api || true
+        fi
+        return 1
+    fi
+    if ! download_and_extract; then
+        cp "$INSTALL_DIR/sub2api.backup" "$INSTALL_DIR/sub2api"
+        if [ "$was_active" = true ]; then
+            systemctl start sub2api || true
+        fi
+        return 1
+    fi
 
-    # Set permissions
-    chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"
+    if ! chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"; then
+        cp "$INSTALL_DIR/sub2api.backup" "$INSTALL_DIR/sub2api"
+        if [ "$was_active" = true ]; then
+            systemctl start sub2api || true
+        fi
+        return 1
+    fi
 
-    # Start service
-    print_info "$(msg 'starting_service')"
-    systemctl start sub2api
+    if [ "$was_active" = true ]; then
+        print_info "$(msg 'starting_service')"
+        if ! systemctl start sub2api; then
+            cp "$INSTALL_DIR/sub2api.backup" "$INSTALL_DIR/sub2api"
+            systemctl start sub2api || true
+            return 1
+        fi
+    fi
 
     print_success "$(msg 'upgrade_complete')"
 }
@@ -851,11 +1283,11 @@ install_version() {
     if [ ! -f "$INSTALL_DIR/sub2api" ]; then
         print_error "$(msg 'not_installed')"
         print_info "$(msg 'fresh_install_hint'): $0 install -v $target_version"
-        exit 1
+        return 1
     fi
 
     # Validate and normalize version
-    target_version=$(validate_version "$target_version")
+    target_version=$(validate_version "$target_version") || return 1
 
     print_info "$(msg 'installing_version'): $target_version"
 
@@ -867,13 +1299,16 @@ install_version() {
     # Check if same version
     if [ "$current_version" = "$target_version" ] || [ "$current_version" = "${target_version#v}" ]; then
         print_warning "$(msg 'same_version')"
-        exit 0
+        return 0
     fi
 
-    # Stop service if running
+    # Preserve the prior activity state; version changes must not activate an
+    # intentionally inactive service.
+    local was_active=false
     if systemctl is-active --quiet sub2api; then
+        was_active=true
         print_info "$(msg 'stopping_service')"
-        systemctl stop sub2api
+        systemctl stop sub2api || return 1
     fi
 
     # Backup current binary (for potential recovery)
@@ -884,26 +1319,38 @@ install_version() {
         else
             backup_name="sub2api.backup.$(date +%Y%m%d%H%M%S)"
         fi
-        cp "$INSTALL_DIR/sub2api" "$INSTALL_DIR/$backup_name"
+        if ! cp "$INSTALL_DIR/sub2api" "$INSTALL_DIR/$backup_name"; then
+            if [ "$was_active" = true ]; then
+                systemctl start sub2api || true
+            fi
+            return 1
+        fi
         print_info "$(msg 'backup_created'): $INSTALL_DIR/$backup_name"
     fi
 
     # Set LATEST_VERSION to the target version for download_and_extract
     LATEST_VERSION="$target_version"
 
-    # Download and install
-    download_and_extract
+    # Download and install. Restore both bytes and activity if replacement fails.
+    if ! download_and_extract || ! chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"; then
+        cp "$INSTALL_DIR/$backup_name" "$INSTALL_DIR/sub2api"
+        if [ "$was_active" = true ]; then
+            systemctl start sub2api || true
+        fi
+        return 1
+    fi
 
-    # Set permissions
-    chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"
-
-    # Start service
-    print_info "$(msg 'starting_service')"
-    if systemctl start sub2api; then
-        print_success "$(msg 'service_started')"
-    else
-        print_error "$(msg 'service_start_failed')"
-        print_info "sudo journalctl -u sub2api -n 50"
+    if [ "$was_active" = true ]; then
+        print_info "$(msg 'starting_service')"
+        if systemctl start sub2api; then
+            print_success "$(msg 'service_started')"
+        else
+            print_error "$(msg 'service_start_failed')"
+            print_info "sudo journalctl -u sub2api -n 50"
+            cp "$INSTALL_DIR/$backup_name" "$INSTALL_DIR/sub2api"
+            systemctl start sub2api || true
+            return 1
+        fi
     fi
 
     # Print completion message
@@ -942,7 +1389,7 @@ uninstall() {
     systemctl disable sub2api 2>/dev/null || true
 
     print_info "$(msg 'removing_files')"
-    rm -f /etc/systemd/system/sub2api.service
+    rm -f "$SYSTEMD_UNIT_PATH"
     systemctl daemon-reload
 
     print_info "$(msg 'removing_install_dir')"
@@ -1059,31 +1506,11 @@ main() {
                     install_version "$target_version"
                 else
                     # Fresh install with specific version
-                    configure_server
-                    LATEST_VERSION=$(validate_version "$target_version")
-                    download_and_extract
-                    create_user
-                    setup_directories
-                    install_service
-                    prepare_for_setup
-                    get_public_ip
-                    start_service
-                    enable_autostart
-                    print_completion
+                    fresh_install "$target_version"
                 fi
             else
                 # Fresh install with latest version
-                configure_server
-                get_latest_version
-                download_and_extract
-                create_user
-                setup_directories
-                install_service
-                prepare_for_setup
-                get_public_ip
-                start_service
-                enable_autostart
-                print_completion
+                fresh_install
             fi
             exit 0
             ;;
@@ -1153,31 +1580,11 @@ main() {
         if [ -f "$INSTALL_DIR/sub2api" ]; then
             install_version "$target_version"
         else
-            configure_server
-            LATEST_VERSION=$(validate_version "$target_version")
-            download_and_extract
-            create_user
-            setup_directories
-            install_service
-            prepare_for_setup
-            get_public_ip
-            start_service
-            enable_autostart
-            print_completion
+            fresh_install "$target_version"
         fi
     else
         # Install latest version
-        configure_server
-        get_latest_version
-        download_and_extract
-        create_user
-        setup_directories
-        install_service
-        prepare_for_setup
-        get_public_ip
-        start_service
-        enable_autostart
-        print_completion
+        fresh_install
     fi
 }
 

@@ -10,11 +10,185 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/workerruntime"
 	"github.com/gin-gonic/gin"
 )
 
 type OpsHandler struct {
-	opsService *service.OpsService
+	opsService    *service.OpsService
+	billingOutbox *service.BillingOutboxWorker
+	workerRuntime *workerruntime.Runtime
+}
+
+// GetWorkerRuntimeStatus exposes this process's managed worker snapshots through
+// the authenticated, monitoring-gated operations surface.
+func (h *OpsHandler) GetWorkerRuntimeStatus(c *gin.Context) {
+	if h == nil || h.workerRuntime == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Worker runtime not available")
+		return
+	}
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, workerRuntimeStatusResponse{
+		Scope:   "process",
+		Workers: projectWorkerRuntimeSnapshots(h.workerRuntime.Snapshot()),
+	})
+}
+
+type workerRuntimeStatusResponse struct {
+	Scope   string                          `json:"scope"`
+	Workers []workerRuntimeSnapshotResponse `json:"workers"`
+}
+
+// workerRuntimeSnapshotResponse intentionally contains only the monitoring-safe
+// portion of a runtime snapshot. Runtime error strings originate in worker callbacks
+// and must not cross this authenticated handler boundary.
+type workerRuntimeSnapshotResponse struct {
+	Descriptor workerRuntimeDescriptorResponse `json:"Descriptor"`
+	Lifecycle  workerRuntimeLifecycleResponse  `json:"Lifecycle"`
+	Status     any                             `json:"Status"`
+}
+
+type workerRuntimeDescriptorResponse struct {
+	Name             string                         `json:"Name"`
+	Kind             workerruntime.Kind             `json:"Kind"`
+	Group            string                         `json:"Group"`
+	CoordinationMode workerruntime.CoordinationMode `json:"CoordinationMode"`
+	Description      string                         `json:"Description"`
+	Tags             []string                       `json:"Tags"`
+}
+
+type workerRuntimeLifecycleResponse struct {
+	State     workerruntime.LifecycleState `json:"State"`
+	UpdatedAt time.Time                    `json:"UpdatedAt"`
+}
+
+type workerRuntimePeriodicStatusResponse struct {
+	LastRunAt    time.Time             `json:"LastRunAt"`
+	NextRunAt    time.Time             `json:"NextRunAt"`
+	LastDuration time.Duration         `json:"LastDuration"`
+	LastOutcome  workerruntime.Outcome `json:"LastOutcome"`
+	RunCount     uint64                `json:"RunCount"`
+	SuccessCount uint64                `json:"SuccessCount"`
+	ErrorCount   uint64                `json:"ErrorCount"`
+	PanicCount   uint64                `json:"PanicCount"`
+	TimeoutCount uint64                `json:"TimeoutCount"`
+	StillRunning bool                  `json:"StillRunning"`
+}
+
+type workerRuntimePoolStatusResponse struct {
+	Accepting          bool   `json:"Accepting"`
+	StillRunning       bool   `json:"StillRunning"`
+	MaxConcurrency     int    `json:"MaxConcurrency"`
+	RunningWorkers     int64  `json:"RunningWorkers"`
+	WaitingTasks       uint64 `json:"WaitingTasks"`
+	SubmittedTasks     uint64 `json:"SubmittedTasks"`
+	CompletedTasks     uint64 `json:"CompletedTasks"`
+	SuccessfulTasks    uint64 `json:"SuccessfulTasks"`
+	FailedTasks        uint64 `json:"FailedTasks"`
+	DroppedTasks       uint64 `json:"DroppedTasks"`
+	DroppedQueueFull   uint64 `json:"DroppedQueueFull"`
+	DroppedPoolStopped uint64 `json:"DroppedPoolStopped"`
+	SyncFallbackTasks  uint64 `json:"SyncFallbackTasks"`
+}
+
+func projectWorkerRuntimeSnapshots(snapshots []workerruntime.Snapshot) []workerRuntimeSnapshotResponse {
+	workers := make([]workerRuntimeSnapshotResponse, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		workers = append(workers, projectWorkerRuntimeSnapshot(snapshot))
+	}
+	return workers
+}
+
+func projectWorkerRuntimeSnapshot(snapshot workerruntime.Snapshot) workerRuntimeSnapshotResponse {
+	descriptor := snapshot.Descriptor
+	worker := workerRuntimeSnapshotResponse{
+		Descriptor: workerRuntimeDescriptorResponse{
+			Name:             descriptor.Name,
+			Kind:             descriptor.Kind,
+			Group:            descriptor.Group,
+			CoordinationMode: descriptor.CoordinationMode,
+			Description:      descriptor.Description,
+			Tags:             append([]string(nil), descriptor.Tags...),
+		},
+		Lifecycle: workerRuntimeLifecycleResponse{
+			State:     snapshot.Lifecycle.State,
+			UpdatedAt: snapshot.Lifecycle.UpdatedAt,
+		},
+	}
+
+	switch status := snapshot.Status.(type) {
+	case workerruntime.PeriodicStatus:
+		worker.Status = projectWorkerRuntimePeriodicStatus(status)
+	case *workerruntime.PeriodicStatus:
+		if status != nil {
+			worker.Status = projectWorkerRuntimePeriodicStatus(*status)
+		}
+	case workerruntime.PoolStatus:
+		worker.Status = projectWorkerRuntimePoolStatus(status)
+	case *workerruntime.PoolStatus:
+		if status != nil {
+			worker.Status = projectWorkerRuntimePoolStatus(*status)
+		}
+	}
+	return worker
+}
+
+func projectWorkerRuntimePeriodicStatus(status workerruntime.PeriodicStatus) workerRuntimePeriodicStatusResponse {
+	return workerRuntimePeriodicStatusResponse{
+		LastRunAt:    status.LastRunAt,
+		NextRunAt:    status.NextRunAt,
+		LastDuration: status.LastDuration,
+		LastOutcome:  status.LastOutcome,
+		RunCount:     status.RunCount,
+		SuccessCount: status.SuccessCount,
+		ErrorCount:   status.ErrorCount,
+		PanicCount:   status.PanicCount,
+		TimeoutCount: status.TimeoutCount,
+		StillRunning: status.StillRunning,
+	}
+}
+
+func projectWorkerRuntimePoolStatus(status workerruntime.PoolStatus) workerRuntimePoolStatusResponse {
+	return workerRuntimePoolStatusResponse{
+		Accepting:          status.Accepting,
+		StillRunning:       status.StillRunning,
+		MaxConcurrency:     status.MaxConcurrency,
+		RunningWorkers:     status.RunningWorkers,
+		WaitingTasks:       status.WaitingTasks,
+		SubmittedTasks:     status.SubmittedTasks,
+		CompletedTasks:     status.CompletedTasks,
+		SuccessfulTasks:    status.SuccessfulTasks,
+		FailedTasks:        status.FailedTasks,
+		DroppedTasks:       status.DroppedTasks,
+		DroppedQueueFull:   status.DroppedQueueFull,
+		DroppedPoolStopped: status.DroppedPoolStopped,
+		SyncFallbackTasks:  status.SyncFallbackTasks,
+	}
+}
+
+// GetBillingOutboxHealth exposes durable billing backlog health through the
+// authenticated, monitoring-gated operations surface without command data.
+func (h *OpsHandler) GetBillingOutboxHealth(c *gin.Context) {
+	if h == nil || h.billingOutbox == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Billing outbox worker not available")
+		return
+	}
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, h.billingOutbox.Health(c.Request.Context()))
 }
 
 // GetErrorLogByID returns ops error log detail.
@@ -70,6 +244,19 @@ func parseOpsViewParam(c *gin.Context) string {
 
 func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 	return &OpsHandler{opsService: opsService}
+}
+
+func (h *OpsHandler) SetBillingOutboxWorker(worker *service.BillingOutboxWorker) {
+	if h != nil {
+		h.billingOutbox = worker
+	}
+}
+
+// SetWorkerRuntime injects the process-local managed worker runtime for Ops status.
+func (h *OpsHandler) SetWorkerRuntime(runtime *workerruntime.Runtime) {
+	if h != nil {
+		h.workerRuntime = runtime
+	}
 }
 
 // GetErrorLogs lists ops error logs.

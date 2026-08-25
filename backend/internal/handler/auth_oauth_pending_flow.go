@@ -564,7 +564,7 @@ func (h *AuthHandler) SendPendingOAuthVerifyCode(c *gin.Context) {
 		return
 	}
 
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
+	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetSecurityClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -1984,6 +1984,11 @@ func (h *AuthHandler) ExchangePendingOAuthCompletion(c *gin.Context) {
 		return
 	}
 	if pendingSessionRequiresBindLogin(payload) {
+		response.Success(c, payload)
+		return
+	}
+	// Only terminal logins or authenticated account-binding flows may mutate identity ownership.
+	if !canIssueTokenPair && !strings.EqualFold(strings.TrimSpace(session.Intent), oauthIntentBindCurrentUser) {
 		response.Success(c, payload)
 		return
 	}

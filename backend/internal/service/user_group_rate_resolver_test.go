@@ -81,3 +81,21 @@ func TestGatewayServiceGetUserGroupRateMultiplier_FallbacksAndUsesExistingResolv
 	require.Equal(t, rate, got)
 	require.Equal(t, 1, repo.calls)
 }
+
+func TestGatewayServiceResolveUserGroupRateMultiplierUsesExistingResolver(t *testing.T) {
+	rate := 1.9
+	repo := &userGroupRateResolverRepoStub{rate: &rate}
+	svc := &GatewayService{userGroupRateResolver: newUserGroupRateResolver(repo, nil, time.Minute, nil, "service.gateway")}
+
+	require.Equal(t, rate, svc.ResolveUserGroupRateMultiplier(context.Background(), 101, 202, 1.2))
+	require.Equal(t, 1, repo.calls)
+}
+
+func TestOpenAIGatewayServiceResolveUserGroupRateMultiplierUsesExistingResolver(t *testing.T) {
+	rate := 1.8
+	repo := &userGroupRateResolverRepoStub{rate: &rate}
+	svc := &OpenAIGatewayService{userGroupRateResolver: newUserGroupRateResolver(repo, nil, time.Minute, nil, "service.openai_gateway")}
+
+	require.Equal(t, rate, svc.ResolveUserGroupRateMultiplier(context.Background(), 101, 202, 1.2))
+	require.Equal(t, 1, repo.calls)
+}

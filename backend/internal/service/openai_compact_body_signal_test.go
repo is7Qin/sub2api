@@ -16,6 +16,13 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestBareOpenAIResponsesPathDoesNotTrimDecodedWhitespace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses%20", nil)
+	require.False(t, isBareOpenAIResponsesPath(c))
+}
+
 func TestHasOpenAICompactionTriggerInInput(t *testing.T) {
 	tests := []struct {
 		name string
@@ -51,7 +58,7 @@ func TestHasOpenAICompactionTriggerInInput(t *testing.T) {
 	}
 }
 
-func TestOpenAIGatewayService_OAuthCodexBodySignalPromotesCompact(t *testing.T) {
+func TestOpenAIGatewayService_OAuthRemoteCompactionUsesNormalResponsesPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -60,8 +67,9 @@ func TestOpenAIGatewayService_OAuthCodexBodySignalPromotesCompact(t *testing.T) 
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact-signal"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","usage":{"input_tokens":1,"output_tokens":1}}`)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid-compact-signal"}},
+		Body: io.NopCloser(strings.NewReader("event: response.completed\n" +
+			`data: {"type":"response.completed","response":{"id":"resp_compact","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n")),
 	}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
 	account := &Account{
@@ -84,15 +92,15 @@ func TestOpenAIGatewayService_OAuthCodexBodySignalPromotesCompact(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "billing-alias", result.Model)
-	require.Equal(t, "gpt-5.4-openai-compact", result.BillingModel)
-	require.Equal(t, "gpt-5.4-openai-compact", result.UpstreamModel)
-	require.Equal(t, "gpt-5.4-openai-compact", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "gpt-5.4", result.BillingModel)
+	require.Equal(t, "gpt-5.4", result.UpstreamModel)
+	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
-	require.Equal(t, chatgptCodexURL+"/compact", upstream.lastReq.URL.String())
-	require.False(t, gjson.GetBytes(upstream.lastBody, "stream").Exists())
-	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Exists())
-	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata").Exists())
+	require.Equal(t, "/v1/responses", c.Request.URL.Path)
+	require.Equal(t, chatgptCodexURL, upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "client_metadata").Exists())
 	require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
 }
 
@@ -118,8 +126,7 @@ func TestOpenAIGatewayService_APIKeyBodySignalStaysNativeResponses(t *testing.T)
 		Credentials: map[string]any{"api_key": "sk-test"},
 	}
 	body := []byte(`{"model":"gpt-5.5","stream":false,"store":true,"input":[{"type":"compaction_trigger"}]}`)
-	// API-key passthrough never receives the handler's promoted marker because
-	// body-signal scheduling is scoped to OAuth-like accounts.
+	require.True(t, PromoteOpenAICompactBodySignal(c, body, false))
 
 	result, err := svc.Forward(context.Background(), c, account, body)
 

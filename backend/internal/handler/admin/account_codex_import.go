@@ -85,6 +85,11 @@ type codexImportAccount struct {
 	UserID              string
 	PlanType            string
 	Organization        string
+	AgentRuntimeID      string
+	AgentPrivateKey     string
+	AgentTaskID         string
+	AgentFedRAMP        bool
+	IsAgentIdentity     bool
 	Credentials         map[string]any
 	Extra               map[string]any
 	TokenExpiresAt      *time.Time
@@ -113,7 +118,8 @@ type codexJWTOpenAIClaims struct {
 }
 
 type codexAccountIndex struct {
-	accountsByKey map[string]service.Account
+	accountsByKey   map[string][]service.Account
+	keysByAccountID map[int64]map[string]struct{}
 }
 
 func (h *AccountHandler) ImportCodexSession(c *gin.Context) {
@@ -512,6 +518,41 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 			item.AccessToken = trimmed
 		}
 	case map[string]any:
+		if agentIdentity, ok := firstCodexMap(raw, []string{"agent_identity"}, []string{"agentIdentity"}); ok || strings.EqualFold(firstCodexString(raw, []string{"auth_mode"}, []string{"authMode"}), service.OpenAIAuthModeAgentIdentity) {
+			if !ok {
+				agentIdentity = raw
+			}
+			item.IsAgentIdentity = true
+			item.AgentRuntimeID = firstCodexString(agentIdentity, []string{"agent_runtime_id"}, []string{"agentRuntimeId"})
+			item.AgentPrivateKey = firstCodexString(agentIdentity, []string{"agent_private_key"}, []string{"agentPrivateKey"})
+			item.AgentTaskID = firstCodexString(agentIdentity, []string{"task_id"}, []string{"taskId"})
+			item.AccountID = firstCodexString(agentIdentity, []string{"account_id"}, []string{"accountId"})
+			item.UserID = firstCodexString(agentIdentity, []string{"chatgpt_user_id"}, []string{"chatgptUserId"})
+			item.Email = firstCodexString(agentIdentity, []string{"email"})
+			item.PlanType = firstCodexString(agentIdentity, []string{"plan_type"}, []string{"planType"})
+			item.AgentFedRAMP, _ = firstCodexBool(agentIdentity, []string{"chatgpt_account_is_fedramp"}, []string{"chatgptAccountIsFedramp"})
+			if item.AgentRuntimeID == "" || item.AgentPrivateKey == "" || item.AccountID == "" || item.UserID == "" {
+				return nil, errors.New("agent identity 缺少必要字段")
+			}
+			if err := service.ValidateOpenAIAgentIdentityPrivateKey(item.AgentPrivateKey); err != nil {
+				return nil, errors.New("agent identity private key 格式无效")
+			}
+			item.Credentials["auth_mode"] = service.OpenAIAuthModeAgentIdentity
+			item.Credentials["agent_runtime_id"] = item.AgentRuntimeID
+			item.Credentials["agent_private_key"] = item.AgentPrivateKey
+			item.Credentials["chatgpt_account_id"] = item.AccountID
+			item.Credentials["chatgpt_user_id"] = item.UserID
+			item.Credentials["chatgpt_account_is_fedramp"] = item.AgentFedRAMP
+			setCodexCredentialIfNotEmpty(item.Credentials, "task_id", item.AgentTaskID)
+			setCodexCredentialIfNotEmpty(item.Credentials, "email", item.Email)
+			setCodexCredentialIfNotEmpty(item.Credentials, "plan_type", item.PlanType)
+			if item.AgentTaskID == "" {
+				item.WarningTexts = append(item.WarningTexts, "未包含 task_id，首次请求会使用现有 runtime 注册新 task")
+			}
+			item.IdentityKeys = buildCodexAgentIdentityKeys(item.AccountID, item.UserID)
+			item.Name = buildCodexImportAccountName(item, entry.Index)
+			return item, nil
+		}
 		if handled, err := normalizeHCPAImportAccount(item, raw, now); handled {
 			if err != nil {
 				return nil, err
@@ -934,6 +975,10 @@ func resolveCodexImportExpiry(req CodexSessionImportRequest, item *codexImportAc
 		return nil, nil, nil, nil, errors.New("导入项为空")
 	}
 
+	if item.IsAgentIdentity {
+		return nil, nil, req.AutoPauseOnExpired, nil, nil
+	}
+
 	var requestExpiresAt *time.Time
 	if req.ExpiresAt != nil && *req.ExpiresAt > 0 {
 		t := time.Unix(*req.ExpiresAt, 0).UTC()
@@ -1077,6 +1122,15 @@ func buildCodexIdentityKeys(accountID, userID, email, accessToken string) []stri
 	return keys
 }
 
+func buildCodexAgentIdentityKeys(accountID, userID string) []string {
+	accountID = strings.TrimSpace(accountID)
+	userID = strings.TrimSpace(userID)
+	if accountID == "" || userID == "" {
+		return nil
+	}
+	return []string{"agent_account_user:" + accountID + ":" + userID}
+}
+
 func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refreshToken string) []string {
 	accessToken = strings.TrimSpace(accessToken)
 	refreshToken = strings.TrimSpace(refreshToken)
@@ -1087,7 +1141,10 @@ func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refresh
 }
 
 func buildCodexAccountIndex(accounts []service.Account) *codexAccountIndex {
-	index := &codexAccountIndex{accountsByKey: map[string]service.Account{}}
+	index := &codexAccountIndex{
+		accountsByKey:   map[string][]service.Account{},
+		keysByAccountID: map[int64]map[string]struct{}{},
+	}
 	for _, account := range accounts {
 		index.Add(account)
 	}
@@ -1099,7 +1156,10 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		return
 	}
 	if i.accountsByKey == nil {
-		i.accountsByKey = map[string]service.Account{}
+		i.accountsByKey = map[string][]service.Account{}
+	}
+	if i.keysByAccountID == nil {
+		i.keysByAccountID = map[int64]map[string]struct{}{}
 	}
 	identityToken := codexCredentialString(account.Credentials, "personal_access_token")
 	if identityToken == "" {
@@ -1111,9 +1171,60 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		codexCredentialString(account.Credentials, "email"),
 		identityToken,
 	)
-	for _, key := range keys {
-		i.accountsByKey[key] = account
+	orderedKeys := make([]string, 0, len(keys)+2)
+	accountKeys := make(map[string]struct{}, len(keys)+2)
+	appendKey := func(key string) {
+		if _, exists := accountKeys[key]; exists {
+			return
+		}
+		accountKeys[key] = struct{}{}
+		orderedKeys = append(orderedKeys, key)
 	}
+	for _, key := range keys {
+		appendKey(key)
+	}
+	if strings.EqualFold(codexCredentialString(account.Credentials, "auth_mode"), service.OpenAIAuthModeAgentIdentity) {
+		for _, key := range buildCodexAgentIdentityKeys(
+			codexCredentialString(account.Credentials, "chatgpt_account_id"),
+			codexCredentialString(account.Credentials, "chatgpt_user_id"),
+		) {
+			appendKey(key)
+		}
+	}
+	if runtimeID := codexCredentialString(account.Credentials, "agent_runtime_id"); runtimeID != "" {
+		appendKey("agent:" + runtimeID)
+	}
+
+	previousKeys := i.keysByAccountID[account.ID]
+	for key := range previousKeys {
+		if _, retained := accountKeys[key]; retained {
+			i.accountsByKey[key] = upsertCodexAccount(i.accountsByKey[key], account)
+			continue
+		}
+		i.removeFromKey(key, account.ID)
+	}
+	for _, key := range orderedKeys {
+		if _, existed := previousKeys[key]; existed {
+			continue
+		}
+		i.accountsByKey[key] = append(i.accountsByKey[key], account)
+	}
+	i.keysByAccountID[account.ID] = accountKeys
+}
+
+func (i *codexAccountIndex) removeFromKey(key string, accountID int64) {
+	accounts := i.accountsByKey[key]
+	kept := accounts[:0]
+	for _, account := range accounts {
+		if account.ID != accountID {
+			kept = append(kept, account)
+		}
+	}
+	if len(kept) == 0 {
+		delete(i.accountsByKey, key)
+		return
+	}
+	i.accountsByKey[key] = kept
 }
 
 func (i *codexAccountIndex) Find(keys []string) *service.Account {
@@ -1121,11 +1232,23 @@ func (i *codexAccountIndex) Find(keys []string) *service.Account {
 		return nil
 	}
 	for _, key := range keys {
-		if account, ok := i.accountsByKey[key]; ok {
+		accounts := i.accountsByKey[key]
+		if len(accounts) > 0 {
+			account := accounts[0]
 			return &account
 		}
 	}
 	return nil
+}
+
+func upsertCodexAccount(accounts []service.Account, account service.Account) []service.Account {
+	for idx := range accounts {
+		if accounts[idx].ID == account.ID {
+			accounts[idx] = account
+			return accounts
+		}
+	}
+	return append(accounts, account)
 }
 
 func firstSeenCodexIdentity(seen map[string]int, keys []string) (int, bool) {
@@ -1230,6 +1353,17 @@ func looksLikeJSON(content string) bool {
 	default:
 		return false
 	}
+}
+
+func firstCodexMap(obj map[string]any, paths ...[]string) (map[string]any, bool) {
+	for _, path := range paths {
+		if value, ok := codexPathValue(obj, path); ok {
+			if nested, ok := value.(map[string]any); ok {
+				return nested, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func firstCodexString(obj map[string]any, paths ...[]string) string {

@@ -1,6 +1,10 @@
 package service
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
 
 const errorPassthroughServiceContextKey = "error_passthrough_service"
 
@@ -27,6 +31,27 @@ func getBoundErrorPassthroughService(c *gin.Context) *ErrorPassthroughService {
 	return svc
 }
 
+// NewLegacyUpstreamErrorFact creates the bounded fact used by legacy final-error
+// boundaries before any configurable rule can inspect it.
+func NewLegacyUpstreamErrorFact(platform string, upstreamStatus int, responseBody []byte) UpstreamErrorFact {
+	var fact UpstreamErrorFact
+	if platform == PlatformGemini {
+		var resp *http.Response
+		if upstreamStatus > 0 {
+			resp = &http.Response{StatusCode: upstreamStatus}
+		}
+		// Legacy Gemini bodies carry their semantic code in error.status.
+		fact = ParseGeminiHTTPUpstreamErrorFact(resp, responseBody)
+	} else {
+		fact = ParseOpenAIJSONErrorFact(platform, UpstreamErrorSourceHTTP, responseBody, "")
+	}
+	if upstreamStatus > 0 {
+		fact.HTTPStatusKnown = true
+		fact.HTTPStatus = upstreamStatus
+	}
+	return fact
+}
+
 // applyErrorPassthroughRule 按规则改写错误响应；未命中时返回默认响应参数。
 func applyErrorPassthroughRule(
 	c *gin.Context,
@@ -46,27 +71,27 @@ func applyErrorPassthroughRule(
 		return status, errType, errMsg, false
 	}
 
-	rule := svc.MatchRule(platform, upstreamStatus, responseBody)
-	if rule == nil {
+	fact := NewLegacyUpstreamErrorFact(platform, upstreamStatus, responseBody)
+	if policy, recognized := RecognizeUpstreamErrorFact(fact); recognized {
+		if policy.Presentation.HTTPStatus > 0 {
+			status = policy.Presentation.HTTPStatus
+		}
+		if policy.Presentation.ErrorType != "" {
+			errType = policy.Presentation.ErrorType
+		}
+		if policy.Presentation.Message != "" {
+			errMsg = policy.Presentation.Message
+		}
+		return status, errType, errMsg, true
+	}
+
+	resolved := ResolveFinalUpstreamError(fact, svc)
+	if !resolved.RuleMatched {
 		return status, errType, errMsg, false
 	}
-
-	status = upstreamStatus
-	if !rule.PassthroughCode && rule.ResponseCode != nil {
-		status = *rule.ResponseCode
-	}
-
-	errMsg = ExtractUpstreamErrorMessage(responseBody)
-	if !rule.PassthroughBody && rule.CustomMessage != nil {
-		errMsg = *rule.CustomMessage
-	}
-
-	// 命中 skip_monitoring 时在 context 中标记，供 ops_error_logger 跳过记录。
-	if rule.SkipMonitoring {
+	if resolved.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
 	}
-
-	// 与现有 failover 场景保持一致：命中规则时统一返回 upstream_error。
-	errType = "upstream_error"
-	return status, errType, errMsg, true
+	presentation := resolved.Presentation
+	return presentation.HTTPStatus, presentation.ErrorType, presentation.Message, true
 }

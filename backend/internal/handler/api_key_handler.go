@@ -31,10 +31,11 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 // CreateAPIKeyRequest represents the create API key request payload
 type CreateAPIKeyRequest struct {
 	Name          string   `json:"name" binding:"required"`
-	GroupID       *int64   `json:"group_id"`        // nullable
-	CustomKey     *string  `json:"custom_key"`      // 可选的自定义key
-	IPWhitelist   []string `json:"ip_whitelist"`    // IP 白名单
-	IPBlacklist   []string `json:"ip_blacklist"`    // IP 黑名单
+	GroupID       *int64   `json:"group_id"`     // nullable
+	CustomKey     *string  `json:"custom_key"`   // 可选的自定义key
+	IPWhitelist   []string `json:"ip_whitelist"` // IP 白名单
+	IPBlacklist   []string `json:"ip_blacklist"` // IP 黑名单
+	Concurrency   int      `json:"concurrency" binding:"min=0,max=2147483647"`
 	Quota         *float64 `json:"quota"`           // 配额限制 (USD)
 	ExpiresInDays *int     `json:"expires_in_days"` // 过期天数
 
@@ -47,16 +48,43 @@ type CreateAPIKeyRequest struct {
 	OpenAIForcePriorityTier bool `json:"openai_force_priority_tier"`
 }
 
+func (r CreateAPIKeyRequest) toServiceRequest() service.CreateAPIKeyRequest {
+	req := service.CreateAPIKeyRequest{
+		Name:                    r.Name,
+		GroupID:                 r.GroupID,
+		CustomKey:               r.CustomKey,
+		IPWhitelist:             r.IPWhitelist,
+		IPBlacklist:             r.IPBlacklist,
+		Concurrency:             r.Concurrency,
+		ExpiresInDays:           r.ExpiresInDays,
+		OpenAIForcePriorityTier: r.OpenAIForcePriorityTier,
+	}
+	if r.Quota != nil {
+		req.Quota = *r.Quota
+	}
+	if r.RateLimit5h != nil {
+		req.RateLimit5h = *r.RateLimit5h
+	}
+	if r.RateLimit1d != nil {
+		req.RateLimit1d = *r.RateLimit1d
+	}
+	if r.RateLimit7d != nil {
+		req.RateLimit7d = *r.RateLimit7d
+	}
+	return req
+}
+
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
-	Name        string   `json:"name"`
-	GroupID     *int64   `json:"group_id"`
-	Status      string   `json:"status" binding:"omitempty,oneof=active inactive"`
-	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
-	Quota       *float64 `json:"quota"`        // 配额限制 (USD), 0=无限制
-	ExpiresAt   *string  `json:"expires_at"`   // 过期时间 (ISO 8601)
-	ResetQuota  *bool    `json:"reset_quota"`  // 重置已用配额
+	Name        string    `json:"name"`
+	GroupID     *int64    `json:"group_id"`
+	Status      string    `json:"status" binding:"omitempty,oneof=active inactive"`
+	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Concurrency *int      `json:"concurrency" binding:"omitempty,min=0,max=2147483647"`
+	Quota       *float64  `json:"quota"`       // 配额限制 (USD), 0=无限制
+	ExpiresAt   *string   `json:"expires_at"`  // 过期时间 (ISO 8601)
+	ResetQuota  *bool     `json:"reset_quota"` // 重置已用配额
 
 	// Rate limit fields (nil = no change, 0 = unlimited)
 	RateLimit5h         *float64 `json:"rate_limit_5h"`
@@ -159,28 +187,7 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		return
 	}
 
-	svcReq := service.CreateAPIKeyRequest{
-		Name:          req.Name,
-		GroupID:       req.GroupID,
-		CustomKey:     req.CustomKey,
-		IPWhitelist:   req.IPWhitelist,
-		IPBlacklist:   req.IPBlacklist,
-		ExpiresInDays: req.ExpiresInDays,
-
-		OpenAIForcePriorityTier: req.OpenAIForcePriorityTier,
-	}
-	if req.Quota != nil {
-		svcReq.Quota = *req.Quota
-	}
-	if req.RateLimit5h != nil {
-		svcReq.RateLimit5h = *req.RateLimit5h
-	}
-	if req.RateLimit1d != nil {
-		svcReq.RateLimit1d = *req.RateLimit1d
-	}
-	if req.RateLimit7d != nil {
-		svcReq.RateLimit7d = *req.RateLimit7d
-	}
+	svcReq := req.toServiceRequest()
 
 	executeUserIdempotentJSON(c, "user.api_keys.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		key, err := h.apiKeyService.Create(ctx, subject.UserID, svcReq)
@@ -216,6 +223,7 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		IPWhitelist:         req.IPWhitelist,
 		IPBlacklist:         req.IPBlacklist,
 		Quota:               req.Quota,
+		Concurrency:         req.Concurrency,
 		ResetQuota:          req.ResetQuota,
 		RateLimit5h:         req.RateLimit5h,
 		RateLimit1d:         req.RateLimit1d,

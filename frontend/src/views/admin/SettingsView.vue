@@ -26,6 +26,7 @@
                 role="tab"
                 :aria-selected="activeTab === tab.key"
                 :tabindex="activeTab === tab.key ? 0 : -1"
+                :data-testid="`settings-tab-${tab.key}`"
                 :class="[
                   'settings-tab',
                   activeTab === tab.key && 'settings-tab-active',
@@ -411,6 +412,69 @@
             </div>
           </div>
 
+          <!-- OpenAI 403 Cooldown Settings -->
+          <div class="card" @keydown.enter.prevent="saveOpenAI403CooldownSettings">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.openai403Cooldown.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.openai403Cooldown.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div v-if="openai403CooldownLoading" class="text-gray-500">{{ t("common.loading") }}</div>
+              <template v-else>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openai403Cooldown.enabled") }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openai403Cooldown.enabledHint") }}</p>
+                  </div>
+                  <Toggle v-model="openai403CooldownForm.enabled" />
+                </div>
+                <div v-if="openai403CooldownForm.enabled" class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openai403Cooldown.ignore") }}</label>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openai403Cooldown.ignoreHint") }}</p>
+                    </div>
+                    <Toggle v-model="openai403CooldownForm.ignore" data-testid="openai-403-ignore" />
+                  </div>
+                  <div v-if="!openai403CooldownForm.ignore" class="grid gap-4 md:grid-cols-2">
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.cooldownSeconds") }}
+                      <input v-model.number="openai403CooldownForm.cooldown_seconds" data-testid="openai-403-cooldown-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
+                    </label>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.thresholdCount") }}
+                      <input v-model.number="openai403CooldownForm.threshold_count" data-testid="openai-403-threshold-count" type="number" min="2" max="100" class="input mt-2 w-40" />
+                    </label>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.counterWindowSeconds") }}
+                      <input v-model.number="openai403CooldownForm.counter_window_seconds" data-testid="openai-403-window-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
+                    </label>
+                    <label class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.thresholdAction") }}
+                      <select v-model="openai403CooldownForm.threshold_action" data-testid="openai-403-threshold-action" class="input mt-2 w-52">
+                        <option value="error">{{ t("admin.settings.openai403Cooldown.actionError") }}</option>
+                        <option value="temp_unsched">{{ t("admin.settings.openai403Cooldown.actionTempUnsched") }}</option>
+                      </select>
+                    </label>
+                    <label v-if="openai403CooldownForm.threshold_action === 'temp_unsched'" class="text-sm text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.openai403Cooldown.thresholdPauseSeconds") }}
+                      <input v-model.number="openai403CooldownForm.threshold_pause_seconds" data-testid="openai-403-threshold-pause-seconds" type="number" min="1" max="2592000" class="input mt-2 w-40" />
+                    </label>
+                  </div>
+                </div>
+                <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <button type="button" data-testid="openai-403-cooldown-save" @click="saveOpenAI403CooldownSettings" :disabled="openai403CooldownSaving || !openai403CooldownLoaded" class="btn btn-primary btn-sm">
+                    {{ openai403CooldownSaving ? t("common.saving") : t("common.save") }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- OpenAI OAuth Dynamic 429 Settings -->
           <div class="card" @keydown.enter.prevent="saveOpenAIOAuth429DynamicSettings">
             <div
@@ -435,153 +499,69 @@
               </div>
 
               <template v-else>
-                <div class="flex items-center justify-between">
-                  <div>
-                    <label class="font-medium text-gray-900 dark:text-white">{{
-                      t("admin.settings.openaiOAuth429Dynamic.enabled")
-                    }}</label>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      {{ t("admin.settings.openaiOAuth429Dynamic.enabledHint") }}
-                    </p>
-                  </div>
-                  <Toggle
-                    v-model="openaiOAuth429DynamicForm.enabled"
-                    data-testid="openai-oauth-429-dynamic-enabled"
+                <div>
+                  <h3 class="mb-3 text-sm font-semibold text-gray-900 dark:text-white">
+                    {{ t("admin.settings.openaiOAuth429Dynamic.defaultPolicy") }}
+                  </h3>
+                  <OpenAIOAuth429PolicyFields
+                    :policy="openaiOAuth429DynamicForm"
+                    test-id-prefix="openai-oauth-429-dynamic"
                   />
                 </div>
 
-                <div
-                  v-if="openaiOAuth429DynamicForm.enabled"
-                  class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
-                >
-                  <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <div class="space-y-3 border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div class="flex items-center justify-between gap-4">
                     <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.windowSeconds",
-                          )
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.window_seconds"
-                        data-testid="openai-oauth-429-dynamic-window-seconds"
-                        type="number"
-                        min="60"
-                        max="3600"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.windowSecondsHint",
-                          )
-                        }}
+                      <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+                        {{ t("admin.settings.openaiOAuth429Dynamic.planTypePolicies") }}
+                      </h3>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">
+                        {{ t("admin.settings.openaiOAuth429Dynamic.planTypePoliciesHint") }}
                       </p>
                     </div>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      :disabled="openaiOAuth429DynamicForm.plan_type_settings.length >= 100"
+                      @click="addOpenAIOAuth429PlanTypeSetting"
+                    >
+                      {{ t("admin.settings.openaiOAuth429Dynamic.addPlanType") }}
+                    </button>
+                  </div>
 
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t("admin.settings.openaiOAuth429Dynamic.minSamples")
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.min_samples"
-                        data-testid="openai-oauth-429-dynamic-min-samples"
-                        type="number"
-                        min="2"
-                        max="10000"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.minSamplesHint",
-                          )
-                        }}
-                      </p>
+                  <div
+                    v-for="(override, index) in openaiOAuth429DynamicForm.plan_type_settings"
+                    :key="index"
+                    class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+                  >
+                    <div class="mb-4 flex items-end justify-between gap-3">
+                      <div class="flex-1">
+                        <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {{ t("admin.settings.openaiOAuth429Dynamic.planType") }}
+                        </label>
+                        <input
+                          v-model.trim="override.plan_type"
+                          type="text"
+                          maxlength="64"
+                          class="input w-full max-w-xs"
+                          :class="{ 'border-red-500 focus:border-red-500 focus:ring-red-500': openaiOAuth429PlanTypeError(index) }"
+                          placeholder="plus"
+                        />
+                        <p
+                          v-if="openaiOAuth429PlanTypeError(index)"
+                          class="mt-1 text-xs text-red-600 dark:text-red-400"
+                        >
+                          {{ openaiOAuth429PlanTypeError(index) }}
+                        </p>
+                      </div>
+                      <button type="button" class="btn btn-danger btn-sm" @click="removeOpenAIOAuth429PlanTypeSetting(index)">
+                        {{ t("common.delete") }}
+                      </button>
                     </div>
-
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{ t("admin.settings.openaiOAuth429Dynamic.min429") }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.min_429"
-                        data-testid="openai-oauth-429-dynamic-min-429"
-                        type="number"
-                        min="1"
-                        :max="openaiOAuth429DynamicForm.min_samples"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t("admin.settings.openaiOAuth429Dynamic.min429Hint")
-                        }}
-                      </p>
-                    </div>
-
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.ratioThreshold",
-                          )
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.ratio_threshold"
-                        data-testid="openai-oauth-429-dynamic-ratio-threshold"
-                        type="number"
-                        min="0.01"
-                        max="1"
-                        step="0.01"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.ratioThresholdHint",
-                          )
-                        }}
-                      </p>
-                    </div>
-
-                    <div>
-                      <label
-                        class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                      >
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.blockSeconds",
-                          )
-                        }}
-                      </label>
-                      <input
-                        v-model.number="openaiOAuth429DynamicForm.block_seconds"
-                        data-testid="openai-oauth-429-dynamic-block-seconds"
-                        type="number"
-                        min="1"
-                        max="7200"
-                        class="input w-32"
-                      />
-                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                        {{
-                          t(
-                            "admin.settings.openaiOAuth429Dynamic.blockSecondsHint",
-                          )
-                        }}
-                      </p>
-                    </div>
+                    <OpenAIOAuth429PolicyFields
+                      :policy="override"
+                      :test-id-prefix="`openai-oauth-429-dynamic-plan-${index}`"
+                    />
                   </div>
                 </div>
 
@@ -805,6 +785,33 @@
                   </button>
                 </div>
               </template>
+            </div>
+          </div>
+
+          <!-- Global upstream error behavior -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.errorPassthrough.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.errorPassthrough.description") }}
+              </p>
+            </div>
+            <div class="flex items-center justify-between gap-4 p-6">
+              <p class="text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.errorPassthrough.globalScope") }}
+              </p>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm shrink-0"
+                data-testid="manage-error-passthrough-rules"
+                @click="showErrorPassthroughRules = true"
+              >
+                {{ t("admin.errorPassthrough.title") }}
+              </button>
             </div>
           </div>
 
@@ -5476,21 +5483,83 @@
               <Toggle v-model="form.channel_monitor_enabled" />
             </div>
 
-            <div v-if="form.channel_monitor_enabled">
-              <label class="input-label">
-                {{ t('admin.settings.features.channelMonitor.defaultInterval') }}
-                <span class="text-red-500">*</span>
-              </label>
-              <input
-                v-model.number="form.channel_monitor_default_interval_seconds"
-                type="number"
-                min="15"
-                max="3600"
-                class="input"
-              />
-              <p class="mt-1 text-xs text-gray-400">
-                {{ t('admin.settings.features.channelMonitor.defaultIntervalHint') }}
-              </p>
+            <div v-if="form.channel_monitor_enabled" class="space-y-5">
+              <div>
+                <label class="input-label">
+                  {{ t('admin.settings.features.channelMonitor.mode') }}
+                </label>
+                <div class="mt-1.5 inline-flex w-full max-w-md rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-900/40">
+                  <button
+                    type="button"
+                    data-testid="channel-monitor-mode-v2"
+                    class="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition"
+                    :class="
+                      form.channel_monitor_mode === 'v2'
+                        ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-800 dark:text-primary-300'
+                        : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-white'
+                    "
+                    @click="form.channel_monitor_mode = 'v2'"
+                  >
+                    {{ t('admin.settings.features.channelMonitor.modeV2') }}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="channel-monitor-mode-v1"
+                    class="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition"
+                    :class="
+                      form.channel_monitor_mode === 'v1'
+                        ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-800 dark:text-primary-300'
+                        : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-white'
+                    "
+                    @click="form.channel_monitor_mode = 'v1'"
+                  >
+                    {{ t('admin.settings.features.channelMonitor.modeV1') }}
+                  </button>
+                </div>
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{
+                    form.channel_monitor_mode === 'v1'
+                      ? t('admin.settings.features.channelMonitor.modeV1Hint')
+                      : t('admin.settings.features.channelMonitor.modeV2Hint')
+                  }}
+                </p>
+                <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                  {{ t('admin.settings.features.channelMonitor.modeHint') }}
+                </p>
+              </div>
+
+              <div v-if="form.channel_monitor_mode === 'v1'">
+                <label class="input-label">
+                  {{ t('admin.settings.features.channelMonitor.defaultInterval') }}
+                  <span class="text-red-500">*</span>
+                </label>
+                <input
+                  v-model.number="form.channel_monitor_default_interval_seconds"
+                  type="number"
+                  min="15"
+                  max="3600"
+                  data-testid="channel-monitor-interval"
+                  class="input"
+                />
+                <p class="mt-1 text-xs text-gray-400">
+                  {{ t('admin.settings.features.channelMonitor.defaultIntervalHint') }}
+                </p>
+              </div>
+
+              <div v-if="form.channel_monitor_mode === 'v2'" class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">
+                    {{ t('admin.settings.features.channelMonitor.hideThroughput') }}
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.features.channelMonitor.hideThroughputHint') }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.channel_monitor_hide_throughput"
+                  data-testid="channel-monitor-hide-throughput"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -6918,7 +6987,11 @@
         </div>
       </form>
 
-      <!-- Provider dialogs placed outside the settings form to prevent form submission bubbling -->
+      <!-- Dialogs are outside the settings form to prevent form submission bubbling. -->
+      <ErrorPassthroughRulesModal
+        :show="showErrorPassthroughRules"
+        @close="showErrorPassthroughRules = false"
+      />
       <PaymentProviderDialog
         ref="providerDialogRef"
         :show="showProviderDialog"
@@ -6976,6 +7049,7 @@ import type {
   DefaultPlatformQuotasMap,
   OpenAICodexUAProfile,
   OpenAIFastPolicyRule,
+  OpenAI403CooldownSettings,
   OpenAIOAuth429DynamicSettings,
   WeChatConnectMode,
   WebSearchEmulationConfig,
@@ -6993,11 +7067,13 @@ import AppLayout from "@/components/layout/AppLayout.vue";
 import Icon from "@/components/icons/Icon.vue";
 import Select from "@/components/common/Select.vue";
 import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
+import ErrorPassthroughRulesModal from "@/components/admin/ErrorPassthroughRulesModal.vue";
 import PaymentProviderList from "@/components/payment/PaymentProviderList.vue";
 import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vue";
 import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
+import OpenAIOAuth429PolicyFields from "@/components/settings/OpenAIOAuth429PolicyFields.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
@@ -7016,6 +7092,7 @@ import {
 } from "@/utils/registrationEmailPolicy";
 
 const { t, locale } = useI18n();
+const showErrorPassthroughRules = ref(false);
 const appStore = useAppStore();
 const adminSettingsStore = useAdminSettingsStore();
 const isZhLocale = computed(() => locale.value.startsWith("zh"));
@@ -7270,6 +7347,20 @@ const rateLimit429CooldownForm = reactive({
   cooldown_seconds: 5,
 });
 
+// OpenAI 403 临时不可调度状态
+const openai403CooldownLoading = ref(true);
+const openai403CooldownSaving = ref(false);
+const openai403CooldownLoaded = ref(false);
+const openai403CooldownForm = reactive<OpenAI403CooldownSettings>({
+  enabled: true,
+  ignore: false,
+  cooldown_seconds: 600,
+  threshold_count: 3,
+  counter_window_seconds: 10800,
+  threshold_action: "error",
+  threshold_pause_seconds: 3600,
+});
+
 // OpenAI OAuth 429 动态调度状态
 const openaiOAuth429DynamicLoading = ref(true);
 const openaiOAuth429DynamicSaving = ref(false);
@@ -7281,6 +7372,11 @@ const openaiOAuth429DynamicForm = reactive<OpenAIOAuth429DynamicSettings>({
   min_429: 3,
   ratio_threshold: 0.5,
   block_seconds: 60,
+  usage_window_check_enabled: false,
+  usage_window_5h_threshold_percent: 100,
+  usage_window_7d_threshold_percent: 100,
+  usage_window_missing_data_fallback_seconds: 0,
+  plan_type_settings: [],
 });
 
 // Stream Timeout 状态
@@ -7409,6 +7505,8 @@ type SettingsForm = Omit<
   openai_advanced_scheduler_enabled: boolean;
   // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
+  /** Form always binds a concrete boolean (SystemSettings marks this optional). */
+  channel_monitor_hide_throughput: boolean;
 };
 
 const form = reactive<SettingsForm>({
@@ -7615,7 +7713,9 @@ const form = reactive<SettingsForm>({
   account_quota_notify_emails: [] as NotifyEmailEntry[],
   // Channel Monitor feature switch
   channel_monitor_enabled: true,
+  channel_monitor_mode: 'v1' as 'v1' | 'v2',
   channel_monitor_default_interval_seconds: 60,
+  channel_monitor_hide_throughput: true,
   // Available Channels feature switch
   available_channels_enabled: false,
   // Affiliate (邀请返利) feature switch
@@ -8783,8 +8883,10 @@ async function saveSettings() {
       ).filter((e) => e.email.trim() !== ""),
       // Channel Monitor feature switch
       channel_monitor_enabled: form.channel_monitor_enabled,
+      channel_monitor_mode: form.channel_monitor_mode === 'v1' ? 'v1' : 'v2',
       channel_monitor_default_interval_seconds:
         Number(form.channel_monitor_default_interval_seconds) || 60,
+      channel_monitor_hide_throughput: Boolean(form.channel_monitor_hide_throughput),
       // Available Channels feature switch
       available_channels_enabled: form.available_channels_enabled,
       // Affiliate (邀请返利) feature switch
@@ -9106,6 +9208,51 @@ async function saveRateLimit429CooldownSettings() {
   }
 }
 
+function normalizeOpenAI403CooldownForm(
+  raw: Partial<OpenAI403CooldownSettings>,
+): OpenAI403CooldownSettings {
+  const action = raw.threshold_action === "temp_unsched" ? "temp_unsched" : "error";
+  return {
+    enabled: Boolean(raw.enabled),
+    ignore: Boolean(raw.ignore),
+    cooldown_seconds: boundedInteger(raw.cooldown_seconds, 1, 2592000, 600),
+    threshold_count: boundedInteger(raw.threshold_count, 2, 100, 3),
+    counter_window_seconds: boundedInteger(raw.counter_window_seconds, 1, 2592000, 10800),
+    threshold_action: action,
+    threshold_pause_seconds: boundedInteger(raw.threshold_pause_seconds, 1, 2592000, 3600),
+  };
+}
+
+async function loadOpenAI403CooldownSettings() {
+  openai403CooldownLoading.value = true;
+  openai403CooldownLoaded.value = false;
+  try {
+    const settings = await adminAPI.settings.getOpenAI403CooldownSettings();
+    Object.assign(openai403CooldownForm, normalizeOpenAI403CooldownForm(settings));
+    openai403CooldownLoaded.value = true;
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.settings.openai403Cooldown.loadFailed")));
+  } finally {
+    openai403CooldownLoading.value = false;
+  }
+}
+
+async function saveOpenAI403CooldownSettings() {
+  if (!openai403CooldownLoaded.value) return;
+  openai403CooldownSaving.value = true;
+  try {
+    const payload = normalizeOpenAI403CooldownForm(openai403CooldownForm);
+    Object.assign(openai403CooldownForm, payload);
+    const updated = await adminAPI.settings.updateOpenAI403CooldownSettings(payload);
+    Object.assign(openai403CooldownForm, normalizeOpenAI403CooldownForm(updated));
+    appStore.showSuccess(t("admin.settings.openai403Cooldown.saved"));
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t("admin.settings.openai403Cooldown.saveFailed")));
+  } finally {
+    openai403CooldownSaving.value = false;
+  }
+}
+
 async function loadOpenAIOAuth429DynamicSettings() {
   openaiOAuth429DynamicLoading.value = true;
   openaiOAuth429DynamicLoaded.value = false;
@@ -9147,9 +9294,9 @@ function boundedNumber(value: unknown, min: number, max: number, fallback: numbe
   return Math.min(max, Math.max(min, parsed));
 }
 
-function normalizeOpenAIOAuth429DynamicForm(
+function normalizeOpenAIOAuth429Policy(
   raw: Partial<OpenAIOAuth429DynamicSettings>,
-): OpenAIOAuth429DynamicSettings {
+): Omit<OpenAIOAuth429DynamicSettings, "plan_type_settings"> {
   const minSamples = boundedInteger(raw.min_samples, 2, 10000, 20);
   return {
     enabled: Boolean(raw.enabled),
@@ -9157,13 +9304,75 @@ function normalizeOpenAIOAuth429DynamicForm(
     min_samples: minSamples,
     min_429: boundedInteger(raw.min_429, 1, minSamples, Math.min(3, minSamples)),
     ratio_threshold: boundedNumber(raw.ratio_threshold, 0.01, 1, 0.5),
-    block_seconds: boundedInteger(raw.block_seconds, 1, 7200, 60),
+    block_seconds: boundedInteger(raw.block_seconds, 1, 2592000, 60),
+    usage_window_check_enabled: Boolean(raw.usage_window_check_enabled),
+    usage_window_5h_threshold_percent: boundedNumber(raw.usage_window_5h_threshold_percent, 0.01, 100, 100),
+    usage_window_7d_threshold_percent: boundedNumber(raw.usage_window_7d_threshold_percent, 0.01, 100, 100),
+    usage_window_missing_data_fallback_seconds: boundedInteger(raw.usage_window_missing_data_fallback_seconds, 0, 31536000, 0),
   };
+}
+
+function normalizeOpenAIOAuth429DynamicForm(
+  raw: Partial<OpenAIOAuth429DynamicSettings>,
+): OpenAIOAuth429DynamicSettings {
+  return {
+    ...normalizeOpenAIOAuth429Policy(raw),
+    plan_type_settings: (raw.plan_type_settings || []).map((override) => ({
+      plan_type: override.plan_type.trim().toLowerCase(),
+      ...normalizeOpenAIOAuth429Policy(override),
+    })),
+  };
+}
+
+function addOpenAIOAuth429PlanTypeSetting() {
+  if (openaiOAuth429DynamicForm.plan_type_settings.length >= 100) {
+    return;
+  }
+  openaiOAuth429DynamicForm.plan_type_settings.push({
+    plan_type: "",
+    ...normalizeOpenAIOAuth429Policy(openaiOAuth429DynamicForm),
+  });
+}
+
+function removeOpenAIOAuth429PlanTypeSetting(index: number) {
+  openaiOAuth429DynamicForm.plan_type_settings.splice(index, 1);
+}
+
+function openaiOAuth429PlanTypeError(index: number): string {
+  const planType = openaiOAuth429DynamicForm.plan_type_settings[index]?.plan_type
+    .trim()
+    .toLowerCase();
+  if (!planType) {
+    return t("admin.settings.openaiOAuth429Dynamic.planTypeRequired");
+  }
+  const duplicate = openaiOAuth429DynamicForm.plan_type_settings.some(
+    (override, candidateIndex) =>
+      candidateIndex !== index && override.plan_type.trim().toLowerCase() === planType,
+  );
+  return duplicate ? t("admin.settings.openaiOAuth429Dynamic.planTypeDuplicate") : "";
+}
+
+function validateOpenAIOAuth429PlanTypes(): boolean {
+  if (openaiOAuth429DynamicForm.plan_type_settings.length > 100) {
+    appStore.showError(t("admin.settings.openaiOAuth429Dynamic.planTypeLimit"));
+    return false;
+  }
+  for (let index = 0; index < openaiOAuth429DynamicForm.plan_type_settings.length; index += 1) {
+    const error = openaiOAuth429PlanTypeError(index);
+    if (error) {
+      appStore.showError(error);
+      return false;
+    }
+  }
+  return true;
 }
 
 async function saveOpenAIOAuth429DynamicSettings() {
   if (!openaiOAuth429DynamicLoaded.value) {
     appStore.showError(t("admin.settings.openaiOAuth429Dynamic.loadFailed"));
+    return;
+  }
+  if (!validateOpenAIOAuth429PlanTypes()) {
     return;
   }
   openaiOAuth429DynamicSaving.value = true;
@@ -9813,6 +10022,7 @@ onMounted(() => {
   loadAdminApiKey();
   loadOverloadCooldownSettings();
   loadRateLimit429CooldownSettings();
+  loadOpenAI403CooldownSettings();
   loadOpenAIOAuth429DynamicSettings();
   loadStreamTimeoutSettings();
   loadRectifierSettings();

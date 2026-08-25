@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -116,6 +117,7 @@ type apiKeyRepoStubForGroupUpdate struct {
 	getErr    error
 	updateErr error
 	updated   *APIKey // captures what was passed to Update
+	lastPatch APIKeyConfigPatch
 	group     *Group
 }
 
@@ -155,8 +157,24 @@ func (s *apiKeyRepoStubForGroupUpdate) UpdateGroupID(_ context.Context, _ int64,
 	s.updated = &clone
 	return &clone, nil
 }
-func (s *apiKeyRepoStubForGroupUpdate) UpdateConfig(context.Context, int64, int64, APIKeyConfigPatch) (*APIKey, error) {
-	panic("unexpected")
+func (s *apiKeyRepoStubForGroupUpdate) UpdateConfig(_ context.Context, _ int64, _ int64, patch APIKeyConfigPatch) (*APIKey, error) {
+	s.lastPatch = patch
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
+	base := s.key
+	if s.updated != nil {
+		base = s.updated
+	}
+	clone := *base
+	if patch.GroupID != nil {
+		clone.GroupID = *patch.GroupID
+	}
+	if patch.Concurrency != nil {
+		clone.Concurrency = *patch.Concurrency
+	}
+	s.updated = &clone
+	return &clone, nil
 }
 func (s *apiKeyRepoStubForGroupUpdate) ResetRateLimitUsage(context.Context, int64) (*APIKey, error) {
 	if s.updateErr != nil {
@@ -325,6 +343,145 @@ func (s *userSubRepoStubForGroupUpdate) GetActiveByUserIDAndGroupID(_ context.Co
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestAdminService_AdminUpdateAPIKeyConcurrency(t *testing.T) {
+	t.Run("omission preserves value", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		svc := &adminServiceImpl{apiKeyRepo: repo}
+
+		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, nil, false)
+		require.NoError(t, err)
+		require.Equal(t, 6, got.APIKey.Concurrency)
+		require.Nil(t, repo.updated)
+	})
+
+	for _, concurrency := range []int{12, 0} {
+		concurrency := concurrency
+		t.Run(fmt.Sprintf("sets %d", concurrency), func(t *testing.T) {
+			existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+			repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+			cache := &authCacheInvalidatorStub{}
+			svc := &adminServiceImpl{apiKeyRepo: repo, authCacheInvalidator: cache}
+
+			got, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &concurrency, false)
+			require.NoError(t, err)
+			require.Equal(t, concurrency, got.APIKey.Concurrency)
+			require.Equal(t, concurrency, repo.updated.Concurrency)
+			require.Equal(t, []string{"sk-test"}, cache.keys)
+		})
+	}
+
+	t.Run("rejects negative", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		svc := &adminServiceImpl{apiKeyRepo: repo}
+		negative := -1
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &negative, false)
+		require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+		require.Nil(t, repo.updated)
+	})
+
+	t.Run("rejects value above database integer range", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		svc := &adminServiceImpl{apiKeyRepo: repo}
+		tooLarge := 2147483648
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, nil, &tooLarge, false)
+		require.ErrorIs(t, err, ErrInvalidAPIKeyConcurrency)
+		require.Nil(t, repo.updated)
+	})
+
+	t.Run("combines group and concurrency", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing, group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
+		groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
+		cache := &authCacheInvalidatorStub{}
+		svc := &adminServiceImpl{apiKeyRepo: repo, groupRepo: groupRepo, authCacheInvalidator: cache}
+		concurrency := 8
+
+		got, err := svc.AdminUpdateAPIKey(context.Background(), 1, int64Ptr(10), &concurrency, false)
+		require.NoError(t, err)
+		require.Equal(t, int64(10), *got.APIKey.GroupID)
+		require.Equal(t, 8, got.APIKey.Concurrency)
+		require.NotNil(t, repo.lastPatch.GroupID, "combined updates must use one repository patch")
+		require.NotNil(t, repo.lastPatch.Concurrency)
+	})
+
+	t.Run("combined repository failure leaves group unchanged and cache valid", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", GroupID: int64Ptr(4), Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing, updateErr: errors.New("forced patch failure")}
+		groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
+		cache := &authCacheInvalidatorStub{}
+		svc := &adminServiceImpl{apiKeyRepo: repo, groupRepo: groupRepo, authCacheInvalidator: cache}
+		concurrency := 8
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), 1, int64Ptr(10), &concurrency, false)
+		require.ErrorContains(t, err, "forced patch failure")
+		require.Equal(t, int64(4), *repo.key.GroupID)
+		require.Nil(t, repo.updated)
+		require.Empty(t, cache.keys)
+	})
+}
+
+func TestAdminService_AdminUpdateAPIKeyResetRateLimitCacheInvalidation(t *testing.T) {
+	newBillingCache := func() (*BillingCacheService, *apiKeyRateLimitInvalidationCache) {
+		cache := &apiKeyRateLimitInvalidationCache{}
+		return &BillingCacheService{cache: cache}, cache
+	}
+
+	t.Run("successful combined reset invalidates once", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		billingService, cache := newBillingCache()
+		svc := &adminServiceImpl{apiKeyRepo: repo, billingCacheService: billingService}
+		concurrency := 8
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), existing.ID, nil, &concurrency, true)
+		require.NoError(t, err)
+		require.Equal(t, []int64{existing.ID}, cache.invalidatedKeyIDs)
+	})
+
+	t.Run("successful exclusive transaction reset invalidates once after commit", func(t *testing.T) {
+		existing := &APIKey{ID: 2, UserID: 9, Key: "sk-exclusive", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing}
+		groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Exclusive", Status: StatusActive, IsExclusive: true}}
+		userRepo := &userRepoStubForGroupUpdate{}
+		billingService, cache := newBillingCache()
+		svc := &adminServiceImpl{
+			apiKeyRepo: repo, groupRepo: groupRepo, userRepo: userRepo,
+			billingCacheService: billingService, entClient: newAdminServiceAuthIdentityBindingTestClient(t),
+		}
+		concurrency := 8
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), existing.ID, int64Ptr(10), &concurrency, true)
+		require.NoError(t, err)
+		require.Equal(t, []int64{existing.ID}, cache.invalidatedKeyIDs)
+	})
+
+	t.Run("failed patch does not invalidate", func(t *testing.T) {
+		existing := &APIKey{ID: 1, UserID: 9, Key: "sk-test", Concurrency: 6}
+		repo := &apiKeyRepoStubForGroupUpdate{key: existing, updateErr: errors.New("forced patch failure")}
+		billingService, cache := newBillingCache()
+		svc := &adminServiceImpl{apiKeyRepo: repo, billingCacheService: billingService}
+
+		_, err := svc.AdminUpdateAPIKey(context.Background(), existing.ID, nil, nil, true)
+		require.ErrorContains(t, err, "forced patch failure")
+		require.Empty(t, cache.invalidatedKeyIDs)
+	})
+}
+
+type apiKeyRateLimitInvalidationCache struct {
+	billingCacheStub
+	invalidatedKeyIDs []int64
+}
+
+func (c *apiKeyRateLimitInvalidationCache) InvalidateAPIKeyRateLimit(_ context.Context, keyID int64) error {
+	c.invalidatedKeyIDs = append(c.invalidatedKeyIDs, keyID)
+	return nil
+}
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_KeyNotFound(t *testing.T) {
 	repo := &apiKeyRepoStubForGroupUpdate{getErr: ErrAPIKeyNotFound}

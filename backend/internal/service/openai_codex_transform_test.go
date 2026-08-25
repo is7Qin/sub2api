@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -126,6 +128,121 @@ func TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly
 	require.Equal(t, "fc_1", second["call_id"])
 }
 
+func TestApplyCodexOAuthTransform_BoundsLongCallIDsAndPreservesPairing(t *testing.T) {
+	suffix := strings.Repeat("z", 62)
+	for _, tc := range []struct {
+		name         string
+		callID       string
+		outputCallID string
+	}{
+		{name: "non-native boundary id", callID: "call-" + strings.Repeat("x", 59), outputCallID: "call-" + strings.Repeat("x", 59)},
+		{name: "overlong fc id", callID: "fc_" + strings.Repeat("y", 62), outputCallID: "fc_" + strings.Repeat("y", 62)},
+		{name: "equivalent prefixes", callID: "call_" + suffix, outputCallID: "fc_" + suffix},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reqBody := map[string]any{
+				"model": "gpt-5.2",
+				"input": []any{
+					map[string]any{"type": "function_call", "call_id": tc.callID, "name": "shell"},
+					map[string]any{"type": "function_call_output", "call_id": tc.outputCallID, "output": "done"},
+				},
+			}
+
+			applyCodexOAuthTransform(reqBody, false, false)
+
+			input, ok := reqBody["input"].([]any)
+			require.True(t, ok)
+			call := input[0].(map[string]any)
+			output := input[1].(map[string]any)
+			fixedCallID, ok := call["call_id"].(string)
+			require.True(t, ok)
+			require.LessOrEqual(t, len(fixedCallID), codexCallIDMaxLength)
+			require.True(t, strings.HasPrefix(fixedCallID, codexCallIDPrefix))
+			require.Equal(t, fixedCallID, output["call_id"])
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_PreservesCallIDsAtOrBelowLimitWhenRequested(t *testing.T) {
+	for _, callID := range []string{
+		"toolu_123",
+		strings.Repeat("x", codexCallIDMaxLength),
+	} {
+		t.Run(fmt.Sprintf("length_%d", len(callID)), func(t *testing.T) {
+			reqBody := map[string]any{
+				"model": "gpt-5.2",
+				"input": []any{
+					map[string]any{"type": "function_call", "call_id": callID, "name": "shell"},
+					map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+				},
+			}
+
+			applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{PreserveToolCallIDs: true})
+
+			input, ok := reqBody["input"].([]any)
+			require.True(t, ok)
+			require.Equal(t, callID, input[0].(map[string]any)["call_id"])
+			require.Equal(t, callID, input[1].(map[string]any)["call_id"])
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_CompactsOverlongPreservedCallIDsDeterministically(t *testing.T) {
+	callID := "toolu_01" + strings.Repeat("x", codexCallIDMaxLength)
+	const expected = "fc_334c4394a7b54bec8574a658ba8184b6582be2c5e5ccaea52ab605a5693ef"
+	transform := func() string {
+		reqBody := map[string]any{
+			"model": "gpt-5.2",
+			"input": []any{
+				map[string]any{"type": "function_call", "call_id": callID, "name": "shell"},
+				map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+			},
+		}
+
+		applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{PreserveToolCallIDs: true})
+
+		input, ok := reqBody["input"].([]any)
+		require.True(t, ok)
+		compacted, ok := input[0].(map[string]any)["call_id"].(string)
+		require.True(t, ok)
+		require.Equal(t, expected, compacted)
+		require.Equal(t, compacted, input[1].(map[string]any)["call_id"])
+		require.Len(t, compacted, codexCallIDMaxLength)
+		require.True(t, strings.HasPrefix(compacted, codexCallIDPrefix))
+		require.NotEqual(t, callID, compacted)
+		return compacted
+	}
+
+	require.Equal(t, expected, transform())
+	require.Equal(t, expected, transform())
+}
+
+func TestApplyCodexOAuthTransform_CompactsOverlongPreservedLegacyCallReferencesOnly(t *testing.T) {
+	callID := "call_" + strings.Repeat("r", 60)
+	unrelatedID := "rs_" + strings.Repeat("s", 62)
+	const expected = "fc_6dc7b6c13987a4ab7bd293b051652e55d193950fb16fd79bfe0198ce5142b"
+	callReference := map[string]any{"type": "item_reference", "id": callID}
+	unrelatedReference := map[string]any{"type": "item_reference", "id": unrelatedID}
+	reqBody := map[string]any{
+		"model": "gpt-5.2",
+		"input": []any{
+			callReference,
+			map[string]any{"type": "function_call_output", "call_id": callID, "output": "done"},
+			unrelatedReference,
+		},
+	}
+
+	applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{PreserveToolCallIDs: true})
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Equal(t, expected, input[0].(map[string]any)["id"])
+	require.Equal(t, expected, input[1].(map[string]any)["call_id"])
+	require.Equal(t, unrelatedID, input[2].(map[string]any)["id"])
+	require.Equal(t, callID, callReference["id"], "filter must not mutate caller input")
+	require.Equal(t, unrelatedID, unrelatedReference["id"], "filter must not mutate caller input")
+}
+
 func TestApplyCodexOAuthTransform_ToolSearchOutputPreservesCallID(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.2",
@@ -226,6 +343,67 @@ func TestApplyCodexOAuthTransform_ConvertsToolRoleMessageToFunctionCallOutput(t 
 	require.False(t, hasRole)
 }
 
+func TestApplyCodexOAuthTransform_ToolRoleUsesOriginalMalformedContentEnvelope(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{
+				"type":         "message",
+				"role":         "tool",
+				"tool_call_id": "call_1",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": []any{"a", "b"}},
+				},
+			},
+		},
+	}
+	expected := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "fc_1",
+				"output":  `[{"text":["a","b"],"type":"input_text"}]`,
+			},
+		},
+	}
+
+	applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{SkipDefaultInstructions: true})
+
+	require.Equal(t, expected, reqBody)
+}
+
+func TestApplyCodexOAuthTransform_NormalizesToolRoleFallbackWithoutCallID(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "tool",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": []any{"a", "b"}},
+				},
+			},
+		},
+	}
+	expected := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": `["a","b"]`},
+				},
+			},
+		},
+	}
+
+	applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{SkipDefaultInstructions: true})
+
+	require.Equal(t, expected, reqBody)
+}
+
 func TestApplyCodexOAuthTransform_StringifiesNonStringMessageContentText(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -251,6 +429,73 @@ func TestApplyCodexOAuthTransform_StringifiesNonStringMessageContentText(t *test
 	part, ok := content[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, `["a","b"]`, part["text"])
+}
+
+func TestApplyCodexOAuthTransform_NormalizesOrdinaryTypedMessageContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  map[string]any
+		expected map[string]any
+	}{
+		{
+			name: "whitespace-padded system-like role",
+			request: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": " system ",
+					"content": []any{map[string]any{"type": "input_text", "text": []any{"a", "b"}}},
+				}},
+			},
+			expected: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": " system ",
+					"content": []any{map[string]any{"type": "input_text", "text": `["a","b"]`}},
+				}},
+			},
+		},
+		{
+			name: "assistant role",
+			request: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": map[string]any{"answer": 42}}},
+				}},
+			},
+			expected: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": `{"answer":42}`}},
+				}},
+			},
+		},
+		{
+			name: "developer role",
+			request: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "developer",
+					"content": []any{map[string]any{"type": "input_text", "text": []any{"policy", 7}}},
+				}},
+			},
+			expected: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "developer",
+					"content": []any{map[string]any{"type": "input_text", "text": `["policy",7]`}},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyCodexOAuthTransformWithOptions(tt.request, codexOAuthTransformOptions{SkipDefaultInstructions: true})
+			require.Equal(t, tt.expected, tt.request)
+		})
+	}
 }
 
 func TestApplyCodexOAuthTransform_DowngradesUnknownToolChoice(t *testing.T) {
@@ -346,26 +591,12 @@ func TestApplyCodexOAuthTransform_StripsClientNamespaceFromReplayedInput(t *test
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"input": []any{
-			map[string]any{
-				"type":      "function_call",
-				"call_id":   "call_1",
-				"name":      "read",
-				"namespace": "mcp",
-				"arguments": "{}",
-			},
-			map[string]any{
-				"type":      "custom_tool_call",
-				"call_id":   "call_2",
-				"name":      "shell",
-				"namespace": "tools",
-				"input":     "pwd",
-			},
-			map[string]any{
-				"type":      "message",
-				"role":      "user",
-				"content":   "keep metadata",
-				"namespace": "application-data",
-			},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "read", "namespace": "mcp", "arguments": "{}"},
+			map[string]any{"type": "custom_tool_call", "call_id": "call_2", "name": "shell", "namespace": "tools", "input": "pwd"},
+			map[string]any{"type": "function_call", "call_id": "call_3", "name": "generate", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "custom_tool_call", "call_id": "call_4", "name": "edit", "namespace": "image_gen", "input": "{}"},
+			map[string]any{"type": "mcp_tool_call", "call_id": "call_5", "name": "native_image", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "message", "role": "user", "content": "keep metadata", "namespace": "application-data"},
 		},
 	}
 
@@ -373,21 +604,21 @@ func TestApplyCodexOAuthTransform_StripsClientNamespaceFromReplayedInput(t *test
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
-	require.Len(t, input, 3)
-	call, ok := input[0].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, call, "namespace")
-	require.Equal(t, "read", call["name"])
-	require.Equal(t, "fc_1", call["call_id"])
+	require.Len(t, input, 6)
+	for _, index := range []int{0, 1, 2, 3} {
+		call, ok := input[index].(map[string]any)
+		require.True(t, ok)
+		require.NotContains(t, call, "namespace")
+	}
+	require.Equal(t, "fc_1", input[0].(map[string]any)["call_id"])
+	require.Equal(t, "fc_2", input[1].(map[string]any)["call_id"])
+	require.Equal(t, "fc_3", input[2].(map[string]any)["call_id"])
+	require.Equal(t, "fc_4", input[3].(map[string]any)["call_id"])
+	mcpCall := input[4].(map[string]any)
+	require.Equal(t, "image_gen", mcpCall["namespace"], "mcp_tool_call is handled by the existing generic namespace pipeline")
+	require.Equal(t, "fc_5", mcpCall["call_id"])
 
-	customCall, ok := input[1].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, customCall, "namespace")
-	require.Equal(t, "shell", customCall["name"])
-	require.Equal(t, "fc_2", customCall["call_id"])
-
-	message, ok := input[2].(map[string]any)
-	require.True(t, ok)
+	message := input[5].(map[string]any)
 	require.Equal(t, "application-data", message["namespace"])
 }
 
@@ -1280,6 +1511,37 @@ func TestApplyCodexOAuthTransform_StringInputWithToolsField(t *testing.T) {
 	require.Len(t, input, 1)
 }
 
+func TestExtractLosslessTextFromContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  any
+		text     string
+		lossless bool
+	}{
+		{name: "top-level null", content: nil},
+		{name: "top-level object", content: map[string]any{"type": "input_text", "text": "hello"}},
+		{name: "non-map array entry", content: []any{"hello"}},
+		{name: "missing type", content: []any{map[string]any{"text": "hello"}}},
+		{name: "unknown type", content: []any{map[string]any{"type": "input_image", "text": "hello"}}},
+		{name: "missing text", content: []any{map[string]any{"type": "input_text"}}},
+		{name: "non-string text", content: []any{map[string]any{"type": "input_text", "text": 42}}},
+		{name: "output_text", content: []any{map[string]any{"type": "output_text", "text": "hello"}}, text: "hello", lossless: true},
+		{name: "text with extra field", content: []any{map[string]any{"type": "text", "text": "hello", "metadata": map[string]any{"source": "policy"}}}},
+		{name: "input_text with extra field", content: []any{map[string]any{"type": "input_text", "text": "hello", "cache_control": map[string]any{"type": "ephemeral"}}}},
+		{name: "output_text with extra field", content: []any{map[string]any{"type": "output_text", "text": "hello", "annotations": []any{map[string]any{"type": "citation"}}}}},
+		{name: "empty string", content: "", lossless: true},
+		{name: "empty array", content: []any{}, lossless: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text, lossless := extractLosslessTextFromContent(tt.content)
+			require.Equal(t, tt.lossless, lossless)
+			require.Equal(t, tt.text, text)
+		})
+	}
+}
+
 func TestExtractSystemMessagesFromInput(t *testing.T) {
 	t.Run("no system messages", func(t *testing.T) {
 		reqBody := map[string]any{
@@ -1384,13 +1646,60 @@ func TestExtractSystemMessagesFromInput(t *testing.T) {
 		require.Equal(t, "user", reqBody["input"].([]any)[0].(map[string]any)["role"])
 	})
 
-	t.Run("system without text is removed without inventing instructions", func(t *testing.T) {
-		reqBody := map[string]any{"input": []any{map[string]any{
-			"role": "system", "content": []any{map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="}},
-		}}}
+	t.Run("mixed text and non-text content remains in input without promotion", func(t *testing.T) {
+		content := []any{
+			map[string]any{"type": "input_text", "text": "Inspect this image."},
+			map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+		}
+		reqBody := map[string]any{
+			"input":        []any{map[string]any{"role": "system", "content": content}},
+			"instructions": "Existing instructions.",
+		}
+
 		require.True(t, extractSystemMessagesFromInput(reqBody, false))
-		require.Empty(t, reqBody["input"])
+		input := reqBody["input"].([]any)
+		require.Len(t, input, 1)
+		message := input[0].(map[string]any)
+		require.Equal(t, "developer", message["role"])
+		require.Equal(t, content, message["content"])
+		require.Equal(t, "Existing instructions.", reqBody["instructions"])
+	})
+
+	t.Run("non-text content remains in input without inventing instructions", func(t *testing.T) {
+		content := []any{map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="}}
+		reqBody := map[string]any{"input": []any{map[string]any{
+			"role": "system", "content": content,
+		}}}
+
+		require.True(t, extractSystemMessagesFromInput(reqBody, false))
+		input := reqBody["input"].([]any)
+		require.Len(t, input, 1)
+		message := input[0].(map[string]any)
+		require.Equal(t, "developer", message["role"])
+		require.Equal(t, content, message["content"])
 		require.NotContains(t, reqBody, "instructions")
+	})
+
+	t.Run("text-only content is promoted once and removed", func(t *testing.T) {
+		const systemPrompt = "Unique system guidance."
+		reqBody := map[string]any{
+			"input": []any{
+				map[string]any{"role": "system", "content": []any{
+					map[string]any{"type": "text", "text": "Unique "},
+					map[string]any{"type": "input_text", "text": "system guidance."},
+				}},
+				map[string]any{"role": "user", "content": "hello"},
+			},
+			"instructions": "Existing instructions.",
+		}
+
+		require.True(t, extractSystemMessagesFromInput(reqBody, false))
+		require.Equal(t, systemPrompt+"\n\nExisting instructions.", reqBody["instructions"])
+		input := reqBody["input"].([]any)
+		require.Len(t, input, 1)
+		require.Equal(t, "user", input[0].(map[string]any)["role"])
+		require.NotContains(t, fmt.Sprint(input), systemPrompt)
+		require.Equal(t, 1, strings.Count(reqBody["instructions"].(string), systemPrompt))
 	})
 
 	t.Run("developer role is a protocol boundary and remains unchanged", func(t *testing.T) {
@@ -1469,6 +1778,174 @@ func TestApplyCodexOAuthTransform_ExtractsSystemMessages(t *testing.T) {
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
 	require.Equal(t, "You are a coding assistant.", instructions)
+}
+
+func TestApplyCodexOAuthTransform_PreservesMixedAndImageOnlySystemContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  map[string]any
+		expected map[string]any
+	}{
+		{
+			name: "mixed text and image",
+			request: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "system",
+					"content": []any{
+						map[string]any{"type": "input_text", "text": "Inspect this image."},
+						map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+					},
+				}},
+				"instructions": "Existing instructions.",
+			},
+			expected: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "developer",
+					"content": []any{
+						map[string]any{"type": "input_text", "text": "Inspect this image."},
+						map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+					},
+				}},
+				"instructions": "Existing instructions.",
+			},
+		},
+		{
+			name: "image only",
+			request: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "system",
+					"content": []any{
+						map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+					},
+				}},
+			},
+			expected: map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type": "message", "role": "developer",
+					"content": []any{
+						map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyCodexOAuthTransformWithOptions(tt.request, codexOAuthTransformOptions{SkipDefaultInstructions: true})
+			require.Equal(t, tt.expected, tt.request)
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_RetainsSystemsAfterFirstNonPromotable(t *testing.T) {
+	reqBody := map[string]any{
+		"model":        "gpt-5.4",
+		"instructions": "Existing instructions.",
+		"input": []any{
+			map[string]any{"type": "message", "role": "system", "content": "First policy."},
+			map[string]any{"type": "message", "role": "system", "content": []any{
+				map[string]any{"type": "input_text", "text": "Inspect this image."},
+				map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+			}},
+			map[string]any{"type": "message", "role": "system", "content": "Third policy."},
+			map[string]any{"type": "message", "role": "user", "content": "Continue."},
+		},
+	}
+	expected := map[string]any{
+		"model":        "gpt-5.4",
+		"instructions": "First policy.\n\nExisting instructions.",
+		"input": []any{
+			map[string]any{"type": "message", "role": "developer", "content": []any{
+				map[string]any{"type": "input_text", "text": "Inspect this image."},
+				map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+			}},
+			map[string]any{"type": "message", "role": "developer", "content": "Third policy."},
+			map[string]any{"type": "message", "role": "user", "content": "Continue."},
+		},
+	}
+
+	applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{SkipDefaultInstructions: true})
+
+	require.Equal(t, expected, reqBody)
+}
+
+func deepCopyCodexTransformTestValue(t *testing.T, value any) any {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	var copied any
+	require.NoError(t, json.Unmarshal(data, &copied))
+	return copied
+}
+
+func TestApplyCodexOAuthTransform_PreservesRetainedSystemContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content any
+	}{
+		{name: "null text", content: []any{map[string]any{"type": "input_text", "text": nil}}},
+		{name: "number text", content: []any{map[string]any{"type": "input_text", "text": 42}}},
+		{name: "object text", content: []any{map[string]any{"type": "output_text", "text": map[string]any{"raw": true}}}},
+		{name: "array text", content: []any{map[string]any{"type": "text", "text": []any{"raw", 7}}}},
+		{name: "unknown part with non-string text", content: []any{map[string]any{"type": "custom_text", "text": map[string]any{"raw": true}, "metadata": "keep"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqBody := map[string]any{
+				"model": "gpt-5.4",
+				"input": []any{map[string]any{
+					"type":    "message",
+					"role":    "system",
+					"content": deepCopyCodexTransformTestValue(t, tt.content),
+				}},
+			}
+			expectedInput := []any{map[string]any{
+				"type":    "message",
+				"role":    "developer",
+				"content": deepCopyCodexTransformTestValue(t, tt.content),
+			}}
+
+			result := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+				SkipDefaultInstructions: true,
+			})
+
+			require.True(t, result.Modified)
+			require.Equal(t, expectedInput, reqBody["input"])
+			require.NotContains(t, reqBody, "instructions")
+		})
+	}
+}
+
+func TestApplyCodexOAuthTransform_PreservesTextPartMetadata(t *testing.T) {
+	content := []any{map[string]any{
+		"type":          "input_text",
+		"text":          "Policy text.",
+		"cache_control": map[string]any{"type": "ephemeral"},
+	}}
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{map[string]any{
+			"type":    "message",
+			"role":    "system",
+			"content": content,
+		}},
+	}
+	expectedInput := []any{map[string]any{
+		"type":    "message",
+		"role":    "developer",
+		"content": deepCopyCodexTransformTestValue(t, content),
+	}}
+
+	applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{SkipDefaultInstructions: true})
+
+	require.Equal(t, expectedInput, reqBody["input"])
+	require.NotContains(t, reqBody, "instructions")
 }
 
 func TestApplyCodexOAuthTransform_JSONModePreservesDeveloperInput(t *testing.T) {

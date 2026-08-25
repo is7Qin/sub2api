@@ -320,7 +320,9 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		PaymentAlipayForceQRCode:               paymentCfg.AlipayForceQRCode,
 
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
+		ChannelMonitorMode:                   settings.ChannelMonitorMode,
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
+		ChannelMonitorHideThroughput:         settings.ChannelMonitorHideThroughput,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 
@@ -663,8 +665,10 @@ type UpdateSettingsRequest struct {
 	PaymentAlipayForceQRCode *bool `json:"payment_alipay_force_qrcode"`
 
 	// Channel Monitor feature switch
-	ChannelMonitorEnabled                *bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds *int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                *bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   *string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds *int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         *bool   `json:"channel_monitor_hide_throughput"`
 
 	// Available Channels feature switch (user-facing)
 	AvailableChannelsEnabled *bool `json:"available_channels_enabled"`
@@ -1810,11 +1814,23 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.ChannelMonitorEnabled
 		}(),
+		ChannelMonitorMode: func() string {
+			if req.ChannelMonitorMode != nil {
+				return *req.ChannelMonitorMode
+			}
+			return previousSettings.ChannelMonitorMode
+		}(),
 		ChannelMonitorDefaultIntervalSeconds: func() int {
 			if req.ChannelMonitorDefaultIntervalSeconds != nil {
 				return *req.ChannelMonitorDefaultIntervalSeconds
 			}
 			return previousSettings.ChannelMonitorDefaultIntervalSeconds
+		}(),
+		ChannelMonitorHideThroughput: func() bool {
+			if req.ChannelMonitorHideThroughput != nil {
+				return *req.ChannelMonitorHideThroughput
+			}
+			return previousSettings.ChannelMonitorHideThroughput
 		}(),
 		AvailableChannelsEnabled: func() bool {
 			if req.AvailableChannelsEnabled != nil {
@@ -2150,7 +2166,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		PaymentAlipayForceQRCode:               updatedPaymentCfg.AlipayForceQRCode,
 
 		ChannelMonitorEnabled:                updatedSettings.ChannelMonitorEnabled,
+		ChannelMonitorMode:                   updatedSettings.ChannelMonitorMode,
 		ChannelMonitorDefaultIntervalSeconds: updatedSettings.ChannelMonitorDefaultIntervalSeconds,
+		ChannelMonitorHideThroughput:         updatedSettings.ChannelMonitorHideThroughput,
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
 
@@ -2626,8 +2644,14 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.ChannelMonitorEnabled != after.ChannelMonitorEnabled {
 		changed = append(changed, "channel_monitor_enabled")
 	}
+	if before.ChannelMonitorMode != after.ChannelMonitorMode {
+		changed = append(changed, "channel_monitor_mode")
+	}
 	if before.ChannelMonitorDefaultIntervalSeconds != after.ChannelMonitorDefaultIntervalSeconds {
 		changed = append(changed, "channel_monitor_default_interval_seconds")
+	}
+	if before.ChannelMonitorHideThroughput != after.ChannelMonitorHideThroughput {
+		changed = append(changed, "channel_monitor_hide_throughput")
 	}
 	if before.AvailableChannelsEnabled != after.AvailableChannelsEnabled {
 		changed = append(changed, "available_channels_enabled")
@@ -3174,13 +3198,32 @@ type UpdateRateLimit429CooldownSettingsRequest struct {
 }
 
 // UpdateOpenAIOAuth429DynamicSettingsRequest 更新OpenAI OAuth 429动态调度配置请求
+type UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest struct {
+	PlanType                              string  `json:"plan_type"`
+	Enabled                               bool    `json:"enabled"`
+	WindowSeconds                         int     `json:"window_seconds"`
+	MinSamples                            int     `json:"min_samples"`
+	Min429                                int     `json:"min_429"`
+	RatioThreshold                        float64 `json:"ratio_threshold"`
+	BlockSeconds                          int     `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool    `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64 `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64 `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int     `json:"usage_window_missing_data_fallback_seconds"`
+}
+
 type UpdateOpenAIOAuth429DynamicSettingsRequest struct {
-	Enabled        bool    `json:"enabled"`
-	WindowSeconds  int     `json:"window_seconds"`
-	MinSamples     int     `json:"min_samples"`
-	Min429         int     `json:"min_429"`
-	RatioThreshold float64 `json:"ratio_threshold"`
-	BlockSeconds   int     `json:"block_seconds"`
+	Enabled                               bool                                                 `json:"enabled"`
+	WindowSeconds                         int                                                  `json:"window_seconds"`
+	MinSamples                            int                                                  `json:"min_samples"`
+	Min429                                int                                                  `json:"min_429"`
+	RatioThreshold                        float64                                              `json:"ratio_threshold"`
+	BlockSeconds                          int                                                  `json:"block_seconds"`
+	UsageWindowCheckEnabled               bool                                                 `json:"usage_window_check_enabled"`
+	UsageWindow5hThresholdPercent         float64                                              `json:"usage_window_5h_threshold_percent"`
+	UsageWindow7dThresholdPercent         float64                                              `json:"usage_window_7d_threshold_percent"`
+	UsageWindowMissingDataFallbackSeconds int                                                  `json:"usage_window_missing_data_fallback_seconds"`
+	PlanTypeSettings                      []UpdateOpenAIOAuth429DynamicPlanTypeSettingsRequest `json:"plan_type_settings"`
 }
 
 // UpdateRateLimit429CooldownSettings 更新429默认回避配置
@@ -3214,6 +3257,51 @@ func (h *SettingHandler) UpdateRateLimit429CooldownSettings(c *gin.Context) {
 	})
 }
 
+type UpdateOpenAI403CooldownSettingsRequest struct {
+	Enabled               bool   `json:"enabled"`
+	Ignore                bool   `json:"ignore"`
+	CooldownSeconds       int    `json:"cooldown_seconds"`
+	ThresholdCount        int    `json:"threshold_count"`
+	CounterWindowSeconds  int    `json:"counter_window_seconds"`
+	ThresholdAction       string `json:"threshold_action"`
+	ThresholdPauseSeconds int    `json:"threshold_pause_seconds"`
+}
+
+func (h *SettingHandler) GetOpenAI403CooldownSettings(c *gin.Context) {
+	settings, err := h.settingService.GetOpenAI403CooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.OpenAI403CooldownSettings{
+		Enabled: settings.Enabled, Ignore: settings.Ignore, CooldownSeconds: settings.CooldownSeconds,
+		ThresholdCount: settings.ThresholdCount, CounterWindowSeconds: settings.CounterWindowSeconds,
+		ThresholdAction: settings.ThresholdAction, ThresholdPauseSeconds: settings.ThresholdPauseSeconds,
+	})
+}
+
+func (h *SettingHandler) UpdateOpenAI403CooldownSettings(c *gin.Context) {
+	var req UpdateOpenAI403CooldownSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	settings := &service.OpenAI403CooldownSettings{
+		Enabled: req.Enabled, Ignore: req.Ignore, CooldownSeconds: req.CooldownSeconds,
+		ThresholdCount: req.ThresholdCount, CounterWindowSeconds: req.CounterWindowSeconds,
+		ThresholdAction: req.ThresholdAction, ThresholdPauseSeconds: req.ThresholdPauseSeconds,
+	}
+	if err := h.settingService.SetOpenAI403CooldownSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, dto.OpenAI403CooldownSettings{
+		Enabled: settings.Enabled, Ignore: settings.Ignore, CooldownSeconds: settings.CooldownSeconds,
+		ThresholdCount: settings.ThresholdCount, CounterWindowSeconds: settings.CounterWindowSeconds,
+		ThresholdAction: settings.ThresholdAction, ThresholdPauseSeconds: settings.ThresholdPauseSeconds,
+	})
+}
+
 // GetOpenAIOAuth429DynamicSettings 获取OpenAI OAuth 429动态调度配置
 // GET /api/v1/admin/settings/openai-oauth-429-dynamic
 func (h *SettingHandler) GetOpenAIOAuth429DynamicSettings(c *gin.Context) {
@@ -3223,14 +3311,7 @@ func (h *SettingHandler) GetOpenAIOAuth429DynamicSettings(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.OpenAIOAuth429DynamicSettings{
-		Enabled:        settings.Enabled,
-		WindowSeconds:  settings.WindowSeconds,
-		MinSamples:     settings.MinSamples,
-		Min429:         settings.Min429,
-		RatioThreshold: settings.RatioThreshold,
-		BlockSeconds:   settings.BlockSeconds,
-	})
+	response.Success(c, openAIOAuth429DynamicSettingsDTO(settings))
 }
 
 // UpdateOpenAIOAuth429DynamicSettings 更新OpenAI OAuth 429动态调度配置
@@ -3243,12 +3324,34 @@ func (h *SettingHandler) UpdateOpenAIOAuth429DynamicSettings(c *gin.Context) {
 	}
 
 	settings := &service.OpenAIOAuth429DynamicSettings{
-		Enabled:        req.Enabled,
-		WindowSeconds:  req.WindowSeconds,
-		MinSamples:     req.MinSamples,
-		Min429:         req.Min429,
-		RatioThreshold: req.RatioThreshold,
-		BlockSeconds:   req.BlockSeconds,
+		Enabled:                               req.Enabled,
+		WindowSeconds:                         req.WindowSeconds,
+		MinSamples:                            req.MinSamples,
+		Min429:                                req.Min429,
+		RatioThreshold:                        req.RatioThreshold,
+		BlockSeconds:                          req.BlockSeconds,
+		UsageWindowCheckEnabled:               req.UsageWindowCheckEnabled,
+		UsageWindow5hThresholdPercent:         req.UsageWindow5hThresholdPercent,
+		UsageWindow7dThresholdPercent:         req.UsageWindow7dThresholdPercent,
+		UsageWindowMissingDataFallbackSeconds: req.UsageWindowMissingDataFallbackSeconds,
+		PlanTypeSettings:                      make([]service.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(req.PlanTypeSettings)),
+	}
+	for _, override := range req.PlanTypeSettings {
+		settings.PlanTypeSettings = append(settings.PlanTypeSettings, service.OpenAIOAuth429DynamicPlanTypeSettings{
+			PlanType: override.PlanType,
+			OpenAIOAuth429DynamicPolicy: service.OpenAIOAuth429DynamicPolicy{
+				Enabled:                               override.Enabled,
+				WindowSeconds:                         override.WindowSeconds,
+				MinSamples:                            override.MinSamples,
+				Min429:                                override.Min429,
+				RatioThreshold:                        override.RatioThreshold,
+				BlockSeconds:                          override.BlockSeconds,
+				UsageWindowCheckEnabled:               override.UsageWindowCheckEnabled,
+				UsageWindow5hThresholdPercent:         override.UsageWindow5hThresholdPercent,
+				UsageWindow7dThresholdPercent:         override.UsageWindow7dThresholdPercent,
+				UsageWindowMissingDataFallbackSeconds: override.UsageWindowMissingDataFallbackSeconds,
+			},
+		})
 	}
 	if err := h.settingService.SetOpenAIOAuth429DynamicSettings(c.Request.Context(), settings); err != nil {
 		response.BadRequest(c, err.Error())
@@ -3261,14 +3364,39 @@ func (h *SettingHandler) UpdateOpenAIOAuth429DynamicSettings(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.OpenAIOAuth429DynamicSettings{
-		Enabled:        updatedSettings.Enabled,
-		WindowSeconds:  updatedSettings.WindowSeconds,
-		MinSamples:     updatedSettings.MinSamples,
-		Min429:         updatedSettings.Min429,
-		RatioThreshold: updatedSettings.RatioThreshold,
-		BlockSeconds:   updatedSettings.BlockSeconds,
-	})
+	response.Success(c, openAIOAuth429DynamicSettingsDTO(updatedSettings))
+}
+
+func openAIOAuth429DynamicSettingsDTO(settings *service.OpenAIOAuth429DynamicSettings) dto.OpenAIOAuth429DynamicSettings {
+	result := dto.OpenAIOAuth429DynamicSettings{
+		Enabled:                               settings.Enabled,
+		WindowSeconds:                         settings.WindowSeconds,
+		MinSamples:                            settings.MinSamples,
+		Min429:                                settings.Min429,
+		RatioThreshold:                        settings.RatioThreshold,
+		BlockSeconds:                          settings.BlockSeconds,
+		UsageWindowCheckEnabled:               settings.UsageWindowCheckEnabled,
+		UsageWindow5hThresholdPercent:         settings.UsageWindow5hThresholdPercent,
+		UsageWindow7dThresholdPercent:         settings.UsageWindow7dThresholdPercent,
+		UsageWindowMissingDataFallbackSeconds: settings.UsageWindowMissingDataFallbackSeconds,
+		PlanTypeSettings:                      make([]dto.OpenAIOAuth429DynamicPlanTypeSettings, 0, len(settings.PlanTypeSettings)),
+	}
+	for _, override := range settings.PlanTypeSettings {
+		result.PlanTypeSettings = append(result.PlanTypeSettings, dto.OpenAIOAuth429DynamicPlanTypeSettings{
+			PlanType:                              override.PlanType,
+			Enabled:                               override.Enabled,
+			WindowSeconds:                         override.WindowSeconds,
+			MinSamples:                            override.MinSamples,
+			Min429:                                override.Min429,
+			RatioThreshold:                        override.RatioThreshold,
+			BlockSeconds:                          override.BlockSeconds,
+			UsageWindowCheckEnabled:               override.UsageWindowCheckEnabled,
+			UsageWindow5hThresholdPercent:         override.UsageWindow5hThresholdPercent,
+			UsageWindow7dThresholdPercent:         override.UsageWindow7dThresholdPercent,
+			UsageWindowMissingDataFallbackSeconds: override.UsageWindowMissingDataFallbackSeconds,
+		})
+	}
+	return result
 }
 
 // GetStreamTimeoutSettings 获取流超时处理配置

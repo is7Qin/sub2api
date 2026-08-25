@@ -919,6 +919,225 @@ func TestHandleFailoverError_EdgeCases(t *testing.T) {
 // HandleSelectionExhausted 测试
 // ---------------------------------------------------------------------------
 
+func TestUpstreamRecoveryState_CandidatePrecedenceAndSuccess(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	structured := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		ProviderCode: "rate_limit_exceeded",
+		ProviderType: "rate_limit_error",
+		SafeMessage:  "quota exceeded",
+	}, service.UpstreamCandidateStructured)
+	statusOnly := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		HTTPStatusKnown: true,
+		HTTPStatus:      http.StatusServiceUnavailable,
+	}, service.UpstreamCandidateStatusOnly)
+	transport := service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		Source:      service.UpstreamErrorSourceTransport,
+		SafeMessage: "transport failed",
+	}, service.UpstreamCandidateGenericTransport)
+
+	state.RetainCandidate(structured)
+	state.RetainCandidate(statusOnly)
+	state.RetainCandidate(transport)
+
+	candidate, ok := state.FinalCandidate()
+	require.True(t, ok)
+	require.Equal(t, "rate_limit_exceeded", candidate.Fact.ProviderCode)
+	require.Equal(t, structured.Presentation, candidate.Presentation)
+
+	state.ClearOnSuccess()
+	_, ok = state.FinalCandidate()
+	require.False(t, ok)
+}
+
+func TestUpstreamRecoveryState_SameRankUsesMostRecentCandidate(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	state.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		ProviderCode: "first", SafeMessage: "first",
+	}, service.UpstreamCandidateStructured))
+	state.RetainCandidate(service.NewUpstreamErrorCandidate(service.UpstreamErrorFact{
+		ProviderCode: "second", SafeMessage: "second",
+	}, service.UpstreamCandidateStructured))
+
+	candidate, ok := state.FinalCandidate()
+	require.True(t, ok)
+	require.Equal(t, "second", candidate.Fact.ProviderCode)
+}
+
+func TestUpstreamRecoveryState_TransitionBudgetIsRequestWide(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	state.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+
+	require.True(t, state.CanTransition(3))
+	state.RecordTransition()
+	require.False(t, state.CanTransition(3))
+
+	state.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+	require.False(t, state.CanTransition(3), "later account errors must not multiply the budget")
+}
+
+func TestUpstreamRecoveryState_ConfiguredHardCapRemainsHardCap(t *testing.T) {
+	state := NewUpstreamRecoveryState()
+	state.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+	require.False(t, state.CanTransition(0))
+}
+
+func TestOpenAIDirectReturnCandidateUsesFactWithoutRetainingIt(t *testing.T) {
+	failoverErr := service.NewUpstreamFailoverErrorWithFact(
+		http.StatusServiceUnavailable,
+		true,
+		service.UpstreamErrorFact{
+			Provider:        service.PlatformOpenAI,
+			Source:          service.UpstreamErrorSourceHTTP,
+			HTTPStatusKnown: true,
+			HTTPStatus:      http.StatusServiceUnavailable,
+			ProviderCode:    "server_is_overloaded",
+			ProviderType:    "service_unavailable_error",
+			SafeMessage:     "Please retry later",
+		},
+	)
+	recovery := NewUpstreamRecoveryState()
+
+	candidate, ok := openAIDirectReturnCandidate(recovery, failoverErr)
+
+	require.True(t, ok)
+	require.NotNil(t, candidate)
+	require.Equal(t, "server_is_overloaded", candidate.Presentation.ErrorCode)
+	_, retained := recovery.FinalCandidate()
+	require.False(t, retained, "direct-return facts must not be retained for later failover")
+}
+
+func TestHandleFailoverError_RecognizedDirectReturnHasNoRecoverySideEffects(t *testing.T) {
+	mock := &mockTempUnscheduler{}
+	fs := NewFailoverState(5, true)
+	failoverErr := service.NewUpstreamFailoverErrorWithFact(
+		http.StatusServiceUnavailable,
+		true,
+		service.UpstreamErrorFact{
+			Provider:        service.PlatformOpenAI,
+			Source:          service.UpstreamErrorSourceHTTP,
+			HTTPStatusKnown: true,
+			HTTPStatus:      http.StatusServiceUnavailable,
+			ProviderCode:    "server_is_overloaded",
+			ProviderType:    "service_unavailable_error",
+			SafeMessage:     "Please retry later",
+		},
+	)
+
+	action := fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformOpenAI, 4, failoverErr)
+
+	require.Equal(t, FailoverDirectReturn, action)
+	require.Zero(t, fs.SameAccountRetryCount[100])
+	require.Zero(t, fs.SwitchCount)
+	require.Empty(t, fs.FailedAccountIDs)
+	require.Empty(t, mock.calls)
+	require.False(t, fs.ForceCacheBilling)
+	_, ok := fs.FinalCandidate()
+	require.False(t, ok, "direct-return facts must not enter failover candidate state")
+	candidate, ok := directReturnCandidate(failoverErr)
+	require.True(t, ok)
+	require.Equal(t, "server_is_overloaded", candidate.Presentation.ErrorCode)
+	require.Equal(t, http.StatusServiceUnavailable, candidate.Presentation.HTTPStatus)
+}
+
+func TestHandleFailoverError_RecognizedRateLimitCapsConfiguredRecovery(t *testing.T) {
+	mock := &mockTempUnscheduler{}
+	fs := NewFailoverState(5, false)
+	failoverErr := service.NewUpstreamFailoverErrorWithFact(
+		http.StatusTooManyRequests,
+		true,
+		service.UpstreamErrorFact{
+			Provider:        service.PlatformOpenAI,
+			Source:          service.UpstreamErrorSourceHTTP,
+			HTTPStatusKnown: true,
+			HTTPStatus:      http.StatusTooManyRequests,
+			ProviderCode:    "rate_limit_exceeded",
+			ProviderType:    "rate_limit_error",
+			SafeMessage:     "quota exceeded",
+		},
+	)
+
+	require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformOpenAI, 4, failoverErr))
+	require.Equal(t, 1, fs.SameAccountRetryCount[100])
+	require.Zero(t, fs.SwitchCount)
+
+	require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformOpenAI, 4, failoverErr))
+	require.Equal(t, 1, fs.SameAccountRetryCount[100])
+	require.Equal(t, 1, fs.SwitchCount)
+
+	require.Equal(t, FailoverExhausted, fs.HandleFailoverError(context.Background(), mock, 200, service.PlatformOpenAI, 4, failoverErr))
+	require.Zero(t, fs.SameAccountRetryCount[200], "the semantic same-account retry budget is request-wide")
+	require.Equal(t, 1, fs.SwitchCount, "the request-wide transition budget allows only one switch")
+}
+
+func TestHandleFailoverError_UnknownFactHasNoLegacyRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		fact                   service.UpstreamErrorFact
+		retryableOnSameAccount bool
+		priorPolicy            service.UpstreamRecoveryPolicy
+	}{
+		{
+			name: "unknown structured status",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true, HTTPStatus: http.StatusBadRequest,
+				ProviderType: "vendor_failure", SafeMessage: "vendor failed",
+			},
+			retryableOnSameAccount: true,
+		},
+		{
+			name: "status unknown",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceSSE,
+				ProviderType: "vendor_stream_failure", SafeMessage: "stream failed",
+			},
+			retryableOnSameAccount: true,
+		},
+		{
+			name: "unknown closes an unused same-account retry budget",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true, HTTPStatus: http.StatusBadRequest,
+				ProviderType: "vendor_failure", SafeMessage: "vendor failed",
+			},
+			retryableOnSameAccount: true,
+			priorPolicy: service.UpstreamRecoveryPolicy{
+				SameAccountRetryBudget: 1,
+			},
+		},
+		{
+			name: "unknown closes an unused transition budget",
+			fact: service.UpstreamErrorFact{
+				Provider: service.PlatformAnthropic, Source: service.UpstreamErrorSourceHTTP,
+				HTTPStatusKnown: true, HTTPStatus: http.StatusBadRequest,
+				ProviderType: "vendor_failure", SafeMessage: "vendor failed",
+			},
+			priorPolicy: service.UpstreamRecoveryPolicy{
+				AccountTransitionBudget: 1,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockTempUnscheduler{}
+			fs := NewFailoverState(5, false)
+			if tc.priorPolicy != (service.UpstreamRecoveryPolicy{}) {
+				fs.Recovery.AdoptPolicy(tc.priorPolicy)
+			}
+			failoverErr := service.NewUpstreamFailoverErrorWithFact(tc.fact.HTTPStatus, tc.retryableOnSameAccount, tc.fact)
+
+			action := fs.HandleFailoverError(context.Background(), mock, 100, service.PlatformAnthropic, 4, failoverErr)
+
+			require.Equal(t, FailoverExhausted, action)
+			require.Zero(t, fs.SameAccountRetryCount[100])
+			require.Zero(t, fs.SwitchCount, "fact-backed unknown errors must not inherit MaxSwitches")
+			require.Empty(t, mock.calls, "unknown facts must not mutate account health")
+			candidate, ok := fs.FinalCandidate()
+			require.True(t, ok, "unknown fact must remain available to the safe final resolver")
+			require.Equal(t, tc.fact.ProviderType, candidate.Fact.ProviderType)
+		})
+	}
+}
+
 func TestHandleSelectionExhausted(t *testing.T) {
 	t.Run("无LastFailoverErr时返回Exhausted", func(t *testing.T) {
 		fs := NewFailoverState(3, false)
@@ -950,6 +1169,21 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		require.Empty(t, fs.FailedAccountIDs, "应清除失败账号列表")
 		require.GreaterOrEqual(t, elapsed, 1500*time.Millisecond, "应等待约 2s")
 		require.Less(t, elapsed, 5*time.Second)
+	})
+
+	t.Run("semantic transition budget consumed preserves exclusions", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.LastFailoverErr = newTestFailoverErr(http.StatusServiceUnavailable, false, false)
+		fs.FailedAccountIDs[100] = struct{}{}
+		fs.Recovery.AdoptPolicy(service.UpstreamRecoveryPolicy{AccountTransitionBudget: 1})
+		fs.Recovery.RecordTransition()
+
+		start := time.Now()
+		action := fs.HandleSelectionExhausted(context.Background())
+
+		require.Equal(t, FailoverExhausted, action)
+		require.Contains(t, fs.FailedAccountIDs, int64(100), "consumed semantic budget must not reopen excluded accounts")
+		require.Less(t, time.Since(start), 100*time.Millisecond, "consumed semantic budget must not back off and retry")
 	})
 
 	t.Run("503但SwitchCount已超过MaxSwitches_返回Exhausted", func(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 
 type authRepoStub struct {
 	getByKeyForAuth   func(ctx context.Context, key string) (*APIKey, error)
+	listByUserID      func(ctx context.Context, userID int64, params pagination.PaginationParams, filters APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error)
 	listKeysByUserID  func(ctx context.Context, userID int64) ([]string, error)
 	listKeysByGroupID func(ctx context.Context, groupID int64) ([]string, error)
 }
@@ -70,7 +71,51 @@ func (s *authRepoStub) DeleteWithAudit(ctx context.Context, id int64) error {
 }
 
 func (s *authRepoStub) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, filters APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error) {
-	panic("unexpected ListByUserID call")
+	if s.listByUserID == nil {
+		panic("unexpected ListByUserID call")
+	}
+	return s.listByUserID(ctx, userID, params, filters)
+}
+
+type apiKeyConcurrencyBatchStub struct {
+	counts map[int64]int
+	err    error
+	ids    []int64
+}
+
+func (s *apiKeyConcurrencyBatchStub) GetAPIKeyConcurrencyBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	s.ids = append([]int64(nil), ids...)
+	return s.counts, s.err
+}
+
+func TestAPIKeyService_ListHydratesEnabledKeyConcurrencyInOneBatch(t *testing.T) {
+	repo := &authRepoStub{listByUserID: func(context.Context, int64, pagination.PaginationParams, APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error) {
+		return []APIKey{{ID: 1, Concurrency: 5}, {ID: 2, Concurrency: 0}, {ID: 3, Concurrency: 7}}, &pagination.PaginationResult{Total: 3}, nil
+	}}
+	reader := &apiKeyConcurrencyBatchStub{counts: map[int64]int{1: 2, 3: 0}}
+	svc := NewAPIKeyService(repo, nil, nil, nil, nil, nil, &config.Config{})
+	svc.SetAPIKeyConcurrencyBatchReader(reader)
+
+	keys, _, err := svc.List(context.Background(), 9, pagination.PaginationParams{}, APIKeyListFilters{})
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 3}, reader.ids)
+	require.NotNil(t, keys[0].CurrentConcurrency)
+	require.Equal(t, 2, *keys[0].CurrentConcurrency)
+	require.Nil(t, keys[1].CurrentConcurrency)
+	require.NotNil(t, keys[2].CurrentConcurrency)
+	require.Zero(t, *keys[2].CurrentConcurrency)
+}
+
+func TestAPIKeyService_ListDegradesWhenConcurrencyUnavailable(t *testing.T) {
+	repo := &authRepoStub{listByUserID: func(context.Context, int64, pagination.PaginationParams, APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error) {
+		return []APIKey{{ID: 1, Concurrency: 5}}, &pagination.PaginationResult{Total: 1}, nil
+	}}
+	svc := NewAPIKeyService(repo, nil, nil, nil, nil, nil, &config.Config{})
+	svc.SetAPIKeyConcurrencyBatchReader(&apiKeyConcurrencyBatchStub{err: errors.New("redis unavailable")})
+
+	keys, _, err := svc.List(context.Background(), 9, pagination.PaginationParams{}, APIKeyListFilters{})
+	require.NoError(t, err)
+	require.Nil(t, keys[0].CurrentConcurrency)
 }
 
 func (s *authRepoStub) VerifyOwnership(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error) {
@@ -261,14 +306,15 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 			Concurrency: 3,
 		},
 		Group: &Group{
-			ID:                    groupID,
-			Name:                  "openai",
-			Platform:              PlatformOpenAI,
-			Status:                StatusActive,
-			SubscriptionType:      SubscriptionTypeStandard,
-			RateMultiplier:        1,
-			AllowMessagesDispatch: true,
-			DefaultMappedModel:    "gpt-5.4",
+			ID:                              groupID,
+			Name:                            "openai",
+			Platform:                        PlatformOpenAI,
+			Status:                          StatusActive,
+			SubscriptionType:                SubscriptionTypeStandard,
+			RateMultiplier:                  1,
+			AllowMessagesDispatch:           true,
+			OpenAILongContextBillingEnabled: true,
+			DefaultMappedModel:              "gpt-5.4",
 			MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
 				OpusMappedModel:   "gpt-5.4-nano",
 				SonnetMappedModel: "gpt-5.3-codex",
@@ -287,6 +333,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Name, roundTrip.Name)
 	require.NotNil(t, roundTrip.Group)
 	require.Equal(t, apiKey.Group.MessagesDispatchModelConfig, roundTrip.Group.MessagesDispatchModelConfig)
+	require.True(t, roundTrip.Group.OpenAILongContextBillingEnabled)
 }
 
 func TestAPIKeyService_SnapshotRoundTrip_PreservesRequirePrivacySet(t *testing.T) {
@@ -322,6 +369,21 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesRequirePrivacySet(t *testing.T
 	require.NotNil(t, roundTrip)
 	require.NotNil(t, roundTrip.Group)
 	require.True(t, roundTrip.Group.RequirePrivacySet)
+}
+
+func TestAPIKeyService_SnapshotRoundTrip_PreservesAPIKeyConcurrency(t *testing.T) {
+	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
+	apiKey := &APIKey{
+		ID: 11, UserID: 22, Key: "sk-concurrency", Name: "limited", Status: StatusActive, Concurrency: 5,
+		User: &User{ID: 22, Status: StatusActive},
+	}
+
+	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NotNil(t, snapshot)
+	require.Equal(t, 5, snapshot.Concurrency)
+
+	restored := svc.snapshotToAPIKey(apiKey.Key, snapshot)
+	require.Equal(t, 5, restored.Concurrency)
 }
 
 func TestAPIKeyService_SnapshotRoundTrip_PreservesOpenAIForcePriorityTier(t *testing.T) {

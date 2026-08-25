@@ -63,8 +63,9 @@ UPDATE account_groups SET group_id = $1 WHERE account_id = $2 AND group_id = $3
 	require.NoError(t, tx.QueryRowContext(ctx, "SELECT count(*) FROM scheduler_dirty_account_sources WHERE account_id=$1", accountID).Scan(&sourceCount))
 	require.Zero(t, sourceCount)
 
-	// High-frequency runtime overlays are published separately and must not
-	// advance lifecycle generations or force bucket rebuilds.
+	// Runtime overlay columns are scheduling inputs consumed by the cache payload
+	// (rate-limited / overloaded / session-window state), so their changes refresh
+	// the account snapshot — without forcing a bucket rebuild.
 	for _, update := range []string{
 		"rate_limited_at = NOW()",
 		"rate_limit_reset_at = NOW() + INTERVAL '1 minute'",
@@ -78,7 +79,7 @@ UPDATE account_groups SET group_id = $1 WHERE account_id = $2 AND group_id = $3
 		truncateSchedulerDirtyTables(t, tx)
 		_, err = tx.ExecContext(ctx, "UPDATE accounts SET "+update+" WHERE id = $1", accountID)
 		require.NoError(t, err)
-		requireNoAccountSource(t, tx, accountID)
+		requireAccountSource(t, tx, accountID, 1, false)
 	}
 
 	for key, value := range map[string]string{
@@ -117,8 +118,8 @@ UPDATE account_groups SET group_id = $1 WHERE account_id = $2 AND group_id = $3
 		requireNoAccountSource(t, tx, accountID)
 	}
 
-	// Unknown keys remain conservatively dirty even when their names resemble
-	// observational usage fields; only explicitly known producers are exempt.
+	// Unknown keys outside the fixed-point whitelist no longer dirty: the 177
+	// trigger compares exactly the scheduling-relevant keys, nothing more.
 	for _, key := range []string{
 		"codex_primary_future_policy",
 		"codex_5h_future_policy",
@@ -131,11 +132,11 @@ UPDATE account_groups SET group_id = $1 WHERE account_id = $2 AND group_id = $3
 			WHERE id = $2
 		`, key, accountID)
 		require.NoError(t, err)
-		requireAccountSource(t, tx, accountID, 1, false)
+		requireNoAccountSource(t, tx, accountID)
 	}
 
-	// Static policy and unknown Extra keys remain conservatively dirty. Only
-	// mixed_scheduling affects bucket membership.
+	// Whitelisted static policy keys still refresh the snapshot (no bucket
+	// rebuild); only mixed_scheduling affects bucket membership.
 	truncateSchedulerDirtyTables(t, tx)
 	_, err = tx.ExecContext(ctx, `UPDATE accounts SET extra = jsonb_set(COALESCE(extra, '{}'::jsonb), '{privacy_mode}', '"training_off"'::jsonb, true) WHERE id = $1`, accountID)
 	require.NoError(t, err)
@@ -144,7 +145,7 @@ UPDATE account_groups SET group_id = $1 WHERE account_id = $2 AND group_id = $3
 	truncateSchedulerDirtyTables(t, tx)
 	_, err = tx.ExecContext(ctx, `UPDATE accounts SET extra = jsonb_set(COALESCE(extra, '{}'::jsonb), '{future_scheduler_key}', 'true'::jsonb, true) WHERE id = $1`, accountID)
 	require.NoError(t, err)
-	requireAccountSource(t, tx, accountID, 1, false)
+	requireNoAccountSource(t, tx, accountID)
 
 	truncateSchedulerDirtyTables(t, tx)
 	_, err = tx.ExecContext(ctx, `UPDATE accounts SET extra = jsonb_set(COALESCE(extra, '{}'::jsonb), '{mixed_scheduling}', 'true'::jsonb, true) WHERE id = $1`, accountID)
@@ -328,8 +329,9 @@ END
 WHERE id IN ($1, $2)`, runtimeID, lifecycleID)
 	require.NoError(t, err)
 
+	// 运行时 key 与白名单外 key 都不产生脏标记（定点白名单契约）。
 	requireNoAccountSource(t, tx, runtimeID)
-	requireAccountSource(t, tx, lifecycleID, 1, false)
+	requireNoAccountSource(t, tx, lifecycleID)
 }
 
 func TestSchedulerRuntimeProjectionDoesNotDisturbPendingLifecycleSource(t *testing.T) {
@@ -347,8 +349,8 @@ func TestSchedulerRuntimeProjectionDoesNotDisturbPendingLifecycleSource(t *testi
 	require.NoError(t, err)
 
 	// Runtime-only observations must not restart pending lifecycle fanout or
-	// advance its generation. A later lifecycle change must do both while keeping
-	// the earlier bucket-rebuild intent sticky.
+	// advance its generation. A later whitelisted lifecycle change must do both
+	// while keeping the earlier bucket-rebuild intent sticky.
 	_, err = tx.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(COALESCE(extra, '{}'::jsonb), '{codex_5h_used_percent}', '50'::jsonb, true) WHERE id=$1`, accountID)
 	require.NoError(t, err)
 	requireAccountSourceState(t, tx, accountID, 1, true, 42)
@@ -356,9 +358,10 @@ func TestSchedulerRuntimeProjectionDoesNotDisturbPendingLifecycleSource(t *testi
 	require.NoError(t, err)
 	requireAccountSourceState(t, tx, accountID, 1, true, 42)
 
+	// 白名单外 key（future_scheduler_key）不推进挂起的生命周期扇出。
 	_, err = tx.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_set(COALESCE(extra, '{}'::jsonb), '{future_scheduler_key}', 'true'::jsonb, true) WHERE id=$1`, accountID)
 	require.NoError(t, err)
-	requireAccountSourceState(t, tx, accountID, 2, true, 0)
+	requireAccountSourceState(t, tx, accountID, 1, true, 42)
 }
 
 func TestSchedulerMixedSchedulingChangePromotesPendingSourceToBucketDirty(t *testing.T) {

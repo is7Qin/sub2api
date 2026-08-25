@@ -976,6 +976,305 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 	require.Len(t, upstreamConn.writes, 1, "passthrough 模式应透传首条 response.create")
 }
 
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CompletedContextFieldsAreNotRequestFailure(t *testing.T) {
+	parseCalls := countUpstreamErrorFactParses(t)
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+
+	upstreamConn := &openAIWSCaptureConn{events: [][]byte{
+		[]byte(`{"type":"response.completed","response":{"id":"resp_completed_context_fields","status":"completed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"context window"},"usage":{"input_tokens":5,"output_tokens":1}}}`),
+	}}
+	captureDialer := &openAIWSCaptureDialer{conn: upstreamConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     &httpUpstreamRecorder{},
+		cache:            &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+		openaiWSPool:     pool,
+	}
+	account := &Account{
+		ID: 460, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra:       map[string]any{"responses_websockets_v2_enabled": true},
+	}
+
+	turnErrCh := make(chan error, 1)
+	hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, _ *OpenAIForwardResult, turnErr error) {
+		turnErrCh <- turnErr
+	}}
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer conn.CloseNow()
+		readCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		_, first, readErr := conn.Read(readCtx)
+		cancel()
+		if readErr != nil {
+			serverErrCh <- readErr
+			return
+		}
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+		ginCtx.Request = r
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", first, hooks)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), nil)
+	cancelDial()
+	require.NoError(t, err)
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1"}`)))
+	cancelWrite()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+
+	select {
+	case turnErr := <-turnErrCh:
+		require.NoError(t, turnErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiting for terminal callback timed out")
+	}
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+	select {
+	case serverErr := <-serverErrCh:
+		if serverErr != nil {
+			require.Contains(t, serverErr.Error(), "StatusNormalClosure")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for websocket exit timed out")
+	}
+	require.Zero(t, parseCalls.Load())
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughContextFailureOwnsTurnWhenClientWriteFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+
+	upstreamConn := &openAIWSCaptureConn{events: [][]byte{
+		[]byte(`{"type":"response.failed","response":{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"context window"},"usage":{"input_tokens":5,"output_tokens":0}}}`),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:                       cfg,
+		httpUpstream:              &httpUpstreamRecorder{},
+		cache:                     &stubGatewayCache{},
+		openaiWSResolver:          NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:             NewCodexToolCorrector(),
+		openaiWSPassthroughDialer: &openAIWSCaptureDialer{conn: upstreamConn},
+	}
+	account := &Account{
+		ID: 459, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+		},
+	}
+
+	var mu sync.Mutex
+	afterTurnCalls := 0
+	var observedErr error
+	hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, _ *OpenAIForwardResult, turnErr error) {
+		mu.Lock()
+		defer mu.Unlock()
+		afterTurnCalls++
+		observedErr = turnErr
+	}}
+
+	firstReadCh := make(chan struct{})
+	clientClosedCh := make(chan struct{})
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer conn.CloseNow()
+		readCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, first, readErr := conn.Read(readCtx)
+		cancel()
+		if readErr != nil {
+			serverErrCh <- readErr
+			return
+		}
+		close(firstReadCh)
+		<-clientClosedCh
+
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+		ginCtx.Request = r
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(context.Background(), ginCtx, conn, account, "sk-test", first, hooks)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), nil)
+	cancelDial()
+	require.NoError(t, err)
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1"}`)))
+	cancelWrite()
+	select {
+	case <-firstReadCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiting for first client frame timed out")
+	}
+	require.NoError(t, clientConn.CloseNow())
+	close(clientClosedCh)
+
+	select {
+	case proxyErr := <-serverErrCh:
+		var requestErr *OpenAIUpstreamRequestError
+		require.ErrorAs(t, proxyErr, &requestErr)
+		require.Equal(t, "context_length_exceeded", requestErr.Code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for passthrough websocket exit timed out")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, afterTurnCalls, "the typed terminal callback must own the turn exactly once")
+	var requestErr *OpenAIUpstreamRequestError
+	require.ErrorAs(t, observedErr, &requestErr)
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughReacquiresBeforeSecondTurn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+
+	upstreamConn := &openAIWSCaptureConn{events: [][]byte{
+		[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_reacquire_1","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_reacquire_2","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:                       cfg,
+		httpUpstream:              &httpUpstreamRecorder{},
+		cache:                     &stubGatewayCache{},
+		openaiWSResolver:          NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:             NewCodexToolCorrector(),
+		openaiWSPassthroughDialer: &openAIWSCaptureDialer{conn: upstreamConn},
+	}
+	account := &Account{ID: 453, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra:       map[string]any{"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough},
+	}
+
+	var mu sync.Mutex
+	beforeTurns := []int{}
+	afterTurns := []int{}
+	hooks := &OpenAIWSIngressHooks{
+		BeforeTurn: func(turn int) error {
+			mu.Lock()
+			defer mu.Unlock()
+			beforeTurns = append(beforeTurns, turn)
+			return nil
+		},
+		AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) {
+			mu.Lock()
+			defer mu.Unlock()
+			afterTurns = append(afterTurns, turn)
+		},
+	}
+
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer conn.CloseNow()
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+		ginCtx.Request = r
+		readCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		_, first, readErr := conn.Read(readCtx)
+		cancel()
+		if readErr != nil {
+			serverErrCh <- readErr
+			return
+		}
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", first, hooks)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer clientConn.CloseNow()
+	write := func(payload string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		require.NoError(t, clientConn.Write(ctx, coderws.MessageText, []byte(payload)))
+	}
+	read := func() string {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, payload, readErr := clientConn.Read(ctx)
+		require.NoError(t, readErr)
+		return gjson.GetBytes(payload, "response.id").String()
+	}
+	write(`{"type":"response.create","model":"gpt-5.1"}`)
+	require.Equal(t, "resp_passthrough_reacquire_1", read())
+	write(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_passthrough_reacquire_1"}`)
+	require.Equal(t, "resp_passthrough_reacquire_2", read())
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+	select {
+	case <-serverErrCh:
+		// The in-memory upstream closes after its scripted terminal events.
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for passthrough websocket exit timed out")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []int{2}, beforeTurns, "the handler already admitted turn one; the adapter must admit each follow-up")
+	require.Equal(t, []int{1, 2}, afterTurns)
+	require.Len(t, upstreamConn.writes, 2)
+}
+
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_OAuthManagedSessionAppliesWSAllowlist(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

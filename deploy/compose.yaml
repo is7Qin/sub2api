@@ -1,0 +1,117 @@
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE:-ghcr.io/is7qin/sub2api}:${SUB2API_VERSION:-latest}
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    ports:
+      - "${PUBLISH_HOST:-0.0.0.0}:${PUBLISH_PORT:-8080}:8080"
+    volumes:
+      - sub2api_data:/app/data
+    env_file:
+      - ./.env
+    environment:
+      AUTO_SETUP: "true"
+      SERVER_HOST: "0.0.0.0"
+      SERVER_PORT: "8080"
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${DATABASE_USER:-sub2api}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      DATABASE_DBNAME: ${DATABASE_DBNAME:-sub2api}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: ${DATABASE_USER:-sub2api}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      POSTGRES_DB: ${DATABASE_DBNAME:-sub2api}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-}
+      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${POSTGRES_EFFECTIVE_CACHE_SIZE:-}
+      POSTGRES_MAINTENANCE_WORK_MEM: ${POSTGRES_MAINTENANCE_WORK_MEM:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    # Build argv from a fixed allowlist so tuning values cannot inject commands.
+    # Blank variables add no -c options, preserving the postgres:18 defaults.
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        set -- "$$@"
+        if [ -n "$${POSTGRES_MAX_CONNECTIONS}" ]; then
+          set -- "$$@" -c "max_connections=$${POSTGRES_MAX_CONNECTIONS}"
+        fi
+        if [ -n "$${POSTGRES_SHARED_BUFFERS}" ]; then
+          set -- "$$@" -c "shared_buffers=$${POSTGRES_SHARED_BUFFERS}"
+        fi
+        if [ -n "$${POSTGRES_EFFECTIVE_CACHE_SIZE}" ]; then
+          set -- "$$@" -c "effective_cache_size=$${POSTGRES_EFFECTIVE_CACHE_SIZE}"
+        fi
+        if [ -n "$${POSTGRES_MAINTENANCE_WORK_MEM}" ]; then
+          set -- "$$@" -c "maintenance_work_mem=$${POSTGRES_MAINTENANCE_WORK_MEM}"
+        fi
+        exec /usr/local/bin/docker-entrypoint.sh "$$@"
+      - --
+    command: ["postgres"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    volumes:
+      - redis_data:/data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-}
+      REDIS_MAXCLIENTS: ${REDIS_MAXCLIENTS:-10000}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - sh
+      - -ec
+      - |
+        set -- redis-server --save 60 1 --appendonly yes --appendfsync everysec --maxclients "$${REDIS_MAXCLIENTS}"
+        if [ -n "$${REDIS_PASSWORD}" ]; then
+          set -- "$$@" --requirepass "$${REDIS_PASSWORD}"
+        fi
+        exec "$$@"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  sub2api_data:
+  postgres_data:
+  redis_data:

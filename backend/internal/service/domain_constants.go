@@ -352,9 +352,18 @@ const (
 	// When false: runner skips scheduling and user-facing endpoints return an empty list.
 	SettingKeyChannelMonitorEnabled = "channel_monitor_enabled"
 
+	// SettingKeyChannelMonitorMode selects the exclusive monitor implementation.
+	// V1 runs active probes; V2 passively aggregates existing operational data.
+	SettingKeyChannelMonitorMode = "channel_monitor_mode"
+	ChannelMonitorModeV1         = "v1"
+	ChannelMonitorModeV2         = "v2"
+
 	// SettingKeyChannelMonitorDefaultIntervalSeconds controls the default interval (seconds)
 	// pre-filled when creating a new channel monitor from the admin UI. Range: [15, 3600].
 	SettingKeyChannelMonitorDefaultIntervalSeconds = "channel_monitor_default_interval_seconds"
+
+	// SettingKeyChannelMonitorHideThroughput hides fleet-scale rates from non-admin V2 views.
+	SettingKeyChannelMonitorHideThroughput = "channel_monitor_hide_throughput"
 
 	// SettingKeyAvailableChannelsEnabled is a DB-backed soft switch for the "Available Channels"
 	// user-facing aggregate view. When false: user endpoint returns an empty list and the
@@ -373,6 +382,9 @@ const (
 
 	// SettingKeyOpenAIOAuth429DynamicSettings stores JSON config for OpenAI OAuth 429 dynamic scheduling.
 	SettingKeyOpenAIOAuth429DynamicSettings = "openai_oauth_429_dynamic_settings"
+
+	// SettingKeyOpenAI403CooldownSettings stores JSON config for OpenAI 403 temporary scheduling protection.
+	SettingKeyOpenAI403CooldownSettings = "openai_403_cooldown_settings"
 
 	// =========================
 	// Stream Timeout Handling

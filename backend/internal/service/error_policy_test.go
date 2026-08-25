@@ -209,6 +209,26 @@ func TestCheckErrorPolicy(t *testing.T) {
 			body:       []byte(`unauthorized`),
 			expected:   ErrorPolicySkipped,
 		},
+		{
+			name: "pool_mode_explicit_temp_rule_is_honored",
+			account: &Account{
+				ID:       9,
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                  true,
+					"temp_unschedulable_enabled": true,
+					"temp_unschedulable_rules": []any{map[string]any{
+						"error_code":       float64(http.StatusServiceUnavailable),
+						"keywords":         []any{"unavailable"},
+						"duration_minutes": float64(30),
+					}},
+				},
+			},
+			statusCode: http.StatusServiceUnavailable,
+			body:       []byte(`Service temporarily unavailable`),
+			expected:   ErrorPolicyTempUnscheduled,
+		},
 	}
 
 	for _, tt := range tests {
@@ -222,7 +242,68 @@ func TestCheckErrorPolicy(t *testing.T) {
 	}
 }
 
-func TestHandleUpstreamError_PoolModeCustomErrorCodesOverride(t *testing.T) {
+func TestCheckErrorPolicy_ModelScopedTempUnschedulable(t *testing.T) {
+	repo := &errorPolicyRepoStub{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       20,
+		Type:     AccountTypeOAuth,
+		Platform: PlatformGemini,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{map[string]any{
+				"error_code":       float64(http.StatusServiceUnavailable),
+				"keywords":         []any{"overloaded"},
+				"duration_minutes": float64(10),
+			}},
+		},
+	}
+
+	result := svc.CheckErrorPolicy(
+		context.Background(),
+		account,
+		http.StatusServiceUnavailable,
+		[]byte("overloaded service"),
+		"gemini-2.5-pro",
+	)
+
+	require.Equal(t, ErrorPolicyTempUnscheduled, result)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, "gemini-2.5-pro", repo.modelRateLimitCalls[0].scope)
+}
+
+func TestCheckErrorPolicy_401KeepsAccountScopeWhenModelKnown(t *testing.T) {
+	repo := &errorPolicyRepoStub{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       21,
+		Type:     AccountTypeOAuth,
+		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{map[string]any{
+				"error_code":       float64(http.StatusUnauthorized),
+				"keywords":         []any{"unauthorized"},
+				"duration_minutes": float64(10),
+			}},
+		},
+	}
+
+	result := svc.CheckErrorPolicy(
+		context.Background(),
+		account,
+		http.StatusUnauthorized,
+		[]byte("unauthorized"),
+		"claude-sonnet-4-5",
+	)
+
+	require.Equal(t, ErrorPolicyTempUnscheduled, result)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Empty(t, repo.modelRateLimitCalls)
+}
+
+func TestHandleUpstreamError_PoolModePolicies(t *testing.T) {
 	t.Run("pool_mode_without_custom_error_codes_still_skips", func(t *testing.T) {
 		repo := &errorPolicyRepoStub{}
 		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
@@ -260,6 +341,89 @@ func TestHandleUpstreamError_PoolModeCustomErrorCodesOverride(t *testing.T) {
 
 		require.True(t, shouldDisable)
 		require.Equal(t, 1, repo.setErrCalls)
+		require.Equal(t, 0, repo.tempCalls)
+	})
+
+	t.Run("pool_mode_explicit_temp_rule_stops_scheduling", func(t *testing.T) {
+		repo := &errorPolicyRepoStub{}
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		account := &Account{
+			ID:       32,
+			Type:     AccountTypeAPIKey,
+			Platform: PlatformOpenAI,
+			Credentials: map[string]any{
+				"pool_mode":                  true,
+				"temp_unschedulable_enabled": true,
+				"temp_unschedulable_rules": []any{map[string]any{
+					"error_code":       float64(http.StatusServiceUnavailable),
+					"keywords":         []any{"unavailable"},
+					"duration_minutes": float64(30),
+				}},
+			},
+		}
+
+		shouldDisable := svc.HandleUpstreamError(context.Background(), account, http.StatusServiceUnavailable, http.Header{}, []byte("Service temporarily unavailable"))
+
+		require.True(t, shouldDisable)
+		require.Equal(t, 0, repo.setErrCalls)
+		require.Equal(t, 1, repo.tempCalls)
+	})
+
+	t.Run("pool_mode_explicit_temp_rule_is_model_scoped_when_model_known", func(t *testing.T) {
+		repo := &errorPolicyRepoStub{}
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		account := &Account{
+			ID:       34,
+			Type:     AccountTypeAPIKey,
+			Platform: PlatformOpenAI,
+			Credentials: map[string]any{
+				"pool_mode":                  true,
+				"temp_unschedulable_enabled": true,
+				"temp_unschedulable_rules": []any{map[string]any{
+					"error_code":       float64(http.StatusServiceUnavailable),
+					"keywords":         []any{"unavailable"},
+					"duration_minutes": float64(30),
+				}},
+			},
+		}
+
+		shouldDisable := svc.HandleUpstreamError(
+			context.Background(),
+			account,
+			http.StatusServiceUnavailable,
+			http.Header{},
+			[]byte("Service temporarily unavailable"),
+			"gpt-5.4",
+		)
+
+		require.True(t, shouldDisable)
+		require.Zero(t, repo.tempCalls)
+		require.Len(t, repo.modelRateLimitCalls, 1)
+		require.Equal(t, "gpt-5.4", repo.modelRateLimitCalls[0].scope)
+	})
+
+	t.Run("pool_mode_temp_rule_miss_still_skips", func(t *testing.T) {
+		repo := &errorPolicyRepoStub{}
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		account := &Account{
+			ID:       33,
+			Type:     AccountTypeAPIKey,
+			Platform: PlatformOpenAI,
+			Credentials: map[string]any{
+				"pool_mode":                  true,
+				"temp_unschedulable_enabled": true,
+				"temp_unschedulable_rules": []any{map[string]any{
+					"error_code":       float64(http.StatusServiceUnavailable),
+					"keywords":         []any{"maintenance"},
+					"duration_minutes": float64(30),
+				}},
+			},
+		}
+
+		shouldDisable := svc.HandleUpstreamError(context.Background(), account, http.StatusServiceUnavailable, http.Header{}, []byte("Service temporarily unavailable"))
+
+		require.False(t, shouldDisable)
+		require.Equal(t, 0, repo.setErrCalls)
 		require.Equal(t, 0, repo.tempCalls)
 	})
 }
@@ -449,13 +613,23 @@ func TestApplyErrorPolicy_GeminiRateLimitBypassesCustomSkip(t *testing.T) {
 
 type errorPolicyRepoStub struct {
 	mockAccountRepoForGemini
-	tempCalls    int
-	setErrCalls  int
-	lastErrorMsg string
+	tempCalls           int
+	modelRateLimitCalls []modelNotFoundRateLimitCall
+	setErrCalls         int
+	lastErrorMsg        string
 }
 
 func (r *errorPolicyRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.tempCalls++
+	return nil
+}
+
+func (r *errorPolicyRepoStub) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	call := modelNotFoundRateLimitCall{accountID: id, scope: scope, resetAt: resetAt}
+	if len(reason) > 0 {
+		call.reason = reason[0]
+	}
+	r.modelRateLimitCalls = append(r.modelRateLimitCalls, call)
 	return nil
 }
 

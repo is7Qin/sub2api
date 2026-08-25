@@ -50,6 +50,8 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			func() {},
 			nil,
 			nil,
+			nil,
+			nil,
 			exitCh,
 		)
 		sig := <-exitCh
@@ -57,10 +59,40 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		require.True(t, sig.graceful)
 	})
 
+	t.Run("response create generation advances before upstream write returns", func(t *testing.T) {
+		t.Parallel()
+
+		state := &relayState{}
+		state.idlessTurnGeneration.Store(1)
+		writeStarted := make(chan struct{})
+		allowWrite := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			runClientToUpstream(
+				context.Background(),
+				newPassthroughTestFrameConn([]passthroughTestFrame{{msgType: coderws.MessageText, payload: []byte(`{"type":"response.create"}`)}}, true),
+				nil,
+				func(_ coderws.MessageType, _ []byte) error {
+					close(writeStarted)
+					<-allowWrite
+					return nil
+				},
+				func() {}, nil, nil, state, nil, make(chan relayExitSignal, 1),
+			)
+			close(done)
+		}()
+
+		<-writeStarted
+		require.Equal(t, uint64(2), state.idlessTurnGeneration.Load())
+		close(allowWrite)
+		<-done
+	})
+
 	t.Run("write upstream failed", func(t *testing.T) {
 		t.Parallel()
 
 		exitCh := make(chan relayExitSignal, 1)
+		var activityMarks atomic.Int32
 		runClientToUpstream(
 			context.Background(),
 			newPassthroughTestFrameConn([]passthroughTestFrame{
@@ -68,7 +100,9 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			nil,
 			func(_ coderws.MessageType, _ []byte) error { return errors.New("boom") },
-			func() {},
+			func() { activityMarks.Add(1) },
+			nil,
+			nil,
 			nil,
 			nil,
 			exitCh,
@@ -76,6 +110,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		sig := <-exitCh
 		require.Equal(t, "write_upstream", sig.stage)
 		require.False(t, sig.graceful)
+		require.Zero(t, activityMarks.Load(), "an undelivered client frame must not refresh idle activity")
 	})
 
 	t.Run("forwarded counter and trace callback", func(t *testing.T) {
@@ -96,6 +131,8 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			func(event RelayTraceEvent) {
 				traces = append(traces, event)
 			},
+			nil,
+			nil,
 			exitCh,
 		)
 		sig := <-exitCh
@@ -112,8 +149,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 		t.Parallel()
 
 		exitCh := make(chan relayExitSignal, 1)
-		drop := &atomic.Bool{}
-		drop.Store(false)
+		drop := &downstreamWriteGate{}
 		runUpstreamToClient(
 			context.Background(),
 			newPassthroughTestFrameConn(nil, true),
@@ -121,6 +157,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now(),
 			time.Now,
 			&relayState{},
+			nil,
 			nil,
 			nil,
 			nil,
@@ -137,12 +174,86 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 		require.True(t, sig.graceful)
 	})
 
+	t.Run("failed terminal callback precedes client write failure", func(t *testing.T) {
+		t.Parallel()
+
+		exitCh := make(chan relayExitSignal, 1)
+		drop := &downstreamWriteGate{}
+		turns := make([]RelayTurnResult, 0, 1)
+		runUpstreamToClient(
+			context.Background(),
+			newPassthroughTestFrameConn([]passthroughTestFrame{{
+				msgType: coderws.MessageText,
+				payload: []byte(`{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"context window"}}}`),
+			}}, true),
+			func(_ coderws.MessageType, _ []byte) error { return errors.New("write failed") },
+			time.Now(),
+			time.Now,
+			&relayState{},
+			nil,
+			func(turn RelayTurnResult) { turns = append(turns, turn) },
+			nil,
+			nil,
+			nil,
+			drop,
+			nil,
+			nil,
+			func() {},
+			nil,
+			exitCh,
+		)
+		sig := <-exitCh
+		require.Equal(t, "write_client", sig.stage)
+		require.Len(t, turns, 1)
+		require.Equal(t, "response.failed", turns[0].TerminalEventType)
+		require.Empty(t, turns[0].RequestID)
+	})
+
+	t.Run("pre-write rejection still observes terminal usage", func(t *testing.T) {
+		t.Parallel()
+
+		exitCh := make(chan relayExitSignal, 1)
+		turns := make([]RelayTurnResult, 0, 1)
+		state := &relayState{}
+		state.idlessTurnGeneration.Store(1)
+		runUpstreamToClient(
+			context.Background(),
+			newPassthroughTestFrameConn([]passthroughTestFrame{{
+				msgType: coderws.MessageText,
+				payload: []byte(`{"type":"response.failed","response":{"usage":{"input_tokens":5,"output_tokens":2}}}`),
+			}}, true),
+			func(_ coderws.MessageType, _ []byte) error {
+				t.Fatal("rejected terminal must not be written")
+				return nil
+			},
+			time.Now(),
+			time.Now,
+			state,
+			nil,
+			func(turn RelayTurnResult) { turns = append(turns, turn) },
+			func(_ coderws.MessageType, _ []byte, _ bool) error { return errors.New("rejected") },
+			nil,
+			nil,
+			&downstreamWriteGate{},
+			nil,
+			nil,
+			func() {},
+			nil,
+			exitCh,
+		)
+
+		sig := <-exitCh
+		require.Equal(t, "upstream_message", sig.stage)
+		require.Len(t, turns, 1)
+		require.Equal(t, Usage{InputTokens: 5, OutputTokens: 2}, turns[0].Usage)
+		require.Equal(t, Usage{InputTokens: 5, OutputTokens: 2}, state.usage)
+	})
+
 	t.Run("write client failed", func(t *testing.T) {
 		t.Parallel()
 
 		exitCh := make(chan relayExitSignal, 1)
-		drop := &atomic.Bool{}
-		drop.Store(false)
+		drop := &downstreamWriteGate{}
 		runUpstreamToClient(
 			context.Background(),
 			newPassthroughTestFrameConn([]passthroughTestFrame{
@@ -152,6 +263,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now(),
 			time.Now,
 			&relayState{},
+			nil,
 			nil,
 			nil,
 			nil,
@@ -171,8 +283,8 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 		t.Parallel()
 
 		exitCh := make(chan relayExitSignal, 1)
-		drop := &atomic.Bool{}
-		drop.Store(true)
+		drop := &downstreamWriteGate{}
+		drop.disable()
 		dropped := &atomic.Int64{}
 		runUpstreamToClient(
 			context.Background(),
@@ -186,6 +298,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now(),
 			time.Now,
 			&relayState{},
+			nil,
 			nil,
 			nil,
 			nil,
@@ -221,6 +334,16 @@ func TestRunIdleWatchdog_NoTimeoutWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestWaitRelayExitContext_CancellationDoesNotWaitForWorkerSignal(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	signal, ok := waitRelayExitContext(ctx, make(chan relayExitSignal))
+	require.False(t, ok)
+	require.Equal(t, context.Canceled, signal.err)
+}
+
 func TestHelperFunctionsCoverage(t *testing.T) {
 	t.Parallel()
 
@@ -240,7 +363,6 @@ func TestHelperFunctionsCoverage(t *testing.T) {
 
 	require.True(t, isTokenEvent("response.output_text.delta"))
 	require.True(t, isTokenEvent("response.output_audio.delta"))
-	require.True(t, isTokenEvent("response.completed"))
 	require.False(t, isTokenEvent(""))
 	require.False(t, isTokenEvent("response.created"))
 
@@ -363,14 +485,28 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 	})
 	require.Equal(t, 0, called)
 
-	// 缺少 response_id 时不应触发。
+	// response.failed 不依赖 response_id；请求错误归类必须仍然触发。
+	var failedWithoutID RelayTurnResult
+	emitTurnComplete(func(turn RelayTurnResult) {
+		called++
+		failedWithoutID = turn
+	}, &relayState{requestModel: "gpt-5"}, observedUpstreamEvent{
+		terminal:  true,
+		eventType: "response.failed",
+		payload:   []byte(`{"type":"response.failed","response":{"error":{"code":"context_length_exceeded"}}}`),
+	})
+	require.Equal(t, 1, called)
+	require.Empty(t, failedWithoutID.RequestID)
+	require.Equal(t, "response.failed", failedWithoutID.TerminalEventType)
+
+	// Every recognized terminal spelling, including ID-less completed turns, emits.
 	emitTurnComplete(func(turn RelayTurnResult) {
 		called++
 	}, &relayState{requestModel: "gpt-5"}, observedUpstreamEvent{
 		terminal:  true,
 		eventType: "response.completed",
 	})
-	require.Equal(t, 0, called)
+	require.Equal(t, 2, called)
 
 	// terminal 且 response_id 存在，应该触发；state=nil 时 model 为空串。
 	var got RelayTurnResult
@@ -383,7 +519,7 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 		responseID: "resp_emit",
 		usage:      Usage{InputTokens: 2, OutputTokens: 3},
 	})
-	require.Equal(t, 1, called)
+	require.Equal(t, 3, called)
 	require.Equal(t, "resp_emit", got.RequestID)
 	require.Equal(t, "response.completed", got.TerminalEventType)
 	require.Equal(t, 2, got.Usage.InputTokens)
@@ -408,7 +544,22 @@ func TestIsTokenEventCoverageBranches(t *testing.T) {
 	require.False(t, isTokenEvent("response.output_item.added"))
 	require.True(t, isTokenEvent("response.output_audio.delta"))
 	require.True(t, isTokenEvent("response.output"))
-	require.True(t, isTokenEvent("response.done"))
+}
+
+func TestIsTokenEventRejectsTerminalEvents(t *testing.T) {
+	t.Parallel()
+
+	for _, eventType := range []string{
+		"response.completed",
+		"response.done",
+		"response.failed",
+		"response.incomplete",
+		"response.cancelled",
+		"response.canceled",
+	} {
+		require.False(t, isTokenEvent(eventType), eventType)
+		require.False(t, isTokenEvent(" \t"+eventType+"\n"), eventType+" with whitespace")
+	}
 }
 
 func TestShouldParseUsageTerminalEvents(t *testing.T) {
@@ -455,6 +606,25 @@ func TestRelayTurnTimingHelpersCoverage(t *testing.T) {
 	// 删除不存在键
 	_, ok = openAIWSRelayDeleteTurnTiming(state, "resp_a")
 	require.False(t, ok)
+}
+
+func TestObserveUpstreamMessage_OlderResponseTerminalDoesNotCompleteNewerTurn(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{}
+	state.idlessTurnGeneration.Store(1)
+	observeUpstreamMessage(state, []byte(`{"type":"response.created","response":{"id":"resp_old"}}`), time.Time{}, time.Now, nil)
+	state.idlessTurnGeneration.Store(2)
+
+	observed := observeUpstreamMessage(
+		state,
+		[]byte(`{"type":"response.completed","response":{"id":"resp_old","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		time.Time{},
+		time.Now,
+		nil,
+	)
+	require.True(t, observed.terminal)
+	require.Equal(t, uint64(1), state.completedTurnGeneration.Load())
 }
 
 func TestObserveUpstreamMessage_ResponseIDFallbackPolicy(t *testing.T) {

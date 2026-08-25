@@ -77,7 +77,14 @@ INSERT INTO ops_system_metrics (
   db_conn_waiting,
 
   goroutine_count,
-  concurrency_queue_depth
+  concurrency_queue_depth,
+
+  heap_alloc_mb,
+  heap_sys_mb,
+  gc_num_cycles,
+  gc_total_pause_ms,
+  gc_cpu_fraction,
+  alloc_bytes_per_sec
 ) VALUES (
   $1,$2,$3,$4,
   $5,$6,$7,$8,
@@ -89,7 +96,8 @@ INSERT INTO ops_system_metrics (
   $32,$33,
   $34,$35,
   $36,$37,$38,
-  $39,$40
+  $39,$40,
+  $41,$42,$43,$44,$45,$46
 )`
 
 	_, err := r.db.ExecContext(
@@ -145,6 +153,13 @@ INSERT INTO ops_system_metrics (
 
 		opsNullInt(input.GoroutineCount),
 		opsNullInt(input.ConcurrencyQueueDepth),
+
+		opsNullFloat64(input.HeapAllocMB),
+		opsNullFloat64(input.HeapSysMB),
+		opsNullInt64(input.GCNumCycles),
+		opsNullFloat64(input.GCTotalPauseMs),
+		opsNullFloat64(input.GCCPUFraction),
+		opsNullFloat64(input.AllocBytesPerSec),
 	)
 	return err
 }
@@ -180,7 +195,14 @@ SELECT
 
   goroutine_count,
   concurrency_queue_depth,
-  account_switch_count
+  account_switch_count,
+
+  heap_alloc_mb,
+  heap_sys_mb,
+  gc_num_cycles,
+  gc_total_pause_ms,
+  gc_cpu_fraction,
+  alloc_bytes_per_sec
 FROM ops_system_metrics
 WHERE window_minutes = $1
   AND platform IS NULL
@@ -203,6 +225,12 @@ LIMIT 1`
 	var goroutines sql.NullInt64
 	var queueDepth sql.NullInt64
 	var accountSwitchCount sql.NullInt64
+	var heapAlloc sql.NullFloat64
+	var heapSys sql.NullFloat64
+	var gcCycles sql.NullInt64
+	var gcPause sql.NullFloat64
+	var gcCPU sql.NullFloat64
+	var allocRate sql.NullFloat64
 
 	if err := r.db.QueryRowContext(ctx, q, windowMinutes).Scan(
 		&out.ID,
@@ -222,6 +250,12 @@ LIMIT 1`
 		&goroutines,
 		&queueDepth,
 		&accountSwitchCount,
+		&heapAlloc,
+		&heapSys,
+		&gcCycles,
+		&gcPause,
+		&gcCPU,
+		&allocRate,
 	); err != nil {
 		return nil, err
 	}
@@ -281,6 +315,30 @@ LIMIT 1`
 	if accountSwitchCount.Valid {
 		v := accountSwitchCount.Int64
 		out.AccountSwitchCount = &v
+	}
+	if heapAlloc.Valid {
+		v := heapAlloc.Float64
+		out.HeapAllocMB = &v
+	}
+	if heapSys.Valid {
+		v := heapSys.Float64
+		out.HeapSysMB = &v
+	}
+	if gcCycles.Valid {
+		v := gcCycles.Int64
+		out.GCNumCycles = &v
+	}
+	if gcPause.Valid {
+		v := gcPause.Float64
+		out.GCTotalPauseMs = &v
+	}
+	if gcCPU.Valid {
+		v := gcCPU.Float64
+		out.GCCPUFraction = &v
+	}
+	if allocRate.Valid {
+		v := allocRate.Float64
+		out.AllocBytesPerSec = &v
 	}
 
 	return &out, nil

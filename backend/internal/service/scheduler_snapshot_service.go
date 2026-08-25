@@ -11,12 +11,16 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
 	ErrSchedulerCacheNotReady   = errors.New("scheduler cache not ready")
 	ErrSchedulerFallbackLimited = errors.New("scheduler db fallback limited")
 	errSchedulerBucketLockBusy  = errors.New("scheduler bucket rebuild lock contended")
+	// errSchedulerRebuildRetryPending 表示全量重建处于失败退避窗口内；dirty 消费端
+	// 据此让 Global 项保持挂起，而不是每轮 poll 立即重试执行重建。
+	errSchedulerRebuildRetryPending = errors.New("scheduler rebuild retry pending")
 )
 
 const (
@@ -24,6 +28,14 @@ const (
 	dirtyWorkBatchSize          = 100
 	schedulerBucketRebuildLimit = 30 * time.Second
 	schedulerBucketLockTTL      = schedulerBucketRebuildLimit + 5*time.Second
+	// outboxRebuildRetryBaseDelay/outboxRebuildRetryMaxDelay 控制重建失败后的
+	// 指数退避：5s 起、每次失败翻倍、5min 封顶，防止一秒一轮的 poll 把失败重建
+	// 变成重建失败→请求回源→DB 过载→重建再失败的风暴。
+	outboxRebuildRetryBaseDelay = 5 * time.Second
+	outboxRebuildRetryMaxDelay  = 5 * time.Minute
+
+	// snapshotStatsLogInterval 调度快照 GetSnapshot 命中/未命中观测日志的聚合窗口。
+	snapshotStatsLogInterval = 10 * time.Second
 )
 
 // batchSeenKey tracks which (groupID, platform) bucket sets have already been
@@ -32,6 +44,70 @@ const (
 type batchSeenKey struct {
 	groupID  int64
 	platform string
+}
+
+// schedulerAccountQueryKey 标识一次可跨分桶复用的账号查询。
+type schedulerAccountQueryKey struct {
+	groupID  int64
+	platform string
+}
+
+// 查询结果只在一次 rebuild batch 内，按原始 groupID+platform 复用成功的 single/forced 查询；
+// mixed 与其他模式保持独立。每个桶都用 defer 消费 remaining，最后一个消费者会立即释放结果，
+// 避免把账号切片的生命周期扩大到整轮 full rebuild。
+type schedulerAccountQueryCache struct {
+	remaining          map[schedulerAccountQueryKey]int
+	accounts           map[schedulerAccountQueryKey][]Account
+	snapshotAccountIDs map[schedulerAccountQueryKey][]int64
+}
+
+// schedulerSnapshotAccountIDWriter 是 SchedulerCache 的可选批次优化能力。
+// 首次完整发布成功后返回实际可编码账号 ID；同一查询结果的后续桶只需发布这些 ID，
+// 避免重复序列化并覆盖全局账号缓存。未实现该接口的缓存继续走原 SetSnapshot 路径。
+type schedulerSnapshotAccountIDWriter interface {
+	SetSnapshotAndReturnAccountIDs(ctx context.Context, bucket SchedulerBucket, accounts []Account) ([]int64, error)
+	SetSnapshotByAccountIDs(ctx context.Context, bucket SchedulerBucket, accountIDs []int64) error
+}
+
+func newSchedulerAccountQueryCache(bucketSets ...[]SchedulerBucket) *schedulerAccountQueryCache {
+	queries := &schedulerAccountQueryCache{
+		remaining:          make(map[schedulerAccountQueryKey]int),
+		accounts:           make(map[schedulerAccountQueryKey][]Account),
+		snapshotAccountIDs: make(map[schedulerAccountQueryKey][]int64),
+	}
+	for _, buckets := range bucketSets {
+		for _, bucket := range buckets {
+			if key, ok := schedulerAccountQueryKeyForBucket(bucket); ok {
+				queries.remaining[key]++
+			}
+		}
+	}
+	return queries
+}
+
+func schedulerAccountQueryKeyForBucket(bucket SchedulerBucket) (schedulerAccountQueryKey, bool) {
+	if bucket.Mode != SchedulerModeSingle && bucket.Mode != SchedulerModeForced {
+		return schedulerAccountQueryKey{}, false
+	}
+	return schedulerAccountQueryKey{groupID: bucket.GroupID, platform: bucket.Platform}, true
+}
+
+func (c *schedulerAccountQueryCache) release(bucket SchedulerBucket) {
+	if c == nil {
+		return
+	}
+	key, ok := schedulerAccountQueryKeyForBucket(bucket)
+	if !ok {
+		return
+	}
+	remaining := c.remaining[key] - 1
+	if remaining <= 0 {
+		delete(c.remaining, key)
+		delete(c.accounts, key)
+		delete(c.snapshotAccountIDs, key)
+		return
+	}
+	c.remaining[key] = remaining
 }
 
 type SchedulerSnapshotService struct {
@@ -44,7 +120,7 @@ type SchedulerSnapshotService struct {
 	cfg                     *config.Config
 	stopCh                  chan struct{}
 	stopOnce                sync.Once
-	workerCtx               context.Context
+	workerCtx               context.Context // retained for focused legacy construction compatibility; not used for dirty ownership
 	workerCancel            context.CancelFunc
 	wg                      sync.WaitGroup
 	fallbackLimit           *fallbackLimiter
@@ -54,6 +130,87 @@ type SchedulerSnapshotService struct {
 	dirtyRebuildLatched     bool
 	dirtyListFailures       int
 	dirtyListRebuildLatched bool
+	// 重建失败退避状态：outbox/dirty 触发的全量重建失败后，下一次尝试推迟到
+	// outboxRebuildRetryAt，延迟随 outboxRebuildFailures 指数增长（5s 起、5min 封顶）。
+	outboxRebuildFailures    int
+	outboxRebuildRetryAt     time.Time
+	outboxRebuildRetryReason string
+	// 快照解码缓存：GetSnapshot 每次调用都对整个桶的账号做 JSON 解码
+	// （大账号池下 O(N) 且与请求成功率无关），高频网关请求下是 CPU 主源。
+	// 命中时免解码；版本可用时以 active version 失效为主、TTL 兜底，
+	// 版本不可用时退化为短 TTL（见下方两个 TTL 常量）；调度器对快照账号只读使用。
+	decodeCache sync.Map // bucket.String() -> *snapshotDecodeCacheEntry
+	// snapshotVersionCacheTTL 分桶激活版本的本地读取窗口：解码缓存命中路径在
+	// 窗口内直接复用上次读到的版本，避免每个请求一次 Redis 版本 GET；窗口过期
+	// 后下一次命中才重新读取（每个分桶每秒最多一次版本往返）。0/负值表示每次
+	// 调用都重新读 Redis（测试直接构造结构体时保持旧行为）。
+	snapshotVersionCacheTTL time.Duration
+	// snapshotVersionCache 记录每个分桶最近一次成功的版本读取（仅非空版本）。
+	snapshotVersionCache sync.Map // bucket.String() -> *snapshotVersionCacheEntry
+	// snapshotFallbackGroup 按分桶合并快照 miss 后的 DB 回源：同一时刻一个分桶
+	// 只允许一个请求实际查询数据库并写回快照，其余请求等待其结果。
+	snapshotFallbackGroup singleflight.Group
+	// dirtyRefreshThrottle 限制同一账号的脏刷新频率（见 dirtyAccountRefreshMinInterval）。
+	dirtyRefreshThrottle *accountWriteThrottle
+}
+
+// snapshotDecodeCacheTTL 是版本不可用（接口缺失或版本读取失败）时快照解码缓存
+// 的保留时间。5 秒内的过期由候选 freshness recheck 兜底，不影响正确性。
+const snapshotDecodeCacheTTL = 5 * time.Second
+
+// snapshotDecodeVersionedTTL 是版本可用的快照解码缓存保留时间。重建后 active
+// 版本立即递增使缓存失效，TTL 只是版本丢失时的兜底上限，不再承担主要失效职责。
+const snapshotDecodeVersionedTTL = 30 * time.Second
+
+// snapshotVersionCacheWindow 分桶激活版本的本地缓存窗口。解码缓存命中路径不再
+// 每个请求读一次 Redis 版本：窗口内直接用本地版本判断条目是否仍有效（零往返），
+// 重建导致的版本递增最多滞后一个窗口即被感知并失效本地条目。失效延迟因此
+// 从“立即”放宽为 ≤snapshotVersionCacheWindow，代价是每个分桶每秒最多一次版本
+// GET（而非每个请求一次），且条目 TTL 始终是陈旧性的最终兜底。
+const snapshotVersionCacheWindow = time.Second
+
+type snapshotDecodeCacheEntry struct {
+	accounts []*Account
+	version  string
+	exp      time.Time
+}
+
+// snapshotVersionCacheEntry 记录一次成功的版本读取时间，供解码缓存命中路径
+// 判断是否可直接复用本地版本（窗口内）而非重新向 Redis 读取。
+type snapshotVersionCacheEntry struct {
+	version string
+	readAt  time.Time
+}
+
+// snapshotVersionReader 是可选接口：解码缓存通过它读取分桶激活版本，重建后立即
+// 失效本地条目。cache 未实现时（仅测试 stub 或第三方实现）退化为 TTL 兜底。
+type snapshotVersionReader interface {
+	GetSnapshotVersion(ctx context.Context, bucket SchedulerBucket) (string, error)
+}
+
+// snapshotAccountBatchReader 是可选接口：网关批量刷新候选账号时通过它直接读
+// Redis 快照全量 payload（秒级更新 + 限流状态实时写回），避免逐请求回源 DB。
+// cache 未实现时（仅测试 stub 或第三方实现）由调用方降级 DB 查询。
+type snapshotAccountBatchReader interface {
+	GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error)
+}
+
+// schedulerAccountBatchWriter 是 SchedulerCache 的可选批量写入能力：dirty 工作
+// 消费端把整批脏账号合并成一次 Redis 管线写入，避免逐账号往返。cache 未实现
+// 时（仅测试 stub 或第三方实现）退化为逐账号 SetAccount。
+type schedulerAccountBatchWriter interface {
+	SetAccounts(ctx context.Context, accounts []Account) error
+}
+
+// dirtyAccountRefreshMinInterval 同一账号两次脏刷新之间的最小间隔。1s 轮询下
+// 高频重复脏化的账号（例如批量生命周期变更）最多每秒全字段刷新一次，避免
+// “每轮 poll 都 3 条 SELECT + ~9KB Redis 写入”的放大。
+const dirtyAccountRefreshMinInterval = time.Second
+
+// snapshotStatsReporter 是可选接口：缓存实现时由统计 worker 周期输出
+// GetSnapshot 命中/未命中观测日志；未实现（仅测试 stub）时静默跳过。
+type snapshotStatsReporter interface {
+	LogSnapshotStats()
 }
 
 func NewSchedulerSnapshotService(
@@ -81,17 +238,19 @@ func newSchedulerSnapshotService(
 	}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	return &SchedulerSnapshotService{
-		cache:         cache,
-		outboxRepo:    outboxRepo,
-		dirtyWorkRepo: dirtyWorkRepo,
-		ownershipRepo: ownershipRepo,
-		accountRepo:   accountRepo,
-		groupRepo:     groupRepo,
-		cfg:           cfg,
-		stopCh:        make(chan struct{}),
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
-		fallbackLimit: newFallbackLimiter(maxQPS),
+		cache:                   cache,
+		outboxRepo:              outboxRepo,
+		dirtyWorkRepo:           dirtyWorkRepo,
+		ownershipRepo:           ownershipRepo,
+		accountRepo:             accountRepo,
+		groupRepo:               groupRepo,
+		cfg:                     cfg,
+		stopCh:                  make(chan struct{}),
+		workerCtx:               workerCtx,
+		workerCancel:            workerCancel,
+		fallbackLimit:           newFallbackLimiter(maxQPS),
+		dirtyRefreshThrottle:    newAccountWriteThrottle(dirtyAccountRefreshMinInterval),
+		snapshotVersionCacheTTL: snapshotVersionCacheWindow,
 	}
 }
 
@@ -107,13 +266,6 @@ func (s *SchedulerSnapshotService) Start() {
 	}()
 
 	interval := s.outboxPollInterval()
-	if s.dirtyWorkRepo != nil && s.ownershipRepo != nil && interval > 0 {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.runDirtyWorkWorker(interval)
-		}()
-	}
 	// Keep the legacy worker during producer migration: observational last-used
 	// events are intentionally absent from lifecycle dirty sources.
 	if s.outboxRepo != nil && interval > 0 {
@@ -131,6 +283,32 @@ func (s *SchedulerSnapshotService) Start() {
 			defer s.wg.Done()
 			s.runFullRebuildWorker(fullInterval)
 		}()
+	}
+
+	// GetSnapshot 命中/未命中观测日志独立于重建与消费 worker，10s 一个窗口聚合输出。
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runSnapshotStatsWorker()
+	}()
+}
+
+// runSnapshotStatsWorker 周期输出调度快照 GetSnapshot 命中/未命中观测日志。
+// cache 未实现 snapshotStatsReporter（仅测试 stub）时立即返回。
+func (s *SchedulerSnapshotService) runSnapshotStatsWorker() {
+	reporter, ok := s.cache.(snapshotStatsReporter)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(snapshotStatsLogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			reporter.LogSnapshotStats()
+		case <-s.stopCh:
+			return
+		}
 	}
 }
 
@@ -151,43 +329,150 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
+	if err := ctx.Err(); err != nil {
+		return nil, useMixed, err
+	}
 
 	if s.cache != nil {
+		cacheKey := bucket.String()
+		// 解码缓存命中路径不再每个请求先读一次 Redis 激活版本：条目在存储时已
+		// 用当时的 active 版本校验，陈旧性由条目 TTL 兜底（见 snapshotDecodeCacheTTL
+		// / snapshotDecodeVersionedTTL）；重建导致的版本递增经本地版本缓存窗口
+		// 感知，最多滞后 snapshotVersionCacheWindow 即失效重取，窗口内命中为
+		// 纯本地判断（零 Redis 往返）。
+		version := ""
+		if entry, ok := s.decodeCache.Load(cacheKey); ok {
+			if e, ok := entry.(*snapshotDecodeCacheEntry); ok && time.Now().Before(e.exp) {
+				if v, fresh := s.cachedSnapshotVersion(cacheKey, time.Now()); fresh {
+					if e.version == v {
+						return derefAccounts(e.accounts), useMixed, nil
+					}
+					version = v
+				} else if v := s.readSnapshotVersion(ctx, bucket); v != "" {
+					s.storeSnapshotVersion(cacheKey, v, time.Now())
+					version = v
+					if e.version == v {
+						return derefAccounts(e.accounts), useMixed, nil
+					}
+				} else if e.version == "" {
+					// 版本不可读时只允许命中无版本条目：带版本号的条目可能
+					// 对应重建前的旧账号集合，命中会穿透版本失效逻辑。
+					return derefAccounts(e.accounts), useMixed, nil
+				}
+			}
+		}
+		// 解码缓存未命中（或版本不一致）才读激活版本：重建后 active 版本立即
+		// 递增，据此失效本地解码缓存并选择条目 TTL。版本不可用（接口缺失/
+		// 读取失败）时退化为纯 TTL 兜底。
+		if version == "" {
+			version = s.readSnapshotVersion(ctx, bucket)
+			if version != "" {
+				s.storeSnapshotVersion(cacheKey, version, time.Now())
+			}
+		}
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, useMixed, ctxErr
+		}
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
+			ttl := snapshotDecodeCacheTTL
+			if version != "" {
+				ttl = snapshotDecodeVersionedTTL
+			}
+			s.decodeCache.Store(cacheKey, &snapshotDecodeCacheEntry{
+				accounts: cached,
+				version:  version,
+				exp:      time.Now().Add(ttl),
+			})
 			return derefAccounts(cached), useMixed, nil
 		}
 	}
 
-	if err := s.guardFallback(ctx); err != nil {
-		return nil, useMixed, err
-	}
+	// 快照 miss 后的 DB 回源是全桶共享的慢路径：按分桶 singleflight 合并并发
+	// 请求，同一时刻只有一个请求实际执行 DB 查询 + SetSnapshot 写回，其余请求
+	// 等待同一结果（回源失败时共享同一错误，下一请求自然重试）。leader 的 DB
+	// 工作使用脱离调用方取消的上下文，避免首个请求断连把整批等待者一起拖垮；
+	// 执行时长由 fallbackQueryContext 施加的硬性上限限制。
+	value, err, _ := s.snapshotFallbackGroup.Do(bucket.String(), func() (any, error) {
+		if err := s.guardFallback(ctx); err != nil {
+			return nil, err
+		}
+		fallbackCtx, cancel := s.fallbackQueryContext(ctx)
+		defer cancel()
 
-	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
-	defer cancel()
+		accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+		if err != nil {
+			return nil, err
+		}
 
-	accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+		if s.cache != nil {
+			if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
+				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
+			}
+		}
+
+		return accounts, nil
+	})
 	if err != nil {
 		return nil, useMixed, err
 	}
+	accounts, _ := value.([]Account)
+	return accounts, useMixed, nil
+}
 
-	if s.cache != nil {
-		if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
+// cachedSnapshotVersion 返回本地版本缓存中窗口内的版本；ttl<=0 时总是返回
+// fresh=false（每次都重新读 Redis，测试直接构造结构体时保持旧行为）。
+func (s *SchedulerSnapshotService) cachedSnapshotVersion(cacheKey string, now time.Time) (string, bool) {
+	if s.snapshotVersionCacheTTL <= 0 {
+		return "", false
+	}
+	if raw, ok := s.snapshotVersionCache.Load(cacheKey); ok {
+		if e, ok := raw.(*snapshotVersionCacheEntry); ok && e.version != "" && now.Sub(e.readAt) < s.snapshotVersionCacheTTL {
+			return e.version, true
 		}
 	}
+	return "", false
+}
 
-	return accounts, useMixed, nil
+// storeSnapshotVersion 记录一次成功的版本读取；空版本与窗口关闭（ttl<=0）时
+// 不缓存，保证本地缓存只含“窗口内可复用的真实版本”。
+func (s *SchedulerSnapshotService) storeSnapshotVersion(cacheKey, version string, now time.Time) {
+	if s.snapshotVersionCacheTTL <= 0 || version == "" {
+		return
+	}
+	s.snapshotVersionCache.Store(cacheKey, &snapshotVersionCacheEntry{version: version, readAt: now})
+}
+
+// readSnapshotVersion 通过可选接口读取分桶激活版本；cache 未实现
+// snapshotVersionReader 或读取失败时返回空串，由调用方退化为 TTL 兜底。
+// 读取失败只记 debug：随后 GetSnapshot 失败会记录完整错误，避免重复告警。
+func (s *SchedulerSnapshotService) readSnapshotVersion(ctx context.Context, bucket SchedulerBucket) string {
+	reader, ok := s.cache.(snapshotVersionReader)
+	if !ok {
+		return ""
+	}
+	version, err := reader.GetSnapshotVersion(ctx, bucket)
+	if err != nil {
+		slog.Debug("[Scheduler] snapshot version read failed", "bucket", bucket.String(), "err", err)
+		return ""
+	}
+	return version
 }
 
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
 	if accountID <= 0 {
 		return nil, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s.cache != nil {
 		account, err := s.cache.GetAccount(ctx, accountID)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] account cache read failed: id=%d err=%v", accountID, err)
 		} else if account != nil {
@@ -201,6 +486,20 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
 	defer cancel()
 	return s.accountRepo.GetByID(fallbackCtx, accountID)
+}
+
+// GetSchedulableAccountsByIDs 从快照批量读取账号调度元数据（meta payload）；
+// 缺失的 ID 不在返回 map 中（与“未在刷新 map 中视为已删除”的调用方语义一致）。
+// cache 缺失或未实现批量读（可选接口）时返回错误，由调用方降级 DB 查询。
+func (s *SchedulerSnapshotService) GetSchedulableAccountsByIDs(ctx context.Context, ids []int64) (map[int64]*Account, error) {
+	if s == nil || s.cache == nil {
+		return nil, ErrSchedulerCacheNotReady
+	}
+	reader, ok := s.cache.(snapshotAccountBatchReader)
+	if !ok {
+		return nil, ErrSchedulerCacheNotReady
+	}
+	return reader.GetSchedulableAccountsByIDs(ctx, ids)
 }
 
 // GetGroupByID 获取分组信息（供调度器使用）
@@ -241,111 +540,65 @@ func (s *SchedulerSnapshotService) runInitialRebuild() {
 	}
 }
 
-func (s *SchedulerSnapshotService) runDirtyWorkWorker(interval time.Duration) {
-	if s.dirtyWorkRepo == nil || s.ownershipRepo == nil {
-		return
-	}
-	if interval <= 0 {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		if s.workerCtx.Err() != nil {
-			return
-		}
-		ownership, acquired, err := s.ownershipRepo.TryAcquire(s.workerCtx)
-		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] ownership acquisition failed: %v", err)
-			}
-		} else if acquired {
-			s.consumeDirtyWork(ownership, interval)
-			if err := ownership.Close(); err != nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] ownership release failed: %v", err)
-			}
-		}
-
-		select {
-		case <-ticker.C:
-		case <-s.workerCtx.Done():
-			return
-		}
-	}
+type SchedulerDirtyWorkResult struct {
+	Work SchedulerDirtyWork
+	Err  error
 }
 
-func (s *SchedulerSnapshotService) consumeDirtyWork(ownership SchedulerOwnership, interval time.Duration) {
-	if ownership == nil {
-		return
-	}
-	if interval <= 0 {
-		interval = time.Second
-	}
-	consumeCtx, cancel := context.WithCancel(ownership.Context())
-	stopWorkerCancel := context.AfterFunc(s.workerCtx, cancel)
-	defer func() {
-		stopWorkerCancel()
-		cancel()
-	}()
+type SchedulerSnapshotDirtyProcessor interface {
+	ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult
+}
 
-	poll := func() {
-		for range dirtyWorkBatchSize {
-			promoted, err := s.dirtyWorkRepo.Promote(consumeCtx, ownership, dirtyWorkBatchSize)
-			if err != nil {
-				if consumeCtx.Err() == nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty source promotion failed: %v", err)
-				}
-				return
-			}
-			if promoted == 0 {
-				break
-			}
-		}
+// ApplyDirtyWorkBatch applies only snapshot/cache effects. Dirty ownership,
+// repository failure state, publication, and acknowledgement belong to the
+// runtime-owned scheduler support publisher.
+func (s *SchedulerSnapshotService) RecordDirtyWorkListFailure(ctx context.Context) {
+	s.recordDirtyListFailure(ctx)
+}
 
-		work, err := s.dirtyWorkRepo.List(consumeCtx, dirtyWorkBatchSize)
-		if err != nil {
-			if consumeCtx.Err() == nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work list failed: %v", err)
-				s.recordDirtyListFailure(consumeCtx)
+func (s *SchedulerSnapshotService) ClearDirtyWorkListFailure() {
+	s.clearDirtyListFailure()
+}
+
+func (s *SchedulerSnapshotService) CheckDirtyWorkLag(ctx context.Context) {
+	s.checkDirtyWorkLag(ctx)
+}
+
+func (s *SchedulerSnapshotService) ApplyDirtyWorkBatch(ctx context.Context, work []SchedulerDirtyWork) []SchedulerDirtyWorkResult {
+	results := make([]SchedulerDirtyWorkResult, len(work))
+	accountWork := make([]SchedulerDirtyWork, 0, len(work))
+	accountIndexes := make(map[int64][]int, len(work))
+	for i, item := range work {
+		results[i].Work = item
+		if err := ctx.Err(); err != nil {
+			for j := i; j < len(results); j++ {
+				results[j] = SchedulerDirtyWorkResult{Work: work[j], Err: err}
 			}
-			return
+			break
 		}
-		s.clearDirtyListFailure()
-		for _, item := range work {
-			if consumeCtx.Err() != nil {
-				return
+		if item.Kind == SchedulerDirtyWorkAccount {
+			if _, seen := accountIndexes[item.EntityID]; !seen {
+				accountWork = append(accountWork, item)
 			}
-			err := s.handleDirtyWork(consumeCtx, item)
-			if err != nil {
-				recorded, recordErr := s.dirtyWorkRepo.RecordFailure(consumeCtx, ownership, item, err)
-				if recordErr != nil && consumeCtx.Err() == nil {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failure recording failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, recordErr)
-				} else if recorded {
-					logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work failed: kind=%d entity=%d", item.Kind, item.EntityID)
-				}
-				continue
-			}
-			if _, err := s.dirtyWorkRepo.Acknowledge(consumeCtx, ownership, item); err != nil && consumeCtx.Err() == nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work acknowledgement failed: kind=%d entity=%d err=%v", item.Kind, item.EntityID, err)
-			}
+			accountIndexes[item.EntityID] = append(accountIndexes[item.EntityID], i)
+			continue
 		}
-		s.checkDirtyWorkLag(consumeCtx)
+		results[i].Err = s.handleDirtyWork(ctx, item)
 	}
-
-	poll()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			poll()
-		case <-ownership.Lost():
-			return
-		case <-s.workerCtx.Done():
-			return
+	if len(accountWork) == 0 || ctx.Err() != nil {
+		return results
+	}
+	accountIDs := make([]int64, len(accountWork))
+	for i := range accountWork {
+		accountIDs[i] = accountWork[i].EntityID
+	}
+	accountResults := s.refreshDirtyAccounts(ctx, accountIDs)
+	for i, item := range accountWork {
+		for _, resultIndex := range accountIndexes[item.EntityID] {
+			results[resultIndex].Err = accountResults[i]
 		}
 	}
+	return results
 }
 
 func (s *SchedulerSnapshotService) handleDirtyWork(ctx context.Context, work SchedulerDirtyWork) error {
@@ -358,7 +611,13 @@ func (s *SchedulerSnapshotService) handleDirtyWork(ctx context.Context, work Sch
 		}
 		return s.rebuildByGroupIDs(ctx, []int64{work.EntityID}, "dirty_group", nil)
 	case SchedulerDirtyWorkGlobal:
-		return s.triggerFullRebuildContext(ctx, "dirty_global")
+		// 全量重建失败后进入指数退避窗口；窗口内不实际执行重建（返回错误让脏项
+		// 保持挂起，DB 端 retry_at 继续延长其可见时间），到期后自动重试。这防止
+		// 重建失败→请求回源→DB 过载→重建再失败的死循环。
+		if s.rebuildRetryPending(time.Now()) {
+			return errSchedulerRebuildRetryPending
+		}
+		return s.runRebuildWithRetryBackoff(ctx, "dirty_global")
 	default:
 		return errors.New("unknown scheduler dirty work kind")
 	}
@@ -382,6 +641,106 @@ func (s *SchedulerSnapshotService) refreshDirtyAccount(ctx context.Context, acco
 		return s.cache.SetAccount(ctx, account)
 	}
 	return nil
+}
+
+// refreshDirtyAccounts 批量刷新脏账号：一次 GetByIDs 全字段读取 + 一次批量
+// 缓存写入（缓存实现 schedulerAccountBatchWriter 时），替代逐账号
+// GetByID×3 + 逐账号 Redis 往返。返回与输入等长的错误切片（nil 表示成功），
+// 单个账号的失败（含缺失删除、缓存写入失败）不影响其他账号。
+//
+// 最小刷新间隔内的重复脏化直接视为成功：缓存最多落后 dirtyAccountRefreshMinInterval，
+// 这是节流策略接受的语义（失败项未被确认，下一轮在间隔到期后重试）。
+func (s *SchedulerSnapshotService) refreshDirtyAccounts(ctx context.Context, ids []int64) []error {
+	results := make([]error, len(ids))
+	if len(ids) == 0 {
+		return results
+	}
+	if s.accountRepo == nil {
+		err := errors.New("account repository unavailable")
+		for i := range results {
+			results[i] = err
+		}
+		return results
+	}
+
+	// 去重并保留首次出现顺序；同一账号的所有输入共享实际刷新结果。
+	uniqueIDs := make([]int64, 0, len(ids))
+	indexesByID := make(map[int64][]int, len(ids))
+	now := time.Now()
+	for i, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		indexesByID[id] = append(indexesByID[id], i)
+		if len(indexesByID[id]) > 1 {
+			continue
+		}
+		if s.dirtyRefreshThrottle != nil && !s.dirtyRefreshThrottle.Allow(id, now) {
+			continue
+		}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return results
+	}
+
+	setResult := func(id int64, err error) {
+		for _, index := range indexesByID[id] {
+			results[index] = err
+		}
+	}
+	accounts, err := s.accountRepo.GetByIDs(ctx, uniqueIDs)
+	if err != nil {
+		for _, id := range uniqueIDs {
+			setResult(id, err)
+		}
+		return results
+	}
+
+	if s.cache == nil {
+		return results
+	}
+
+	foundByID := make(map[int64]Account, len(accounts))
+	found := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil || account.ID <= 0 {
+			continue
+		}
+		if _, ok := indexesByID[account.ID]; !ok {
+			continue
+		}
+		foundByID[account.ID] = *account
+		found = append(found, *account)
+	}
+
+	// 缺失账号只做删除；其余账号合并为一次批量写入（可选接口，未实现则逐账号
+	// SetAccount，逐账号记录错误）。
+	batchWrite := false
+	var batchErr error
+	if writer, ok := s.cache.(schedulerAccountBatchWriter); ok {
+		batchWrite = true
+		batchErr = writer.SetAccounts(ctx, found)
+	} else {
+		for _, account := range found {
+			if err := s.cache.SetAccount(ctx, &account); err != nil {
+				setResult(account.ID, err)
+			}
+		}
+	}
+
+	for _, id := range uniqueIDs {
+		if _, exists := foundByID[id]; !exists {
+			if err := s.cache.DeleteAccount(ctx, id); err != nil {
+				setResult(id, err)
+			}
+			continue
+		}
+		if batchWrite {
+			setResult(id, batchErr)
+		}
+	}
+	return results
 }
 
 func (s *SchedulerSnapshotService) runOutboxWorker(interval time.Duration) {
@@ -699,7 +1058,7 @@ func (s *SchedulerSnapshotService) rebuildBucketsForPlatform(ctx context.Context
 	if platform == "" {
 		return nil
 	}
-	var firstErr error
+	buckets := make([]SchedulerBucket, 0, len(groupIDs)*3)
 	for _, gid := range groupIDs {
 		// Within a single poll batch, skip (groupID, platform) pairs that were
 		// already rebuilt. The first rebuild loads fresh DB data for all accounts
@@ -712,32 +1071,32 @@ func (s *SchedulerSnapshotService) rebuildBucketsForPlatform(ctx context.Context
 			}
 			seen[key] = struct{}{}
 		}
-		if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeSingle}, reason); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced}, reason); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeSingle})
+		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced})
 		if platform == PlatformAnthropic || platform == PlatformGemini {
-			if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed}, reason); err != nil && firstErr == nil {
-				firstErr = err
-			}
+			buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed})
 		}
 	}
-	return firstErr
+	return s.rebuildBuckets(ctx, buckets, reason)
 }
 
 func (s *SchedulerSnapshotService) rebuildBuckets(ctx context.Context, buckets []SchedulerBucket, reason string) error {
+	queries := newSchedulerAccountQueryCache(buckets)
 	var firstErr error
 	for _, bucket := range buckets {
-		if err := s.rebuildBucket(ctx, bucket, reason); err != nil && firstErr == nil {
+		if err := s.rebuildBucketWithQueryCache(ctx, bucket, reason, queries); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket SchedulerBucket, reason string) error {
+func (s *SchedulerSnapshotService) rebuildBucketWithQueryCache(ctx context.Context, bucket SchedulerBucket, reason string, queries *schedulerAccountQueryCache) error {
+	if queries != nil {
+		// 无论本次重建是否成功，都消费一次 remaining；最后一个消费者立即释放
+		// 账号切片与可复用 ID，避免把结果保留到整轮 rebuild 结束。
+		defer queries.release(bucket)
+	}
 	if s.cache == nil {
 		return ErrSchedulerCacheNotReady
 	}
@@ -759,16 +1118,68 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 	rebuildCtx, cancel := context.WithTimeout(ctx, schedulerBucketRebuildLimit)
 	defer cancel()
 
-	accounts, err := s.loadAccountsFromDB(rebuildCtx, bucket, bucket.Mode == SchedulerModeMixed)
+	accounts, err := s.loadAccountsForRebuild(rebuildCtx, bucket, queries)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
-	if err := s.cache.SetSnapshot(rebuildCtx, bucket, accounts); err != nil {
+	if err := s.setRebuildSnapshot(rebuildCtx, bucket, accounts, queries); err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
 	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts))
+	return nil
+}
+
+// loadAccountsForRebuild 读取 bucket 的账号集；single/forced 桶在同一重建批次内
+// 共享一次数据库查询。mixed 与其他模式不可复用，直接走原查询路径。
+func (s *SchedulerSnapshotService) loadAccountsForRebuild(ctx context.Context, bucket SchedulerBucket, queries *schedulerAccountQueryCache) ([]Account, error) {
+	key, cacheable := schedulerAccountQueryKeyForBucket(bucket)
+	if queries == nil || !cacheable {
+		return s.loadAccountsFromDB(ctx, bucket, bucket.Mode == SchedulerModeMixed)
+	}
+
+	if accounts, ok := queries.accounts[key]; ok {
+		return accounts, nil
+	}
+	if queries.remaining[key] <= 1 {
+		// 最后一个消费者直接查询，避免为无人再消费的结果保留切片。
+		return s.loadAccountsFromDB(ctx, bucket, false)
+	}
+	accounts, err := s.loadAccountsFromDB(ctx, bucket, false)
+	if err != nil {
+		return nil, err
+	}
+	queries.accounts[key] = accounts
+	return accounts, nil
+}
+
+// setRebuildSnapshot 发布 bucket 快照；缓存实现了 schedulerSnapshotAccountIDWriter
+// 且该桶的查询可复用时，首个消费者完整发布并登记实际写入的账号 ID，后续桶只发布
+// ID（省略重复的账号序列化与全局键写入），最后一个消费者回到原 SetSnapshot。
+func (s *SchedulerSnapshotService) setRebuildSnapshot(ctx context.Context, bucket SchedulerBucket, accounts []Account, queries *schedulerAccountQueryCache) error {
+	writer, ok := s.cache.(schedulerSnapshotAccountIDWriter)
+	key, reusable := schedulerAccountQueryKeyForBucket(bucket)
+	if !ok || queries == nil || !reusable {
+		return s.cache.SetSnapshot(ctx, bucket, accounts)
+	}
+
+	if accountIDs, exists := queries.snapshotAccountIDs[key]; exists {
+		return writer.SetSnapshotByAccountIDs(ctx, bucket, accountIDs)
+	}
+	if queries.remaining[key] <= 1 {
+		return s.cache.SetSnapshot(ctx, bucket, accounts)
+	}
+
+	accountIDs, err := writer.SetSnapshotAndReturnAccountIDs(ctx, bucket, accounts)
+	if err != nil {
+		return err
+	}
+	if queries.remaining[key] > 1 {
+		// 必须保存实际成功编码并写入的有序 ID，不能从原账号切片重新推导；
+		// 否则不可编码账号会只出现在后续桶中，破坏两个快照的成员一致性。
+		queries.snapshotAccountIDs[key] = accountIDs
+	}
 	return nil
 }
 
@@ -878,6 +1289,10 @@ func (s *SchedulerSnapshotService) checkDirtyWorkLag(ctx context.Context) {
 	if !degraded {
 		s.dirtyLagFailures = 0
 		s.dirtyRebuildLatched = false
+		// 条件恢复后清除重建失败退避状态，避免旧失败污染下一轮退化场景。
+		s.outboxRebuildFailures = 0
+		s.outboxRebuildRetryAt = time.Time{}
+		s.outboxRebuildRetryReason = ""
 		s.lagMu.Unlock()
 		return
 	}
@@ -910,6 +1325,45 @@ func (s *SchedulerSnapshotService) checkDirtyWorkLag(ctx context.Context) {
 	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] dirty work degraded rebuild requested: lag=%ds pending=%d failed=%d", lagSeconds, stats.Count, stats.FailedCount)
 }
 
+// runRebuildWithRetryBackoff 执行一次全量重建并登记退避状态：成功清除失败计数与
+// 重试时间，失败按指数退避（5s 起，5min 封顶）推迟下一次尝试。所有 outbox/dirty
+// 触发的重建都经由这里，失败后不会在下一轮 poll 立即重试，避免重建失败→请求
+// 回源 DB→DB 过载→重建再失败的死循环。
+func (s *SchedulerSnapshotService) runRebuildWithRetryBackoff(ctx context.Context, reason string) error {
+	err := s.triggerFullRebuildContext(ctx, reason)
+	s.lagMu.Lock()
+	if err == nil {
+		s.outboxRebuildFailures = 0
+		s.outboxRebuildRetryAt = time.Time{}
+		s.outboxRebuildRetryReason = ""
+	} else {
+		s.outboxRebuildFailures++
+		s.outboxRebuildRetryAt = time.Now().Add(outboxRebuildRetryDelay(s.outboxRebuildFailures))
+		s.outboxRebuildRetryReason = reason
+	}
+	s.lagMu.Unlock()
+	return err
+}
+
+// rebuildRetryPending 报告全量重建是否处于失败退避窗口内。
+func (s *SchedulerSnapshotService) rebuildRetryPending(now time.Time) bool {
+	s.lagMu.Lock()
+	defer s.lagMu.Unlock()
+	return !s.outboxRebuildRetryAt.IsZero() && now.Before(s.outboxRebuildRetryAt)
+}
+
+// outboxRebuildRetryDelay 计算第 failures 次失败后的退避延迟：5s 起翻倍，封顶 5min。
+func outboxRebuildRetryDelay(failures int) time.Duration {
+	delay := outboxRebuildRetryBaseDelay
+	for i := 1; i < failures && delay < outboxRebuildRetryMaxDelay; i++ {
+		delay *= 2
+		if delay >= outboxRebuildRetryMaxDelay {
+			return outboxRebuildRetryMaxDelay
+		}
+	}
+	return delay
+}
+
 func (s *SchedulerSnapshotService) checkOutboxLag(ctx context.Context, oldest SchedulerOutboxEvent, watermark int64) {
 	if oldest.CreatedAt.IsZero() || s.cfg == nil {
 		return
@@ -920,40 +1374,85 @@ func (s *SchedulerSnapshotService) checkOutboxLag(ctx context.Context, oldest Sc
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox lag warning: %ds", lagSeconds)
 	}
 
-	if s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 && int(lag.Seconds()) >= s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds {
-		s.lagMu.Lock()
-		s.lagFailures++
-		failures := s.lagFailures
-		s.lagMu.Unlock()
-
-		if failures >= s.cfg.Gateway.Scheduling.OutboxLagRebuildFailures {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox lag rebuild triggered: lag=%s failures=%d", lag, failures)
-			s.lagMu.Lock()
-			s.lagFailures = 0
-			s.lagMu.Unlock()
-			if err := s.triggerFullRebuild("outbox_lag"); err != nil {
-				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox lag rebuild failed: %v", err)
-			}
-		}
-	} else {
-		s.lagMu.Lock()
-		s.lagFailures = 0
-		s.lagMu.Unlock()
-	}
+	lagDegraded := s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 && int(lag.Seconds()) >= s.cfg.Gateway.Scheduling.OutboxLagRebuildSeconds
 
 	threshold := s.cfg.Gateway.Scheduling.OutboxBacklogRebuildRows
-	if threshold <= 0 || s.outboxRepo == nil {
-		return
-	}
-	maxID, err := s.outboxRepo.MaxID(ctx)
-	if err != nil {
-		return
-	}
-	if maxID-watermark >= int64(threshold) {
-		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox backlog rebuild triggered: backlog=%d", maxID-watermark)
-		if err := s.triggerFullRebuild("outbox_backlog"); err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox backlog rebuild failed: %v", err)
+	backlogDegraded := false
+	var backlog int64
+	if threshold > 0 && s.outboxRepo != nil {
+		maxID, err := s.outboxRepo.MaxID(ctx)
+		if err != nil {
+			// MaxID 失败只视为 backlog 未退化；lag 决策独立继续，避免单次读失败
+			// 同时吞掉 lag 的重建触发。
+			backlogDegraded = false
+		} else {
+			backlog = maxID - watermark
+			backlogDegraded = backlog >= int64(threshold)
 		}
+	}
+
+	now := time.Now()
+	s.lagMu.Lock()
+	if !lagDegraded && !backlogDegraded {
+		s.lagFailures = 0
+		s.outboxRebuildFailures = 0
+		s.outboxRebuildRetryAt = time.Time{}
+		s.outboxRebuildRetryReason = ""
+		s.lagMu.Unlock()
+		return
+	}
+
+	// 退避原因对应的退化条件已消失时，旧的失败状态不再有意义，立即清除；
+	// 否则会永远压住下一次触发（例如 backlog 恢复后残留的 outbox_backlog 退避）。
+	if s.outboxRebuildRetryReason != "" {
+		retryReasonActive := (s.outboxRebuildRetryReason == "outbox_lag" && lagDegraded) ||
+			(s.outboxRebuildRetryReason == "outbox_backlog" && backlogDegraded)
+		if !retryReasonActive {
+			s.outboxRebuildFailures = 0
+			s.outboxRebuildRetryAt = time.Time{}
+			s.outboxRebuildRetryReason = ""
+		}
+	}
+
+	// 上一次 lag 重建失败后处于退避窗口内时，不再累计 lag 失败计数；
+	// 退避到期后由 retryDue 直接触发下一次重建。
+	lagRetryPending := s.outboxRebuildRetryReason == "outbox_lag" && !s.outboxRebuildRetryAt.IsZero()
+	if lagDegraded && !lagRetryPending {
+		s.lagFailures++
+	}
+	failures := s.lagFailures
+	lagReady := lagDegraded && failures >= s.cfg.Gateway.Scheduling.OutboxLagRebuildFailures
+	retryDue := !s.outboxRebuildRetryAt.IsZero() && !now.Before(s.outboxRebuildRetryAt)
+
+	reason := ""
+	switch {
+	case lagReady && s.outboxRebuildRetryReason != "outbox_lag":
+		// lag 就绪可抢占挂起的 backlog 退避：lag 反映最新消费进度，优先重建。
+		if s.outboxRebuildRetryReason != "" {
+			s.outboxRebuildFailures = 0
+			s.outboxRebuildRetryAt = time.Time{}
+			s.outboxRebuildRetryReason = ""
+		}
+		reason = "outbox_lag"
+	case retryDue && s.outboxRebuildRetryReason == "outbox_lag" && lagDegraded:
+		reason = "outbox_lag"
+	case backlogDegraded && (s.outboxRebuildRetryReason == "" || (retryDue && s.outboxRebuildRetryReason == "outbox_backlog")):
+		reason = "outbox_backlog"
+	}
+	if reason != "" {
+		s.lagFailures = 0
+	}
+	s.lagMu.Unlock()
+
+	if reason == "" {
+		return
+	}
+
+	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] %s rebuild triggered: lag=%s failures=%d backlog=%d", reason, lag, failures, backlog)
+	// 重建独立于 poll 的 10s 超时运行（沿用原实现传入 Background），
+	// 避免 poll 上下文过期把最长 30s 的重建提前中断。
+	if err := s.runRebuildWithRetryBackoff(context.Background(), reason); err != nil {
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] %s rebuild failed: %v", reason, err)
 	}
 }
 
@@ -1060,6 +1559,19 @@ func (s *SchedulerSnapshotService) guardFallback(ctx context.Context) error {
 		return ErrSchedulerFallbackLimited
 	}
 	return ErrSchedulerCacheNotReady
+}
+
+// fallbackQueryContext 构造 singleflight leader 的回源查询上下文：脱离调用方
+// 取消（leader 的 DB 工作不随首个请求断连中断），并施加硬性执行上限——
+// db_fallback_timeout_seconds 未配置（生产默认 0）时也必须兜底有限，否则 DB
+// 挂起会让 leader 无限阻塞，整桶 singleflight 等待者一起卡死。
+func (s *SchedulerSnapshotService) fallbackQueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	bounded, boundedCancel := context.WithTimeout(context.WithoutCancel(ctx), schedulerBucketRebuildLimit)
+	fallbackCtx, fallbackCancel := s.withFallbackTimeout(bounded)
+	return fallbackCtx, func() {
+		boundedCancel()
+		fallbackCancel()
+	}
 }
 
 func (s *SchedulerSnapshotService) withFallbackTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

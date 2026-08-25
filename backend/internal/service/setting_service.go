@@ -143,8 +143,9 @@ type cachedOpenAIQuotaAutoPauseSettings struct {
 }
 
 type cachedOpenAIOAuth429DynamicSettings struct {
-	settings  OpenAIOAuth429DynamicSettings
-	expiresAt int64
+	settings   OpenAIOAuth429DynamicSettings
+	byPlanType map[string]OpenAIOAuth429DynamicPolicy
+	expiresAt  int64
 }
 
 const openAICodexUserAgentCacheTTL = 60 * time.Second
@@ -776,7 +777,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyBalanceLowNotifyRechargeURL,
 		SettingKeyAccountQuotaNotifyEnabled,
 		SettingKeyChannelMonitorEnabled,
+		SettingKeyChannelMonitorMode,
 		SettingKeyChannelMonitorDefaultIntervalSeconds,
+		SettingKeyChannelMonitorHideThroughput,
 		SettingKeyAvailableChannelsEnabled,
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
@@ -886,7 +889,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		BalanceLowNotifyRechargeURL:      settings[SettingKeyBalanceLowNotifyRechargeURL],
 
 		ChannelMonitorEnabled:                !isFalseSettingValue(settings[SettingKeyChannelMonitorEnabled]),
+		ChannelMonitorMode:                   normalizeChannelMonitorMode(settings[SettingKeyChannelMonitorMode]),
 		ChannelMonitorDefaultIntervalSeconds: parseChannelMonitorInterval(settings[SettingKeyChannelMonitorDefaultIntervalSeconds]),
+		ChannelMonitorHideThroughput:         !isFalseSettingValue(settings[SettingKeyChannelMonitorHideThroughput]),
 
 		AvailableChannelsEnabled: settings[SettingKeyAvailableChannelsEnabled] == "true",
 
@@ -904,7 +909,19 @@ const (
 	channelMonitorIntervalMin      = 15
 	channelMonitorIntervalMax      = 3600
 	channelMonitorIntervalFallback = 60
+	defaultChannelMonitorMode      = ChannelMonitorModeV1
 )
+
+func normalizeChannelMonitorMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case ChannelMonitorModeV2:
+		return ChannelMonitorModeV2
+	case ChannelMonitorModeV1, "":
+		return ChannelMonitorModeV1
+	default:
+		return defaultChannelMonitorMode
+	}
+}
 
 // parseChannelMonitorInterval parses the stored string and clamps to [15, 3600].
 // Empty / invalid input falls back to channelMonitorIntervalFallback.
@@ -930,26 +947,48 @@ func clampChannelMonitorInterval(v int) int {
 	return v
 }
 
-// ChannelMonitorRuntime is the lightweight view of the channel monitor feature
-// consumed by the runner and user-facing handlers.
+// ChannelMonitorRuntime is the lightweight view consumed by both exclusive monitor modes.
 type ChannelMonitorRuntime struct {
 	Enabled                bool
+	Mode                   string
 	DefaultIntervalSeconds int
+	HideThroughput         bool
 }
 
-// GetChannelMonitorRuntime reads the channel monitor feature flags directly from
-// the settings store. Fail-open: on error returns Enabled=true with the default interval.
+func (r ChannelMonitorRuntime) ActiveProbesAllowed() bool {
+	return r.Enabled && r.Mode == ChannelMonitorModeV1
+}
+
+func (r ChannelMonitorRuntime) PassiveAggregationAllowed() bool {
+	return r.Enabled && r.Mode == ChannelMonitorModeV2
+}
+
+// GetChannelMonitorRuntime reads the channel monitor flags directly from the settings store.
+// Errors preserve V1 behavior but fail closed for V2 and throughput privacy.
 func (s *SettingService) GetChannelMonitorRuntime(ctx context.Context) ChannelMonitorRuntime {
+	fallback := ChannelMonitorRuntime{
+		Enabled:                true,
+		Mode:                   defaultChannelMonitorMode,
+		DefaultIntervalSeconds: channelMonitorIntervalFallback,
+		HideThroughput:         true,
+	}
+	if s == nil || s.settingRepo == nil {
+		return fallback
+	}
 	vals, err := s.settingRepo.GetMultiple(ctx, []string{
 		SettingKeyChannelMonitorEnabled,
+		SettingKeyChannelMonitorMode,
 		SettingKeyChannelMonitorDefaultIntervalSeconds,
+		SettingKeyChannelMonitorHideThroughput,
 	})
 	if err != nil {
-		return ChannelMonitorRuntime{Enabled: true, DefaultIntervalSeconds: channelMonitorIntervalFallback}
+		return fallback
 	}
 	return ChannelMonitorRuntime{
 		Enabled:                !isFalseSettingValue(vals[SettingKeyChannelMonitorEnabled]),
+		Mode:                   normalizeChannelMonitorMode(vals[SettingKeyChannelMonitorMode]),
 		DefaultIntervalSeconds: parseChannelMonitorInterval(vals[SettingKeyChannelMonitorDefaultIntervalSeconds]),
+		HideThroughput:         !isFalseSettingValue(vals[SettingKeyChannelMonitorHideThroughput]),
 	}
 }
 
@@ -1203,12 +1242,14 @@ type PublicSettingsInjectionPayload struct {
 	// Feature flags — MUST match the opt-in/opt-out registry in
 	// frontend/src/utils/featureFlags.ts. Missing a field here is the bug
 	// that hid the "可用渠道" menu on page refresh.
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
-	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
-	AffiliateEnabled                     bool `json:"affiliate_enabled"`
-	RiskControlEnabled                   bool `json:"risk_control_enabled"`
-	AllowUserViewErrorRequests           bool `json:"allow_user_view_error_requests"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
+	AvailableChannelsEnabled             bool   `json:"available_channels_enabled"`
+	AffiliateEnabled                     bool   `json:"affiliate_enabled"`
+	RiskControlEnabled                   bool   `json:"risk_control_enabled"`
+	AllowUserViewErrorRequests           bool   `json:"allow_user_view_error_requests"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1267,7 +1308,9 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		BalanceLowNotifyRechargeURL:      settings.BalanceLowNotifyRechargeURL,
 
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
+		ChannelMonitorMode:                   settings.ChannelMonitorMode,
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
+		ChannelMonitorHideThroughput:         settings.ChannelMonitorHideThroughput,
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
@@ -1901,9 +1944,12 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// Channel monitor feature switch
 	updates[SettingKeyChannelMonitorEnabled] = strconv.FormatBool(settings.ChannelMonitorEnabled)
+	settings.ChannelMonitorMode = normalizeChannelMonitorMode(settings.ChannelMonitorMode)
+	updates[SettingKeyChannelMonitorMode] = settings.ChannelMonitorMode
 	if v := clampChannelMonitorInterval(settings.ChannelMonitorDefaultIntervalSeconds); v > 0 {
 		updates[SettingKeyChannelMonitorDefaultIntervalSeconds] = strconv.Itoa(v)
 	}
+	updates[SettingKeyChannelMonitorHideThroughput] = strconv.FormatBool(settings.ChannelMonitorHideThroughput)
 
 	// Available channels feature switch
 	updates[SettingKeyAvailableChannelsEnabled] = strconv.FormatBool(settings.AvailableChannelsEnabled)
@@ -2827,9 +2873,11 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpsQueryModeDefault:          "auto",
 		SettingKeyOpsMetricsIntervalSeconds:    "60",
 
-		// Channel monitor defaults (enabled, 60s)
+		// Channel monitor defaults (active V1 probes, hidden user throughput)
 		SettingKeyChannelMonitorEnabled:                "true",
+		SettingKeyChannelMonitorMode:                   ChannelMonitorModeV1,
 		SettingKeyChannelMonitorDefaultIntervalSeconds: "60",
+		SettingKeyChannelMonitorHideThroughput:         "true",
 
 		// Available channels feature (default disabled; opt-in)
 		SettingKeyAvailableChannelsEnabled: "false",
@@ -3334,11 +3382,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		}
 	}
 
-	// Channel monitor feature (default: enabled, 60s)
+	// Channel monitor feature (safe default: V1 active probes, hidden user throughput)
 	result.ChannelMonitorEnabled = !isFalseSettingValue(settings[SettingKeyChannelMonitorEnabled])
+	result.ChannelMonitorMode = normalizeChannelMonitorMode(settings[SettingKeyChannelMonitorMode])
 	result.ChannelMonitorDefaultIntervalSeconds = parseChannelMonitorInterval(
 		settings[SettingKeyChannelMonitorDefaultIntervalSeconds],
 	)
+	result.ChannelMonitorHideThroughput = !isFalseSettingValue(settings[SettingKeyChannelMonitorHideThroughput])
 
 	// Available channels feature (default: disabled; strict true)
 	result.AvailableChannelsEnabled = settings[SettingKeyAvailableChannelsEnabled] == "true"
@@ -4135,6 +4185,92 @@ func (s *SettingService) SetRateLimit429CooldownSettings(ctx context.Context, se
 	return s.settingRepo.Set(ctx, SettingKeyRateLimit429CooldownSettings, string(data))
 }
 
+func (s *SettingService) GetOpenAI403CooldownSettings(ctx context.Context) (*OpenAI403CooldownSettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAI403CooldownSettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultOpenAI403CooldownSettings(), nil
+		}
+		return nil, fmt.Errorf("get OpenAI 403 cooldown settings: %w", err)
+	}
+	if value == "" {
+		return DefaultOpenAI403CooldownSettings(), nil
+	}
+	var settings OpenAI403CooldownSettings
+	if json.Unmarshal([]byte(value), &settings) != nil {
+		return DefaultOpenAI403CooldownSettings(), nil
+	}
+	// Convert the short-lived minute-based schema without changing its duration.
+	if settings.CooldownSeconds == 0 && settings.CounterWindowSeconds == 0 {
+		var legacy struct {
+			CooldownMinutes       int `json:"cooldown_minutes"`
+			CounterWindowMinutes  int `json:"counter_window_minutes"`
+			ThresholdPauseMinutes int `json:"threshold_pause_minutes"`
+		}
+		if json.Unmarshal([]byte(value), &legacy) == nil {
+			settings.CooldownSeconds = legacy.CooldownMinutes * 60
+			settings.CounterWindowSeconds = legacy.CounterWindowMinutes * 60
+			settings.ThresholdPauseSeconds = legacy.ThresholdPauseMinutes * 60
+		}
+	}
+	normalizeOpenAI403CooldownSettings(&settings)
+	return &settings, nil
+}
+
+func (s *SettingService) SetOpenAI403CooldownSettings(ctx context.Context, settings *OpenAI403CooldownSettings) error {
+	if err := validateOpenAI403CooldownSettings(settings); err != nil {
+		return err
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal OpenAI 403 cooldown settings: %w", err)
+	}
+	return s.settingRepo.Set(ctx, SettingKeyOpenAI403CooldownSettings, string(data))
+}
+
+func normalizeOpenAI403CooldownSettings(settings *OpenAI403CooldownSettings) {
+	defaults := DefaultOpenAI403CooldownSettings()
+	settings.CooldownSeconds = clampInt(settings.CooldownSeconds, 1, OpenAI403MaxDurationSeconds)
+	settings.ThresholdCount = clampInt(settings.ThresholdCount, 2, 100)
+	settings.CounterWindowSeconds = clampInt(settings.CounterWindowSeconds, 1, OpenAI403MaxDurationSeconds)
+	if settings.ThresholdAction != OpenAI403ThresholdActionError && settings.ThresholdAction != OpenAI403ThresholdActionTempPause {
+		settings.ThresholdAction = defaults.ThresholdAction
+	}
+	settings.ThresholdPauseSeconds = clampInt(settings.ThresholdPauseSeconds, 1, OpenAI403MaxDurationSeconds)
+}
+
+func validateOpenAI403CooldownSettings(settings *OpenAI403CooldownSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	if settings.CooldownSeconds < 1 || settings.CooldownSeconds > OpenAI403MaxDurationSeconds {
+		return fmt.Errorf("cooldown_seconds must be between 1-%d", OpenAI403MaxDurationSeconds)
+	}
+	if settings.ThresholdCount < 2 || settings.ThresholdCount > 100 {
+		return fmt.Errorf("threshold_count must be between 2-100")
+	}
+	if settings.CounterWindowSeconds < 1 || settings.CounterWindowSeconds > OpenAI403MaxDurationSeconds {
+		return fmt.Errorf("counter_window_seconds must be between 1-%d", OpenAI403MaxDurationSeconds)
+	}
+	if settings.ThresholdAction != OpenAI403ThresholdActionError && settings.ThresholdAction != OpenAI403ThresholdActionTempPause {
+		return fmt.Errorf("threshold_action must be error or temp_unsched")
+	}
+	if settings.ThresholdPauseSeconds < 1 || settings.ThresholdPauseSeconds > OpenAI403MaxDurationSeconds {
+		return fmt.Errorf("threshold_pause_seconds must be between 1-%d", OpenAI403MaxDurationSeconds)
+	}
+	return nil
+}
+
+func clampInt(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
 // GetOpenAIOAuth429DynamicSettings 获取OpenAI OAuth 429动态调度配置。
 // 该配置会在请求成功热路径上读取，因此在 SettingService 层做短 TTL 缓存。
 func (s *SettingService) GetOpenAIOAuth429DynamicSettings(ctx context.Context) (*OpenAIOAuth429DynamicSettings, error) {
@@ -4173,16 +4309,46 @@ func (s *SettingService) GetOpenAIOAuth429DynamicSettings(ctx context.Context) (
 	return nil, fmt.Errorf("get openai oauth 429 dynamic settings: invalid cached value")
 }
 
+// GetOpenAIOAuth429DynamicPolicy returns the immutable cached runtime policy for one Plan Type.
+func (s *SettingService) GetOpenAIOAuth429DynamicPolicy(ctx context.Context, planType string) (OpenAIOAuth429DynamicPolicy, error) {
+	if s == nil || s.settingRepo == nil {
+		return *DefaultOpenAIOAuth429DynamicSettings().PolicyForPlanType(planType), nil
+	}
+	cached := s.getCachedOpenAIOAuth429DynamicSnapshot(false)
+	if cached == nil {
+		if _, err := s.GetOpenAIOAuth429DynamicSettings(ctx); err != nil {
+			return OpenAIOAuth429DynamicPolicy{}, err
+		}
+		cached = s.getCachedOpenAIOAuth429DynamicSnapshot(false)
+		if cached == nil {
+			return OpenAIOAuth429DynamicPolicy{}, fmt.Errorf("get openai oauth 429 dynamic policy: cache unavailable")
+		}
+	}
+	if policy, ok := cached.byPlanType[normalizeOpenAIOAuth429PlanType(planType)]; ok {
+		return policy, nil
+	}
+	return *cached.settings.defaultPolicy(), nil
+}
+
 // SetOpenAIOAuth429DynamicSettings 设置OpenAI OAuth 429动态调度配置
 func (s *SettingService) SetOpenAIOAuth429DynamicSettings(ctx context.Context, settings *OpenAIOAuth429DynamicSettings) error {
 	if settings == nil {
 		return fmt.Errorf("settings cannot be nil")
 	}
-	if err := validateOpenAIOAuth429DynamicSettings(settings); err != nil {
+	if err := validateOpenAIOAuth429DynamicPlanTypeSettings(settings.PlanTypeSettings); err != nil {
+		return err
+	}
+	if err := validateOpenAIOAuth429DynamicPolicy(settings.defaultPolicy()); err != nil {
 		if settings.Enabled {
 			return err
 		}
-		settings = DefaultOpenAIOAuth429DynamicSettings()
+		defaults := DefaultOpenAIOAuth429DynamicSettings()
+		settings.Enabled = defaults.Enabled
+		settings.WindowSeconds = defaults.WindowSeconds
+		settings.MinSamples = defaults.MinSamples
+		settings.Min429 = defaults.Min429
+		settings.RatioThreshold = defaults.RatioThreshold
+		settings.BlockSeconds = defaults.BlockSeconds
 	}
 
 	normalizeOpenAIOAuth429DynamicSettings(settings)
@@ -4220,15 +4386,26 @@ func (s *SettingService) loadOpenAIOAuth429DynamicSettings(ctx context.Context) 
 }
 
 func (s *SettingService) getCachedOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
-	cached, _ := s.openAIOAuth429DynamicSettingsCache.Load().(*cachedOpenAIOAuth429DynamicSettings)
-	if cached == nil || time.Now().UnixNano() >= cached.expiresAt {
+	cached := s.getCachedOpenAIOAuth429DynamicSnapshot(false)
+	if cached == nil {
 		return nil
 	}
 	return cloneOpenAIOAuth429DynamicSettings(&cached.settings)
 }
 
-func (s *SettingService) getLastOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
+func (s *SettingService) getCachedOpenAIOAuth429DynamicSnapshot(allowExpired bool) *cachedOpenAIOAuth429DynamicSettings {
+	if s == nil {
+		return nil
+	}
 	cached, _ := s.openAIOAuth429DynamicSettingsCache.Load().(*cachedOpenAIOAuth429DynamicSettings)
+	if cached == nil || (!allowExpired && time.Now().UnixNano() >= cached.expiresAt) {
+		return nil
+	}
+	return cached
+}
+
+func (s *SettingService) getLastOpenAIOAuth429DynamicSettings() *OpenAIOAuth429DynamicSettings {
+	cached := s.getCachedOpenAIOAuth429DynamicSnapshot(true)
 	if cached == nil {
 		return nil
 	}
@@ -4241,9 +4418,14 @@ func (s *SettingService) storeOpenAIOAuth429DynamicSettingsCache(settings *OpenA
 	}
 	cloned := cloneOpenAIOAuth429DynamicSettings(settings)
 	normalizeOpenAIOAuth429DynamicSettings(cloned)
+	byPlanType := make(map[string]OpenAIOAuth429DynamicPolicy, len(cloned.PlanTypeSettings))
+	for i := range cloned.PlanTypeSettings {
+		byPlanType[cloned.PlanTypeSettings[i].PlanType] = cloned.PlanTypeSettings[i].OpenAIOAuth429DynamicPolicy
+	}
 	s.openAIOAuth429DynamicSettingsCache.Store(&cachedOpenAIOAuth429DynamicSettings{
-		settings:  *cloned,
-		expiresAt: time.Now().Add(openAIOAuth429DynamicSettingsCacheTTL).UnixNano(),
+		settings:   *cloned,
+		byPlanType: byPlanType,
+		expiresAt:  time.Now().Add(openAIOAuth429DynamicSettingsCacheTTL).UnixNano(),
 	})
 }
 
@@ -4252,13 +4434,40 @@ func cloneOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettings)
 		return nil
 	}
 	cloned := *settings
+	cloned.PlanTypeSettings = append([]OpenAIOAuth429DynamicPlanTypeSettings(nil), settings.PlanTypeSettings...)
 	return &cloned
+}
+
+func normalizeOpenAIOAuth429PlanType(planType string) string {
+	return strings.ToLower(strings.TrimSpace(planType))
 }
 
 func normalizeOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettings) {
 	if settings == nil {
 		return
 	}
+	policy := settings.defaultPolicy()
+	normalizeOpenAIOAuth429DynamicPolicy(policy)
+	settings.Enabled = policy.Enabled
+	settings.WindowSeconds = policy.WindowSeconds
+	settings.MinSamples = policy.MinSamples
+	settings.Min429 = policy.Min429
+	settings.RatioThreshold = policy.RatioThreshold
+	settings.BlockSeconds = policy.BlockSeconds
+	settings.UsageWindowCheckEnabled = policy.UsageWindowCheckEnabled
+	settings.UsageWindow5hThresholdPercent = policy.UsageWindow5hThresholdPercent
+	settings.UsageWindow7dThresholdPercent = policy.UsageWindow7dThresholdPercent
+	settings.UsageWindowMissingDataFallbackSeconds = policy.UsageWindowMissingDataFallbackSeconds
+	for i := range settings.PlanTypeSettings {
+		settings.PlanTypeSettings[i].PlanType = normalizeOpenAIOAuth429PlanType(settings.PlanTypeSettings[i].PlanType)
+		normalizeOpenAIOAuth429DynamicPolicy(&settings.PlanTypeSettings[i].OpenAIOAuth429DynamicPolicy)
+	}
+	sort.Slice(settings.PlanTypeSettings, func(i, j int) bool {
+		return settings.PlanTypeSettings[i].PlanType < settings.PlanTypeSettings[j].PlanType
+	})
+}
+
+func normalizeOpenAIOAuth429DynamicPolicy(settings *OpenAIOAuth429DynamicPolicy) {
 	if settings.WindowSeconds < 60 {
 		settings.WindowSeconds = 60
 	}
@@ -4286,12 +4495,64 @@ func normalizeOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSetti
 	if settings.BlockSeconds < 1 {
 		settings.BlockSeconds = 1
 	}
-	if settings.BlockSeconds > 7200 {
-		settings.BlockSeconds = 7200
+	if settings.BlockSeconds > OpenAIOAuth429DynamicMaxBlockSeconds {
+		settings.BlockSeconds = OpenAIOAuth429DynamicMaxBlockSeconds
+	}
+	if settings.UsageWindow5hThresholdPercent <= 0 {
+		settings.UsageWindow5hThresholdPercent = 100
+	}
+	if settings.UsageWindow5hThresholdPercent > 100 {
+		settings.UsageWindow5hThresholdPercent = 100
+	}
+	if settings.UsageWindow7dThresholdPercent <= 0 {
+		settings.UsageWindow7dThresholdPercent = 100
+	}
+	if settings.UsageWindow7dThresholdPercent > 100 {
+		settings.UsageWindow7dThresholdPercent = 100
+	}
+	if settings.UsageWindowMissingDataFallbackSeconds < 0 {
+		settings.UsageWindowMissingDataFallbackSeconds = 0
 	}
 }
 
 func validateOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	if err := validateOpenAIOAuth429DynamicPolicy(settings.defaultPolicy()); err != nil {
+		return err
+	}
+	return validateOpenAIOAuth429DynamicPlanTypeSettings(settings.PlanTypeSettings)
+}
+
+func validateOpenAIOAuth429DynamicPlanTypeSettings(settings []OpenAIOAuth429DynamicPlanTypeSettings) error {
+	if len(settings) > OpenAIOAuth429DynamicMaxPlanTypeSettings {
+		return fmt.Errorf("plan_type_settings must not exceed %d entries", OpenAIOAuth429DynamicMaxPlanTypeSettings)
+	}
+	seen := make(map[string]struct{}, len(settings))
+	for i := range settings {
+		planType := normalizeOpenAIOAuth429PlanType(settings[i].PlanType)
+		if planType == "" {
+			return fmt.Errorf("plan_type must not be empty")
+		}
+		if len(planType) > 64 {
+			return fmt.Errorf("plan_type must not exceed 64 characters")
+		}
+		if _, ok := seen[planType]; ok {
+			return fmt.Errorf("duplicate plan_type: %s", planType)
+		}
+		seen[planType] = struct{}{}
+		if err := validateOpenAIOAuth429DynamicPolicy(&settings[i].OpenAIOAuth429DynamicPolicy); err != nil {
+			return fmt.Errorf("plan_type %q: %w", planType, err)
+		}
+	}
+	return nil
+}
+
+func validateOpenAIOAuth429DynamicPolicy(settings *OpenAIOAuth429DynamicPolicy) error {
+	if settings == nil {
+		return fmt.Errorf("policy cannot be nil")
+	}
 	if settings.WindowSeconds < 60 || settings.WindowSeconds > 3600 {
 		return fmt.Errorf("window_seconds must be between 60-3600")
 	}
@@ -4304,8 +4565,19 @@ func validateOpenAIOAuth429DynamicSettings(settings *OpenAIOAuth429DynamicSettin
 	if settings.RatioThreshold <= 0 || settings.RatioThreshold > 1 {
 		return fmt.Errorf("ratio_threshold must be between 0.01-1")
 	}
-	if settings.BlockSeconds < 1 || settings.BlockSeconds > 7200 {
-		return fmt.Errorf("block_seconds must be between 1-7200")
+	if settings.BlockSeconds < 1 || settings.BlockSeconds > OpenAIOAuth429DynamicMaxBlockSeconds {
+		return fmt.Errorf("block_seconds must be between 1-%d", OpenAIOAuth429DynamicMaxBlockSeconds)
+	}
+	if settings.UsageWindowCheckEnabled {
+		if settings.UsageWindow5hThresholdPercent <= 0 || settings.UsageWindow5hThresholdPercent > 100 {
+			return fmt.Errorf("usage_window_5h_threshold_percent must be between 0-100")
+		}
+		if settings.UsageWindow7dThresholdPercent <= 0 || settings.UsageWindow7dThresholdPercent > 100 {
+			return fmt.Errorf("usage_window_7d_threshold_percent must be between 0-100")
+		}
+		if settings.UsageWindowMissingDataFallbackSeconds < 0 {
+			return fmt.Errorf("usage_window_missing_data_fallback_seconds must not be negative")
+		}
 	}
 	return nil
 }

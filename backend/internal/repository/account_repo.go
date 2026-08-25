@@ -49,6 +49,10 @@ type accountRepository struct {
 	// Used to proactively sync account snapshot to cache when status changes,
 	// ensuring sticky sessions can promptly detect unavailable accounts.
 	schedulerCache service.SchedulerCache
+
+	// modelAvailabilityCache 缓存模型可用性候选（404-vs-503 判别专用），
+	// 按 groupID 短 TTL 复用，避免每请求全量查询与解码候选账号。
+	modelAvailabilityCache *modelAvailabilityCandidateCache
 }
 
 // Keep this allowlist exact: unknown Extra keys must remain lifecycle-relevant,
@@ -94,7 +98,12 @@ func NewAccountRepository(client *dbent.Client, sqlDB *sql.DB, schedulerCache se
 // newAccountRepositoryWithSQL 是内部构造函数，支持依赖注入 SQL 执行器。
 // 这种设计便于单元测试时注入 mock 对象。
 func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedulerCache service.SchedulerCache) *accountRepository {
-	return &accountRepository{client: client, sql: sqlq, schedulerCache: schedulerCache}
+	return &accountRepository{
+		client:                 client,
+		sql:                    sqlq,
+		schedulerCache:         schedulerCache,
+		modelAvailabilityCache: newModelAvailabilityCandidateCache(),
+	}
 }
 
 func (r *accountRepository) sqlFromContext(ctx context.Context) sqlExecutor {
@@ -470,11 +479,6 @@ func nullTimePointer(value sql.NullTime) *time.Time {
 }
 
 func (r *accountRepository) updateAccountRow(ctx context.Context, client *dbent.Client, account *service.Account) error {
-	schedulable := account.Schedulable
-	if account.Status == service.StatusError {
-		schedulable = false
-	}
-
 	builder := client.Account.UpdateOneID(account.ID).
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
@@ -486,7 +490,8 @@ func (r *accountRepository) updateAccountRow(ctx context.Context, client *dbent.
 		SetPriority(account.Priority).
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
-		SetSchedulable(schedulable).
+		// Status is transient health; preserve the administrator's scheduling intent.
+		SetSchedulable(account.Schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
 
 	if account.RateMultiplier != nil {
@@ -664,7 +669,10 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 	return r.ListWithFilters(ctx, params, service.AccountListFilters{})
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+// buildListWithFiltersQuery 构建账号列表的过滤查询（WHERE 部分）。
+// 供全量版（ListWithFilters）、投影版（ListWithFiltersProjected）与
+// 导出全量版（ListWithFiltersFull）共用。
+func (r *accountRepository) buildListWithFiltersQuery(filters service.AccountListFilters) *dbent.AccountQuery {
 	q := r.client.Account.Query()
 
 	if filters.Platform != "" {
@@ -761,6 +769,15 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			s.Where(sqljson.ValueEQ(dbaccount.FieldCredentials, filters.PlanType, sqljson.Path("plan_type")))
 		}))
 	}
+	return q
+}
+
+// ListWithFilters 是通用账号列表契约：返回完整账号（含 credentials 全量
+// JSONB 解码）。AccountService.List 依赖该契约。
+// 需要瘦身凭据的路径必须使用 ListWithFiltersProjected（admin 列表专用），
+// 不要在此方法上加投影。
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
 
 	total, err := q.Clone().Count(ctx)
 	if err != nil {
@@ -784,6 +801,201 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		return nil, nil, err
 	}
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+// ListWithFiltersProjected 是 admin 账号列表专用投影版：排除 credentials 列
+// （平均 3.2KB/账号，最大 27KB），列表不需要完整凭据。前端需要的少量
+// credentials 字段由 ListAccountCredentialSubset 单独批量提取，避免 ent 全量
+// 解码 JSONB 造成的 CPU 风暴与 800KB/页 的响应膨胀。
+// 注意：通用契约 ListWithFilters 保持全量，本方法只供 admin 列表路径使用。
+func (r *accountRepository) ListWithFiltersProjected(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.buildListWithFiltersQuery(filters)
+
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	accountsQuery := q.
+		Select(accountListProjectionFields...).
+		Offset(params.Offset()).
+		Limit(params.Limit())
+	for _, order := range accountListOrder(params) {
+		accountsQuery = accountsQuery.Order(order)
+	}
+
+	accounts, err := accountsQuery.All(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	outAccounts, err := r.accountsToService(ctx, accounts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+// MaxAccountUpdatedAt 返回 accounts 表最大 updated_at，作为账号列表缓存的
+// 失效版本：任何账号变更都会推进该值，列表缓存据此立即失效。
+// 26K 行规模下 max(updated_at) 毫秒级完成。
+func (r *accountRepository) MaxAccountUpdatedAt(ctx context.Context) (*time.Time, error) {
+	if r == nil || r.sql == nil {
+		return nil, nil
+	}
+	rows, err := r.sqlFromContext(ctx).QueryContext(ctx, `SELECT max(updated_at) FROM accounts WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return nil, nil
+	}
+	var latest sql.NullTime
+	if err := rows.Scan(&latest); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if !latest.Valid {
+		return nil, nil
+	}
+	v := latest.Time
+	return &v, nil
+}
+
+// ListWithFiltersFull 与 ListWithFilters 相同，均返回全量 credentials
+// （JSONB 全量解码），供导出等需要完整凭据（id_token/access_token 等）
+// 的路径使用。admin 列表专用投影见 ListWithFiltersProjected，避免敏感
+// 凭据进入列表响应。
+func (r *accountRepository) ListWithFiltersFull(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	// 内部委托：两版契约当前逐字节相同，实现体收敛到 ListWithFilters。
+	return r.ListWithFilters(ctx, params, filters)
+}
+
+// accountListProjectionFields 是 admin 账号列表查询的字段白名单：
+// 除 credentials 外的全部列。credentials 是列表响应的体积大头
+// （含 token/refresh_token 等真实凭据），列表 UI 只需要其中少量字段
+// （见 ListAccountCredentialSubset），不应全量加载与解码。
+var accountListProjectionFields = []string{
+	dbaccount.FieldID,
+	dbaccount.FieldCreatedAt,
+	dbaccount.FieldUpdatedAt,
+	dbaccount.FieldDeletedAt,
+	dbaccount.FieldName,
+	dbaccount.FieldNotes,
+	dbaccount.FieldPlatform,
+	dbaccount.FieldType,
+	dbaccount.FieldExtra,
+	dbaccount.FieldProxyID,
+	dbaccount.FieldConcurrency,
+	dbaccount.FieldLoadFactor,
+	dbaccount.FieldPriority,
+	dbaccount.FieldRateMultiplier,
+	dbaccount.FieldStatus,
+	dbaccount.FieldErrorMessage,
+	dbaccount.FieldLastUsedAt,
+	dbaccount.FieldExpiresAt,
+	dbaccount.FieldAutoPauseOnExpired,
+	dbaccount.FieldSchedulable,
+	dbaccount.FieldRateLimitedAt,
+	dbaccount.FieldRateLimitResetAt,
+	dbaccount.FieldOverloadUntil,
+	dbaccount.FieldTempUnschedulableUntil,
+	dbaccount.FieldTempUnschedulableReason,
+	dbaccount.FieldSessionWindowStart,
+	dbaccount.FieldSessionWindowEnd,
+	dbaccount.FieldSessionWindowStatus,
+}
+
+// ListAccountCredentialSubset 批量提取列表 UI 实际消费的 credentials 子字段，
+// 替代全量 JSONB 解码。统一使用 credentials->'field'（保留 JSON 类型），
+// 标量与布尔字段（email/plan_type/temp_unschedulable_enabled 等）反序列化
+// 后保持 string/bool 语义。返回 map[accountID]子集 map；查询失败返回错误。
+// 注意：必须用原生 SQL（ent 的 Select 不接受任意 SQL 表达式列，scan 会错位）。
+func (r *accountRepository) ListAccountCredentialSubset(ctx context.Context, ids []int64) (map[int64]map[string]any, error) {
+	if r == nil || r.sql == nil || len(ids) == 0 {
+		return map[int64]map[string]any{}, nil
+	}
+	uniqueIDs := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return map[int64]map[string]any{}, nil
+	}
+
+	subFieldNames := accountCredentialSubsetFieldNames()
+	selectList := "id"
+	for _, name := range subFieldNames {
+		// credentials->'field'（jsonb 运算符）对所有类型返回带类型的 JSON
+		// 文本：标量（email/plan_type）带引号、对象/数组保留结构。统一在
+		// 扫描后 json.Unmarshal，标量自动去引号、对象保留类型。
+		selectList += ", credentials->'" + name + "'"
+	}
+
+	rows, err := r.sqlFromContext(ctx).QueryContext(ctx, `
+		SELECT `+selectList+`
+		FROM accounts
+		WHERE id = ANY($1)
+	`, uniqueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[int64]map[string]any, len(uniqueIDs))
+	for rows.Next() {
+		var id int64
+		values := make([]sql.NullString, len(subFieldNames))
+		dest := make([]any, 0, len(subFieldNames)+1)
+		dest = append(dest, &id)
+		for i := range values {
+			dest = append(dest, &values[i])
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		subset := make(map[string]any, len(subFieldNames))
+		for i, name := range subFieldNames {
+			if !values[i].Valid {
+				continue
+			}
+			// 统一反序列化：标量 JSON（"email"）去引号还原为字符串，
+			// 对象/数组/布尔/数字保留类型；解析失败时兜底为原样文本。
+			var v any
+			if err := json.Unmarshal([]byte(values[i].String), &v); err == nil {
+				subset[name] = v
+			} else {
+				subset[name] = values[i].String
+			}
+		}
+		out[id] = subset
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func accountCredentialSubsetFieldNames() []string {
+	return []string{
+		"email", "plan_type", "subscription_expires_at", "project_id",
+		"antigravity_project_id", "oauth_type",
+		"openai_capabilities", "model_mapping",
+		"compact_model_mapping", "temp_unschedulable_rules",
+		"temp_unschedulable_enabled", "model_whitelist",
+		"intercept_warmup_requests", "api_key",
+	}
 }
 
 // ListOpsAccountsForStats loads only the account fields consumed by the realtime
@@ -899,6 +1111,7 @@ func (r *accountRepository) ListOAuthRefreshCandidates(ctx context.Context) ([]s
 		SELECT id
 		FROM accounts
 		WHERE deleted_at IS NULL
+			AND schedulable = TRUE
 			AND status = 'active'
 			AND type IN ('oauth', 'setup-token')
 			AND platform IN ('anthropic', 'openai', 'gemini', 'antigravity')
@@ -1081,11 +1294,11 @@ func (r *accountRepository) batchUpdateLastUsedChunk(ctx context.Context, ids []
 
 func (r *accountRepository) SetError(ctx context.Context, id int64, errorMsg string) error {
 	client := clientFromContext(ctx, r.client)
+	// Error status blocks effective scheduling without overwriting administrator intent.
 	_, err := client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
 		SetStatus(service.StatusError).
 		SetErrorMessage(errorMsg).
-		SetSchedulable(false).
 		Save(ctx)
 	if err != nil {
 		return err
@@ -1274,6 +1487,14 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 	if err != nil {
 		return err
 	}
+	// 与 BindGroups 一致：新增绑定也推进受影响账号的 updated_at（列表缓存版本，
+	// clock_timestamp() 理由同上）。
+	if _, err := r.sqlFromContext(ctx).ExecContext(ctx,
+		"UPDATE accounts SET updated_at = clock_timestamp() WHERE id = $1",
+		accountID,
+	); err != nil {
+		return err
+	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
 	if err := enqueueSchedulerOutbox(ctx, r.sqlFromContext(ctx), service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue add to group failed: account=%d group=%d err=%v", accountID, groupID, err)
@@ -1290,6 +1511,14 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 		).
 		Exec(ctx)
 	if err != nil {
+		return err
+	}
+	// 与 BindGroups 一致：解除绑定也推进受影响账号的 updated_at（列表缓存版本，
+	// clock_timestamp() 理由同上）。
+	if _, err := r.sqlFromContext(ctx).ExecContext(ctx,
+		"UPDATE accounts SET updated_at = clock_timestamp() WHERE id = $1",
+		accountID,
+	); err != nil {
 		return err
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
@@ -1358,6 +1587,18 @@ func (r *accountRepository) bindGroupsWithClient(ctx context.Context, client *db
 		if _, err := client.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
 			return err
 		}
+	}
+
+	// 成员替换即账号变更：推进受影响账号的 updated_at（账号列表缓存以
+	// max(accounts.updated_at) 为失效版本，仅改分组的批量编辑在 BulkUpdate 无字段
+	// 变更提前返回后不推进版本，分组过滤的列表缓存会返回陈旧成员）。用
+	// clock_timestamp() 而非 NOW()（NOW() 固定为事务开始时间，长事务内推进无效），
+	// 经 sqlFromContext 与成员替换复用同一事务，回滚时一并撤销。
+	if _, err := r.sqlFromContext(ctx).ExecContext(ctx,
+		"UPDATE accounts SET updated_at = clock_timestamp() WHERE id = $1",
+		accountID,
+	); err != nil {
+		return err
 	}
 
 	payload := buildSchedulerGroupPayload(mergeGroupIDs(existingGroupIDs, groupIDs))
@@ -1528,6 +1769,10 @@ func (r *accountRepository) ListSchedulableByGroupIDAndPlatforms(ctx context.Con
 		platforms:   platforms,
 	})
 }
+
+// ListModelAvailabilityCandidates 的实现已移至 account_model_availability_cache.go：
+// 生产路径带 30s TTL 缓存 + 字段投影（见该文件顶部注释与报告
+// .superpowers/sdd/modelcheck-fix-report.md）。
 
 func (r *accountRepository) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
 	result, err := r.sqlFromContext(ctx).ExecContext(ctx, `
@@ -2501,9 +2746,10 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 }
 
 type accountGroupQueryOptions struct {
-	status      string
-	schedulable bool
-	platforms   []string // 允许的多个平台，空切片表示不进行平台过滤
+	status               string
+	schedulable          bool
+	ignoreTransientState bool
+	platforms            []string // 允许的多个平台，空切片表示不进行平台过滤
 }
 
 func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID int64, opts accountGroupQueryOptions) ([]service.Account, error) {
@@ -2520,14 +2766,16 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 		preds = append(preds, dbaccount.PlatformIn(opts.platforms...))
 	}
 	if opts.schedulable {
-		now := time.Now()
-		preds = append(preds,
-			dbaccount.SchedulableEQ(true),
-			tempUnschedulablePredicate(),
-			notExpiredPredicate(now),
-			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
-		)
+		preds = append(preds, dbaccount.SchedulableEQ(true))
+		if !opts.ignoreTransientState {
+			now := time.Now()
+			preds = append(preds,
+				tempUnschedulablePredicate(),
+				notExpiredPredicate(now),
+				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			)
+		}
 	}
 
 	if len(preds) > 0 {

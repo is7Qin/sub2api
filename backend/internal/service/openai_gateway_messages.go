@@ -126,6 +126,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	responsesReq.Model = upstreamModel
+	if responsesReq.Reasoning != nil {
+		responsesReq.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, responsesReq.Reasoning.Effort)
+	}
 	if previousResponseID != "" {
 		responsesReq.PreviousResponseID = previousResponseID
 		trimAnthropicCompatResponsesInputToLatestTurn(responsesReq)
@@ -342,7 +345,20 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			)
 			return s.ForwardAsAnthropic(ctx, c, account, body, promptCacheKey, defaultMappedModel)
 		}
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+		shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody)
+		// Explicit account rules must run before the compat handler commits the error response.
+		tempUnscheduled := false
+		if !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
+			tempUnscheduled = s.rateLimitService.CheckErrorPolicy(
+				ctx,
+				account,
+				resp.StatusCode,
+				respBody,
+				upstreamModel,
+			) == ErrorPolicyTempUnscheduled
+			shouldFailover = tempUnscheduled
+		}
+		if shouldFailover {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -361,7 +377,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			if !tempUnscheduled {
+				s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			}
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
@@ -480,14 +498,42 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		if strings.TrimSpace(rawMessage) == "" {
 			rawMessage = "OpenAI messages response failed"
 		}
+		if requestErr := newOpenAIUpstreamRequestError(payload, requestID); requestErr != nil {
+			requestErr.attachUsage(usage)
+			writeAnthropicError(c, requestErr.StatusCode, requestErr.AnthropicErrorType(), requestErr.Message)
+			return &OpenAIForwardResult{
+				RequestID: requestID, AttemptID: forwardResultAttemptID(resp), ResponseID: finalResponse.ID, Usage: usage,
+				Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
+				Stream: false, Duration: time.Since(startTime),
+			}, requestErr
+		}
 		if openAIStreamFailedEventShouldFailover(payload, rawMessage) {
 			message := boundOpenAIMessagesErrorMessage(rawMessage)
-			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message)
+			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message, resp.Header)
 		}
 		message := boundOpenAIMessagesErrorMessage(rawMessage)
-		writeAnthropicError(c, http.StatusBadGateway, "api_error", message)
+		s.recordOpenAIMessagesStreamUpstreamError(c, account, requestID, upstreamURLFromResponse(resp), "stream_failed", message)
+		// response.failed arrives inside an HTTP 200 SSE stream, so there is no upstream HTTP error status to pass through.
+		status, errType, errMsg, matched := applyErrorPassthroughRule(
+			c, account.Platform, 0, payload,
+			http.StatusBadGateway, "api_error", message,
+		)
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		if strings.TrimSpace(errMsg) == "" {
+			errMsg = message
+		}
+		errMsg = boundOpenAIMessagesErrorMessage(errMsg)
+		if matched {
+			MarkResponseCommitted(c)
+			writeAnthropicError(c, status, errType, errMsg)
+		} else {
+			writeAnthropicError(c, http.StatusBadGateway, "api_error", message)
+		}
 		return &OpenAIForwardResult{
 			RequestID:     requestID,
+			AttemptID:     forwardResultAttemptID(resp),
 			ResponseID:    finalResponse.ID,
 			Usage:         usage,
 			Model:         originalModel,
@@ -495,7 +541,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			UpstreamModel: upstreamModel,
 			Stream:        false,
 			Duration:      time.Since(startTime),
-		}, fmt.Errorf("upstream response failed: %s", message)
+		}, fmt.Errorf("upstream response failed: %s", errMsg)
 	}
 
 	// When the terminal event has an empty output array, reconstruct from
@@ -514,6 +560,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
+		AttemptID:     forwardResultAttemptID(resp),
 		ResponseID:    finalResponse.ID,
 		Usage:         usage,
 		Model:         originalModel,
@@ -860,6 +907,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:        requestID,
+			AttemptID:        forwardResultAttemptID(resp),
 			ResponseID:       responseID,
 			Usage:            usage,
 			Model:            originalModel,
@@ -905,29 +953,56 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			usage = copyOpenAIUsageFromResponsesUsage(failedResponse.Usage)
 		}
 		if eventType == "response.failed" || isBareErrorEvent {
+			if requestErr := newOpenAIUpstreamRequestError(payloadBytes, requestID); requestErr != nil {
+				requestErr.observeTerminal(usage, clientOutputStarted || OpenAICompatAnthropicClientOutputStarted(c))
+				streamErr = requestErr
+				if !clientDisconnected {
+					writeStreamHeaders()
+					if err := writeAnthropicStreamError(c, requestErr.AnthropicErrorType(), requestErr.Message); err != nil {
+						clientDisconnected = true
+					}
+				}
+				return true
+			}
 			rawMessage := extractOpenAIMessagesRawSSEErrorMessage(payloadBytes)
 			if strings.TrimSpace(rawMessage) == "" {
 				rawMessage = "OpenAI messages stream response failed"
 			}
 			if !clientDisconnected && !clientOutputStarted && openAIStreamFailedEventShouldFailover(payloadBytes, rawMessage) {
 				message := boundOpenAIMessagesErrorMessage(rawMessage)
-				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message)
+				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message, resp.Header)
 				return true
 			}
 			message := boundOpenAIMessagesErrorMessage(rawMessage)
 			s.recordOpenAIMessagesStreamUpstreamError(c, account, requestID, upstreamURL, "stream_failed", message)
-			streamErr = fmt.Errorf("upstream response failed: %s", message)
+			// response.failed arrives inside an HTTP 200 SSE stream, so there is no upstream HTTP error status to pass through.
+			errStatus, errType, errMsg := http.StatusBadGateway, "api_error", message
+			if status, mappedType, mappedMsg, matched := applyErrorPassthroughRule(
+				c, account.Platform, 0, payloadBytes,
+				errStatus, errType, errMsg,
+			); matched {
+				if status == 0 {
+					status = errStatus
+				}
+				if strings.TrimSpace(mappedMsg) == "" {
+					mappedMsg = errMsg
+				}
+				mappedMsg = boundOpenAIMessagesErrorMessage(mappedMsg)
+				errStatus, errType, errMsg = status, mappedType, mappedMsg
+				MarkResponseCommitted(c)
+			}
+			streamErr = fmt.Errorf("upstream response failed: %s", errMsg)
 			if !clientDisconnected {
 				if c != nil && c.Writer != nil && c.Writer.Written() {
 					writeStreamHeaders()
-					if err := writeAnthropicStreamError(c, "api_error", message); err != nil {
+					if err := writeAnthropicStreamError(c, errType, errMsg); err != nil {
 						clientDisconnected = true
 						logger.L().Info("openai messages stream: client disconnected while writing failure event",
 							zap.String("request_id", requestID),
 						)
 					}
 				} else if !OpenAICompatAnthropicClientOutputStarted(c) {
-					writeAnthropicError(c, http.StatusBadGateway, "api_error", message)
+					writeAnthropicError(c, errStatus, errType, errMsg)
 				}
 			}
 			return true

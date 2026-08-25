@@ -5,18 +5,23 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type openAIImagesFailoverAccountRepo struct {
@@ -196,6 +201,23 @@ func (r *openAIImagesFailoverUsageRepo) snapshot() (int, *service.UsageLog) {
 	return r.calls, r.lastLog
 }
 
+func TestBoundedImageDiagnosticValue(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		known map[string]struct{}
+		want  string
+	}{
+		{name: "known", value: "HIGH", known: imageQualityDiagnosticValues, want: "high"},
+		{name: "missing", value: "", known: imageQualityDiagnosticValues, want: "default"},
+		{name: "arbitrary long", value: strings.Repeat("private-", 100), known: imageQualityDiagnosticValues, want: "other"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, boundedImageDiagnosticValue(tt.value, tt.known))
+		})
+	}
+}
+
 func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhenExhausted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(3130)
@@ -248,6 +270,7 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 		nil,
 		nil,
 		nil,
+		nil, nil, // usageRecordWorkerPool
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
@@ -264,8 +287,12 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 	)
 	handler.maxAccountSwitches = 10
 
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat"}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	secretPrompt := "draw a private cat"
+	arbitraryQuality := strings.Repeat("secret-quality-", 100)
+	body := []byte(`{"model":"gpt-image-2","prompt":"` + secretPrompt + `","quality":"` + arbitraryQuality + `","size":"1536x1024","image_url":"https://secret.example/image"}`)
+	core, observedLogs := observer.New(zap.DebugLevel)
+	requestCtx := logger.IntoContext(context.Background(), zap.New(core))
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body)).WithContext(requestCtx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -283,10 +310,26 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 
 	handler.Images(c)
 
+	accountSelectingLogs := observedLogs.FilterMessage("openai.images.account_selecting").All()
+	require.Len(t, accountSelectingLogs, 3)
+	for _, entry := range accountSelectingLogs {
+		fields := entry.ContextMap()
+		require.Equal(t, "other", fields["img_quality"])
+		require.Equal(t, "1536x1024", fields["img_size"])
+		encoded, err := json.Marshal(fields)
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded), secretPrompt)
+		require.NotContains(t, string(encoded), arbitraryQuality)
+		require.NotContains(t, string(encoded), "secret.example")
+		require.NotContains(t, fields, "prompt")
+		require.NotContains(t, fields, "body")
+		require.NotContains(t, fields, "image_url")
+	}
+
 	require.Equal(t, []int64{1, 2}, upstream.calls())
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, "Upstream service temporarily unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 
 	rawEvents, ok := c.Get(service.OpsUpstreamErrorsKey)
 	require.True(t, ok)
@@ -310,6 +353,7 @@ func TestOpenAIGatewayHandlerImages_Canceled520DoesNotReplayOrReportExhausted(t 
 	gatewayService := service.NewOpenAIGatewayService(
 		openAIImagesFailoverAccountRepo{accounts: accounts}, nil, nil, nil, nil, nil, nil, cfg,
 		nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, // usageRecordWorkerPool
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
@@ -368,6 +412,7 @@ func TestOpenAIGatewayHandlerImages_CancellationAroundAccountAcquisitionStopsBef
 			gatewayService := service.NewOpenAIGatewayService(
 				openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}, nil, nil, nil, nil, nil, nil, cfg,
 				nil, concurrencyService, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil,
+				nil, nil, // usageRecordWorkerPool
 			)
 			billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(billingService.Stop)
@@ -415,6 +460,7 @@ func TestOpenAIGatewayHandlerImages_CancellationAtServiceAdmissionIsClean(t *tes
 		gatewayService := service.NewOpenAIGatewayService(
 			openAIImagesFailoverAccountRepo{accounts: []service.Account{account}}, nil, nil, nil, nil, nil, nil, cfg,
 			nil, concurrencyService, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, // usageRecordWorkerPool
 		)
 		billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 		handler := NewOpenAIGatewayHandler(
@@ -525,6 +571,7 @@ func TestOpenAIGatewayHandlerImages_IncompleteFailoverBillsOnlyFinalSuccess(t *t
 		nil,
 		nil,
 		nil,
+		nil, nil, // usageRecordWorkerPool
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
@@ -567,7 +614,8 @@ func TestOpenAIGatewayHandlerImages_IncompleteFailoverBillsOnlyFinalSuccess(t *t
 	calls, lastLog := usageRepo.snapshot()
 	require.Equal(t, 1, calls)
 	require.NotNil(t, lastLog)
-	require.Equal(t, int64(12), lastLog.AccountID)
+	require.NotNil(t, lastLog.AccountID)
+	require.Equal(t, int64(12), *lastLog.AccountID)
 	require.Equal(t, 1, lastLog.ImageCount)
 	require.Equal(t, "req_img_success", lastLog.RequestID)
 }

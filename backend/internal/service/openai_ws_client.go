@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +18,7 @@ import (
 )
 
 const openAIWSMessageReadLimitBytes int64 = 16 * 1024 * 1024
+const openAIWSHandshakeErrorBodyLimitBytes int64 = 64 * 1024
 const (
 	openAIWSProxyTransportMaxIdleConns        = 128
 	openAIWSProxyTransportMaxIdleConnsPerHost = 64
@@ -42,6 +44,10 @@ type openAIWSClientConn interface {
 // openAIWSClientDialer 抽象 WS 建连器。
 type openAIWSClientDialer interface {
 	Dial(ctx context.Context, wsURL string, headers http.Header, proxyURL string) (openAIWSClientConn, int, http.Header, error)
+}
+
+type openAIWSClientDetailedDialer interface {
+	DialDetailed(ctx context.Context, wsURL string, headers http.Header, proxyURL string) (openAIWSClientConn, int, http.Header, []byte, error)
 }
 
 type openAIWSTransportMetricsDialer interface {
@@ -72,9 +78,19 @@ func (d *coderOpenAIWSClientDialer) Dial(
 	headers http.Header,
 	proxyURL string,
 ) (openAIWSClientConn, int, http.Header, error) {
+	conn, status, responseHeaders, _, err := d.DialDetailed(ctx, wsURL, headers, proxyURL)
+	return conn, status, responseHeaders, err
+}
+
+func (d *coderOpenAIWSClientDialer) DialDetailed(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+	proxyURL string,
+) (openAIWSClientConn, int, http.Header, []byte, error) {
 	targetURL := strings.TrimSpace(wsURL)
 	if targetURL == "" {
-		return nil, 0, nil, errors.New("ws url is empty")
+		return nil, 0, nil, nil, errors.New("ws url is empty")
 	}
 
 	opts := &coderws.DialOptions{
@@ -84,7 +100,7 @@ func (d *coderOpenAIWSClientDialer) Dial(
 	if proxy := strings.TrimSpace(proxyURL); proxy != "" {
 		proxyClient, err := d.proxyHTTPClient(proxy)
 		if err != nil {
-			return nil, 0, nil, err
+			return nil, 0, nil, nil, err
 		}
 		opts.HTTPClient = proxyClient
 	}
@@ -97,7 +113,12 @@ func (d *coderOpenAIWSClientDialer) Dial(
 			status = resp.StatusCode
 			respHeaders = cloneHeader(resp.Header)
 		}
-		return nil, status, respHeaders, err
+		var responseBody []byte
+		if resp != nil && resp.Body != nil {
+			responseBody, _ = io.ReadAll(io.LimitReader(resp.Body, openAIWSHandshakeErrorBodyLimitBytes))
+			_ = resp.Body.Close()
+		}
+		return nil, status, respHeaders, responseBody, err
 	}
 	// coder/websocket 默认单消息读取上限为 32KB，Codex WS 事件（如 rate_limits/大 delta）
 	// 可能超过该阈值，需显式提高上限，避免本地 read_fail(message too big)。
@@ -106,7 +127,7 @@ func (d *coderOpenAIWSClientDialer) Dial(
 	if resp != nil {
 		respHeaders = cloneHeader(resp.Header)
 	}
-	return &coderOpenAIWSClientConn{conn: conn}, 0, respHeaders, nil
+	return &coderOpenAIWSClientConn{conn: conn}, 0, respHeaders, nil, nil
 }
 
 func (d *coderOpenAIWSClientDialer) proxyHTTPClient(proxy string) (*http.Client, error) {

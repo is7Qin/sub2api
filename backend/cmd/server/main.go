@@ -173,9 +173,17 @@ func runMainServer() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
-	}
+	shutdownServer(ctx, app.Server)
 
 	log.Println("Server exited")
+}
+
+type serverShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+func shutdownServer(ctx context.Context, server serverShutdowner) {
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	}
 }
